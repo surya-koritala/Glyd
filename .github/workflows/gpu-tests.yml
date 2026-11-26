@@ -234,6 +234,13 @@ jobs:
           "$E" twomodels muse kimi
           # (R1a: a buffer belongs to its context: one of a second context on the GPU written, read, zeroed and freed while the first is current)
           "$E" bufcheck
+      - name: Requests of every sampling at once through the scheduler, the rows their draws see made on the GPU (random Gemma 4, Qwen3.5-layout and plain dense models; logits.rs samplecheck, #138)
+        run: |
+          # (prompts one a pass: each request at once its run alone token for token and the host's draws from its whole rows; greedy, a top-k, a JSON schema's grammar, the penalties, a bias,
+          # an allowed list and a least length in the same steps)
+          for c in gemma4 qwen35 dense; do GLYD_ENGINE_BATCH_PREFILL=0 "$E" samplecheck "$c" --users 8 --vocab 0; done
+          # (prompts together and 64 users: every request the host's draws; the replies like alone counted)
+          "$E" samplecheck gemma4 --users 64 --vocab 0
       - name: Nemotron-H's developer tools on the executor (a random M*ME model made here, nhtoy with and without the decode graph, nhoffload through the expert cache, kcheck_nh.rs)
         run: |
           d="$RUNNER_TEMP/nh"

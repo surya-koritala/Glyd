@@ -143,9 +143,6 @@ impl ConfigKimi {
 
     /// `parse` of a config.json parsed once (`ModelConfig`).
     pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<ConfigKimi> {
-        if c.model_type != "kimi_k3" {
-            return err(format!("{label}: not a Kimi-K3 model (model_type kimi_k3)"));
-        }
         if !c.nested {
             return err(format!("{label}: no text_config"));
         }
@@ -343,5 +340,25 @@ mod reader_tests {
         let mut v: serde_json::Value = serde_json::from_str(text).unwrap();
         v["text_config"]["kv_lora_rank"] = serde_json::Value::Null;
         assert_eq!(ConfigKimi::parse(&v.to_string(), "c", None).unwrap_err().msg, "c: no kv_lora_rank");
+    }
+
+    /// Kimi-K3.1-Pro's released config (tests/fixtures/headers: a wrapper `kimi_k31` over the same `kimi_linear` text model) is read as Kimi-K3's is, by the text
+    /// model's type: the family is Kimi, the layers, delta and latent attention and experts are Kimi-K3's, and the sparse attention is on the latent attention
+    /// layers at the release's numbers (32 heads of 128, LayerNorm-ed keys, 2,048 picks).
+    #[test]
+    fn kimi_k31_is_read_by_its_text_models_type() {
+        let config = |f: &str| -> String {
+            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers").join(f);
+            let h: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+            h["config"].as_str().unwrap().to_string()
+        };
+        let (k31, k3) = (config("Kimi-K3.1-Pro.json"), config("Kimi-K3.json"));
+        assert!(is_kimi(&k31) && is_kimi(&k3));
+        let (c31, c3) = (ConfigKimi::parse(&k31, "Kimi-K3.1-Pro", None).unwrap(), ConfigKimi::parse(&k3, "Kimi-K3", None).unwrap());
+        assert_eq!(c3.dsa, None);
+        let latent: Vec<usize> = (0..c3.layers).filter(|&l| c3.kinds[l] == GlmKind::Mla).collect();
+        assert_eq!(c31.dsa, Some(KimiDsa { layers: latent, heads: 32, dim: 128, top_k: 2048, layer_norm: true }));
+        assert!(c31.kinds == c3.kinds && c31.moe == c3.moe && c31.kda == c3.kda && c31.mla == c3.mla && c31.experts == c3.experts);
+        assert_eq!((c31.hidden, c31.layers, c31.res_block, c31.situ), (c3.hidden, c3.layers, c3.res_block, c3.situ));
     }
 }

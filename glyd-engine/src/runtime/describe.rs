@@ -157,10 +157,11 @@ pub fn describe_dir(dir: &std::path::Path) -> Result<(Described, String)> {
 /// `describe_dir` of a config.json parsed once.
 pub fn describe_dir_of(dir: &std::path::Path, c: &ModelConfig) -> Result<(Described, String)> {
     let label = dir.join("config.json").display().to_string();
-    let d = describe_config(c)?;
     let hub = !dir.join("glyd.json").exists() && (dir.join("model.safetensors.index.json").exists() || dir.join("model.safetensors").exists());
-    if hub {
-        d.check(&names::index_names(dir)?, false).map_err(|e| e.context(&label))?;
+    let have = if hub { Some(names::index_names(dir)?) } else { None };
+    let d = describe_config_in(c, have.as_ref())?;
+    if let Some(have) = &have {
+        d.check(have, false).map_err(|e| e.context(&label))?;
     }
     Ok((d, label))
 }
@@ -413,11 +414,27 @@ pub fn describe(cfg: &Value) -> Result<Described> {
     describe_config(&ModelConfig::from_value(cfg)?)
 }
 
+/// The description of the model whose `config.json` is `cfg`, for a checkpoint whose tensor names are `have` (`describe_config_in`).
+pub fn describe_held(cfg: &Value, have: &BTreeSet<String>) -> Result<Described> {
+    describe_config_in(&ModelConfig::from_value(cfg)?, Some(have))
+}
+
 /// The description of a config.json parsed once.
 pub fn describe_config(c: &ModelConfig) -> Result<Described> {
+    describe_config_in(c, None)
+}
+
+/// The description of a config.json parsed once, in the stored form of the checkpoint whose tensor names are `have` where its config does not say how it
+/// stores them: the Qwen3.5 layout's routed experts are one tensor an expert's matrix (as its earlier releases are saved) unless the checkpoint holds each
+/// layer's experts as two stacked tensors (`mlp.experts.gate_up_proj`, `mlp.experts.down_proj`: the form transformers keeps them in, and the one
+/// Qwen3.8-2.4T-A95B is released in). With no `have`, the form the config alone gives.
+pub fn describe_config_in(c: &ModelConfig, have: Option<&BTreeSet<String>>) -> Result<Described> {
     let (tc, prefix) = (&c.text, c.prefix());
+    // (the Kimi-K3 layout by its text model's, not the wrapper's release name: Kimi-K3's wrapper is `kimi_k3`, Kimi-K3.1's `kimi_k31`)
+    if c.nested && c.text_type == "kimi_linear" {
+        return kimi(c);
+    }
     match c.model_type.as_str() {
-        "kimi_k3" => return kimi(c),
         "muse_spark" => return muse(tc, prefix),
         "deepseek_v4" => return deepseek_v4(tc),
         "deepseek_v41" => return deepseek_v41(c),
@@ -429,7 +446,7 @@ pub fn describe_config(c: &ModelConfig) -> Result<Described> {
     let tied_top = c.top.get("tie_word_embeddings").and_then(|v| v.as_bool());
     match mt {
         t if LLAMA.contains(&t) => llama(tc, prefix, mt, tied_top),
-        "qwen3_5_text" | "qwen3_5_moe_text" | "qwen3_5" | "qwen3_5_moe" => qwen35(tc, prefix, mt, tied_top),
+        "qwen3_5_text" | "qwen3_5_moe_text" | "qwen3_5" | "qwen3_5_moe" => qwen35(tc, prefix, mt, tied_top, have),
         "qwen4_exp_text" => qwen4x(tc, prefix, mt, tied_top).and_then(|d| with_tower(d, c)),
         "gemma4_text" | "gemma4_unified_text" => gemma4(tc, prefix, mt, tied_top),
         "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
@@ -546,7 +563,7 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: Norm::rms(eps),
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32 },
@@ -564,7 +581,7 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
     Ok(out)
 }
 
-fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
+fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, have: Option<&BTreeSet<String>>) -> Result<Described> {
     let k = Keys::new(tc, mt);
     let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
     let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.usize("head_dim")?);
@@ -574,6 +591,11 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         Some(Value::Object(o)) => rope(o, hd, max_pos, &format!("{mt} rope_parameters"))?,
         _ => legacy_rope(&k, hd, max_pos)?,
     };
+    // (the routed experts' stored form, which the config does not say: each expert's matrices a tensor, unless the checkpoint holds the layer's experts stacked)
+    let first = names::HF.layer(prefix, 0);
+    let stacked = have.is_some_and(|h| {
+        names::roles(part::QWEN_MOE_STACKED, &first, 0, |r| r == "experts_gate_up").iter().all(|(_, s)| s.names().iter().all(|n| h.contains(n)))
+    });
     k.expect("attention_bias", &Value::Bool(false))?;
     let gate = k.bool("attn_output_gate", true)?;
     let lin_gate = act(k.str("output_gate_type")?.unwrap_or("swish"))?;
@@ -698,7 +720,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             }
             Some(m) => {
                 blocks.push(Block { norm_in: pn, body: Body::Ffn(Ffn::Moe(m.clone())), norm_out: None, residual: Residual::Add });
-                names::roles(part::QWEN_MOE, &p, m.experts, |r| m.shared.is_some() || !r.starts_with("shared_"))
+                names::roles(if stacked { part::QWEN_MOE_STACKED } else { part::QWEN_MOE }, &p, m.experts, |r| m.shared.is_some() || !r.starts_with("shared_"))
             }
         };
         shape_roles(&mut shapes, &r, &[sh, vec![("norm_in", vec![d])]].concat());
@@ -712,8 +734,9 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                 &[
                     ("norm_in", vec![d]),
                     ("router", vec![m.experts, d]),
-                    ("experts_gate_up", vec![moe_inter, d]),
-                    ("experts_down", vec![d, moe_inter]),
+                    // (a tensor an expert's matrix, or the stacked [experts, 2 inter, in] and [experts, out, inter])
+                    ("experts_gate_up", if stacked { vec![m.experts, 2 * moe_inter, d] } else { vec![moe_inter, d] }),
+                    ("experts_down", if stacked { vec![m.experts, d, moe_inter] } else { vec![d, moe_inter] }),
                     ("shared_gate", vec![shared_inter, d]),
                     ("shared_up", vec![shared_inter, d]),
                     ("shared_down", vec![d, shared_inter]),
@@ -728,7 +751,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: pn,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32 },
@@ -880,6 +903,7 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             dilation: order,
             norm: pn,
             form: NgramForm::Segmented,
+            table: TableAt::Host,
         })
     };
     for &l in &ple {
@@ -1059,7 +1083,7 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: hc, per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: hc, per_layer: None, table: if tied { TableAt::Gpu } else { TableAt::Host } },
         blocks,
         final_norm: pn,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::GatedMix, rounding: Rounding::F32 },
@@ -1359,7 +1383,7 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: (d as f32).sqrt(), norm: None, streams: 1, per_layer },
+        embed: Embed { scale: (d as f32).sqrt(), norm: None, streams: 1, per_layer, table: TableAt::Gpu },
         blocks,
         final_norm: n,
         // (the release's head is bf16: transformers soft-caps `lm_head`'s bf16 logits by three bf16 operations)
@@ -1765,7 +1789,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: streams.map_or(1, |s| s.streams), per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: streams.map_or(1, |s| s.streams), per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: n,
         // (the logits in bf16: the release's lm_head is a bf16 product, its output the logits (modeling_glm5_next.py, modeling_glm_moe_dsa.py))
@@ -1828,15 +1852,13 @@ fn top_keys(top: &Map<String, Value>, what: &str, known: &[&str]) -> Result<()> 
     Ok(())
 }
 
-/// Kimi-K3 (`kimi_k3`, a `kimi_linear` text model): Kimi delta attention and gated NoPE MLA, the depth mix over groups of
-/// `attn_res_block_size` layers, a dense first layer then the latent MoE, situ activations, KimiRMSNorm (two roundings).
+/// Kimi-K3 (`kimi_k3`, a `kimi_linear` text model; Kimi-K3.1's `kimi_k31` is the same layout with the latent attention's sparse indexer, `dsa_config`): Kimi
+/// delta attention and gated NoPE MLA, the depth mix over groups of `attn_res_block_size` layers, a dense first layer then the latent MoE, situ activations,
+/// KimiRMSNorm (two roundings).
 fn kimi(c: &ModelConfig) -> Result<Described> {
     let (mt, tc) = ("kimi_linear", &c.text);
-    top_keys(&c.top, "kimi_k3", &["text_config", "vision_config", "quantization_config", "tie_word_embeddings"])?;
+    top_keys(&c.top, &c.model_type, &["text_config", "vision_config", "quantization_config", "tie_word_embeddings"])?;
     let k = Keys::new(tc, mt);
-    if tc.get("model_type").and_then(|v| v.as_str()) != Some(mt) {
-        return err("kimi_k3: the text model is not kimi_linear");
-    }
     let (d, layers, vocab, eps, tied) = common(&k, None)?;
     if k.str("hidden_act")? != Some("situ") {
         return err(format!("{mt}: only situ is supported"));
@@ -2076,7 +2098,7 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: n,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::DepthMix, rounding: Rounding::F32 },
@@ -2231,7 +2253,7 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: Some(bare), streams: 1, per_layer: None },
+        embed: Embed { scale: 1.0, norm: Some(bare), streams: 1, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: Norm::rms(eps),
         // (the release's head is bf16: its product, the output multiplier's product and the soft-cap's three operations each rounded, as muse_ref.rs and the
@@ -2454,7 +2476,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: streams.streams, per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: streams.streams, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: Norm::rms(eps),
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::Weighted { eps: streams.eps, norm_eps: eps }, rounding: Rounding::F32 },
@@ -2682,6 +2704,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
             dilation: 1,
             norm: Norm::rms(eps),
             form: NgramForm::Engram,
+            table: TableAt::Gpu,
         };
         let rows = list("engram_num_embeddings")?;
         let want = super::reference::ngram::tables(&n).0.iter().sum::<u64>();
@@ -2808,7 +2831,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: streams.streams, per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: streams.streams, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: rn,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::LastPre, rounding: Rounding::F32 },
@@ -3090,7 +3113,7 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: n,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32 },

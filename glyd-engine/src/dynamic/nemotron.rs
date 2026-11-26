@@ -227,5 +227,6 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
         v4: None,
         hc: (0.0, 0),
         logit_mult: 0.0,
+        host: Vec::new(),
     })
 }

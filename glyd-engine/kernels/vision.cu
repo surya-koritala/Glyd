@@ -76,8 +76,8 @@ extern "C" __global__ void vis_rope(const bf16* qkv, const int* pos, const float
 // the values (as FlashAttention does). A block takes 64 query rows of a head (4 warps of 16), the keys 64 at a time, K and V two tiles deep (cp.async), the scores and the output in
 // registers (mma.sync m16n8k16). sl2 = the softmax's scale * log2(e). Dynamic shared memory: 320 rows of VS.
 extern "C" __global__ void __launch_bounds__(128) vis_attn(const bf16* __restrict__ q, const bf16* __restrict__ k, const bf16* __restrict__ v, bf16* __restrict__ out, int n, float sl2, int D) {
-    extern __shared__ __align__(128) unsigned char smem_raw[];
-    bf16* sQ = reinterpret_cast<bf16*>(smem_raw);  // [64][VS]
+    extern __shared__ __align__(128) unsigned char vis_smem[];
+    bf16* sQ = reinterpret_cast<bf16*>(vis_smem);  // [64][VS]
     bf16* sK = sQ + 64 * VS;                       // [2][64][VS]
     bf16* sV = sK + 2 * 64 * VS;                   // [2][64][VS]
     const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31, h = blockIdx.y, q0 = blockIdx.x * 64;

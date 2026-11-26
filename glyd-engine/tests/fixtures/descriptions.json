@@ -162,7 +162,7 @@
   "qwen4x_config.json": {
     "blocks": 97,
     "tensors": 1658,
-    "kinds": "166d19d7c98de187",
+    "kinds": "4fead01fb123df08",
     "weights": "752d76fa3cdc0164",
     "plan": "486b4bb7ea65514b",
     "family": "FlashNext"
@@ -183,6 +183,14 @@
     "plan": "ecacae94fa33b23e",
     "family": "DeepSeekV41"
   },
+  "headers/Kimi-K3.1-Pro.json": {
+    "blocks": 186,
+    "tensors": 497172,
+    "kinds": "e5e05b3675a90e1c",
+    "weights": "29d35fa49572e4d5",
+    "plan": "db1106022036986d",
+    "family": "Kimi"
+  },
   "headers/Kimi-K3.json": {
     "blocks": 186,
     "tensors": 497052,
@@ -190,6 +198,14 @@
     "weights": "8a61e387854958e6",
     "plan": "75009d91903744c9",
     "family": "Kimi"
+  },
+  "headers/Qwen3.8-2.4T-A95B.json": {
+    "blocks": 184,
+    "tensors": 142718,
+    "kinds": "0bf40d99f98cab0a",
+    "weights": "c71d637d2707d4a0",
+    "plan": "353d917de7b8253e",
+    "family": "Qwen35"
   },
   "headers/Qwen3.8-27B.json": {
     "blocks": 128,

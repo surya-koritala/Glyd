@@ -36,7 +36,7 @@ const TYPES: [(&str, &str); 30] = [
     ("glib::f8c::F8Un", "crate::fold::F8Un"),
     ("glib::f8c::F8Lin", "crate::fold::F8Lin"),
     ("glib::MoePairs", "crate::fold::MoePairs"),
-    ("CUtensorMap", "crate::fold::TensorMap"),
+    ("CUtensorMap", "crate::device::TensorMap"),
 ];
 
 /// The source without comments, its continued lines joined.

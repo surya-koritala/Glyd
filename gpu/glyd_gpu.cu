@@ -38,6 +38,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <map>

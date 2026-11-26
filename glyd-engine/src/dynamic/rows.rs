@@ -204,10 +204,12 @@ pub(super) struct Cands {
     made: bool,
     /// Each head row's sum of exponentials made with the step (a launched one's, `ModelStep::draws`): the temperature and the sum.
     sums: Vec<Option<(f32, f64)>>,
-    /// Where a grammar's mask made the candidates, the rows' own largest logits before it (the log-probabilities' top: the row's, not the allowed tokens'), in the host's
-    /// pinned room (tokens, then logits, `cap` rows of each), and the rows they were made for.
+    /// Where a request's changes made a row's candidates (`ProcGpu`: of the row its draw sees), the rows' own largest logits before them (the log-probabilities' top: the model's
+    /// row's), in the host's pinned room (tokens, then logits, `cap` rows of each), and the rows they were made for.
     raw: Option<crate::dev::Pinned>,
     raw_rows: usize,
+    /// The head rows whose candidates (and sums, buckets) are of the row the draw sees.
+    procd: Vec<bool>,
 }
 
 impl Cands {
@@ -215,6 +217,12 @@ impl Cands {
     fn fresh(&mut self, rows: usize) {
         (self.rows, self.made, self.raw_rows) = (rows, false, 0);
         self.sums.clear();
+        self.procd.clear();
+    }
+
+    /// Whether head row `row`'s candidates are of the row its draw sees.
+    fn procd(&self, row: usize) -> bool {
+        self.procd.get(row).copied().unwrap_or(false)
     }
 }
 
@@ -257,8 +265,11 @@ struct Lane {
     graph: bool,
     queue_ms: f64,
     evs: Vec<(&'static str, crate::dev::Ev)>,
-    /// Whether the step's candidates were queued with it (`ModelStep::draws`).
+    /// Whether the step's candidates were queued with it (`ModelStep::draws`), and which of them are of the rows the draws see (`Cands::procd`, with the rows whose own were
+    /// kept, `Cands::raw_rows`).
     drawn: bool,
+    procd: Vec<bool>,
+    raw_rows: usize,
     /// The 12-bit pages' status words of each group after the step (its void pages' ring, `kv12_lost`), copied with its samples.
     status: crate::dev::Pinned,
     /// The head rows' sums of exponentials the step was asked for (f64 a row), and the asks.
@@ -283,6 +294,8 @@ impl Lanes {
                     queue_ms: 0.0,
                     evs: Vec::new(),
                     drawn: false,
+                    procd: Vec::new(),
+                    raw_rows: 0,
                     status: crate::dev::Pinned::new(4 * status_words)?,
                     sums: crate::dev::Pinned::new(8 * head)?,
                     asks: Vec::new(),
@@ -454,6 +467,178 @@ pub(crate) fn pool_blocks(budget: usize, per: &[usize], covers: &[usize], keep: 
     blocks
 }
 
+/// The pools' layer groups of `rings`, of which the engine holds those `held` says (`Dyn::page`): a group is the rings of one window and one ratio (a ring it does not
+/// hold, a group of its own). Each ring's group, and each group's window (0: the whole context; usize::MAX: rings not held) and ratio.
+pub(crate) fn ring_groups(rings: &[super::Ring], held: &[bool]) -> (Vec<usize>, Vec<(usize, usize)>) {
+    let mut windows: Vec<(usize, usize)> = Vec::new();
+    let mut group = Vec::with_capacity(rings.len());
+    for (r, ring) in rings.iter().enumerate() {
+        let w = (if held[r] { ring.window } else { usize::MAX }, ring.ratio.max(1));
+        if !windows.contains(&w) {
+            windows.push(w);
+        }
+        group.push(windows.iter().position(|&x| x == w).expect("just added"));
+    }
+    (group, windows)
+}
+
+/// How a description's sequences hold their keys and values on the executor (`Dyn::serve_rows`): one sequence alone (an operation keeps a sequence's data outside
+/// its rings and states: `one_sequence_op`), in pools of blocks they share (`pages_all`), or each in rings of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Hold {
+    One,
+    Pooled,
+    Own,
+}
+
+/// What a description's sequences take on the executor beside its weights, the whole model on one GPU with no draft model (`Dyn::serve_rows`; keys and values in
+/// bf16), at a context and a prompt chunk: the one rule a plan's keys, values and states are sized by (src/plan.rs `sizing`) and the loader takes a plan's bytes by
+/// (`Dyn::take_plan`): a plan never promises more than the pools hold, and the pools never take more than the plan gives them.
+#[derive(Clone, Debug)]
+pub(crate) struct SeqRoom {
+    pub hold: Hold,
+    /// A sequence's recurrent states (every state of the description, each at least the 4 bytes a buffer takes), and whether the engine keeps a copy of each
+    /// sequence's at its mark and a pool of them at block boundaries (`ModelStep::keeps`, `snaps::count`).
+    pub state: u64,
+    pub marks: bool,
+    /// One sequence's rings as the engine loads them (each ring's rows at the context: `Ring::rows`).
+    pub rings: u64,
+    /// The pools' groups (`ring_groups`): each one's bytes a token (bf16), the tokens a block covers, the blocks one sequence holds of it at most (`seq_blocks` of
+    /// its window and a chunk, else the whole context), and a block's bytes of its rings (block 0 of each group, which no sequence holds, is one).
+    pub per: Vec<usize>,
+    pub covers: Vec<usize>,
+    pub least: Vec<usize>,
+    pub block: Vec<u64>,
+}
+
+/// Whether the engine keeps a model's states at each sequence's mark and at block boundaries, where it has states and no draft model (`ModelStep::keeps`): unless
+/// GLYD_ENGINE_KEEP=0 or GLYD_ENGINE_BATCH_PREFILL=0 says not.
+pub(crate) fn marks_kept() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_KEEP").is_none_or(|v| v != "0")) && Dyn::batch_prefill()
+}
+
+/// Whether the engine pages a description's keys and values where it can (`pages_all`): unless a development build's GLYD_ENGINE_PAGED=0 says not.
+fn paging_asked() -> bool {
+    crate::tune!("GLYD_ENGINE_PAGED").is_none_or(|v| v != "0")
+}
+
+impl SeqRoom {
+    /// The rule for the description `d` at `ctx` tokens of context and prompt chunks of `chunk`, rounded as the engine rounds them (`Dyn::build`).
+    pub(crate) fn of(d: &super::ModelDesc, ctx: usize, chunk: usize) -> SeqRoom {
+        let (ctx, chunk) = (ctx.div_ceil(16) * 16, chunk.max(1));
+        let hold = match (one_sequence_op(d).is_some(), pages_all(d) && paging_asked()) {
+            (true, _) => Hold::One,
+            (false, true) => Hold::Pooled,
+            (false, false) => Hold::Own,
+        };
+        let state = d.states.iter().map(|&b| b.max(4) as u64).sum::<u64>();
+        let room = |r: &super::Ring, rows: usize| (rows * r.nk * r.d * 2 * (1 + r.values as usize)) as u64;
+        let rings = d.rings.iter().map(|r| room(r, r.rows(ctx, chunk))).sum();
+        let (group, windows) = ring_groups(&d.rings, &vec![true; d.rings.len()]);
+        let (mut per, mut block) = (vec![0usize; windows.len()], vec![0u64; windows.len()]);
+        for (r, ring) in d.rings.iter().enumerate() {
+            per[group[r]] += ring.token_bytes();
+            block[group[r]] += room(ring, BLOCK);
+        }
+        let covers: Vec<usize> = windows.iter().map(|w| BLOCK * w.1).collect();
+        let keep: Vec<Option<usize>> = windows.iter().map(|&(w, _)| (w > 0 && w != usize::MAX).then_some(w + chunk)).collect();
+        let least = keep.iter().zip(&covers).map(|(&k, &c)| seq_blocks(k, ctx, c)).collect();
+        SeqRoom { hold, state, marks: !d.states.is_empty() && marks_kept(), rings, per, covers, least, block }
+    }
+
+    /// The pools' budget (`pool_blocks`'s) of `k` sequences' blocks in every group, each one's at most (`least`): what one sequence's context takes, and every user's.
+    fn budget_of(&self, k: usize) -> u64 {
+        (0..self.per.len()).map(|g| (k * self.least[g] * self.covers[g] * self.per[g]) as u64).sum()
+    }
+
+    /// What `users` sequences take whatever their keys and values: pooled, their states, where the engine keeps them, a copy of each at its mark and the pool of
+    /// copies at block boundaries, and each group's block 0; each in its own rings, every one's rings and states and its mark's copy; one alone, its rings and states.
+    fn fixed(&self, users: usize) -> u64 {
+        let (u, m) = (users as u64, self.marks as u64);
+        match self.hold {
+            Hold::One => self.rings + self.state,
+            Hold::Own => u * (self.rings + self.state * (1 + m)),
+            Hold::Pooled => u * self.state * (1 + m) + m * snaps::count(self.state as usize) as u64 * self.state + self.block.iter().sum::<u64>(),
+        }
+    }
+
+    /// The bytes of `users` sequences where they share one sequence's context: the least a plan gives them (each holding the whole context, the most: `plan` with
+    /// no bound).
+    pub(crate) fn least_bytes(&self, users: usize) -> u64 {
+        match self.hold {
+            Hold::Pooled => self.fixed(users) + self.budget_of(1),
+            Hold::Own => self.fixed(1),
+            Hold::One => self.fixed(1),
+        }
+    }
+
+    /// The sequences a plan for `users` holds, and their bytes, where `left` bytes of the GPU are theirs: in pools, every user's states and the pools what is left,
+    /// at most every user's context and at least one sequence's (as many users as leave room for that beside their states: they share the pools); each in its own
+    /// rings, as many as fit; one alone. None where not one fits.
+    pub(crate) fn plan(&self, users: usize, left: u64) -> Option<(usize, u64)> {
+        let users = users.max(1);
+        match self.hold {
+            Hold::One => (self.fixed(1) <= left).then_some((1, self.fixed(1))),
+            Hold::Own => {
+                let k = ((left / self.fixed(1).max(1)) as usize).min(users);
+                (k >= 1).then(|| (k, self.fixed(k)))
+            }
+            Hold::Pooled => {
+                let k = (1..=users).rev().find(|&k| self.least_bytes(k) <= left)?;
+                let pool = (left - self.fixed(k)).clamp(self.budget_of(1), self.budget_of(k));
+                Some((k, self.fixed(k) + pool))
+            }
+        }
+    }
+
+    /// The pools' budget (`pool_blocks`') a plan gives `users` sequences in `kv` bytes, of which `once` the 12-bit pages spend once (`kv12::once_bytes`): what their
+    /// states, marks and each group's block 0 leave.
+    pub(crate) fn pool_budget(&self, users: usize, kv: u64, once: u64) -> usize {
+        kv.saturating_sub(self.fixed(users) + once) as usize
+    }
+
+    /// The sequences a plan of `kv` bytes holds where each has rings of its own: as many as it has the bytes of, at most `users`, at least one.
+    pub(crate) fn own_seqs(&self, users: usize, kv: u64) -> usize {
+        ((kv / self.fixed(1).max(1)) as usize).clamp(1, users.max(1))
+    }
+}
+
+/// The rings and the states the layers of stage `st` of `d` read or write (what a stage's engine holds of a sequence: `Dyn::build`).
+pub(crate) fn stage_holds(d: &super::ModelDesc, st: &super::Stage) -> (std::collections::BTreeSet<usize>, std::collections::BTreeSet<usize>) {
+    let ops = || d.layers[st.layers.0..st.layers.1.min(d.layers.len())].iter().flatten();
+    (ops().flat_map(Op::rings).collect(), ops().flat_map(Op::states).collect())
+}
+
+/// One sequence's rings and states on the executor at `ctx` tokens and prompt chunks of `chunk` (`SeqRoom::rings`, `state`), each counted with the first layer of
+/// `d` whose operations read or write it (one no layer names, with the first): what the layers of a stage hold of a sequence (`Dyn::build`).
+pub(crate) fn layer_rooms(d: &super::ModelDesc, ctx: usize, chunk: usize) -> Vec<u64> {
+    let (ctx, chunk) = (ctx.div_ceil(16) * 16, chunk.max(1));
+    let ring = |r: usize| {
+        let x = &d.rings[r];
+        (x.rows(ctx, chunk) * x.nk * x.d * 2 * (1 + x.values as usize)) as u64
+    };
+    let state = |s: usize| d.states[s].max(4) as u64;
+    let mut out = vec![0u64; d.layers.len().max(1)];
+    let (mut ring_seen, mut state_seen) = (vec![false; d.rings.len()], vec![false; d.states.len()]);
+    for (l, ops) in d.layers.iter().enumerate() {
+        for op in ops {
+            for r in op.rings() {
+                if r < d.rings.len() && !std::mem::replace(&mut ring_seen[r], true) {
+                    out[l] += ring(r);
+                }
+            }
+            for s in op.states() {
+                if s < d.states.len() && !std::mem::replace(&mut state_seen[s], true) {
+                    out[l] += state(s);
+                }
+            }
+        }
+    }
+    out[0] += (0..d.rings.len()).filter(|&r| !ring_seen[r]).map(ring).sum::<u64>() + (0..d.states.len()).filter(|&s| !state_seen[s]).map(state).sum::<u64>();
+    out
+}
+
 /// Whether an operation on a sequence's cache or states takes its rows at an offset in a pass over several sequences (`Dyn::rows_before`, `Dyn::cache`, `Dyn::state`): the attention
 /// layer kind, the gated delta rule, Kimi delta attention, Mamba-2, DeepSeek-V4's compressed attention.
 fn by_sequence(op: &Op) -> bool {
@@ -607,23 +792,23 @@ impl Dyn {
 
     /// Whether this description's keys and values can be paged (`pages_all`), with no draft model, the whole model on one GPU.
     fn pageable(&self) -> bool {
-        self.draft.is_none() && self.stage.first && self.stage.last && pages_all(&self.big.d) && crate::tune!("GLYD_ENGINE_PAGED").is_none_or(|v| v != "0")
+        self.draft.is_none() && self.stage.first && self.stage.last && pages_all(&self.big.d) && paging_asked()
     }
 
-    /// The rings' keys and values moved to pools of blocks shared by `users` sequences, as large as the GPU's free memory leaves (`keep` of it kept): a sliding group no more than every
-    /// user's window and a chunk, the full groups the rest. Each ring's room in kc and vc is then its group's blocks; the sequences' tables name every entry block 0 until they grow. A group is
-    /// the rings of one window and one ratio: compressed entries' (`Ring::ratio`) are blocks of BLOCK entries, which cover BLOCK `ratio` tokens.
+    /// The plan the loader took (`take_plan`): the sequences it holds and the bytes it gives their keys, values and states (`LoadPlan::users`, `kv`), which
+    /// `serve_rows` holds them in and takes no more than; None: an engine no plan sized (a development check's), whose pools are what the GPU's free memory leaves.
+    pub fn take_plan(&mut self, users: usize, kv: u64) {
+        self.planned = Some((users.max(1), kv));
+    }
+
+    /// The rings' keys and values moved to pools of blocks shared by `users` sequences: as large as the plan says (`take_plan`: its bytes less what the sequences'
+    /// states, marks and block 0 take, `SeqRoom::pool_budget`), else as the GPU's free memory leaves (`keep` of it kept); a sliding group no more than every user's window
+    /// and a chunk, the full groups the rest. Each ring's room in kc and vc is then its group's blocks; the sequences' tables name every entry block 0 until they grow. A group
+    /// is the rings of one window and one ratio: compressed entries' (`Ring::ratio`) are blocks of BLOCK entries, which cover BLOCK `ratio` tokens.
     fn page(&mut self, users: usize) -> Result<()> {
         let rings = &self.big.d.rings;
-        let mut windows: Vec<(usize, usize)> = Vec::new();
-        let mut group = Vec::with_capacity(rings.len());
-        for (r, ring) in rings.iter().enumerate() {
-            let w = (if self.ring_cap[r] == 0 { usize::MAX } else { ring.window }, ring.ratio.max(1));
-            if !windows.contains(&w) {
-                windows.push(w);
-            }
-            group.push(windows.iter().position(|&x| x == w).expect("just added"));
-        }
+        let held: Vec<bool> = self.ring_cap.iter().map(|&c| c > 0).collect();
+        let (group, windows) = ring_groups(rings, &held);
         let covers: Vec<usize> = windows.iter().map(|w| BLOCK * w.1).collect();
         // a token's bytes in each group (its keys and values, every ring of the group: bf16, or 12-bit pages where the model has tables a ring takes)
         let twelve: Vec<Option<f64>> = (0..rings.len())
@@ -653,10 +838,44 @@ impl Dyn {
         const KEEP: usize = 512 << 20;
         // (and what the vision tower takes for an image of the most pixels, where the model reads images: src/dynamic/images.rs)
         let tower = self.vis.as_ref().map_or(0, |v| v.reserve);
-        let budget = (free.saturating_sub(KEEP + tab_bytes + once + tower) as f64 * self.share) as usize;
+        let room = (free.saturating_sub(KEEP + tab_bytes + once + tower) as f64 * self.share) as usize;
+        let budget = match self.planned {
+            // (the plan's: its bytes less the sequences' states, their marks and the boundaries' pool (made before the pools) and each group's block 0; the later
+            // sequences' states (`add_seqs`) are made after the pools, of what the GPU then has. A GPU that has less free than that refuses the plan, which promised
+            // more than this engine holds; `serve --with`'s first model takes its share of it at most)
+            Some((_, kv)) => {
+                let sr = SeqRoom::of(&self.big.d, self.ctx, self.chunk);
+                let b = sr.pool_budget(users, kv, once as u64);
+                let later = (users - 1) * self.states.iter().map(|s| s.bytes).sum::<usize>();
+                let zero: usize = sr.block.iter().sum::<u64>() as usize;
+                if self.share >= 1.0 && b + zero + later > room {
+                    return err(format!(
+                        "the plan gives the pools of {users} sequences {:.1} MiB, and the GPU has {:.1} MiB free for them beside their states: the plan holds more than the GPU",
+                        (b + zero) as f64 / (1u64 << 20) as f64,
+                        room.saturating_sub(later) as f64 / (1u64 << 20) as f64
+                    ));
+                }
+                b.min(room.saturating_sub(later + zero))
+            }
+            None => room,
+        };
         // as many tokens' blocks in every group (a block of a group is its `covers` tokens of every layer in it), the sliding groups capped and what they leave to the full ones
         let least: Vec<usize> = keep.iter().zip(&covers).map(|(&k, &c)| seq_blocks(k, self.ctx, c)).collect();
         let mut blocks = pool_blocks(budget, &per, &covers, &keep, &most, &least);
+        // (a plan's pools hold one sequence's context in every group: a sliding group's window and a chunk and the block it straddles, a full group's every token. A
+        // plan that gives less promised more than its pools hold)
+        if let Some((_, kv)) = self.planned {
+            let need = |g: usize| if keep[g].is_some() { least[g] } else { self.ctx.div_ceil(covers[g]) };
+            if let Some(g) = (0..blocks.len()).find(|&g| blocks[g] < need(g)) {
+                return err(format!(
+                    "the plan gives the keys, values and states of {users} sequences {:.1} MiB, where their pools hold {} blocks of {} tokens of a group whose one sequence takes {}",
+                    kv as f64 / (1u64 << 20) as f64,
+                    blocks[g],
+                    covers[g],
+                    need(g)
+                ));
+            }
+        }
         // (a development build's GLYD_ENGINE_PAGES: at most that many blocks a group, to run the memory out on purpose)
         if let Some(cap) = crate::tune!("GLYD_ENGINE_PAGES").and_then(|v| v.parse::<usize>().ok()) {
             blocks.iter_mut().for_each(|b| *b = (*b).min(cap));
@@ -1174,7 +1393,8 @@ impl Dyn {
         }
         // (a step's sequences begin empty: what a reply before this left in the one sequence is not a scheduler's, which would find its first slot holding tokens)
         self.reset()?;
-        let users = users.clamp(1, self.chunk.min(64));
+        // (no more than the plan's sequences, where a plan sized this engine: `take_plan`)
+        let users = self.planned.map_or(users, |p| users.min(p.0)).clamp(1, self.chunk.min(64));
         if users > 1 {
             self.set_head_rows(users)?;
         }
@@ -1201,7 +1421,18 @@ impl Dyn {
         let (free, _) = self.dev.mem_info()?;
         // (room kept for the products' workspaces and the driver)
         const KEEP: usize = 512 << 20;
-        let more = ((free.saturating_sub(KEEP + states * marks as usize) as f64 * self.share) as usize / per).min(users - 1);
+        let fit = ((free.saturating_sub(KEEP + states * marks as usize) as f64 * self.share) as usize / per).min(users - 1);
+        // (the plan's sequences, each its own rings (`SeqRoom::own_seqs`): a GPU that holds fewer refuses the plan, which promised more than this engine holds)
+        let more = match self.planned {
+            Some((_, kv)) => {
+                let want = SeqRoom::of(&self.big.d, self.ctx, self.chunk).own_seqs(users, kv) - 1;
+                if want > fit && self.share >= 1.0 {
+                    return err(format!("the plan gives {} sequences rings of their own, and the GPU's free memory holds {}", want + 1, fit + 1));
+                }
+                want.min(fit)
+            }
+            None => fit,
+        };
         if marks {
             self.mark_room(more + 1)?;
         }
@@ -1420,6 +1651,7 @@ impl Dyn {
             || !ModelStep::one_step(self)
             || !self.big.moe.iter().all(|b| !b.reads_host() && (b.resident().is_some() || b.graphable()))
             || self.big.ram.is_some()
+            || self.reads_host_tables()
             || !self.kern.has_step_ids()
             || self.tok.as_ref().is_some_and(|b| b.bytes < 4 * self.chunk)
         {
@@ -1607,18 +1839,14 @@ impl Dyn {
             }
             let out = self.sums.as_ref().map_or(0, |b| b.ptr);
             for (r, &t) in asks.iter().enumerate().take(asked) {
-                if let Some(t) = t.filter(|&t| t > 0.0) {
-                    // SAFETY: head row r of v logits and its largest (f32) in val; its f64 sum at row r of the sums' room (a head's rows).
+                // (of the row the draw sees where the request changes it: `sum_row`)
+                if let (Some(t), Some((row, maxv, procd))) = (t.filter(|&t| t > 0.0), self.sum_row(r)) {
+                    // SAFETY: head row r's row (v bf16 logits, or the v floats its draw sees) and its largest (f32); its f64 sum at row r of the sums' room (a head's rows).
                     unsafe {
-                        self.kern.exp_sum_rows(
-                            s,
-                            self.big.logits.ptr + (r * v * 2) as u64,
-                            v as i32,
-                            1,
-                            self.big.val.ptr + (4 * r) as u64,
-                            t,
-                            out + (8 * r) as u64,
-                        )?
+                        match procd {
+                            true => self.kern.exp_sum_f32(s, row, v, 1, maxv, t, out + (8 * r) as u64)?,
+                            false => self.kern.exp_sum_rows(s, row, v as i32, 1, maxv, t, out + (8 * r) as u64)?,
+                        }
                     };
                 }
             }
@@ -1645,6 +1873,7 @@ impl Dyn {
         }
         lane.done.record(s)?;
         lane.drawn = drawn;
+        (lane.procd, lane.raw_rows) = if drawn { (self.cands.procd.clone(), self.cands.raw_rows) } else { (Vec::new(), 0) };
         (lane.rows, lane.lasts, lane.prompt, lane.graph, lane.evs) = (rows.len(), lasts, n - rows.len(), graph, evs);
         lane.queue_ms = called.elapsed().as_secs_f64() * 1e3;
         lanes.gap[k] = gap;
@@ -1689,9 +1918,10 @@ impl Dyn {
         // (the step's own status for the lost blocks the scheduler asks for next, `kv12_lost`)
         self.status_from = Some(lane.status.ptr as *const u32);
         self.cands.fresh(asked);
-        // (made with the step where it draws: its event covers their copy)
+        // (made with the step where it draws: its event covers their copy, and the rows' own candidates kept where the draws' rows made theirs)
         self.cands.made = drawn;
         self.cands.sums = sums;
+        (self.cands.procd, self.cands.raw_rows) = (std::mem::take(&mut lane.procd), lane.raw_rows);
         // (the expert cache's end of a step reads the GPU's counters and writes the plan's next settings: never while a later step is queued, whose calls read them; owed until
         // a step lands with none after it, which `quiet` asks for every QUIET_EVERY steps)
         if later {
@@ -1752,27 +1982,37 @@ impl Dyn {
         }
         let (tok, val, host, cap) = self.cands.bufs.as_ref().map(|b| (b.0.ptr, b.1.ptr, b.2.ptr as *mut u8, b.3)).expect("made above");
         let s = self.dev.stream;
-        // (the grammar masks of the step's sampled rows, given before it: the candidates of those rows made again with the mask put on the row before the top-k)
-        let masks = std::mem::take(&mut self.row_masks);
-        let masked = masks.iter().any(Option::is_some);
-        if masked && self.masker.is_none() {
-            self.masker = crate::kern::MaskGpu::new(v, cap).ok();
-        }
-        if masked && self.cands.raw.as_ref().is_none_or(|r| r.bytes < 8 * TOPK * cap) {
+        // (what the step's sampled rows' draws put on their rows, given before it: the rows they see made on the GPU, each its grammar's mask waited for (made beside the step),
+        // and their candidates made of those over the model's rows')
+        let procs = std::mem::take(&mut self.row_procs);
+        let resolved: Vec<(usize, crate::sampler::Resolved)> =
+            procs.into_iter().take(n).enumerate().filter_map(|(r, p)| p.map(|p| (r, p.resolve(v)))).collect();
+        self.cands.procd = vec![false; n];
+        if !resolved.is_empty() && self.cands.raw.as_ref().is_none_or(|r| r.bytes < 8 * TOPK * cap) {
             self.cands.raw = Some(crate::dev::Pinned::new(8 * TOPK * cap)?);
         }
         // SAFETY: the pass's head rows of v logits each (n of them, within the head's room); TOPK of each to the buffers made for `cap` rows; the pinned rooms hold the
-        // tokens, then from 4 TOPK cap on the logits, read after the stream has run the copies; the masker's staging was read by a copy the stream has run (a step's
-        // candidates are made once its step before landed).
+        // tokens, then from 4 TOPK cap on the logits, read after the stream has run the copies; the rows' staging was read by a copy the stream has run, and the rows it made
+        // read by work it has run (a step's candidates are made once its step before landed).
         unsafe {
             self.kern.topk_rows(s, self.big.logits.ptr, v as i32, n as u32, tok, val)?;
-            if let Some(g) = self.masker.as_ref().filter(|_| masked) {
-                // (the rows' own candidates copied first, then made again with the masks over them)
+            if !resolved.is_empty() {
+                // (the rows' own candidates copied first, then those of the rows the draws see made over them; where the room for those cannot be had, the rows' own stay, and
+                // the draws read the rows)
                 let raw = self.cands.raw.as_ref().expect("made above").ptr as *mut u8;
                 crate::dev::copy_d2h_async(raw as *mut _, tok, 4 * TOPK * n, s)?;
                 crate::dev::copy_d2h_async(raw.add(4 * TOPK * cap) as *mut _, val, 4 * TOPK * n, s)?;
-                if g.apply(&self.kern, &self.dev, &masks[..masks.len().min(n)], self.big.logits.ptr, tok, val)? {
-                    self.cands.raw_rows = n;
+                self.cands.raw_rows = n;
+                let g = self.procg.get_or_insert_with(|| crate::kern::ProcGpu::new(v));
+                let rows: Vec<(usize, &crate::sampler::Resolved)> = resolved.iter().map(|(r, x)| (*r, x)).collect();
+                match g.queue(&self.kern, &self.dev, &rows, self.big.logits.ptr, tok, val) {
+                    Ok(()) => resolved.iter().for_each(|(r, _)| self.cands.procd[*r] = true),
+                    Err(e) => {
+                        static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                        if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            eprintln!("glyd: the rows the draws see could not be made on the GPU ({e}): those draws read the rows");
+                        }
+                    }
                 }
             }
             crate::dev::copy_d2h_async(host as *mut _, tok, 4 * TOPK * n, s)?;
@@ -1781,35 +2021,52 @@ impl Dyn {
         Ok(())
     }
 
-    /// `ModelStep::hist`: row `row`'s HIST_BUCKETS buckets of its weights at `temperature` (`Kern::exp_hist`), and the row's largest logit they are about.
+    /// The device address of head row `row`'s row for the sums and buckets of its draw, of that row's largest (f32), and whether it is the row the draw sees: that row where the
+    /// step's candidates were made of it (`ProcGpu`; its largest its first candidate), else the model's (the head's own largest). None where the row the draw sees is gone.
+    fn sum_row(&self, row: usize) -> Option<(u64, u64, bool)> {
+        let v = self.big.d.vocab;
+        if self.cands.procd(row) {
+            let w = self.procg.as_ref()?.row_of(row)?;
+            let val = self.cands.bufs.as_ref()?.1.ptr;
+            return Some((w, val + (4 * crate::kern::TOPK * row) as u64, true));
+        }
+        Some((self.big.logits.ptr + (row * v * 2) as u64, self.big.val.ptr + (4 * row) as u64, false))
+    }
+
+    /// The largest of head row `row`'s row for its draw (`sum_row`), read back.
+    fn sum_max(&self, row: usize) -> Result<f32> {
+        let mut m = [0f32; 1];
+        match (self.cands.procd(row), self.cands.bufs.as_ref()) {
+            (true, Some(b)) => b.1.read(4 * crate::kern::TOPK * row, &mut m)?,
+            _ => self.big.val.read(4 * row, &mut m)?,
+        }
+        Ok(m[0])
+    }
+
+    /// `ModelStep::hist`: row `row`'s HIST_BUCKETS buckets of its weights at `temperature` (`Kern::exp_hist`), and the row's largest logit they are about; of the row its draw sees where
+    /// the request changes it (`sum_row`).
     fn row_hist(&mut self, row: usize, temperature: f32) -> Result<Option<crate::sampler::Hist>> {
         use crate::sampler::{HIST_BUCKETS, HIST_PER};
         let v = self.big.d.vocab;
         if self.top.off || row >= self.cands.rows || !self.kern.has_hist() || self.lanes.as_ref().is_some_and(|l| l.stale) {
             return Ok(None);
         }
+        let Some((w, maxv, procd)) = self.sum_row(row) else { return Ok(None) };
         let (sums, counts) = (Buf::new(8 * HIST_BUCKETS)?, Buf::new(4 * HIST_BUCKETS)?);
         let s = self.dev.stream;
-        // SAFETY: the step's head row `row` of v logits and its largest (f32) in val; HIST_BUCKETS sums and counts; read after the synchronize.
+        let (b, per) = (HIST_BUCKETS as i32, HIST_PER);
+        // SAFETY: the step's head row `row` (v bf16 logits, or the v floats its draw sees) and its largest (f32); HIST_BUCKETS sums and counts; read after the synchronize.
         unsafe {
-            self.kern.exp_hist(
-                s,
-                self.big.logits.ptr + (row * v * 2) as u64,
-                v as i32,
-                self.big.val.ptr + (4 * row) as u64,
-                temperature,
-                HIST_BUCKETS as i32,
-                HIST_PER,
-                sums.ptr,
-                counts.ptr,
-            )?
+            match procd {
+                true => self.kern.exp_hist_f32(s, w, v, maxv, temperature, b, per, sums.ptr, counts.ptr)?,
+                false => self.kern.exp_hist(s, w, v as i32, maxv, temperature, b, per, sums.ptr, counts.ptr)?,
+            }
         };
         self.dev.sync()?;
-        let (mut h, mut c, mut m) = (vec![0f64; HIST_BUCKETS], vec![0u32; HIST_BUCKETS], [0f32; 1]);
+        let (mut h, mut c) = (vec![0f64; HIST_BUCKETS], vec![0u32; HIST_BUCKETS]);
         sums.read(0, &mut h)?;
         counts.read(0, &mut c)?;
-        self.big.val.read(4 * row, &mut m)?;
-        Ok(Some(crate::sampler::Hist { max: m[0], per: HIST_PER, sums: h, counts: c }))
+        Ok(Some(crate::sampler::Hist { max: self.sum_max(row)?, per: HIST_PER, sums: h, counts: c }))
     }
 
     /// `ModelStep::hist_bucket`: the tokens of bucket `bucket` of row `row`'s `row_hist` (`Kern::hist_bucket`), at most `cap`.
@@ -1819,25 +2076,17 @@ impl Dyn {
         if self.top.off || row >= self.cands.rows || !self.kern.has_hist() || self.lanes.as_ref().is_some_and(|l| l.stale) {
             return Ok(None);
         }
+        let Some((w, maxv, procd)) = self.sum_row(row) else { return Ok(None) };
         let (want, n, tok, val) = (Buf::new(4)?, Buf::new(4)?, Buf::new(4 * cap.max(1))?, Buf::new(4 * cap.max(1))?);
         want.write(0, &[bucket as i32])?;
         let s = self.dev.stream;
+        let (b, per, c) = (HIST_BUCKETS as i32, HIST_PER, cap as i32);
         // SAFETY: as `row_hist`; want holds the bucket, n one count, tok and val room for `cap`; read after the synchronize.
         unsafe {
-            self.kern.hist_bucket(
-                s,
-                self.big.logits.ptr + (row * v * 2) as u64,
-                v as i32,
-                self.big.val.ptr + (4 * row) as u64,
-                temperature,
-                HIST_BUCKETS as i32,
-                HIST_PER,
-                want.ptr,
-                cap as i32,
-                n.ptr,
-                tok.ptr,
-                val.ptr,
-            )?
+            match procd {
+                true => self.kern.hist_bucket_f32(s, w, v, maxv, temperature, b, per, want.ptr, c, n.ptr, tok.ptr, val.ptr)?,
+                false => self.kern.hist_bucket(s, w, v as i32, maxv, temperature, b, per, want.ptr, c, n.ptr, tok.ptr, val.ptr)?,
+            }
         };
         self.dev.sync()?;
         let mut k = [0u32; 1];
@@ -1852,27 +2101,29 @@ impl Dyn {
         Ok(Some(t.into_iter().map(|t| t as u32).zip(x).collect()))
     }
 
-    /// `ModelStep::mass`: row `row`'s sum of exp((logit - largest) / temperature) on the GPU, about the head's largest (`val`), read back (8 bytes, not the row).
-    fn row_mass(&mut self, row: usize, temperature: f32) -> Result<Option<f64>> {
+    /// `ModelStep::mass`: row `row`'s sum of exp((logit - largest) / temperature) on the GPU, read back (8 bytes, not the row): of the row its draw sees where the request changes it
+    /// (`sum_row`), of the model's own where `raw` (the log-probabilities').
+    fn row_mass(&mut self, row: usize, temperature: f32, raw: bool) -> Result<Option<f64>> {
         let v = self.big.d.vocab;
         if self.top.off || row >= self.cands.rows || !v.is_multiple_of(8) || self.lanes.as_ref().is_some_and(|l| l.stale) {
             return Ok(None);
         }
+        let Some((w, maxv, procd)) = (match raw {
+            true => Some((self.big.logits.ptr + (row * v * 2) as u64, self.big.val.ptr + (4 * row) as u64, false)),
+            false => self.sum_row(row),
+        }) else {
+            return Ok(None);
+        };
         if self.sums.is_none() {
             self.sums = Some(Buf::zeroed(8 * self.head_room())?);
         }
         let out = self.sums.as_ref().expect("made above").ptr;
-        // SAFETY: the step's head row `row` of v logits and its largest (f32) in val; one f64 out; read after the synchronize.
+        // SAFETY: the step's head row `row` (v bf16 logits, or the v floats its draw sees) and its largest (f32); one f64 out; read after the synchronize.
         unsafe {
-            self.kern.exp_sum_rows(
-                self.dev.stream,
-                self.big.logits.ptr + (row * v * 2) as u64,
-                v as i32,
-                1,
-                self.big.val.ptr + (4 * row) as u64,
-                temperature,
-                out,
-            )?
+            match procd {
+                true => self.kern.exp_sum_f32(self.dev.stream, w, v, 1, maxv, temperature, out)?,
+                false => self.kern.exp_sum_rows(self.dev.stream, w, v as i32, 1, maxv, temperature, out)?,
+            }
         };
         self.dev.sync()?;
         let mut m = [0f64; 1];
@@ -2095,8 +2346,12 @@ impl ModelStep for Dyn {
     fn row_choices(&self, slot: i32, pos: usize) -> Option<Vec<super::RowRoute>> {
         self.row_route(slot as usize, pos)
     }
-    fn masks(&mut self, masks: Vec<Option<crate::constrain::MaskHandle>>) {
-        self.row_masks = masks;
+    fn procs(&mut self, procs: Vec<Option<crate::sampler::Proc>>) {
+        self.row_procs = procs;
+    }
+    /// Whether row `row`'s candidates (made now where they were not) are of the row its draw sees.
+    fn processed(&mut self, row: usize) -> bool {
+        ModelStep::top(self, row).is_some() && self.cands.procd(row)
     }
     /// Row `row`'s buckets on the GPU (`exp_hist`), about the head's largest (`val`), read back (12 KB, not the row).
     fn hist(&mut self, row: usize, temperature: f32) -> Option<crate::sampler::Hist> {
@@ -2105,7 +2360,7 @@ impl ModelStep for Dyn {
     fn hist_bucket(&mut self, row: usize, temperature: f32, bucket: usize, cap: usize) -> Option<Vec<(u32, f32)>> {
         self.row_bucket(row, temperature, bucket, cap).unwrap_or(None)
     }
-    /// The row's own candidates where a grammar's mask made `top`'s (copied before the mask was put on): those of `top` otherwise.
+    /// The row's own candidates where a request's changes made `top`'s (copied before those were made): those of `top` otherwise.
     fn top_raw(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
         let top = ModelStep::top(self, row)?;
         if row >= self.cands.raw_rows {
@@ -2122,7 +2377,14 @@ impl ModelStep for Dyn {
                 return Some(m);
             }
         }
-        self.row_mass(row, temperature).unwrap_or(None)
+        self.row_mass(row, temperature, false).unwrap_or(None)
+    }
+    /// The model's row's sum at temperature 1: the step's where it made that one of the model's row, else made now.
+    fn raw_mass(&mut self, row: usize) -> Option<f64> {
+        if self.cands.procd(row) {
+            return self.row_mass(row, 1.0, true).unwrap_or(None);
+        }
+        ModelStep::mass(self, row, 1.0)
     }
     /// The candidates the GPU makes of the step's head rows (`Cands`); where it cannot (an error), the row is read as without them.
     fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
@@ -2199,8 +2461,7 @@ impl ModelStep for Dyn {
     /// GLYD_ENGINE_BATCH_PREFILL=0, where every reply is to be the reply alone bit for bit: a turn that goes on in a kept slot runs the rest of its prompt in a pass of fewer rows
     /// than the whole prompt's, which is another kernel's (the module's note).
     fn keeps(&self) -> bool {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_KEEP").is_none_or(|v| v != "0")) && Self::batch_prefill() && self.draft.is_none()
+        marks_kept() && self.draft.is_none()
     }
     /// A drafted model's decode of its one sequence: a drafting round (`spec_round`), as a reply alone runs it.
     fn draft(&mut self, row: &Row, sampler: Option<&mut crate::sampler::Sampler>) -> Result<Option<Vec<u32>>> {

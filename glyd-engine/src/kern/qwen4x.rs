@@ -225,6 +225,15 @@ impl KernQx {
         }
         let [mult, sizes, offsets] = hash;
         launch!(self.ngram_rows, [n as u32, 1, 1], [256, 1, 1], s; tok, hist, mult, sizes, offsets, table, e, h as i32, per as i32, row as i32, eos as i32, order as i32, map, segments as i32)?;
+        self.ngram_hist(s, tok, hist, n, order, map)
+    }
+
+    /// The sequence's last `order` - 1 ids hist moved on past a call's n rows tok (`qx_ngram_hist`, each mapped where `map`): `ngram_rows`' last launch, and the
+    /// whole of a call whose rows came from a table on the host (src/dynamic/tables.rs).
+    ///
+    /// # Safety
+    /// As `hc_norm`.
+    pub(crate) unsafe fn ngram_hist(&self, s: Stream, tok: u64, hist: u64, n: usize, order: usize, map: u64) -> Result<()> {
         launch!(self.ngram_hist, [1, 1, 1], [1, 1, 1], s; tok, hist, n as i32, order as i32, map)
     }
 

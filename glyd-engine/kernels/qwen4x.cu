@@ -1304,8 +1304,8 @@ extern "C" __global__ void __launch_bounds__(256) qx_attn_dec8(const bf16* q, in
 extern "C" __global__ void __launch_bounds__(512) qx_attn_sel(const bf16* q, int qs, const bf16* gate, int gs, const bf16* kc, const bf16* vc, const int* tab, long long ts, const int* sel, const int* cnt, int tmax,
                                                              bf16* out, int os, int nq, int nk, float sl2, float* part, int S) {
     tab = ml_row_tab(tab, ts, blockIdx.x);
-    extern __shared__ uint32_t sm[];
-    uint32_t* Ks = sm;
+    extern __shared__ uint32_t qx_sm[];
+    uint32_t* Ks = qx_sm;
     uint32_t* Vs = Ks + QX_KB * QX_KS;
     uint32_t* Qs = Vs + QX_KB * 128;
     const int G = nq / nk, w = threadIdx.x >> 5, lane = threadIdx.x & 31;

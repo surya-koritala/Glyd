@@ -7296,7 +7296,9 @@ template <int NT, int WG>
 __device__ __forceinline__ void mma12_tma_body(const CUtensorMap& xmap, Nib f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
 #if defined(__CUDA_ARCH_FEAT_SM90_ALL)
     using C = Tma12<NT, WG>;
-    extern __shared__ __align__(1024) uint8_t smem_raw[];  // NS slots [X tile | a row block's steps, exceptions, bounds | the other's], the barriers
+    // (aligned as the MID and WS bodies declare it, 128: the base is aligned to 1024 by hand below, in the 1024 SHARED leaves for it; a 1024 here pads the
+    // block's static memory up to 1024, and tiered_tma's 64-token tile would ask 256 bytes past an H100's 227 KB)
+    extern __shared__ __align__(128) uint8_t smem_raw[];  // NS slots [X tile | a row block's steps, exceptions, bounds | the other's], the barriers
     __shared__ int last;
     uint32_t raw = (uint32_t)__cvta_generic_to_shared(smem_raw), base = (raw + 1023) & ~1023u;
     uint8_t* gbase = smem_raw + (base - raw);
@@ -7521,7 +7523,7 @@ template <int NT, int WG, int BPS, bool SS>
 __device__ __forceinline__ void tiered_tma_body(const CUtensorMap& xmap, Tiered f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done, int bb) {
 #if defined(__CUDA_ARCH_FEAT_SM90_ALL)
     using C = TmaT<NT, WG, BPS>;
-    extern __shared__ __align__(1024) uint8_t smem_raw[];  // NS slots [X tile | a row block's steps, blocks' bytes, bounds | the others'], the trade buffers, the barriers, the scratch
+    extern __shared__ __align__(128) uint8_t smem_raw[];  // NS slots [X tile | a row block's steps, blocks' bytes, bounds | the others'], the trade buffers, the barriers, the scratch
     __shared__ int last;
     __shared__ uint32_t tab[256];
     uint32_t raw = (uint32_t)__cvta_generic_to_shared(smem_raw), base = (raw + 1023) & ~1023u;
@@ -8676,7 +8678,7 @@ template <int NT, int ACT>
 __device__ __forceinline__ void mma12_moe_wg_body(const CUtensorMap& xmap, Nib f, int64_t O, int64_t K, int E, const int* __restrict__ plan, const int4* __restrict__ tiles, int RU, const __nv_bfloat16* __restrict__ bias, const void* __restrict__ wts, int wf32, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32) {
 #if defined(__CUDA_ARCH_FEAT_SM90_ALL)
     using C = Wm12<NT, ACT>;
-    extern __shared__ __align__(1024) uint8_t smem_raw[];  // NS slots [X tile | a row block's steps, exceptions, bounds and record | the other's], the barriers, the scratch, the exchange
+    extern __shared__ __align__(128) uint8_t smem_raw[];  // NS slots [X tile | a row block's steps, exceptions, bounds and record | the other's], the barriers, the scratch, the exchange
     uint32_t raw = (uint32_t)__cvta_generic_to_shared(smem_raw), base = (raw + 1023) & ~1023u;
     uint8_t* gbase = smem_raw + (base - raw);
     uint32_t full = base + C::NS * C::SLOT, empty = full + 8 * C::NS;

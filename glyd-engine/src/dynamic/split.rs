@@ -49,6 +49,8 @@ enum Cmd {
     Logits,
     Logprob(f32),
     Describe,
+    /// The sequence's prompt and its images (`Dyn::set_images`): the first stage runs the tower over them, each stage turns its rows by their positions.
+    Images(Vec<u32>, Vec<std::sync::Arc<crate::vision::Image>>),
 }
 
 enum Out {
@@ -81,6 +83,8 @@ pub struct Split {
     eos: Vec<i64>,
     /// The last stage drafts with a head of the model (`spec_round`).
     drafting: bool,
+    /// The images of the next reply's prompt (`Gen::see`).
+    next: Vec<std::sync::Arc<crate::vision::Image>>,
 }
 
 fn gone() -> Error {
@@ -137,6 +141,7 @@ impl Split {
                             Cmd::Logits => Out::Logits(e.logits()),
                             Cmd::Logprob(l) => Out::Logprob(e.logprob(l)),
                             Cmd::Describe => Out::Text(e.describe()),
+                            Cmd::Images(prompt, images) => Out::Done(e.set_images(&prompt, &images)),
                         };
                         if otx.send(out).is_err() {
                             break;
@@ -153,7 +158,7 @@ impl Split {
                 _ => return Err(gone()),
             }
         }
-        let mut s = Split { w, n: 0, ctx: o.ctx.div_ceil(16) * 16, chunk: o.chunk.max(1), eos, drafting: false };
+        let mut s = Split { w, n: 0, ctx: o.ctx.div_ceil(16) * 16, chunk: o.chunk.max(1), eos, drafting: false, next: Vec::new() };
         let last = s.w.len() - 1;
         s.drafting = matches!(s.ask(last, Cmd::Drafting)?, Out::Flag(true));
         Ok(s)
@@ -191,6 +196,12 @@ impl Split {
         self.each(&|| Cmd::Reset)?;
         self.n = 0;
         Ok(())
+    }
+
+    /// The sequence begins with `prompt`, whose images are `images` in order (none: a text): every stage told before its first chunk, the first running the
+    /// tower as the chunks reach their rows (src/dynamic/images.rs). A model with no vision tower refuses images in words.
+    pub fn set_images(&self, prompt: &[u32], images: &[std::sync::Arc<crate::vision::Image>]) -> Result<()> {
+        self.each(&|| Cmd::Images(prompt.to_vec(), images.to_vec()))
     }
 
     /// Whether the last stage drafts with a head of the model (`spec_round`).
@@ -379,6 +390,16 @@ impl Run {
             Run::Tp(e) => e.reset(),
         }
     }
+    /// The next prompt's images, after `reset` (`Dyn::set_images`; a split's every stage, `Split::set_images`); every layer across GPUs reads none yet.
+    pub fn set_images(&mut self, prompt: &[u32], images: &[std::sync::Arc<crate::vision::Image>]) -> Result<()> {
+        match self {
+            Run::One(e) => e.set_images(prompt, images),
+            Run::Split(_) if !images.is_empty() => err("a model across GPUs reads no images yet: its image passes do not yet give one GPU's bits every run"),
+            Run::Split(e) => e.set_images(prompt, images),
+            Run::Tp(_) if images.is_empty() => Ok(()),
+            Run::Tp(_) => err("a model with every layer across GPUs reads no images yet"),
+        }
+    }
 }
 
 /// `--tp GPU,..` of a command line: every layer across those GPUs (a GPU may repeat: places on one GPU check the gathers), or none.
@@ -410,6 +431,9 @@ impl Split {
             return err(format!("{} prompt tokens, where the context holds {}", prompt.len(), self.ctx));
         }
         self.reset()?;
+        // (the prompt's images, where `see` gave them for this reply: none for a reply it did not)
+        let images = std::mem::take(&mut self.next);
+        self.set_images(prompt, &images)?;
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
         let mut s = self.prefill(prompt)?;
@@ -472,12 +496,24 @@ impl crate::conv::Gen for Run {
             Run::Split(_) | Run::Tp(_) => None,
         }
     }
-    /// One GPU: the engine's own images (src/dynamic/images.rs); stages and layers across GPUs read none yet.
+    /// One GPU: the engine's pools are the plan's (`Dyn::take_plan`); stages and layers across GPUs hold one sequence, its rings made at the load.
+    fn take_plan(&mut self, users: usize, kv: u64) {
+        if let Run::One(e) = self {
+            e.take_plan(users, kv);
+        }
+    }
+    /// The engine's own images (src/dynamic/images.rs), on one GPU or cut into stages (the next reply's: `Split::reply` tells every stage); every layer across
+    /// GPUs reads none yet.
     fn see(&mut self, images: Vec<std::sync::Arc<crate::vision::Image>>) -> Result<()> {
         match self {
             Run::One(e) => crate::conv::Gen::see(e, images),
-            Run::Split(_) | Run::Tp(_) if images.is_empty() => Ok(()),
-            Run::Split(_) | Run::Tp(_) => err("a model across GPUs reads no images yet"),
+            Run::Split(_) if !images.is_empty() => err("a model across GPUs reads no images yet: its image passes do not yet give one GPU's bits every run"),
+            Run::Split(e) => {
+                e.next = images;
+                Ok(())
+            }
+            Run::Tp(_) if images.is_empty() => Ok(()),
+            Run::Tp(_) => err("a model with every layer across GPUs reads no images yet"),
         }
     }
     /// One GPU: the engine's own step (src/dynamic/rows.rs); stages and layers across GPUs: a step of one sequence at a time (`ModelStep for Run`), its slot empty (what a
@@ -525,6 +561,16 @@ impl crate::sched::ModelStep for Run {
             Run::One(e) => e.desc().eos.clone(),
             Run::Split(e) => e.eos().to_vec(),
             Run::Tp(e) => e.eos().to_vec(),
+        }
+    }
+    /// The sequence's images: every stage of a split told (`Split::set_images`); every layer across GPUs refuses them.
+    fn images(&mut self, slot: i32, prompt: &[u32], images: &[std::sync::Arc<crate::vision::Image>]) -> Result<()> {
+        match self {
+            Run::One(e) => crate::sched::ModelStep::images(e, slot, prompt, images),
+            Run::Split(_) if !images.is_empty() => err("a model across GPUs reads no images yet: its image passes do not yet give one GPU's bits every run"),
+            Run::Split(e) => e.set_images(prompt, images),
+            Run::Tp(_) if images.is_empty() => Ok(()),
+            Run::Tp(_) => err("a model with every layer across GPUs reads no images yet"),
         }
     }
     fn prefill(&mut self, _pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>> {
@@ -625,26 +671,35 @@ fn dynamic_row(f: crate::support::Family) -> Option<&'static str> {
 
 /// The model of `dir` as `plan` says it loads (src/plan.rs `size_dynamic`): its layers cut over the plan's GPUs (`Spread::cuts`, `devices`) or across them
 /// (`across`), its context, prompt chunk and layout (the 12-bit one where `twelve`), and where its experts are in the computer's memory each stage's places
-/// of them, the memory the plan gives them and the last layers' dense matrices there (`dense`), with the expert cache's copy-or-compute policy `offload`.
-/// Nothing is sized here.
+/// of them, the memory the plan gives them and the last layers' dense matrices there (`dense`), with the expert cache's copy-or-compute policy `offload`; on one GPU
+/// its sequences' keys, values and states in the plan's bytes (`Dyn::take_plan`). Nothing is sized here.
 pub fn open_plan(dir: &Path, plan: &crate::plan::LoadPlan, offload: crate::offload::Offload) -> Result<Run> {
     let sp = plan.spread.as_ref().ok_or_else(|| Error("a plan of the dynamic route spreads the model (Spread)".into()))?;
     let layout = if sp.twelve { crate::weights::Layout::Twelve } else { crate::weights::Layout::Tiered };
     let o = Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device: sp.devices[0], layout: Some(layout) };
     let ram = plan.experts.filter(|c| c.ram < c.host_bytes()).map(|c| crate::offload::HostMemory { bytes: c.ram, total: c.host_bytes() });
     let (cuts, devices) = (&sp.cuts, &sp.devices);
-    if sp.host_bytes == 0 {
-        return if sp.across { open_tp(dir, &o, devices) } else { open(dir, &o, cuts, devices) };
-    }
-    // (each stage's experts in the expert cache: a hummingbird directory's, or the release's in places of their own; the release's experts of the latent block
-    // across the GPUs where the plan says so, their cache's host tier and plans shared: src/dynamic/tp_cache.rs)
-    let cachings: Vec<crate::hbg_store::HbCaching> =
-        sp.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect();
-    if sp.across && plan.level != "hummingbird" && latent_experts(dir)? {
-        let c = cachings.into_iter().next().ok_or_else(|| Error("a plan across GPUs with no places for its experts".into()))?;
-        return open_tp_cached(dir, &o, devices, c);
-    }
-    open_cached(dir, &o, cuts, devices, cachings)
+    let mut run = if sp.host_bytes == 0 {
+        if sp.across {
+            open_tp(dir, &o, devices)?
+        } else {
+            open(dir, &o, cuts, devices)?
+        }
+    } else {
+        // (each stage's experts in the expert cache: a hummingbird directory's, or the release's in places of their own; the release's experts of the latent block
+        // across the GPUs where the plan says so, their cache's host tier and plans shared: src/dynamic/tp_cache.rs)
+        let cachings: Vec<crate::hbg_store::HbCaching> =
+            sp.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect();
+        if sp.across && plan.level != "hummingbird" && latent_experts(dir)? {
+            let c = cachings.into_iter().next().ok_or_else(|| Error("a plan across GPUs with no places for its experts".into()))?;
+            open_tp_cached(dir, &o, devices, c)?
+        } else {
+            open_cached(dir, &o, cuts, devices, cachings)?
+        }
+    };
+    // (its sequences' keys, values and states the plan's: on one GPU their pools take its bytes, no more)
+    crate::conv::Gen::take_plan(&mut run, plan.users, plan.kv);
+    Ok(run)
 }
 
 /// Whether the model of `dir` has experts of the Moe kind's latent block (`experts::latent_block`: a latent of their own projections whose sum is normed),
@@ -763,6 +818,26 @@ pub fn loader(d: &crate::runtime::describe::Described) -> Result<Loader> {
         Lowering::GatedDelta => Loader { ends: super::qwen35::ends, stage: super::qwen35::stage },
         Lowering::LatentPlain => Loader { ends: super::glm::plain_ends, stage: super::glm::stage_plain },
     })
+}
+
+/// The description of the model whose config is `c` lowered as its loader lowers it (`loader`), the whole model for sequences of up to `max_pos` positions, from the
+/// config alone: the rings and states its sequences take on the executor, which a plan counts before a file is here (src/plan.rs `sizing::size_dynamic_row`).
+/// The end tokens and the checkpoint's dtypes are not read (none of them changes a ring or a state).
+pub fn lowered_of(c: &crate::runtime::config::ModelConfig, max_pos: usize) -> Result<ModelDesc> {
+    use super::lower;
+    let d = crate::runtime::describe::describe_config(c)?;
+    let nl = c.num("num_hidden_layers").unwrap_or(0);
+    let st = Stage::whole(nl);
+    match lowering(&d)? {
+        Lowering::Compressed => lower::deepseek_v4(&d, Vec::new(), max_pos, &st, &super::deepseek_v4::V4Opts::of(crate::weights::Layout::Tiered, max_pos)),
+        Lowering::Mamba2 => lower::nemotron(&d, Vec::new(), max_pos, &st),
+        Lowering::DeltaStreams => lower::glm(&d, Vec::new(), max_pos, &st),
+        Lowering::DeltaDepth => lower::kimi(&d, Vec::new(), max_pos, &st, &vec![(true, true); nl], false),
+        Lowering::GatedResidual => lower::muse(&d, Vec::new(), max_pos, &st),
+        Lowering::GatedStreams => lower::qwen4x(&d, Vec::new(), max_pos),
+        Lowering::GatedDelta => lower::qwen35(&d, Vec::new(), max_pos, &st),
+        Lowering::LatentPlain => lower::latent_moe(&d, Vec::new(), max_pos, &st),
+    }
 }
 
 /// A number of the config (its `text_config`'s for a model that nests one).

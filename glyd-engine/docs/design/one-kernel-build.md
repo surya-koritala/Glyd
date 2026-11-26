@@ -73,6 +73,9 @@ Each step lands alone, keeps `libglyd_gpu` loadable (the Python package needs it
   the fatbin, built for sm_90a, with their launches (tensor maps from the driver's
   `cuTensorMapEncodeTiled`, clusters); they have run on no H100 yet.
 - **Step 5.** The folded kernels are in `kernels/engine.cu`'s fatbin, so the CUDA 12 fatbin (`NVCC12`) carries them as it carries the rest.
+  The two toolkits lay out the Hopper kernels' tensor map apart (CUDA 13's `cuda.h` aligns a `CUtensorMap` to 128 bytes, CUDA 12's to 64; both
+  128 bytes): `build.rs` aligns the engine's (`device::TensorMap`) as the main fatbin's toolkit does, and each nvcc's compile of `fold.cu` holds
+  its own `cuda.h` to the alignment `build.rs` gives it, with every other number `src/device.rs` passes the driver.
 - **Step 6.** The HIP build compiles `engine.cu`, so `fold.cu` and the header with it: the header is the library's own HIP-compiling source.
   Not compiled by hipcc yet (the AMD job runs it).
 - **Step 4, begun.** The entries `Lib` still called outside `GpuOps` run from the engine's fatbin, each compared with the library's by

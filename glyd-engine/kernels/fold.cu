@@ -5,11 +5,24 @@
 #if !defined(__HIPCC__)
 #include <cuda.h>  // (CUtensorMap: the Hopper kernels' tensor maps, a kernel parameter; hip.h has its own)
 #include <cstddef>
-// (the numbers src/device.rs passes the driver for Hopper's launches, and the layouts it builds, held to cuda.h's)
+// (the numbers src/device.rs passes the driver, and the layouts it builds, held to the cuda.h of every toolkit that compiles the kernels)
+static_assert(CU_DEVICE_ATTRIBUTE_WARP_SIZE == 10 && CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT == 16 && CU_DEVICE_ATTRIBUTE_TCC_DRIVER == 35 &&
+                  CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR == 75 && CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR == 76 &&
+                  CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN == 97 && CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES == 8,
+              "device.rs's Attr and its function attribute");
+static_assert(CU_MEMHOSTALLOC_PORTABLE == 1 && CU_MEMHOSTALLOC_DEVICEMAP == 2 && CU_MEMHOSTREGISTER_READ_ONLY == 8 && CU_STREAM_NON_BLOCKING == 1 &&
+                  CU_STREAM_CAPTURE_MODE_RELAXED == 2 && CU_EVENT_DISABLE_TIMING == 2 && CU_EVENT_RECORD_EXTERNAL == 1 && CUDA_ERROR_NOT_READY == 600 &&
+                  CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED == 704,
+              "device.rs's HostMem, flags and results");
 static_assert(CU_TENSOR_MAP_DATA_TYPE_BFLOAT16 == 9 && CU_TENSOR_MAP_INTERLEAVE_NONE == 0 && CU_TENSOR_MAP_SWIZZLE_128B == 3 && CU_TENSOR_MAP_L2_PROMOTION_L2_256B == 3 &&
                   CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE == 0,
               "device.rs's tensor map numbers");
-static_assert(sizeof(CUtensorMap) == 128 && alignof(CUtensorMap) == 64, "fold::TensorMap");
+// (device.rs's TensorMap: 128 bytes, aligned as build.rs says this nvcc's cuda.h aligns a CUtensorMap, GLYD_TENSOR_MAP_ALIGN: 64 by CUDA 12's, 128 by CUDA 13's;
+// a compile of its own, as the kernels' compile check's, holds the size alone)
+static_assert(sizeof(CUtensorMap) == 128, "device.rs's TensorMap");
+#ifdef GLYD_TENSOR_MAP_ALIGN
+static_assert(alignof(CUtensorMap) == GLYD_TENSOR_MAP_ALIGN, "device.rs's TensorMap: the alignment build.rs gives this toolkit's CUtensorMap");
+#endif
 static_assert(CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION == 4 && sizeof(CUlaunchConfig) == 56 && sizeof(CUlaunchAttribute) == 72 && offsetof(CUlaunchConfig, hStream) == 32 &&
                   offsetof(CUlaunchConfig, numAttrs) == 48,
               "device.rs's LaunchConfig and LaunchAttribute");

@@ -23,6 +23,9 @@ pub(crate) use kvpages::room_of as kv12_room;
 #[cfg(all(test, feature = "dev"))]
 pub(crate) use rows::pool_blocks;
 pub(crate) use rows::seq_blocks;
+#[cfg(all(test, feature = "dev"))]
+pub(crate) use rows::Hold;
+pub(crate) use rows::{layer_rooms, marks_kept, stage_holds, SeqRoom};
 pub mod lower;
 pub mod lower_comp;
 pub mod mla;
@@ -41,6 +44,7 @@ mod rows;
 pub(crate) mod snaps;
 pub mod split;
 mod swap;
+pub mod tables;
 pub mod tp;
 pub mod tp_cache;
 
@@ -615,7 +619,7 @@ impl Ring {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ModelDesc {
     pub family: &'static str,
     pub hidden: usize,
@@ -657,6 +661,45 @@ pub struct ModelDesc {
     pub hc: (f32, i32),
     /// The logits times this before the soft-cap (Muse Spark's: cap tanh(x mult / cap), each step rounded); 0: the soft-cap alone.
     pub logit_mult: f32,
+    /// The tables read by rows held on the host (src/dynamic/tables.rs: the embedding's matrix, an n-gram block's table), none of them on the GPU.
+    pub host: Vec<usize>,
+}
+
+/// The derived form, with `host` said only where a table is there: the other descriptions read as they did before the field (a lowering's recorded digest
+/// is of this text).
+impl std::fmt::Debug for ModelDesc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("ModelDesc");
+        s.field("family", &self.family)
+            .field("hidden", &self.hidden)
+            .field("vocab", &self.vocab)
+            .field("eps", &self.eps)
+            .field("max_pos", &self.max_pos)
+            .field("widths", &self.widths)
+            .field("mats", &self.mats)
+            .field("small", &self.small)
+            .field("forms", &self.forms)
+            .field("ropes", &self.ropes)
+            .field("rings", &self.rings)
+            .field("first", &self.first)
+            .field("layers", &self.layers)
+            .field("states", &self.states)
+            .field("final_norm", &self.final_norm)
+            .field("decoded", &self.decoded)
+            .field("skinny", &self.skinny)
+            .field("embed", &self.embed)
+            .field("lm", &self.lm)
+            .field("softcap", &self.softcap)
+            .field("eos", &self.eos)
+            .field("post", &self.post)
+            .field("v4", &self.v4)
+            .field("hc", &self.hc)
+            .field("logit_mult", &self.logit_mult);
+        if !self.host.is_empty() {
+            s.field("host", &self.host);
+        }
+        s.finish()
+    }
 }
 
 impl ModelDesc {
@@ -862,6 +905,8 @@ struct Part {
     small_sc: Vec<Option<Buf>>,
     /// The layers whose matrices are in the computer's memory (src/dense_ram.rs).
     ram: Option<crate::dense_ram::DenseRam>,
+    /// The tables read by rows held on the host (`ModelDesc::host`, src/dynamic/tables.rs), by matrix.
+    host: Vec<(usize, tables::HostTable)>,
     slots: Vec<Buf>,
     logits: Buf,
     tok: Buf,
@@ -903,7 +948,7 @@ impl Part {
         let (tok, val) = (Buf::zeroed(4 * out)?, Buf::zeroed(4 * out)?);
         let mut small_sc = l.small_sc;
         small_sc.resize_with(l.small.len(), || None);
-        Ok(Part { d, mats: l.mats, f8: l.f8, moe: l.moe, small: l.small, small_sc, ram: l.ram, slots, logits, tok, val })
+        Ok(Part { d, mats: l.mats, f8: l.f8, moe: l.moe, small: l.small, small_sc, ram: l.ram, host: l.host, slots, logits, tok, val })
     }
 }
 
@@ -1166,7 +1211,9 @@ fn load_part(
     let lossless = matches!(layout, Layout::Tiered | Layout::Twelve);
     let as_f8 = |k: usize| -> Option<(usize, usize)> {
         let it = &d.mats[k];
-        (lossless && v7.is_none() && in_ram(k).is_none() && k != d.embed).then(|| crate::f8::released_shape(&ck, &it.members)).flatten()
+        (lossless && v7.is_none() && in_ram(k).is_none() && k != d.embed && !tables::on_host(&d, k))
+            .then(|| crate::f8::released_shape(&ck, &it.members))
+            .flatten()
     };
     let f8_rows = |k: usize, rows: usize| -> Result<(usize, usize)> {
         match slice(k) {
@@ -1184,8 +1231,8 @@ fn load_part(
     let mut hosted: Vec<Option<crate::weights::Packed>> = (0..d.mats.len()).map(|_| None).collect();
     let mut f8s: Vec<Option<crate::f8::F8Mat>> = (0..d.mats.len()).map(|_| None).collect();
     let lib = if (0..d.mats.len()).any(|k| want.is_none_or(|w| w[k]) && as_f8(k).is_some()) { Some(Lib::find()?) } else { None };
-    // (a stage of a split model loads only the matrices its layers multiply by)
-    let ks: Vec<usize> = (0..d.mats.len()).filter(|&k| want.is_none_or(|w| w[k]) && !saved[k]).collect();
+    // (a stage of a split model loads only the matrices its layers multiply by; a table on the host is not packed)
+    let ks: Vec<usize> = (0..d.mats.len()).filter(|&k| want.is_none_or(|w| w[k]) && !saved[k] && !tables::on_host(&d, k)).collect();
     let read = |k: usize| -> Result<Read> {
         match as_f8(k) {
             Some((rows, cols)) => {
@@ -1225,9 +1272,18 @@ fn load_part(
     // ponytail: a matrix another stage holds is an empty dense one here (never multiplied by); a Mat variant of its own if one is ever read by mistake
     let mut ram = crate::dense_ram::RamBuilder::new(placing.ram);
     let mut mats: Vec<Mat> = Vec::with_capacity(d.mats.len());
+    // (a table read by rows on the host: the checkpoint's files mapped, one mapping a file; an empty matrix in its place on the GPU)
+    let (mut host, mut maps) = (Vec::new(), std::collections::HashMap::new());
     for (k, (x, h)) in packed.into_iter().zip(hosted).enumerate() {
         if let Some(f) = f8s[k].take() {
             mats.push(Mat::F8(f));
+            continue;
+        }
+        if tables::on_host(&d, k) {
+            if want.is_none_or(|w| w[k]) {
+                host.push((k, tables::HostTable::open(&ck, &d.mats[k], &mut maps)?));
+            }
+            mats.push(Mat::Dense(Buf::new(2)?, 0, 0));
             continue;
         }
         match (x, h, in_ram(k)) {
@@ -1299,7 +1355,7 @@ fn load_part(
         })
         .collect::<Result<_>>()?;
     let moe = experts(&ck, layout)?;
-    Part::from_loaded(d, Loaded { mats, small, small_sc, moe, ram, ..Loaded::default() }, rows, out)
+    Part::from_loaded(d, Loaded { mats, small, small_sc, moe, ram, host, ..Loaded::default() }, rows, out)
 }
 
 /// What a family's loader puts on the GPU for its description: the matrices, the FP8 ones, the small tensors, the blocks of experts.
@@ -1313,6 +1369,8 @@ pub struct Loaded {
     /// The small tensors' fp32 block scales where they are released in FP8 (`Part::small_sc`); empty or None: none.
     pub small_sc: Vec<Option<Buf>>,
     pub moe: Vec<Box<dyn MoeBlock>>,
+    /// The tables read by rows held on the host, by matrix (src/dynamic/tables.rs).
+    pub host: Vec<(usize, tables::HostTable)>,
 }
 
 /// A draft model on the executor: its part, its tokens a round, and the positions [the queries', the last key's] its attention reads at; a draft head's
@@ -1403,6 +1461,8 @@ pub struct Dyn {
     ctx: usize,
     /// The part of the GPU's free memory `serve_rows` takes for the sequences (`Gen::share_memory`).
     share: f64,
+    /// The plan the loader took (`take_plan`): the sequences `serve_rows` holds at most and the bytes of their keys, values and states.
+    planned: Option<(usize, u64)>,
     /// Passes of up to this many rows take the decode step's split attention (1, or a drafted round's k + 1: the same kernel, so drafted = plain).
     split_rows: usize,
     pf_kib: [usize; 3],
@@ -1442,6 +1502,8 @@ pub struct Dyn {
     /// (int32 [chunk]); where one weighs its activations, the weights of one its second product sums with (fp32 [chunk, k]).
     moe_inv: Buf,
     tok: Option<Buf>,
+    /// The rows of the tables this stage reads on the host, staged each pass (src/dynamic/tables.rs); None where it reads none there.
+    hosted: Option<tables::Hosted>,
     ones: Option<Buf>,
     /// kernels/qwen4x.cu's, and the unweighted picks' room, where the description has the gated residuals, the n-gram embedding or the mean-pooled indexer.
     kqx: Option<crate::kern::qwen4x::KernQx>,
@@ -1532,10 +1594,10 @@ pub struct Dyn {
     draws: Vec<Option<f32>>,
     /// The 12-bit pages' status as the lane of the step landed last copied it (src/dynamic/kvpages.rs `kv12_lost` reads it once); None: the GPU's own.
     status_from: Option<*const u32>,
-    /// The grammar masks of the next step's sampled rows (`ModelStep::masks`), put on the rows before their candidates' top-k (`masker`), and the room for a row's sum of
-    /// exponentials (`ModelStep::mass`).
-    row_masks: Vec<Option<crate::constrain::MaskHandle>>,
-    masker: Option<crate::kern::MaskGpu>,
+    /// What the next step's sampled rows' draws put on their rows (`ModelStep::procs`): the rows the draws see, made on the GPU before their candidates (`procg`); and the room for
+    /// a row's sum of exponentials (`ModelStep::mass`).
+    row_procs: Vec<Option<crate::sampler::Proc>>,
+    procg: Option<crate::kern::ProcGpu>,
     sums: Option<Buf>,
     /// Launched steps landed with a later one queued, whose expert cache's end of a step is owed (src/dynamic/rows.rs `quiet`).
     owed: usize,
@@ -1904,7 +1966,7 @@ impl Dyn {
         let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
         let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
         let bytes = |k: usize| (d.mats[k].rows * d.mats[k].cols * 2) as u64;
-        let (saved, packed): (Vec<usize>, Vec<usize>) = (0..d.mats.len()).partition(|&k| held_as_saved(&d, k, &rows_of));
+        let (saved, packed): (Vec<usize>, Vec<usize>) = (0..d.mats.len()).filter(|&k| !tables::on_host(&d, k)).partition(|&k| held_as_saved(&d, k, &rows_of));
         let small: u64 = d
             .small
             .iter()
@@ -1963,14 +2025,12 @@ impl Dyn {
         Ok(e)
     }
 
-    /// The images of the model in `dir`, where its description has a vision tower (src/dynamic/images.rs) and the model is on this GPU whole: its tower opened,
-    /// the images' bounds and token set for the requests' threads (`vision::PREP`), the step graph captured again to read the rows' positions. A tower this
-    /// engine cannot run leaves the model served for text, the reason said.
+    /// The images of the model in `dir`, where its description has a vision tower (src/dynamic/images.rs): its tower opened on the stage that stages the image
+    /// rows (the first, or the model on this GPU whole; a stage after it turns its rows by the same positions), the images' bounds and token set for the
+    /// requests' threads (`vision::PREP`), the step graph captured again to read the rows' positions. A tower this engine cannot run leaves the model served
+    /// for text, the reason said.
     fn see_with(&mut self, dir: &Path) -> Result<()> {
-        if !(self.stage.first && self.stage.last) {
-            return Ok(());
-        }
-        match images::Images::open(dir, &self.big.d, self.chunk.max(VERIFY_ROWS), &self.dev) {
+        match images::Images::open(dir, &self.big.d, self.chunk.max(VERIFY_ROWS), &self.dev, self.stage.first) {
             Ok(Some(v)) => {
                 eprintln!(
                     "images: up to {} pixels each ({} tokens)",
@@ -2034,7 +2094,7 @@ impl Dyn {
         st: Stage,
         o: &Opts,
     ) -> Result<Dyn> {
-        Dyn::from_parts(dev, d, Loaded { mats, f8, small, small_sc: Vec::new(), moe, ram: None }, ropes, layout, st, o)
+        Dyn::from_parts(dev, d, Loaded { mats, f8, small, small_sc: Vec::new(), moe, ram: None, host: Vec::new() }, ropes, layout, st, o)
     }
 
     /// A model its family's loader put on the GPU, whatever it holds (`Loaded`).
@@ -2168,6 +2228,7 @@ impl Dyn {
         let moes = || d.layers.iter().flatten().filter_map(|op| if let Op::Moe(m) = op { Some(m) } else { None });
         let ngram = d.layers.iter().flatten().any(|op| matches!(op, Op::NgramRows(_)));
         let tok = if moes().any(|m| m.hash.is_some()) || ngram { Some(Buf::zeroed(ch * 4)?) } else { None };
+        let hosted = tables::Hosted::new(&big, stage.layers, ch)?;
         let qx = d.layers.iter().flatten().any(|op| {
             matches!(
                 op,
@@ -2256,6 +2317,7 @@ impl Dyn {
             n: 0,
             chunk: ch,
             share: 1.0,
+            planned: None,
             ctx,
             split_rows: rows_out,
             pf_kib: pf_kib(crate::tune!("GLYD_G4_PF").as_deref())?,
@@ -2289,6 +2351,7 @@ impl Dyn {
             kmuse,
             moe_inv,
             tok,
+            hosted,
             ones,
             head_ones,
             kqx,
@@ -2339,8 +2402,8 @@ impl Dyn {
             gaps: None,
             draws: Vec::new(),
             status_from: None,
-            row_masks: Vec::new(),
-            masker: None,
+            row_procs: Vec::new(),
+            procg: None,
             sums: None,
             owed: 0,
             vis: None,
@@ -2398,7 +2461,7 @@ impl Dyn {
         self.n = 0;
         self.pending = None;
         self.head_reset();
-        self.top.ask = None;
+        (self.top.ask, self.top.proc) = (None, None);
         for b in &self.states {
             b.fill_async(0, self.dev.stream)?;
         }
@@ -2583,7 +2646,6 @@ impl Dyn {
         self.gap_begin()?;
         let hid = self.big.d.hidden;
         let s = self.dev.stream;
-        let Some(e) = self.big.mats[self.big.d.embed].packed_opt().map(|p| &p.pack) else { return err("the embedding is not packed") };
         let x = self.big.slot(Slot::X);
         if let Some(&t) = tokens.iter().find(|&&t| t as usize >= self.big.d.vocab) {
             return err(format!("token {t}: the vocabulary has {}", self.big.d.vocab));
@@ -2591,6 +2653,12 @@ impl Dyn {
         if let Some(v) = &self.tok {
             v.write(0, &tokens.iter().map(|&t| t as i32).collect::<Vec<i32>>())?;
         }
+        // (the pass's rows of the tables on the host: the n-gram blocks' staged, the embedding's copied into X; src/dynamic/tables.rs)
+        self.stage_ngram(tokens)?;
+        if self.embed_host(tokens)? {
+            return Ok(());
+        }
+        let Some(e) = self.big.mats[self.big.d.embed].packed_opt().map(|p| &p.pack) else { return err("the embedding is not packed") };
         if tokens.len() == 1 {
             let t = tokens[0] as i64;
             let row0 = (t / 64) * 64;
@@ -3416,11 +3484,14 @@ impl Dyn {
         unsafe {
             if self.stage.first {
                 self.embed(tokens)?;
+                // (an image's rows over its tokens' embedding: this stage holds the tower, the stages after it turn the rows by the same positions)
+                self.stage_images(&[(self.seq, 0, at, n)])?;
             } else {
                 // (the rows' tokens, which an operation of a later stage may read as the embedding hands them to the first: the n-gram embedding's rows, hash routing)
                 if let Some(v) = &self.tok {
                     v.write(0, &tokens.iter().map(|&t| t as i32).collect::<Vec<i32>>())?;
                 }
+                self.stage_ngram(tokens)?;
                 let mut off = 0usize;
                 for (sl, w) in self.boundary() {
                     copy_h2d_async(self.big.slot(sl), io[off..].as_ptr() as *const _, n * w * 2, self.dev.stream)?;
@@ -3999,6 +4070,10 @@ impl crate::conv::Gen for Dyn {
         self.share = part.clamp(0.0, 1.0);
     }
 
+    fn take_plan(&mut self, users: usize, kv: u64) {
+        Dyn::take_plan(self, users, kv);
+    }
+
     fn see(&mut self, images: Vec<std::sync::Arc<crate::vision::Image>>) -> Result<()> {
         match self.vis.as_mut() {
             Some(v) => {
@@ -4042,8 +4117,7 @@ impl crate::conv::Gen for Dyn {
         }
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
-        self.top.ask = sampler.top_need();
-        self.top.mask = sampler.mask_handle();
+        (self.top.ask, self.top.proc) = sampler.gpu_ask();
         let mut s = self.prefill(prompt)?;
         let mut out = Vec::new();
         let eos = self.big.d.eos.clone();
@@ -4079,8 +4153,7 @@ impl crate::conv::Gen for Dyn {
             if out.len() >= o.max_new || self.n + 1 > self.ctx {
                 return Ok((out, Finish::Length));
             }
-            self.top.ask = sampler.top_need();
-            self.top.mask = sampler.mask_handle();
+            (self.top.ask, self.top.proc) = sampler.gpu_ask();
             s = self.step(tok)?;
         }
     }

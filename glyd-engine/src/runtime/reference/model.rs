@@ -391,7 +391,7 @@ impl RefModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::kinds::{Act, Block, Body, Embed, Ffn, Head, Mlp, Norm, Rounding};
+    use crate::runtime::kinds::{Act, Block, Body, Embed, Ffn, Head, Mlp, Norm, Rounding, TableAt};
     use crate::runtime::reference::{ffn, hc_weights, matvec, testing::fill};
 
     const D: usize = 8;
@@ -422,7 +422,7 @@ mod tests {
         let desc = ModelDesc {
             hidden: D,
             vocab: 16,
-            embed: Embed { scale: 1.0, norm: None, streams: N, per_layer: None },
+            embed: Embed { scale: 1.0, norm: None, streams: N, per_layer: None, table: TableAt::Gpu },
             blocks: layers.iter().map(|l| l.block.clone()).collect(),
             final_norm: Norm::rms(1e-6),
             head: Head { tied: false, softcap: None, scale: 1.0, collapse, rounding: Rounding::F32 },
