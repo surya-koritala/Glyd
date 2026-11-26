@@ -273,6 +273,16 @@ pub(crate) fn item_words(ck: &Checkpoint, it: &Item) -> Result<Vec<u16>> {
             at = w.len();
             continue;
         }
+        // (a table stored at 4 bits beside its name: the bf16 it decodes to, every row as the host's gather decodes it)
+        if let Some(q) = crate::formats::q4_beside(ck, m) {
+            let v = crate::formats::nf4_words(ck, &q, it.cols)?;
+            if at + v.len() > w.len() {
+                return err(format!("{}: {} weights past its {} x {}", it.members.join(" + "), at + v.len(), it.rows, it.cols));
+            }
+            w[at..at + v.len()].copy_from_slice(&v);
+            at += v.len();
+            continue;
+        }
         let (_, t) = ck.get(m).ok_or_else(|| Error(format!("{}: no tensor {m}", ck.dir.display())))?;
         // (a bf16 matrix as it is; an FP8 one with its block scales as the bf16 it dequantises to)
         if !matches!(t.dtype.as_str(), "BF16" | "F8_E4M3") || t.shape.len() != 2 || t.shape[1] as usize != it.cols {

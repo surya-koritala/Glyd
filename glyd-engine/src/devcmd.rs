@@ -185,6 +185,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "samplecheck" => glyd_engine::logits::sample_check(a),
         "twomodels" => glyd_engine::logits::two_models_check(a),
         "splitcheck" => glyd_engine::logits::split_check(a),
+        "tablerows" => glyd_engine::dynamic::tables::rows_cmd(a),
         "bufcheck" => glyd_engine::dev::buf_check(),
         "foldcheck" => glyd_engine::fold::check(a.flag("only")),
         "kindcheck" => glyd_engine::dynamic::kindcheck::run(&a),

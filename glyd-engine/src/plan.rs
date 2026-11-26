@@ -4672,21 +4672,42 @@ pub mod sizing {
     }
 
     /// The refusal of the model `model` (short name `name`) of the row `family` whose experts come from a codes pack at the hummingbird level
-    /// (`ExpertCache::Codes`) where none is beside its weights (`codes_beside`): `run`'s, and `fit`'s of a model here.
+    /// (`ExpertCache::Codes`) where none is beside its weights or named (`codes_of`): `run`'s, and `fit`'s of a model here.
     pub fn no_codes_pack(name: &str, family: &str, model: &str) -> Refusal {
         Refusal::unsupported(
             format!(
-                "{name} ({family}) at the hummingbird level runs from a codes pack of its experts beside its weights (DIR/pack), and {model} has none here"
+                "{name} ({family}) at the hummingbird level runs from a codes pack of its experts beside its weights (DIR/pack) or named by --pack, and {model} has none here"
             ),
-            "Put its pack in DIR/pack (the release's packs: condor/tools/download.sh) and run DIR:hummingbird, or serve it with qwenserve CKPT PACK",
+            "Name its pack (the release's: condor/tools/download.sh): run DIR:hummingbird --pack PACK, or put it in DIR/pack, or serve it with qwenserve CKPT PACK",
         )
     }
 
     /// The codes pack beside the weights in `dir` (`dir/pack`, its `meta.json` the format's, glyd-x/1), where it has one.
     pub fn codes_beside(dir: &Path) -> Option<PathBuf> {
-        let p = dir.join("pack");
+        codes_at(&dir.join("pack"))
+    }
+
+    /// `p` where it is a codes pack (its `meta.json` the format's, glyd-x/1).
+    fn codes_at(p: &Path) -> Option<PathBuf> {
         let text = std::fs::read_to_string(p.join("meta.json")).ok()?;
-        glyd_gpu::json::parse(&text).ok()?.get("format").and_then(glyd_gpu::json::Value::as_str).filter(|f| *f == "glyd-x/1").map(|_| p)
+        glyd_gpu::json::parse(&text).ok()?.get("format").and_then(glyd_gpu::json::Value::as_str).filter(|f| *f == "glyd-x/1").map(|_| p.to_path_buf())
+    }
+
+    /// The codes pack `--pack DIR` names to `run`, `serve` and `prepare` (`name_pack`), for a model whose directory holds none beside its weights: the
+    /// release's download keeps its packs beside `model/` (condor/tools/download.sh: `DIR/model`, `DIR/precise-v2`).
+    static PACK: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+    /// `--pack DIR` of `a` as this process's codes pack (`codes_of`), where it names one.
+    pub fn name_pack(a: &Args) {
+        if let Some(p) = a.flag("pack").filter(|p| !p.is_empty()) {
+            let _ = PACK.set(PathBuf::from(p));
+        }
+    }
+
+    /// The codes pack the experts of the model in `dir` are read from at the hummingbird level: the one `--pack` named (`name_pack`), else the one beside its
+    /// weights (`codes_beside`).
+    pub fn codes_of(dir: &Path) -> Option<PathBuf> {
+        PACK.get().and_then(|p| codes_at(p)).or_else(|| codes_beside(dir))
     }
 
     /// `kimi_cache` with every layer across all the GPUs of `room` (src/dynamic/tp.rs): each GPU holds its slice of the rows of each big matrix (the embedding
