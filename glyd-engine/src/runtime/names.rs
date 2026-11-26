@@ -181,6 +181,19 @@ pub mod part {
         ("shared_router", "mlp.shared_expert_gate.weight"),
     ];
 
+    /// The same with each layer's routed experts stacked in two tensors, as transformers holds them and Qwen3.8-2.4T-A95B is released: `experts_gate_up`
+    /// [experts, 2 inter, in] (the gate's rows first), `experts_down` [experts, out, inter].
+    pub const QWEN_MOE_STACKED: Roles = &[
+        ("norm_in", "post_attention_layernorm.weight"),
+        ("router", "mlp.gate.weight"),
+        ("experts_gate_up", "mlp.experts.gate_up_proj"),
+        ("experts_down", "mlp.experts.down_proj"),
+        ("shared_gate", "mlp.shared_expert.gate_proj.weight"),
+        ("shared_up", "mlp.shared_expert.up_proj.weight"),
+        ("shared_down", "mlp.shared_expert.down_proj.weight"),
+        ("shared_router", "mlp.shared_expert_gate.weight"),
+    ];
+
     // ---- Qwen3.8-Flash-Next (Condor): the gated residuals around each block, the indexer, the experts stacked, the n-gram embedding
     pub const QX_GR_ATTN: Roles = &[
         ("norm_in", "attn_hyper_connection.hc_norm.weight"),

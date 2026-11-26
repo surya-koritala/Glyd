@@ -463,12 +463,14 @@ pub(crate) mod tests {
 
     /// The recorded headers: for each model the files the Hub listed (path, bytes), the index's total, the config.json and the table of tensors, compact
     /// (tests/fixtures/headers/NAME.json; `record_header_fixtures` writes them).
-    const HEADER_FIXTURES: [(&str, &str); 5] = [
+    const HEADER_FIXTURES: [(&str, &str); 7] = [
         ("gemma-4-12B-it", include_str!("../tests/fixtures/headers/gemma-4-12B-it.json")),
         ("Kimi-K3", include_str!("../tests/fixtures/headers/Kimi-K3.json")),
         ("DeepSeek-V4-Flash-0731", include_str!("../tests/fixtures/headers/DeepSeek-V4-Flash-0731.json")),
         ("Qwen3.8-27B", include_str!("../tests/fixtures/headers/Qwen3.8-27B.json")),
         ("DeepSeek-V4.1-Flash-1017", include_str!("../tests/fixtures/headers/DeepSeek-V4.1-Flash-1017.json")),
+        ("Kimi-K3.1-Pro", include_str!("../tests/fixtures/headers/Kimi-K3.1-Pro.json")),
+        ("Qwen3.8-2.4T-A95B", include_str!("../tests/fixtures/headers/Qwen3.8-2.4T-A95B.json")),
     ];
 
     fn groups_of(v: &serde_json::Value) -> Vec<Group> {
@@ -489,11 +491,12 @@ pub(crate) mod tests {
 
     /// Records the headers of the recent models by ranges from the Hub (the files' headers and the small files; no weights) into tests/fixtures/headers:
     /// `GLYD_RECORD_HEADERS=1 cargo test -p glyd-engine --lib -- --ignored record_header_fixtures` (or GLYD_RECORD_HEADERS=REPO,REPO: those of the list alone).
-    /// Recorded and committed so far: five of the nine repos listed below (gemma-4-12B-it, Kimi-K3, DeepSeek-V4-Flash-0731, Qwen3.8-27B, and
-    /// DeepSeek-V4.1-Flash-1017, the family's newest release, whose config, index and inference code are the first DeepSeek-V4.1-Flash's byte for byte).
-    /// The others (Muse Spark, and #333's releases: GLM-5.3, Qwen3.8-2.4T-A95B, DeepSeek-V4-Flash's DSpark drafter) are listed and not recorded: no header
-    /// of theirs is in the tree, so `runtime::describe_tests::every_recorded_release_describes_or_says_what_it_lacks`, which holds each file here, holds
-    /// none of them.
+    /// Recorded and committed so far: seven of the ten repos listed below (gemma-4-12B-it, Kimi-K3, DeepSeek-V4-Flash-0731, Qwen3.8-27B, and
+    /// DeepSeek-V4.1-Flash-1017, the family's newest release, whose config, index and inference code are the first DeepSeek-V4.1-Flash's byte for byte;
+    /// and #333's Kimi-K3.1-Pro and Qwen3.8-2.4T-A95B). The others (Muse Spark, and #333's GLM-5.3 and DeepSeek-V4-Flash's DSpark drafter) are listed and not
+    /// recorded: no header of theirs is in the tree, so `runtime::describe_tests::every_recorded_release_describes_or_says_what_it_lacks`, which holds each
+    /// file here, holds none of them. The index's total is recorded where the index is under `Hub::text`'s 16 MiB (Kimi-K3's and Kimi-K3.1-Pro's, 59 MB,
+    /// are not: their total is the index's first lines, read by one range request, and the descriptions' tests hold it).
     #[test]
     #[ignore = "needs the network: GLYD_RECORD_HEADERS=1"]
     fn record_header_fixtures() {
@@ -506,6 +509,7 @@ pub(crate) mod tests {
         for repo in [
             "google/gemma-4-12B-it",
             "moonshotai/Kimi-K3",
+            "moonshotai/Kimi-K3.1-Pro",
             "deepseek-ai/DeepSeek-V4-Flash-0731",
             "meta-models/Muse-Spark-Open-816B-A42B",
             "Qwen/Qwen3.8-27B",
@@ -535,7 +539,8 @@ pub(crate) mod tests {
             let config = hub.text(repo, &remote.commit, "config.json").unwrap_or_default();
             let v = serde_json::json!({
                 "repo": repo, "commit": remote.commit, "listed_safetensors": listed,
-                "index_total_size": index.as_ref().and_then(|i| i["metadata"]["total_size"].as_u64()),
+                // (a total some indexes write as a float: 4892365451008.0)
+                "index_total_size": index.as_ref().and_then(|i| i["metadata"]["total_size"].as_u64().or_else(|| i["metadata"]["total_size"].as_f64().map(|t| t as u64))),
                 "config": config,
                 "groups": groups.iter().map(|g| serde_json::json!({"mask": g.mask, "dtype": g.dtype, "shape": g.shape, "bytes": g.bytes, "layers": g.layers, "experts": g.experts})).collect::<Vec<_>>(),
             });
@@ -586,7 +591,7 @@ pub(crate) mod tests {
         let m = crate::plan::Machine::preset("8xh100").unwrap();
         let devs: Vec<crate::plan::Target> = m.devices.iter().enumerate().map(|(i, d)| crate::plan::Target::of(d, i as i32, Some(m.ram_free))).collect();
         let mut planned = 0;
-        for (name, text) in HEADER_FIXTURES.iter().filter(|f| f.0 == "Kimi-K3" || f.0.starts_with("DeepSeek")) {
+        for (name, text) in HEADER_FIXTURES.iter().filter(|f| f.0.starts_with("Kimi-K3") || f.0.starts_with("DeepSeek")) {
             let v: serde_json::Value = serde_json::from_str(text).unwrap();
             let table = Table::expand(&groups_of(&v));
             let config = v["config"].as_str().unwrap();

@@ -587,8 +587,10 @@ fn conventions_name_the_checkpoints_tensors_exactly() {
 }
 
 /// #333: every header fixture there is (tests/fixtures/headers; `sizes::record_header_fixtures` records the recent releases', #333's among them) describes
-/// from its config.json alone a weight map its checkpoint holds and reads it whole but the parts the language model does not run, or is refused in the words
-/// `LACKS` gives: the releases whose mechanisms the layer kinds do not have yet (none now: DeepSeek-V4.1's CSA2, Engram and lagged mHC are kind parameters).
+/// from its config.json (and, where the config does not say how a checkpoint stores something, its index: `describe_held`) a weight map its checkpoint holds and
+/// reads it whole but the parts the language model does not run, or is refused in the words `LACKS` gives: the releases whose mechanisms the layer kinds do not
+/// have yet (none now: DeepSeek-V4.1's CSA2, Engram and lagged mHC are kind parameters; Kimi-K3.1's sparse indexer and Qwen3.8-2.4T-A95B's stacked experts are
+/// kinds the library has).
 #[test]
 fn every_recorded_release_describes_or_says_what_it_lacks() {
     const LACKS: &[(&str, &str)] = &[];
@@ -600,8 +602,10 @@ fn every_recorded_release_describes_or_says_what_it_lacks() {
         let name = f.trim_end_matches(".json");
         let h = fixture(&format!("headers/{f}"));
         let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap_or_else(|e| panic!("{f}: its config: {e}"));
-        match (describe(&cfg), LACKS.iter().find(|l| l.0 == name)) {
-            (Ok(d), None) => d.check(&header_names(&h), true).unwrap_or_else(|e| panic!("{f}: {}", e.msg)),
+        // (each held to its own index: where a config does not say how its checkpoint stores something, the index does)
+        let have = header_names(&h);
+        match (super::describe::describe_held(&cfg, &have), LACKS.iter().find(|l| l.0 == name)) {
+            (Ok(d), None) => d.check(&have, true).unwrap_or_else(|e| panic!("{f}: {}", e.msg)),
             (Err(e), Some((_, why))) => assert!(e.msg.contains(why), "{f}: {}", e.msg),
             (Ok(_), Some(_)) => panic!("{f} describes now: take it out of LACKS"),
             (Err(e), None) => panic!("{f}: {}", e.msg),
@@ -696,6 +700,23 @@ fn a_drafters_depth_is_the_configs_else_the_formats_and_a_directory_is_held_to_i
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Every tensor of a header fixture by name: its dtype, shape and bytes.
+fn header_tensors(h: &serde_json::Value) -> std::collections::BTreeMap<String, (String, Vec<usize>, u64)> {
+    let mut out = std::collections::BTreeMap::new();
+    for g in h["groups"].as_array().unwrap() {
+        let (mask, dtype, bytes) = (g["mask"].as_str().unwrap(), g["dtype"].as_str().unwrap(), g["bytes"].as_u64().unwrap());
+        let shape: Vec<usize> = g["shape"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+        let layers: Vec<String> = g["layers"].as_array().unwrap().iter().map(|l| l.as_u64().unwrap().to_string()).collect();
+        let experts: Vec<String> = (0..g["experts"].as_u64().unwrap()).map(|e| e.to_string()).collect();
+        for l in if mask.contains("{L}") { layers } else { vec![String::new()] } {
+            for e in if mask.contains("{E}") { experts.clone() } else { vec![String::new()] } {
+                out.insert(mask.replace("{L}", &l).replace("{E}", &e), (dtype.to_string(), shape.clone(), bytes));
+            }
+        }
+    }
+    out
+}
+
 /// Every tensor name of a header fixture: its groups' masks with each of their layers ({L}) and experts ({E}).
 fn header_names(h: &serde_json::Value) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
@@ -764,8 +785,8 @@ fn deepseek_v41_flashs_weight_map_is_its_index() {
     }
 }
 
-/// #333, Kimi-K3.1: its sparse attention (`text_config.dsa_config`, the keys of vLLM's `KimiLinearDSAConfig`; the release's own config.json is not in the
-/// fixtures yet) on Kimi-K3's released config: each latent attention layer it names takes the sparse attention's indexer of a key a token in the gated form, its
+/// #333, Kimi-K3.1: its sparse attention (`text_config.dsa_config`, the keys of vLLM's `KimiLinearDSAConfig`; the release's own, at its own numbers, is held to
+/// its index by `kimi_k31_pros_weight_map_is_its_index`) on Kimi-K3's released config: each latent attention layer it names takes the sparse attention's indexer of a key a token in the gated form, its
 /// keys RMS-normed at the model's eps (LayerNorm-ed with a bias where `index_k_norm_type` says so), and reads the indexer's tensors; the delta attention layers
 /// are as they were. What is not described is refused: an indexer rotary, picks shared across layers, a layer that is no latent attention.
 #[test]
@@ -864,6 +885,228 @@ fn kimi_k3s_packed_experts_are_named_and_other_packings_refused() {
     refused(&|q| q["config_groups"]["group_0"]["weights"]["group_size"] = 16.into(), "groups of 32");
     refused(&|q| q["format"] = "nvfp4-pack-quantized".into(), "nvfp4");
     refused(&|q| q["ignore"] = serde_json::json!(["re:.*self_attn.*", "re:.*lm_head.*"]), "shared_experts");
+}
+
+/// Kimi-K3's layout's tensor at its place in a layer (or in the model), as a config's numbers make it: its dtype and shape. The experts' codes are two to a byte
+/// and their scales a byte a group of 32. None for a name the layout has no tensor of.
+fn kimi_tensor(c: &serde_json::Value, name: &str) -> Option<(&'static str, Vec<usize>)> {
+    let t = &c["text_config"];
+    let n = |k: &str| t[k].as_u64().unwrap() as usize;
+    let (d, ne, lat, mi, inter, heads) =
+        (n("hidden_size"), n("num_experts"), n("routed_expert_hidden_size"), n("moe_intermediate_size"), n("intermediate_size"), n("num_attention_heads"));
+    let la = &t["linear_attn_config"];
+    let (kh, kd, conv) = (la["num_heads"].as_u64()? as usize, la["head_dim"].as_u64()? as usize, la["short_conv_kernel_size"].as_u64()? as usize);
+    let (qd, ql, kvl, vh) = (kh * kd, n("q_lora_rank"), n("kv_lora_rank"), n("v_head_dim"));
+    let (nope, rope, shared) = (n("qk_nope_head_dim"), n("qk_rope_head_dim"), n("num_shared_experts") * mi);
+    let (b, f, u) = ("BF16", "F32", "U8");
+    let rest = name.strip_prefix("language_model.")?;
+    let (layer, rest) = match rest.strip_prefix("model.layers.") {
+        Some(r) => {
+            let (l, r) = r.split_once('.')?;
+            (Some(l.parse::<usize>().ok()?), r)
+        }
+        None => (None, rest),
+    };
+    let latent = layer.is_some_and(|l| la["full_attn_layers"].as_array().unwrap().iter().any(|x| x.as_u64() == Some(l as u64 + 1)));
+    let big = if latent { heads * vh } else { qd };
+    if let Some(r) = rest.strip_prefix("block_sparse_moe.experts.") {
+        let (matrix, what) = r.split_once('.')?.1.split_once('.')?;
+        let (rows, cols) = if matrix == "w2" { (lat, mi) } else { (mi, lat) };
+        return match what {
+            "weight_packed" => Some((u, vec![rows, cols / 2])),
+            "weight_scale" => Some((u, vec![rows, cols / 32])),
+            _ => None,
+        };
+    }
+    Some(match rest {
+        "lm_head.weight" | "model.embed_tokens.weight" => (b, vec![n("vocab_size"), d]),
+        "model.norm.weight" | "model.output_attn_res_norm.weight" => (b, vec![d]),
+        "model.output_attn_res_proj.weight" => (b, vec![1, d]),
+        "input_layernorm.weight" | "post_attention_layernorm.weight" | "mlp_res_norm.weight" | "self_attention_res_norm.weight" => (b, vec![d]),
+        "mlp_res_proj.weight" | "self_attention_res_proj.weight" => (b, vec![1, d]),
+        "mlp.gate_proj.weight" | "mlp.up_proj.weight" => (b, vec![inter, d]),
+        "mlp.down_proj.weight" => (b, vec![d, inter]),
+        "block_sparse_moe.gate.weight" => (b, vec![ne, d]),
+        "block_sparse_moe.gate.e_score_correction_bias" => (f, vec![ne]),
+        "block_sparse_moe.routed_expert_down_proj.weight" => (b, vec![lat, d]),
+        "block_sparse_moe.routed_expert_up_proj.weight" => (b, vec![d, lat]),
+        "block_sparse_moe.routed_expert_norm.weight" => (b, vec![lat]),
+        "block_sparse_moe.shared_experts.gate_proj.weight" | "block_sparse_moe.shared_experts.up_proj.weight" => (b, vec![shared, d]),
+        "block_sparse_moe.shared_experts.down_proj.weight" => (b, vec![d, shared]),
+        // (the delta attention's and the latent attention's, which both have a g_proj and an o_proj)
+        "self_attn.q_proj.weight" | "self_attn.k_proj.weight" | "self_attn.v_proj.weight" => (b, vec![qd, d]),
+        "self_attn.g_proj.weight" => (b, vec![big, d]),
+        "self_attn.o_proj.weight" => (b, vec![d, big]),
+        "self_attn.b_proj.weight" => (b, vec![kh, d]),
+        "self_attn.f_a_proj.weight" => (b, vec![kd, d]),
+        "self_attn.f_b_proj.weight" => (b, vec![qd, kd]),
+        "self_attn.dt_bias" => (f, vec![qd]),
+        // (as released: the delta heads' size, not the heads' number, which the loader reads the first of)
+        "self_attn.A_log" | "self_attn.o_norm.weight" => (f, vec![kd]),
+        "self_attn.q_conv1d.weight" | "self_attn.k_conv1d.weight" | "self_attn.v_conv1d.weight" => (f, vec![qd, 1, conv]),
+        "self_attn.q_a_proj.weight" => (b, vec![ql, d]),
+        "self_attn.q_a_layernorm.weight" => (b, vec![ql]),
+        "self_attn.q_b_proj.weight" => (b, vec![heads * (nope + rope), ql]),
+        "self_attn.kv_a_proj_with_mqa.weight" => (b, vec![kvl + rope, d]),
+        "self_attn.kv_a_layernorm.weight" => (b, vec![kvl]),
+        "self_attn.kv_b_proj.weight" => (b, vec![heads * (nope + vh), kvl]),
+        // (the sparse attention's indexer, where the config has one)
+        "self_attn.indexer.wq_b.weight" => {
+            (b, vec![t["dsa_config"]["index_num_heads"].as_u64()? as usize * t["dsa_config"]["index_head_dim"].as_u64()? as usize, ql])
+        }
+        "self_attn.indexer.wk.weight" => (b, vec![t["dsa_config"]["index_head_dim"].as_u64()? as usize, d]),
+        "self_attn.indexer.weights_proj.weight" => (b, vec![t["dsa_config"]["index_num_heads"].as_u64()? as usize, d]),
+        "self_attn.indexer.k_norm.weight" | "self_attn.indexer.k_norm.bias" => (b, vec![t["dsa_config"]["index_head_dim"].as_u64()? as usize]),
+        _ => return None,
+    })
+}
+
+/// #333, Kimi-K3.1-Pro (released 2026-11-02; wrapper model type `kimi_k31`, text model Kimi-K3's `kimi_linear`): its released config.json describes, by its
+/// keys alone, a weight map that is its safetensors index (497,340 tensors in 96 files, 1,561,217,377,280 bytes, the index's total: its file headers recorded
+/// by ranges, no weight read). Every tensor the description reads is there at the dtype and shape the config's numbers make it, and every tensor there is read
+/// but the vision tower and its projector (168, which the language model does not run). It differs from Kimi-K3 (headers/Kimi-K3.json) in 120 tensors, the
+/// sparse indexer's five (wq_b, wk, weights_proj, a key norm's weight and bias) on each of the 24 latent attention layers, and in nothing else: the
+/// description is Kimi-K3's but for `dsa_config`, whose keys are the indexer's heads (32 of 128), keys (LayerNorm-ed, with a bias), 2,048 picks, no rotary and
+/// no shared picks.
+#[test]
+fn kimi_k31_pros_weight_map_is_its_index() {
+    use super::kinds::*;
+    let (h, h3) = (fixture("headers/Kimi-K3.1-Pro.json"), fixture("headers/Kimi-K3.json"));
+    assert_eq!(h["repo"].as_str(), Some("moonshotai/Kimi-K3.1-Pro"));
+    let (cfg, cfg3): (serde_json::Value, serde_json::Value) =
+        (serde_json::from_str(h["config"].as_str().unwrap()).unwrap(), serde_json::from_str(h3["config"].as_str().unwrap()).unwrap());
+    assert_eq!((cfg["model_type"].as_str(), cfg3["model_type"].as_str()), (Some("kimi_k31"), Some("kimi_k3")));
+    let (d, d3) = (describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg)), describe(&cfg3).unwrap());
+    let (t, t3) = (header_tensors(&h), header_tensors(&h3));
+    let have: BTreeSet<String> = t.keys().cloned().collect();
+    assert_eq!((t.len(), t3.len()), (497_340, 497_220));
+    assert_eq!(
+        t.values().map(|x| x.2).sum::<u64>(),
+        1_561_217_377_280,
+        "the index's total size (its metadata, read by a range request: the 59 MB index is over the recorder's text limit)"
+    );
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    // (what it does not read: the vision tower's 27 blocks of six tensors and its three, and the projector's three)
+    let names = d.names();
+    let left: Vec<&String> = have.iter().filter(|n| !names.contains(*n)).collect();
+    assert_eq!(left.len(), 27 * 6 + 3 + 3);
+    assert!(
+        left.iter().all(|n| n.starts_with("vision_tower.") || n.starts_with("mm_projector.")),
+        "{:?}",
+        left.iter().find(|n| !n.starts_with("vision_tower."))
+    );
+    assert_eq!((names.len(), d.mtp_layers, d.scales.len()), (497_172, 0, 92 * 896 * 3));
+    // (every tensor read at its dtype and shape: the config's numbers, and the description's where it says them)
+    for n in &names {
+        let (dtype, shape, _) = &t[n];
+        let want = kimi_tensor(&cfg, n).unwrap_or_else(|| panic!("{n}: no tensor of the layout has this name"));
+        assert_eq!((dtype.as_str(), shape), (want.0, &want.1), "{n}");
+        if let Some(s) = d.shapes.get(n) {
+            assert_eq!(s, shape, "{n}: the description's shape");
+        }
+    }
+    // (against Kimi-K3: the tensors it adds, each of the 24 latent attention layers' indexer, and the rest the same at the same dtype and shape)
+    let full: Vec<usize> =
+        cfg["text_config"]["linear_attn_config"]["full_attn_layers"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize - 1).collect();
+    assert_eq!((full.len(), cfg["text_config"]["dsa_config"]["dsa_layers"].as_array().unwrap().len()), (24, 24));
+    let added: BTreeSet<&String> = have.iter().filter(|n| !t3.contains_key(*n)).collect();
+    let want: BTreeSet<String> = full
+        .iter()
+        .flat_map(|l| {
+            ["wq_b.weight", "wk.weight", "weights_proj.weight", "k_norm.weight", "k_norm.bias"]
+                .map(|x| format!("language_model.model.layers.{l}.self_attn.indexer.{x}"))
+        })
+        .collect();
+    assert_eq!(added, want.iter().collect::<BTreeSet<_>>());
+    assert!(t3.keys().all(|n| t.contains_key(n)) && t3.iter().all(|(n, v)| &t[n] == v), "the other tensors are Kimi-K3's");
+    let names3 = d3.names();
+    assert_eq!(names.iter().filter(|n| !names3.contains(*n)).collect::<BTreeSet<_>>(), want.iter().collect::<BTreeSet<_>>());
+    assert!(names3.iter().all(|n| names.contains(n)));
+    // (the description: Kimi-K3's but for the indexer on the layers `dsa_config` names; the config's other differences (the wrapper's name, the ignore list's two
+    // more entries for tensors that are bf16 in both) leave it as it was)
+    let mut plain = cfg.clone();
+    plain["text_config"].as_object_mut().unwrap().remove("dsa_config");
+    let p = describe(&plain).unwrap();
+    assert!(p.desc == d3.desc && p.names() == d3.names() && p.shapes == d3.shapes && p.scales == d3.scales, "without dsa_config it is Kimi-K3's");
+    let ix = Indexer {
+        heads: 32,
+        head_dim: 128,
+        top_k: 2048,
+        block: 1,
+        shared: false,
+        form: IndexForm::Gated { key: Norm { kind: NormKind::Layer, ..Norm::rms(cfg["text_config"]["rms_norm_eps"].as_f64().unwrap() as f32) } },
+        rope: 0,
+    };
+    let mut latent = 0;
+    for (b, was) in d.desc.blocks.iter().zip(&d3.desc.blocks) {
+        match (&b.body, &was.body) {
+            (Body::Mixer(Mixer::Mla(m)), Body::Mixer(Mixer::Mla(w))) => {
+                assert_eq!((m.indexer.as_ref(), &Mla { indexer: None, ..m.clone() }), (Some(&ix), w));
+                latent += 1;
+            }
+            (x, y) => assert_eq!(x, y),
+        }
+    }
+    assert_eq!(latent, 24);
+}
+
+/// #333, Qwen3.8-2.4T-A95B's weight map, described from its released config.json (the Qwen3.5 layout with experts, `Qwen3_5MoeForCausalLM`), is its safetensors
+/// index (its 213 files' headers, recorded by ranges with no weight read: 1,609 tensors, 4,892,365,451,008 bytes, the index's total). The config does not
+/// say how a checkpoint stores the experts: the description's form for one with no index names each expert's three matrices a tensor (as the layout's earlier
+/// releases are saved), and this release holds each layer's 512 experts as two stacked tensors (`mlp.experts.gate_up_proj` [512, 4096, 8192] and
+/// `down_proj` [512, 8192, 2048], transformers' own form), so a description held to its index (`describe_held`, which a directory's loader is given) names those.
+/// Every tensor it reads is there at the shape it says; every tensor there is read but the draft layer (`mtp.*`, 19 tensors: its front's norms and product
+/// and one full-attention layer with its 512 experts, which this layout's description counts and does not read, its `mtp` empty).
+#[test]
+fn qwen38_2_4ts_weight_map_is_its_index() {
+    use super::describe::{describe_held, Source};
+    let h = fixture("headers/Qwen3.8-2.4T-A95B.json");
+    assert_eq!((h["repo"].as_str(), h["index_total_size"].as_u64()), (Some("Qwen/Qwen3.8-2.4T-A95B"), Some(4_892_365_451_008)));
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let (t, have) = (header_tensors(&h), header_names(&h));
+    assert_eq!((t.len(), t.values().map(|x| x.2).sum::<u64>()), (1609, 4_892_365_451_008));
+    assert!(t.values().all(|x| x.0 == "BF16"));
+    // (the config alone: each expert's matrices a tensor, 92 layers of 512 experts of three, none of which the checkpoint has)
+    let alone = describe(&cfg).unwrap();
+    let e = alone.check(&have, true).unwrap_err().msg;
+    assert!(e.contains(&format!("{} tensors", 92 * 512 * 3)), "{e}");
+    let d = describe_held(&cfg, &have).unwrap_or_else(|e| panic!("{}", e.msg));
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!(d.desc.blocks, alone.desc.blocks, "the same kinds, the experts' stored form apart");
+    let names = d.names();
+    assert_eq!(names.len(), 1609 - 19);
+    let left: Vec<&String> = have.iter().filter(|n| !names.contains(*n)).collect();
+    assert!(left.len() == 19 && left.iter().all(|n| n.starts_with("mtp.")), "{left:?}");
+    assert_eq!((d.mtp_layers, d.desc.mtp.len()), (1, 0));
+    // (every tensor read at its shape: a shape said for each, and the header's)
+    assert_eq!(d.shapes.keys().cloned().collect::<BTreeSet<_>>(), names, "a shape for every tensor described");
+    for (n, s) in &d.shapes {
+        assert_eq!(&t[n].1, s, "{n}");
+    }
+    let role = |l: usize, r: &str| match d.blocks[2 * l + 1].iter().find(|(x, _)| x == r) {
+        Some((_, Source::Tensor(n))) => n.clone(),
+        other => panic!("layer {l} {r}: {other:?}"),
+    };
+    assert_eq!(role(91, "experts_gate_up"), "model.layers.91.mlp.experts.gate_up_proj");
+    assert_eq!((d.shapes[&role(0, "experts_gate_up")].clone(), d.shapes[&role(0, "experts_down")].clone()), (vec![512, 4096, 8192], vec![512, 8192, 2048]));
+    // (a directory is held to its own index: this release's names read stacked, a per-expert checkpoint's (the random case of the layout) per expert, a directory
+    // with no index as the config alone says)
+    let dir = std::env::temp_dir().join(format!("glyd-describe-stored-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let held = |cfg: &serde_json::Value, names: &BTreeSet<String>| {
+        std::fs::write(dir.join("config.json"), cfg.to_string()).unwrap();
+        let map: serde_json::Map<String, serde_json::Value> = names.iter().map(|n| (n.clone(), "model-00001.safetensors".into())).collect();
+        std::fs::write(dir.join("model.safetensors.index.json"), serde_json::json!({ "weight_map": map }).to_string()).unwrap();
+        super::describe::describe_dir(&dir).map(|x| x.0)
+    };
+    let from_dir = held(&cfg, &have).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((from_dir.names(), from_dir.shapes), (names, d.shapes.clone()));
+    let tiny = fixture("qwen35moe_tiny_config.json");
+    let per_expert = describe(&tiny).unwrap();
+    let from_dir = held(&tiny, &per_expert.names()).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert!(from_dir.names() == per_expert.names() && from_dir.shapes == per_expert.shapes);
+    assert!(matches!(from_dir.blocks[1].iter().find(|(r, _)| r == "experts_gate_up"), Some((_, Source::Experts(e))) if e.len() == 32));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Every config of tests/fixtures describes from its own file, the toy and tiny ones as the released (Condor's Qwen3.8-Flash-Next too: 48 layers of two blocks, and
