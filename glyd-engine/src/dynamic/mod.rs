@@ -6,6 +6,7 @@ pub mod attn;
 mod comp;
 pub mod deepseek_v4;
 pub mod dense;
+pub(crate) mod entry;
 pub mod experts;
 pub mod gemma4;
 pub mod glm;
@@ -3287,51 +3288,59 @@ impl Dyn {
             return Ok(());
         }
         if head > 0 {
-            // (a pass over several sequences: the rows the head reads, the last of each sequence that asks for a token, moved to the pass's last rows in order)
-            let w = (p.d.hidden * 2) as u64;
-            let moved: Vec<Slot> = [Slot::X, Slot::H].into_iter().chain(p.d.final_norm.map(|f| f.1)).collect();
-            let rows_moved: &[usize] = if std::ptr::eq(p, &self.big) { &self.head_rows } else { &[] };
-            for (j, &src) in rows_moved.iter().enumerate().rev() {
-                let dst = n - rows_moved.len() + j;
-                if dst != src {
-                    for &slot in &moved {
-                        copy_d2d_async(p.slot(slot) + dst as u64 * w, p.slot(slot) + src as u64 * w, w as usize, s)?;
-                    }
-                }
-            }
-            let first = ((n - head) * p.d.hidden * 2) as u64;
-            if let Some(post) = p.d.post {
-                self.lin(&p.mats[post], p.slot(Slot::H) + first, head, p.slot(Slot::Hid))?;
-            }
-            let hl = match p.d.final_norm {
-                Some((w, y, plus1)) => {
-                    let (x, y, w, out, rows, hid) =
-                        (p.slot(Slot::X) + first, p.slot(y) + first, p.small[w].ptr, p.slot(Slot::Hlast), head as u32, p.d.hidden as i32);
-                    if plus1 {
-                        self.k35.rmsnorm_add(s, x, y, w, out, rows, hid, p.d.eps)?;
-                    } else {
-                        self.kern.rmsnorm_add(s, x, y, w, out, rows, hid, p.d.eps)?;
-                    }
-                    p.slot(Slot::Hlast)
-                }
-                None => p.slot(Slot::H) + first,
-            };
-            // (a draft head's LM head is the model's)
-            let lm = if !std::ptr::eq(p, &self.big) && matches!(p.d.first, Op::MtpIn { .. }) { &self.big.mats[self.big.d.lm] } else { &p.mats[p.d.lm] };
-            self.lin(lm, hl, head, p.logits.ptr)?;
-            if p.d.softcap > 0.0 && p.d.logit_mult > 0.0 {
-                launch!(self.kmuse.softcap, [64, 1, 1], [256, 1, 1], s; p.logits.ptr, (head * p.d.vocab) as i32, p.d.logit_mult, p.d.softcap)?;
-            } else if p.d.softcap > 0.0 {
-                launch!(self.kg.softcap, [64, 1, 1], [256, 1, 1], s; p.logits.ptr, (head * p.d.vocab) as i32, p.d.softcap)?;
-            }
-            self.kern.argmax_rows(s, p.logits.ptr, p.d.vocab as i32, head as u32, p.tok.ptr, p.val.ptr)?;
-            self.mark("head")?;
+            self.logits_pass(p, n, head)?;
         }
         if std::ptr::eq(p, &self.big) {
             self.gap_end()?;
         }
         self.queued.set(queue.elapsed().as_secs_f64() * 1e3);
         Ok(())
+    }
+
+    /// The head on the last `head` of part `p`'s pass of n rows (`forward`'s last work, and the CUDA backend's head piece): the rows it reads moved to the pass's
+    /// last (a pass over several sequences), the draft model's post projection, the final norm where the description adds it here, the LM head, its soft-cap,
+    /// and each row's best token.
+    unsafe fn logits_pass(&self, p: &Part, n: usize, head: usize) -> Result<()> {
+        let s = self.dev.stream;
+        // (a pass over several sequences: the rows the head reads, the last of each sequence that asks for a token, moved to the pass's last rows in order)
+        let w = (p.d.hidden * 2) as u64;
+        let moved: Vec<Slot> = [Slot::X, Slot::H].into_iter().chain(p.d.final_norm.map(|f| f.1)).collect();
+        let rows_moved: &[usize] = if std::ptr::eq(p, &self.big) { &self.head_rows } else { &[] };
+        for (j, &src) in rows_moved.iter().enumerate().rev() {
+            let dst = n - rows_moved.len() + j;
+            if dst != src {
+                for &slot in &moved {
+                    copy_d2d_async(p.slot(slot) + dst as u64 * w, p.slot(slot) + src as u64 * w, w as usize, s)?;
+                }
+            }
+        }
+        let first = ((n - head) * p.d.hidden * 2) as u64;
+        if let Some(post) = p.d.post {
+            self.lin(&p.mats[post], p.slot(Slot::H) + first, head, p.slot(Slot::Hid))?;
+        }
+        let hl = match p.d.final_norm {
+            Some((w, y, plus1)) => {
+                let (x, y, w, out, rows, hid) =
+                    (p.slot(Slot::X) + first, p.slot(y) + first, p.small[w].ptr, p.slot(Slot::Hlast), head as u32, p.d.hidden as i32);
+                if plus1 {
+                    self.k35.rmsnorm_add(s, x, y, w, out, rows, hid, p.d.eps)?;
+                } else {
+                    self.kern.rmsnorm_add(s, x, y, w, out, rows, hid, p.d.eps)?;
+                }
+                p.slot(Slot::Hlast)
+            }
+            None => p.slot(Slot::H) + first,
+        };
+        // (a draft head's LM head is the model's)
+        let lm = if !std::ptr::eq(p, &self.big) && matches!(p.d.first, Op::MtpIn { .. }) { &self.big.mats[self.big.d.lm] } else { &p.mats[p.d.lm] };
+        self.lin(lm, hl, head, p.logits.ptr)?;
+        if p.d.softcap > 0.0 && p.d.logit_mult > 0.0 {
+            launch!(self.kmuse.softcap, [64, 1, 1], [256, 1, 1], s; p.logits.ptr, (head * p.d.vocab) as i32, p.d.logit_mult, p.d.softcap)?;
+        } else if p.d.softcap > 0.0 {
+            launch!(self.kg.softcap, [64, 1, 1], [256, 1, 1], s; p.logits.ptr, (head * p.d.vocab) as i32, p.d.softcap)?;
+        }
+        self.kern.argmax_rows(s, p.logits.ptr, p.d.vocab as i32, head as u32, p.tok.ptr, p.val.ptr)?;
+        self.mark("head")
     }
 
     /// What a pass of part `p` on n rows at `pos` makes once for every layer before its operations run: the tables of its rows that decode, each its sequence's

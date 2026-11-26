@@ -30,8 +30,10 @@
 //! | MoE: sigmoid routers with a choice bias, sqrt-softplus and hash routers, shared and latent experts, expert norms (the Nemotron-H layout, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4) | 2e-2 | each expert's activations bf16, the weighted sum's order; a router's choice near a tie as above (none past the bound) | 9.9e-3 |
 //! | residual and norms: RMS (w, 1 + w, input-scaled, Kimi's two roundings), sandwich norms and the layer scalar, the gated residual, mHC's streams, the depth mix, each family's final norm and collapse (all seven) | 2e-2 | the residual bf16 after each add, the normed value rounded, mHC's Sinkhorn and the depth mix's softmax in fp32 on the GPU's bf16 inputs | 1.6e-2 |
 //!
-//! Not compared on the GPU kind by kind: the embedding's scale and norm and the head's soft-cap (each family's logits fixture holds them,
-//! `logitscheck`); MTP heads (their blocks are the kinds above). Condor's kinds (Qwen3.8-Flash-Next: the gated residuals and the final
+//! Each comparison runs the CUDA backend's entry point of its kind (`runtime::cuda`: the executor's own operations through `Dyn::op`). The
+//! embedding (its rows, scale, norm and streams, with the residual's operations into the first block) is held at the residual's bound; the
+//! head (the LM head's product of the GPU's own final-normed row, rounded into the bf16 logits, and its soft-cap) at the MLP's, the same
+//! arithmetic of one product. Not compared kind by kind: MTP heads (their blocks are the kinds above). Condor's kinds (Qwen3.8-Flash-Next: the gated residuals and the final
 //! mixer, the indexer on GQA, the n-gram embedding) are `kindcheck`'s cases `qwen4x` and `qwen4x-s2`: on an A10 its Gated DeltaNet
 //! 1.3e-2, its attention over the indexer's picks 4.7e-3, its experts 6.6e-3, the residuals 9.8e-3; the n-gram embedding, which adds its
 //! output into the streams in place, is compared by the streams it leaves (8.2e-3; its own output, the streams' change, 9.8e-3 of its

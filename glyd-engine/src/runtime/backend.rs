@@ -1,12 +1,14 @@
 //! The vendor seam (`docs/design/runtime.md` §3-4): a backend says per kind and weight format whether it supports it, and builds a
-//! `LayerImpl` for each block of a description. The executor is generic over a backend's associated types; layers are
-//! `Box<dyn LayerImpl<B>>`, one virtual call per block per step.
+//! `LayerImpl` for each block of a description, and for the pieces around the blocks' bodies (`Around`: the residual's norms and rules,
+//! the embedding, the head). The executor is generic over a backend's associated types; layers are `Box<dyn LayerImpl<B>>`, one virtual
+//! call per block per step.
 //!
-//! The types around the traits (`Placement`, `Arenas`, `StepCx`) carry what the CPU reference needs today; the executor (R4a), the
-//! KV manager (R4b) and the expert store (R12) fill them in.
+//! The types around the traits (`Placement`, `Arenas`, `StepCx`) carry what the CPU reference needs; the CUDA backend (`runtime::cuda`)
+//! keeps a piece's state where its loaded executor holds it (KV pages, recurrent states, the expert cache, a pass's row tables), so its
+//! pieces take nothing more from them.
 
-use super::kinds::{Block, Body, Ffn, Mixer};
-use crate::ffi::Result;
+use super::kinds::{Block, Body, Embed, Ffn, Head, Mixer, Norm};
+use crate::ffi::{err, Result};
 
 /// A kind without its parameters, for `supports`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -133,6 +135,21 @@ pub struct StepCx<'a, B: Backend + ?Sized> {
     pub tokens: &'a [u32],
 }
 
+/// A piece of a description around its blocks' bodies, each with an entry point of its own on a backend that runs whole models (`build_around`):
+/// the residual's operations between the bodies (the rule of the block before, its post-norm, the next block's input norm, a streams kind's mixes),
+/// the embedding, and the head. A backend decides which side of a body its residual's operations fall on (the CUDA backend: where its executor's
+/// layers put them), so a piece before a body or after one may hold none.
+pub enum Around<'a> {
+    /// The residual's operations before block `index`'s body (`block`).
+    Before { index: usize, block: &'a Block },
+    /// The residual's operations after block `index`'s body (the final norm's, after the last).
+    After { index: usize, block: &'a Block },
+    /// The tokens' rows of the embedding into the residual (`StepCx::tokens`).
+    Embed(&'a Embed),
+    /// The last rows' final norm (its collapse of the streams), the LM head and its soft-cap.
+    Head { norm: &'a Norm, head: &'a Head },
+}
+
 /// A captured step (a CUDA or HIP graph); backends that cannot capture return None from `capture`.
 pub struct Captured;
 
@@ -146,6 +163,18 @@ pub trait Backend: Send + Sync {
     fn devices(&self) -> &[DeviceInfo];
     fn supports(&self, kind: &KindRef, fmt: &Format) -> Support;
     fn build(&self, layer: &LayerDesc, w: &dyn WeightSource, place: &Placement, mem: &mut Arenas<Self>) -> Result<Box<dyn LayerImpl<Self>>>;
+    /// An entry point for a piece around the blocks' bodies; a backend that runs blocks alone (the reference's model runs these itself, the MLX spike
+    /// runs one kind) refuses it.
+    fn build_around(&self, a: &Around, w: &dyn WeightSource, place: &Placement, mem: &mut Arenas<Self>) -> Result<Box<dyn LayerImpl<Self>>> {
+        let _ = (w, place, mem);
+        let what = match a {
+            Around::Before { index, .. } => format!("the residual before block {index}"),
+            Around::After { index, .. } => format!("the residual after block {index}"),
+            Around::Embed(_) => "the embedding".into(),
+            Around::Head { .. } => "the head".into(),
+        };
+        err(format!("{what}: this backend runs blocks' bodies alone"))
+    }
     fn queue(&self, dev: DeviceId) -> Result<Self::Queue>;
     fn capture(&self, q: &Self::Queue, body: &mut dyn FnMut() -> Result<()>) -> Result<Option<Captured>>;
     fn collective(&self) -> Option<&dyn Collective>;

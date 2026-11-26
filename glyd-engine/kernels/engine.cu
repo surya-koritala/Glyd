@@ -1431,5 +1431,4 @@ __device__ __forceinline__ void next_pf(const NextPf& p, int b, int nb) {
 #include "vision.cu"  // its vision tower's (after the prompt attention's helpers)
 #include "skinny.cu"  // the four-, five- and six-bit block layouts' products for a few rows (a decode step's and a verification's)
 #include "tp.cu"  // a model's layers across the GPUs of one machine: the gather of the slices of a product's rows
-#include "seam.cu"  // R9's CUDA spike: the dense MLP block through the layer-kind seam, f32
 #include "fold.cu"  // R17: the GPU library's kernels the engine runs from its own fatbin (gpu/glyd_gpu_kernels.h, the library's own source)

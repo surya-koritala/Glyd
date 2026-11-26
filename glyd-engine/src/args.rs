@@ -121,7 +121,6 @@ const BY_COMMAND: &[(&str, &str, bool)] = &[
     ("calibrate-experts", "synthetic", false),
     ("ceiling", "fp8", true),
     ("quality", "bar", true),
-    ("seamcheck", "gpu", true),
     ("dsv4gen", "score", true),
 ];
 
@@ -336,7 +335,6 @@ mod tests {
         assert_eq!((q.pos.len(), q.flag("bar"), q.flag("out")), (3, Some("wren"), Some("card.json")));
         let b = Args::from(["bench", "--bar", "a.json", "b.json"].map(String::from));
         assert_eq!((b.pos.len(), b.flag("bar")), (3, Some("")));
-        assert_eq!(Args::from(["seamcheck", "--gpu", "1"].map(String::from)).num("gpu", 0i32).unwrap(), 1);
         assert_eq!(Args::from(["dsv4gen", "dir", "--score", "text.txt"].map(String::from)).flag("score"), Some("text.txt"));
     }
 
