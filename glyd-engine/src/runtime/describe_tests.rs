@@ -1111,7 +1111,7 @@ fn qwen38_2_4ts_weight_map_is_its_index() {
 
 /// #333, Qwen3.8-2.4T-A95B's stacked experts as the lossy route's packer reads them (`stacked_rows`): each of the 92 x 512 experts' three matrices the
 /// config alone names (the names its save gives them) is its rows of the layer's stacked tensor in its recorded headers, gate then up then the next expert,
-/// every row of the 92 x 2 stacked tensors one matrix's; the release's lossy plan reads each from those rows (`pack::qwen35_plan_held`). A description held
+/// every row of the 92 x 2 stacked tensors one matrix's; the release's lossy plan reads each from those rows (`pack::plan`). A description held
 /// to a checkpoint of a tensor an expert's matrix gives none, and one whose experts do not cover the stacked tensor's rows is refused.
 #[test]
 fn qwen38_2_4ts_stacked_experts_are_rows_of_its_tensors() {
@@ -1142,7 +1142,9 @@ fn qwen38_2_4ts_stacked_experts_are_rows_of_its_tensors() {
     let mut short = held.clone();
     short.shapes.insert("model.layers.0.mlp.experts.down_proj".into(), vec![512, 8192 + 64, 2048]);
     assert!(stacked_rows(&alone, &short).unwrap_err().msg.contains("expert 0's matrices take 8192 of its 8256 rows"));
-    let plan = crate::pack::qwen35_plan_held(&crate::runtime::config::ModelConfig::from_value(&cfg).unwrap(), &|_| false, Some(&held)).unwrap();
+    let qwen35 = crate::support::row(crate::support::Family::Qwen35).saves.unwrap();
+    let mc = crate::runtime::config::ModelConfig::from_value(&cfg).unwrap();
+    let plan = crate::pack::plan(&mc, glyd_gpu::save::Layout::Int6, &qwen35, Some(&held), &|_| false, &|_| None).unwrap();
     assert!(plan.contains(
         r#"{"linear": ["model.layers.7.mlp.experts.511.gate_proj", "model.layers.7.mlp.experts.511.up_proj"], "from": [{"tensor": "model.layers.7.mlp.experts.gate_up_proj", "rows": [2093056, 2095104]}, {"tensor": "model.layers.7.mlp.experts.gate_up_proj", "rows": [2095104, 2097152]}]}"#
     ));

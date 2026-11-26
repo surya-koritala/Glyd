@@ -1,7 +1,7 @@
 //! Experts stacked in one tensor a matrix ([experts, rows, cols]: the form transformers holds a layer's experts in, and the one Qwen3.8-2.4T-A95B is
 //! released in), as a source the Moe kind reads like a tensor an expert's matrix (#333): the description held to a checkpoint's index names the stacked
 //! tensors (`describe::describe_held`), and every reader takes expert e's rows of one by their range of the file alone (src/dynamic/experts.rs `Stacked`:
-//! the kind's block resident and in the expert cache; the lossy route's packer, `pack::qwen35_plan_held`; the hummingbird packer, src/hb_pack.rs). Here:
+//! the kind's block resident and in the expert cache; the lossy route's packer, `pack::plan`; the hummingbird packer, src/hb_pack.rs). Here:
 //! a checkpoint written again in the stacked form (`restack`: the random maker's `--stacked`) and the check that the two forms are one model
 //! (`check`: `glyd-engine stackcheck`).
 

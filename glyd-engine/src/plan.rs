@@ -4173,7 +4173,7 @@ pub mod sizing {
     }
 
     /// The level description (`LevelOf`) of a model of the Qwen3.5 layout, dense or with experts, by its description: what a level's save holds of it, as
-    /// `pack::qwen35_plan` packs it, a sequence's states and a token's keys and values as its lowered description holds them, and its longest context. Its
+    /// `pack::plan` packs it, a sequence's states and a token's keys and values as its lowered description holds them, and its longest context. Its
     /// experts stay on the GPU at these levels (kestrel, swift and wren alone take them); none of its levels here is hummingbird.
     fn qwen35_level(a: &Args, model: &str, name: &str, layout: Layout, m: &ModelConfig, gen: Option<&str>, packed: Option<&Path>) -> Done<LevelOf> {
         let tag = level_name(layout);

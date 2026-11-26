@@ -378,6 +378,14 @@
       },
       "plan": "cfca25f51449ed8f5b25dedb72323e153545d9b0961cce138b3c4e89c37b3100"
     },
+    "nemotron-latent hb": {
+      "files": {
+        "config.json": "bc73404fd1b6c259fd9e8d0ba529267fb78d96656095a54e6166a1b4699fc9a3",
+        "glyd.json": "16504fe2a4271d2651b069fef3bb2ac359879fe979b8979d7dd8d7c3e723179a",
+        "model.safetensors": "8621e3538d0c6d749043e37fa03892bdeb2772ed91ea77673c724265b97d65fd"
+      },
+      "plan": "2f52cc0b8e4a0be49221e636c3e56dcf77ba7b2baadd91753d779905c547d3a5"
+    },
     "glm mma": {
       "refused": "Glm5NextForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
     },
