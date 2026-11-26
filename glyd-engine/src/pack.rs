@@ -440,11 +440,6 @@ fn level_plan(dir: &Path, level: Layout, config: Option<&ModelConfig>) -> Result
     };
     let Some(form) = saves_of(c) else { return Ok(None) };
     let label = dir.join("config.json").display().to_string();
-    if c.family() == Some(Family::Glm) {
-        // (GLM-5.3-Flash: its own plan until its weight map names its matrices in the order its saves pack them)
-        let c = ConfigGlm::of(c, &label, ModelConfig::generation(dir).as_deref())?;
-        return Ok(Some(glm_plan(&c)));
-    }
     // (the checkpoint's own form of its experts, by its index: a tensor an expert's matrix, or each layer's experts stacked)
     let (held, _) = crate::runtime::describe::describe_dir_of(dir, c)?;
     let ck = io(Checkpoint::open(dir))?;
@@ -968,17 +963,17 @@ mod tests {
         assert!(all.iter().all(|n| names.contains(n.as_str()) && !c.skipped(n)), "a tensor the checkpoint lacks, or the MTP layer's or the vision tower's");
     }
 
-    /// A tiny GLM-5.3-Flash checkpoint laid out as the real one is (Kimi delta attention and latent attention layers, a dense MLP and mixture-of-experts layers, the experts, the MLPs and the latent attention's projections as
+    /// A small GLM-5.3-Flash checkpoint (the toy's config: the random case's) laid out as the real one is (Kimi delta attention and latent attention layers, a dense MLP and mixture-of-experts layers, the experts, the MLPs and the latent attention's projections as
     /// E4M3 bytes with block scales that do not divide into whole blocks, the rest bf16, fp32 parameters, the hyper-connections, an indexer; with a tensor of the MTP layer and one of the vision tower) packed by `run_with`
     /// in each of the two block layouts the engine runs: a glyd-v7 directory under the source's names, whose packs the loader's checks accept and which are, buffer for buffer, the packer's of the bf16 the matrices dequantise to
     /// (the same checkpoint with them dequantised first, and the FP8 one packed as the loader packs a bf16 directory), whose small tensors are the source's bytes (the fp32 ones fp32), and which glyd-gpu's verify decodes
-    /// to the sha256 of its glyd.json.
+    /// to the sha256 of its glyd.json. A config the executor does not run is refused in its words: Kimi delta heads of 64 (the tiny config's), an activation the experts' kernels do not take.
     #[test]
     fn glm_saves_a_v7_directory_the_loader_reads() {
         use crate::weights::{check_v7, read_pack, saved_parts, v7_manifest, WORDS_KEY};
         let dir = std::env::temp_dir().join(format!("glyd-engine-glm-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let text = crate::glm::tests::tiny_text();
+        let text = include_str!("../tests/fixtures/glm5_next_toy_config.json");
         let c = ConfigGlm::parse(text, "tiny", None).unwrap();
         let words = crate::glm::tests::checkpoint(&dir, text, &c);
         let (fp8, bf16) = (Checkpoint::open(&dir.join("fp8")).unwrap(), Checkpoint::open(&dir.join("bf16")).unwrap());
@@ -1050,7 +1045,11 @@ mod tests {
         std::fs::write(bad.join("config.json"), text.replace("\"silu\"", "\"gelu\"")).unwrap();
         std::fs::copy(dir.join("fp8").join("model.safetensors"), bad.join("model.safetensors")).unwrap();
         let e = run_with(bad.to_str().unwrap(), &dir.join("out-refused"), 2, Layout::Int6, true).unwrap_err().msg;
-        assert!(e.contains("an activation other than silu"), "{e:?}");
+        assert!(e.contains("the kernels take SwiGLU, GeGLU, relu squared and SiTU"), "{e:?}");
+        let tiny = crate::glm::tests::tiny_text();
+        crate::glm::tests::checkpoint(&dir.join("tiny"), tiny, &ConfigGlm::parse(tiny, "tiny", None).unwrap());
+        let e = run_with(dir.join("tiny").join("fp8").to_str().unwrap(), &dir.join("out-tiny"), 2, Layout::Int6, true).unwrap_err().msg;
+        assert!(e.contains("Kimi delta heads of 64: this engine runs heads of 128"), "{e:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1368,10 +1367,8 @@ mod tests {
             let t = index(&tensors);
             let (f32, shape) = (|n: &str| t.get(n).is_some_and(|x| x.0 == "F32"), |n: &str| t.get(n).map(|x| x.1.clone()));
             for &level in levels {
-                let text = match family {
-                    Family::Glm => glm_plan(&crate::glm::tests::parse()),
-                    _ => plan(&ModelConfig::parse(text).unwrap(), level, &form(family), None, &f32, &shape).unwrap_or_else(|e| panic!("{fixture}: {}", e.msg)),
-                };
+                let text =
+                    plan(&ModelConfig::parse(text).unwrap(), level, &form(family), None, &f32, &shape).unwrap_or_else(|e| panic!("{fixture}: {}", e.msg));
                 let name = if family == Family::NemotronH { format!("{fixture} {}", level.name()) } else { fixture.to_string() };
                 let dumped = match family {
                     Family::NemotronH => format!("nemotron-real-{}", level.name()),
