@@ -748,16 +748,30 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
         if stores.is_empty() {
             return err(format!("{}: no layer's experts are in the expert cache ({places} places a layer)", dir.display()));
         }
+        // (the scheduler's step made first: its graphs of decode steps are captured there, and the ladder's top is known then)
+        crate::conv::Gen::as_step(&mut e, most)?.ok_or_else(|| Error("no scheduler's step for this model".into()))?;
         let (planned, eb, graphed, top) =
             (stores.iter().map(|s| s.device_layers()).sum::<usize>(), stores[0].expert_bytes(), e.has_graph(), e.rows_graph_top());
         drop(stores);
+        // (why a decode step of n rows runs eager where it does: the host plans the calls, or the description takes no graph of n rows)
+        let eager_why = |n: usize| -> &'static str {
+            if !graphed {
+                "the host plans the calls, reading the router's choices there, a wait each call that no graph holds"
+            } else if top < 2 {
+                "the description takes no graph of several rows: its decode rows have no tables (no operation reads a ring), and a call of more than the plan's 8 rows is the host's"
+            } else if n > top {
+                "more rows than the ladder's top"
+            } else {
+                ""
+            }
+        };
         println!(
             "== {what}: {places} places a layer, an expert {:.2} MB; {}",
             eb as f64 / 1e6,
             if graphed {
-                format!("the decode step one graph ({planned} layers planned on the GPU; steps of 2 to {top} rows a graph of their rows)")
+                format!("the decode step of one row one graph ({planned} layers planned on the GPU); steps of 2 to {top} rows a graph of their rows")
             } else {
-                format!("the decode steps eager: the host plans the calls of the cache's layers ({planned} planned on the GPU), reading the router's choices there, a wait each call that no graph holds")
+                format!("the decode steps eager ({planned} layers planned on the GPU): {}", eager_why(2))
             }
         );
         for (i, &n) in rows_l.iter().enumerate() {
@@ -851,22 +865,23 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
             if let Some(last) = got.steps.last() {
                 println!("  the last step's layers (the step's output): {}", last.iter().enumerate().map(|(l, s)| s.json(l)).collect::<Vec<_>>().join(" "));
             }
-            // (graphs: where the step of one row is one, every decode step replays its graph; else every one runs eager)
+            // (graphs: where the step of one row is one, every decode step of one row replays its sequence's graph and every step of 2 to `top` rows the graph of its rows,
+            // none eager; else no step replays one, and the line says why)
             let [replays, eager, ones, late] = got.graphs;
             let s = steps as u64;
             let ok = late == 0
-                && match (graphed, n) {
-                    (true, 1) => ones == s,
-                    (true, n) if n <= top => replays == s && eager == 0,
-                    (true, _) => eager == s,
-                    (false, 1) => ones == 0,
-                    (false, _) => replays == 0 && eager == s,
+                && match n {
+                    1 => ones == if graphed { s } else { 0 },
+                    n if graphed && n <= top => replays == s && eager == 0,
+                    _ => replays == 0,
                 };
+            let why = if n == 1 && graphed || n > 1 && graphed && n <= top { "" } else { eager_why(n) };
             println!(
-                "{} {tag}: decode steps replayed from a CUDA graph {}, run eager {eager} of {steps}; graphs captured in a step {late}{}",
+                "{} {tag}: decode steps replayed from a CUDA graph {}, run eager {} of {steps}; graphs captured in a step {late}{}",
                 if ok { "PASS" } else { "FAIL" },
                 if n == 1 { ones } else { replays },
-                if graphed { "" } else { " (the host plans the calls: eager, as said above)" }
+                if n == 1 { s - ones } else { eager },
+                if why.is_empty() { String::new() } else { format!(" (eager: {why})") }
             );
             if !ok {
                 fails.push(format!("{tag}: graphs"));
