@@ -1107,6 +1107,153 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// sha256 in hex.
+    #[cfg(feature = "dev")]
+    fn sha(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Each file of the save in `out` by name, its sha256: glyd.json with the glyd that saved it and its source (a path of this run) written alike, so that a save
+    /// is its packs' and tensors' bytes, their order and their entries.
+    #[cfg(feature = "dev")]
+    fn save_digests(out: &Path) -> std::collections::BTreeMap<String, String> {
+        use glyd_gpu::json::Value;
+        let mut files = std::collections::BTreeMap::new();
+        for e in std::fs::read_dir(out).unwrap() {
+            let p = e.unwrap().path();
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            let mut bytes = std::fs::read(&p).unwrap();
+            if name == "glyd.json" {
+                let mut m = glyd_gpu::json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap();
+                if let Value::Object(o) = &mut m {
+                    for (k, v) in o.iter_mut() {
+                        match k.as_str() {
+                            "glyd" => *v = Value::String("VERSION".into()),
+                            "source" => *v = Value::Object(vec![("repo".into(), Value::String("MODEL".into())), ("revision".into(), Value::Null)]),
+                            _ => {}
+                        }
+                    }
+                }
+                bytes = glyd_gpu::json::to_python(&m, 1).into_bytes();
+            }
+            files.insert(name, sha(&bytes));
+        }
+        files
+    }
+
+    /// The models of the saves the packer writes: each family's random model of the logits checks (`logits::random_model`'s case, or its maker's form) and the
+    /// layouts each is packed at, those it is refused at among them (the levels a family is not saved at, and Int4H where no codes times a scale give the weights).
+    #[cfg(feature = "dev")]
+    fn saved_models() -> Vec<(&'static str, Vec<Layout>)> {
+        use Layout::*;
+        let lossy = || vec![Tiered, Int6, Int5, Int4, Int4H, Int3];
+        let mut v = vec![("dense", vec![Tiered, Twelve, Compact, Int6, Int5, Int4, Int4H, Int3])];
+        for c in ["qwen35", "qwen35-wide", "qwen35moe", "qwen35moe-st", "gemma4", "gemma4-kv", "nemotron", "nemotron-latent", "glm", "glm-fp8"] {
+            v.push((c, lossy()));
+        }
+        for c in ["glm-dsa", "kimi", "muse", "deepseek-v4", "qwen4x"] {
+            v.push((c, vec![Tiered, Int6]));
+        }
+        v
+    }
+
+    /// Every save the packer writes is the one recorded (tests/fixtures/pack_saves.json): each of `saved_models` packed by `run_with` at each of its layouts, every
+    /// file of the save byte for byte (its sha256: `save_digests`) and the plan text it saves by (`level_plan`'s, at the levels a plan makes); a model refused is
+    /// refused in the words recorded. And the plan text of each real config the packer's own tests read (the Qwen3.5 releases', Nemotron 3 Super's at each of its
+    /// levels, GLM-5.3-Flash's, Gemma 4 12B's), by its sha256. A change that alters any of them fails here, by case and layout. A save meant to change (a new
+    /// format version; a save made right) is recorded anew by running this test alone with GLYD_BLESS_PACKS=1, and its commit says which lines changed and why.
+    /// GLYD_PACK_PLANS=DIR writes each plan text to DIR, to compare two trees' plans line by line.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn every_save_is_the_one_recorded() {
+        use serde_json::{json, Map, Value};
+        let root = std::env::temp_dir().join(format!("glyd-pack-saves-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dump = std::env::var_os("GLYD_PACK_PLANS").map(std::path::PathBuf::from);
+        if let Some(d) = &dump {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let plan_digest = |name: &str, text: &str| {
+            if let Some(d) = &dump {
+                std::fs::write(d.join(format!("{name}.json")), text).unwrap();
+            }
+            sha(text.as_bytes())
+        };
+        let (mut saves, mut plans) = (Map::new(), Map::new());
+        for (case, layouts) in saved_models() {
+            let model = root.join(case);
+            match case {
+                "nemotron-latent" => crate::kcheck_nh::random(&model, 1024, 16).unwrap(),
+                "glm-fp8" => crate::glm::random(&model, true, None).unwrap(),
+                c => crate::logits::random_model(c, &model).unwrap(),
+            }
+            let config = ModelConfig::load(&model).ok();
+            let words = |e: String| e.replace(&model.display().to_string(), "MODEL").replace(&root.display().to_string(), "ROOT");
+            for layout in layouts {
+                // (by `--layout`'s word: the compact layout's name in glyd.json is the tiered one's)
+                let word = if layout == Layout::Compact { "a" } else { layout.name() };
+                let name = format!("{case} {word}");
+                let out = root.join(format!("{case}-{word}"));
+                let entry = match run_with(model.to_str().unwrap(), &out, 4, layout, true) {
+                    Ok(()) => {
+                        let mut e = json!({ "files": save_digests(&out) });
+                        // (the plan text, where the save is a planned one: a lossy level's, or penguin's glyd-v7)
+                        let planned = matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3)
+                            || crate::weights::v7_manifest(&out).ok().flatten().is_some();
+                        if planned {
+                            let text = level_plan(&model, layout, config.as_ref()).unwrap().expect("a planned save's plan");
+                            e["plan"] = Value::String(plan_digest(&format!("{case}-{word}"), &text));
+                        }
+                        e
+                    }
+                    Err(e) => json!({ "refused": words(e.msg) }),
+                };
+                let _ = std::fs::remove_dir_all(&out);
+                saves.insert(name, entry);
+            }
+            let _ = std::fs::remove_dir_all(&model);
+        }
+        // (the real configs' plans, from their configs and the tensors' dtypes the fixtures hold)
+        let all = glyd_gpu::json::parse(include_str!("../tests/fixtures/qwen35_configs.json")).unwrap();
+        let have = glyd_gpu::json::parse(include_str!("../tests/fixtures/qwen35_tensors.json")).unwrap();
+        for (name, v) in all.as_object().unwrap() {
+            let text = glyd_gpu::json::to_compact(v);
+            let tensors = have.get(name).and_then(|t| t.as_object());
+            let f32 = |n: &str| tensors.is_some_and(|t| t.iter().any(|(k, v)| k == n && v.as_array().unwrap()[0].as_str() == Some("F32")));
+            let made = qwen35_plan(&ModelConfig::parse(&text).unwrap(), &f32).map_err(|e| e.msg);
+            plans.insert(name.clone(), Value::String(made.map_or_else(|e| format!("refused: {e}"), |t| plan_digest(&name.replace('/', "_"), &t))));
+        }
+        let nh = crate::nemotron::tests::parse();
+        let nh_tensors = crate::nemotron::tests::tensors();
+        for level in [Layout::Int6, Layout::Int5, Layout::Int4, Layout::Int3] {
+            let text = nemotron_plan(&nh, level, &|n: &str| nh_tensors.iter().any(|t| t.0 == n && t.1 == "F32"));
+            plans.insert(format!("nemotron_h_config.json {}", level.name()), Value::String(plan_digest(&format!("nemotron-real-{}", level.name()), &text)));
+        }
+        plans.insert("glm5_next_config.json".into(), Value::String(plan_digest("glm-real", &glm_plan(&crate::glm::tests::parse()))));
+        let g4 = crate::gemma4::ConfigG4::parse(include_str!("../tests/fixtures/gemma4_12b_config.json"), None, false).unwrap();
+        plans.insert("gemma4_12b_config.json".into(), Value::String(plan_digest("gemma4-real", &gemma4_plan(&g4))));
+        let _ = std::fs::remove_dir_all(&root);
+        let now = json!({ "saves": saves, "plans": plans });
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pack_saves.json");
+        if std::env::var_os("GLYD_BLESS_PACKS").is_some() {
+            std::fs::write(&path, serde_json::to_string_pretty(&now).unwrap() + "\n").unwrap();
+            return;
+        }
+        let was: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let mut differ = Vec::new();
+        for part in ["saves", "plans"] {
+            let (a, b) = (was[part].as_object().unwrap(), now[part].as_object().unwrap());
+            differ.extend(
+                b.iter()
+                    .filter(|(k, v)| a.get(*k) != Some(*v))
+                    .map(|(k, v)| format!("{part}: {k}: {v} where {} is recorded", a.get(k).unwrap_or(&Value::Null))),
+            );
+            differ.extend(a.keys().filter(|k| !b.contains_key(*k)).map(|k| format!("{part}: {k}: recorded, and not made now")));
+        }
+        assert!(differ.is_empty(), "the saves are not the ones recorded (tests/fixtures/pack_saves.json):\n{}", differ.join("\n"));
+    }
+
     /// A plain dense model (the logits checks' random one) packed at penguin is a glyd-v7 save the executor reads as saved: each matrix of its lowered description (q, k
     /// and v under q's name; gate and up under gate's; the embedding, the head) a lossless pack under its first member's name at the description's rows and columns, each small
     /// tensor copied as bf16, and no sidecar of the earlier dense engine's.
