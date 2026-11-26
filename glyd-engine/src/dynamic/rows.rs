@@ -3,9 +3,9 @@
 //! in one pass: the operations that act row by row (the products, norms, activations) on all the rows at once, so each weight is read once for the step, and the operations on a sequence's cache or
 //! states (the attention's cache write and read, the recurrent layers) on each sequence's rows by themselves with the kernels and row counts its own pass has; the pass's rows that decode, a token
 //! of a sequence each, take an attention layer in one launch of each kernel (one call of the library's decode), each row through its own block table (`RowTabs`), which is each row's own pass's
-//! arithmetic; so do the recurrent layers' operations (the gated delta rule's and Mamba-2's convolution and recurrence: `rows_state`), each row through its own state (`RowTabs::states`). A
-//! step of nothing but such rows replays a CUDA graph of its rows padded to a ladder of sizes (`rows_bucket`), where the description is one of attention layers, such recurrent layers and
-//! operations that act row by row: its padding rows read and write no key and no state. What a row computes never turns
+//! arithmetic; so do the other operations on a sequence's caches and states (`takes_lead`: the recurrent layers' convolutions and recurrences, the latent and the compressed attention,
+//! the mean-pooled indexer, the n-gram embedding), each row through its own tables and states (`RowTabs::states`). A step of nothing but such rows replays a CUDA graph of its rows
+//! padded to a ladder of sizes (`rows_bucket`), every operation of the description being capturable (`capturable`): its padding rows read and write no key and no state. What a row computes never turns
 //! on what the other sequences hold. It can turn on how many rows the step has, because a product's kernel is picked by them: in a step of 16 rows or fewer every row's logits are, bit for bit,
 //! those of its own pass; in a larger one (17 to 64 rows another kernel, past 64 `decoded_way`'s) they differ by the rounding of the engine's bf16 values, as the engine differs from an f32
 //! reference. Measured by `glyd-engine roundcheck` (src/logits.rs) on every family and on gemma-4-12B at wren with a text's tokens: a KL of 0.002 to 0.005 from the row alone on average, the
@@ -48,8 +48,8 @@ pub(super) struct Paged {
 /// pass's positions (`pcap` entries, a chunk's), the slots of its rows that decode (`rows` entries, -1 a padding row), and the addresses of each such row's recurrent states
 /// (row r's state i at entry r `nst` + i, as vLLM's state indices pick a request's slot of the state pools; 0 for a padding row), read by the
 /// recurrent layers' kernels of such rows (`Dyn::state_lead`).
-/// `graphs`: whether a step of such rows alone may replay a CUDA graph of its padded rows (`Dyn::rows_bucket`): every operation of the description acts row by row, is an
-/// attention layer or is a recurrent layer's operation that takes such rows (`rows_state`).
+/// `graphs`: whether a step of such rows alone may replay a CUDA graph of its padded rows (`Dyn::rows_bucket`): every operation of the description is capturable (`capturable`:
+/// it acts row by row, or takes such rows at once through their tables and states, `takes_lead`) and no latent attention's ring is in 12-bit pages.
 pub(super) struct RowTabs {
     pub(super) tab: Vec<Buf>,
     pub(super) dup: Vec<usize>,
@@ -113,19 +113,46 @@ pub(super) fn meta_bytes(pcap: usize, rows: usize, pos: &[i32], slots: &[i32], s
 }
 
 /// Whether an operation on a sequence's recurrent state has a kernel that takes a step's rows that decode, a token of a sequence each, each through its own state
-/// (`Dyn::state_lead`): the gated delta rule's and Mamba-2's convolution and recurrence.
+/// (`Dyn::state_lead`): the gated delta rule's, Kimi delta attention's and Mamba-2's convolution and recurrence.
 pub(super) fn rows_state(op: &Op) -> bool {
-    matches!(op, Op::GdnConv { .. } | Op::GdnDelta { .. } | Op::MambaConv { .. } | Op::MambaScan { .. })
+    matches!(op, Op::GdnConv { .. } | Op::GdnDelta { .. } | Op::KdaConv { .. } | Op::KdaDelta { .. } | Op::MambaConv { .. } | Op::MambaScan { .. })
 }
 
-/// Whether a step of rows that decode alone, padded, can be one CUDA graph (`RowTabs::graphs`): every operation acts row by row, is an attention layer, or is a recurrent
-/// layer's that takes such rows; the latent attention runs its sequences by their own pointers, so not it.
-pub(super) fn rows_graphable<'a>(mut ops: impl Iterator<Item = &'a Op>) -> bool {
-    ops.all(|op| match op {
-        Op::Attn(_) => true,
-        Op::Mla(_) => false,
-        op => row_wise(op) || rows_state(op),
-    })
+/// Whether an operation on a sequence's caches or states takes a pass's first rows that decode, a token of a sequence each, all at once, each through its own block tables
+/// and states (`RowTabs`; `Dyn::op_lead`): the attention layer kind (picked or not), the recurrent layers' operations (`rows_state`), the compressed attention's (its window,
+/// compressors, indexer and attention: `Dyn::comp_lead`), the mean-pooled indexer's (`Dyn::idx_mean_lead`, `Dyn::pick_pools_lead`) and the n-gram embedding's. Each row's
+/// kernels and sums are its own sequence's pass's on its one token. (The latent attention kind acts on every row of a pass itself and takes such rows there: `Dyn::mla`.)
+pub(super) fn takes_lead(op: &Op) -> bool {
+    rows_state(op)
+        || matches!(
+            op,
+            Op::Attn(_)
+                | Op::CompKv { .. }
+                | Op::Compress { .. }
+                | Op::IdxKeys { .. }
+                | Op::IdxPick(_)
+                | Op::CompAttn { .. }
+                | Op::IdxMean { .. }
+                | Op::NgramRows(_)
+                | Op::NgramAdd(_)
+        )
+}
+
+/// Whether an operation can be in a decode step's whole CUDA graph of its padded rows (`RowTabs::graphs`; the layer kind's word that docs/design/runtime.md calls
+/// `capturable`): it acts row by row, or takes a step's rows that decode at once (`takes_lead`), each row's tables and states read from the step's metadata on the GPU,
+/// which one copy writes before every replay (`RowTabs::meta`), and a padding row (position -1, no slot, no state) reading and writing none of them. Not a draft model's
+/// input (a model alone's: no step of several sequences).
+pub(super) fn capturable(op: &Op) -> bool {
+    row_wise(op) || takes_lead(op)
+}
+
+/// Row r's block table of a group's tables of a pass's rows that decode (`RowTabs`): `ts` entries from one row's to the next's (none where `tab` is 0).
+pub(super) fn tab_at(tab: u64, ts: usize, r: usize) -> u64 {
+    if tab == 0 {
+        0
+    } else {
+        tab + (4 * r * ts) as u64
+    }
 }
 
 /// The entries of the rows' state table (`RowTabs::states`) for a pass whose first rows decode, each with its sequence's states `lead[r]` (`Part::states`), the rest of `rows`
@@ -344,6 +371,11 @@ pub(super) struct Part {
     pub kc: u64,
     pub vc: u64,
     pub states: Vec<u64>,
+}
+
+/// Whether every operation of `ops` is capturable (`capturable`).
+pub(super) fn graphable_all<'a>(mut ops: impl Iterator<Item = &'a Op>) -> bool {
+    ops.all(capturable)
 }
 
 /// Whether an operation acts on each row alone (no cache, no state, no other row): it runs on the rows of every sequence of a pass at once.
@@ -750,9 +782,9 @@ impl Dyn {
         Ok(())
     }
 
-    /// A recurrent layer's operation (`rows_state`) on the pass's first `rows` rows, a token of a sequence each: one launch, each row through its own state (`RowTabs::states`),
-    /// which is each row's own pass's arithmetic (the kernels are the one-sequence ones' on a token).
-    pub(super) unsafe fn state_lead(&self, p: &super::Part, op: &Op, rows: usize) -> Result<()> {
+    /// A recurrent layer's operation (`rows_state`) on the pass's first `rows` rows (of its `n`), a token of a sequence each: one launch, each row through its own state
+    /// (`RowTabs::states`), which is each row's own pass's arithmetic (the kernels are the one-sequence ones' on a token).
+    pub(super) unsafe fn state_lead(&self, p: &super::Part, op: &Op, (rows, n): (usize, usize)) -> Result<()> {
         use super::Slot;
         let rt = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).expect("a pass's decode rows have their tables");
         let (s, ss, ru) = (self.dev.stream, rt.nst as i32, rows as u32);
@@ -791,6 +823,17 @@ impl Dyn {
                 let (dtb, al, dd) = (p.small[dt_bias].ptr, p.small[a_log].ptr, p.small[d].ptr);
                 self.kmamba.ssm_rows(s, xc, cd as i32, dtr, row as i32, dtb, al, dd, sts(state), ss, core, ru, nh as i32, ng as i32, 0.0)?;
                 self.mark("Mamba-2: scan")
+            }
+            Op::KdaConv { w, state, c, row, w32 } => {
+                self.kglm.conv_rows(s, p.slot(Slot::Mix), row as i32, p.small[w].ptr, w32, (sts(state), rt.nst), p.slot(Slot::Xc), ru, c as i32)?;
+                self.mark("linear attention: convolution")
+            }
+            Op::KdaDelta { a_log, dt_bias, state, heads, bound, ba } => {
+                // (the input gate's rows: the copied slot's where the pass has several rows (Op::Parts ran on all of them), Mix's row in place for one)
+                let bb = p.view(ba, n);
+                let (xc, fg, core) = (p.slot(Slot::Xc), p.slot(Slot::Qo), p.slot(Slot::Core));
+                self.kglm.delta_rows(s, xc, fg, p.small[dt_bias].ptr, p.small[a_log].ptr, bb, (sts(state), rt.nst), core, ru, heads as i32, bound)?;
+                self.mark("linear attention: delta rule")
             }
             _ => err(format!("{op:?}: no kernel takes a step's rows that decode, each through its own state")),
         }
@@ -932,22 +975,31 @@ impl Dyn {
         Ok(())
     }
 
-    /// The tables of a pass's decode rows (`RowTabs`) for `users` sequences, the `groups` groups `group` makes of the rings, tables of `tlen` entries: None where an attention layer's decode cannot take them (a layer that reads its picks, a call's sequences a row no group's copies divide).
+    /// The tables of a pass's decode rows (`RowTabs`) for `users` sequences, the `groups` groups `group` makes of the rings, tables of `tlen` entries: None where no
+    /// operation reads a ring.
     fn row_tabs_for(&self, group: &[usize], groups: usize, users: usize, tlen: usize) -> Result<Option<RowTabs>> {
         let d = &self.big.d;
-        let attns: Vec<&super::AttnOp> = d.layers.iter().flatten().filter_map(|op| if let Op::Attn(a) = op { Some(a) } else { None }).collect();
-        if attns.is_empty() || attns.iter().any(|a| a.picked) {
+        let ops = || std::iter::once(&d.first).chain(d.layers.iter().flatten());
+        // (every ring an operation reads or writes for a pass's rows that decode, its group, the sequences a row its calls take and the window it reads: an attention
+        // layer's calls of the library's decode take its query heads in dparts() sequences a row, over a bf16 cache and 12-bit pages alike; every other reader one table a row)
+        let sp = |op: &Op| match op {
+            Op::Attn(a) if !a.picked && self.ldec.is_some() && a.lib_decode() => a.dparts(),
+            _ => 1,
+        };
+        let window = |op: &Op, r: usize| match op {
+            Op::Attn(a) => a.window,
+            _ => Some(d.rings[r].window).filter(|&w| w != usize::MAX).unwrap_or(0),
+        };
+        let readers: Vec<(usize, usize, usize)> = ops().flat_map(|op| op.rings().into_iter().map(move |r| (group[r], sp(op), window(op, r)))).collect();
+        if readers.is_empty() {
             return Ok(None);
         }
-        // (a layer's calls of the library's decode: its query heads in dparts() sequences a row, over a bf16 cache and 12-bit pages alike)
-        let sp = |a: &super::AttnOp| if self.ldec.is_some() && a.lib_decode() { a.dparts() } else { 1 };
         let pages12 = self.lossless.iter().flat_map(|lx| lx.rings.iter().enumerate()).filter_map(|(r, rp)| rp.as_ref().map(|rp| (group[r], rp.parts)));
-        let dup = row_dups(groups, attns.iter().map(|a| (group[a.ring], sp(a))).chain(pages12));
+        let dup = row_dups(groups, readers.iter().map(|&(g, sp, _)| (g, sp)).chain(pages12));
         // (a group's tables are copied from the first block its widest reader reads: none sliding, from the first)
         let mut win: Vec<Option<usize>> = vec![None; groups];
-        let readers = attns.iter().map(|a| (group[a.ring], a.window));
         let readers12 = self.lossless.iter().flat_map(|lx| lx.rings.iter().enumerate()).filter_map(|(r, rp)| rp.as_ref().map(|rp| (group[r], rp.shape.window)));
-        for (g, w) in readers.chain(readers12) {
+        for (g, w) in readers.iter().map(|&(g, _, w)| (g, w)).chain(readers12) {
             win[g] = Some(match (win[g], w) {
                 (Some(0), _) | (_, 0) => 0,
                 (Some(v), w) => v.max(w),
@@ -956,11 +1008,27 @@ impl Dyn {
         }
         let win: Vec<usize> = win.into_iter().map(|w| w.unwrap_or(0)).collect();
         let tab = dup.iter().map(|&k| Buf::zeroed((users * k * tlen * 4).max(4))).collect::<Result<Vec<_>>>()?;
-        // (a step of such rows alone in a graph: `rows_graphable`; each row's recurrent states through the table of their addresses)
-        let graphs = self.rgraph_on && rows_graphable(std::iter::once(&d.first).chain(d.layers.iter().flatten()));
+        // (a step of such rows alone in a graph: every operation capturable (`capturable`), each row's recurrent states through the table of their addresses; not where a
+        // latent attention's ring is in 12-bit pages, whose rows read their sequence's pages unpacked into the one staging ring one sequence after another, up to the
+        // sequence's length eager and to the context in a graph, which a step of many rows cannot afford: such steps run in pieces)
+        let latent12 = ops().any(|op| matches!(op, Op::Mla(a) if self.lossless.as_ref().is_some_and(|lx| lx.rings.get(a.ring).is_some_and(Option::is_some))));
+        let graphs = self.rgraph_on && graphable_all(ops()) && !latent12;
         let (nst, pcap) = (self.states.len(), self.chunk);
         let meta = Buf::zeroed(meta_states(pcap, users) + 8 * users * nst.max(1))?;
         Ok(Some(RowTabs { tab, dup, win, meta, pcap, nst, rows: users, graphs }))
+    }
+
+    /// Ring `ring`'s room in the pools, and the tables of the pass's rows that decode in its group (`RowTabs`): the first row's, and the entries from one row's to the
+    /// next's (a reader that takes one table a row reads each row's first copy).
+    pub(super) fn lead_ring(&self, ring: usize) -> (u64, u64, usize) {
+        let (tab, t, dup) = self.row_tab(ring);
+        (self.kc.ptr + self.ring_off[ring].0, tab, dup * t)
+    }
+
+    /// State `i` of the pass's rows that decode, in the rows' state table (`RowTabs::states_at`): the address of row 0's entry, and the entries from one row's to the next's.
+    pub(super) fn lead_states(&self, i: usize) -> (u64, usize) {
+        let rt = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).expect("a pass's decode rows have their tables");
+        (rt.states_at() + 8 * i as u64, rt.nst)
     }
 
     /// The entries of sequence `slot`'s tables changed since they were last copied, copied to the GPU (nothing runs on them then: the steps before have been waited for);
@@ -1144,7 +1212,12 @@ impl Dyn {
         // (`RowTabs`); a step of nothing else, padded to a graph's rows, that graph's replay (`rows_bucket`): its padding rows at position -1, which write and read no key)
         let room = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).map_or(0, |rt| rt.rows);
         let lead = jobs.iter().take_while(|j| j.1.len() == 1).count().min(room);
-        let graph = if lead == jobs.len() && asked == lead { self.rows_bucket(n) } else { None };
+        let decode = lead == jobs.len() && asked == lead;
+        let graph = if decode { self.rows_bucket(n) } else { None };
+        // (a step of rows that decode alone, several, that runs eager: counted, for the checks that hold such steps to their graphs)
+        if decode && n > 1 && graph.is_none() {
+            self.rows_eager.set(self.rows_eager.get() + 1);
+        }
         let rows = graph.unwrap_or(n);
         if let Some(k) = graph {
             pos.resize(k, -1);
@@ -1177,6 +1250,8 @@ impl Dyn {
         // them; such rows of one that does run eager where its graph is not taken (GLYD_ENGINE_ROWS_GRAPH=0))
         let whole = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).is_some_and(|rt| rt.graphs);
         let pieces = !whole || jobs.iter().any(|j| j.1.len() > 1 || !j.2);
+        // (a step of rows that decode and nothing else: the expert cache's plan on the GPU takes its calls of up to `devplan::DEV_STEP_ROWS` rows, eager as in its graph)
+        self.step_rows(decode);
         // SAFETY: live buffers of the engine and of each sequence, the pass's rows within a chunk's (a graph's padded rows within the head's).
         let r = unsafe { self.embed(&tokens) }.and_then(|_| self.stage_images(&spans)).and_then(|_| unsafe {
             match graph {
@@ -1185,6 +1260,7 @@ impl Dyn {
                 None => self.forward(&self.big, n, (pp, pp), asked),
             }
         });
+        self.step_rows(false);
         self.parts.clear();
         self.head_rows.clear();
         self.lead.set(0);
@@ -1202,9 +1278,27 @@ impl Dyn {
     }
 
     /// The rows of the CUDA graph a step of `n` rows that decode (and nothing else) replays (vLLM's full graphs of uniform decode batches at a ladder of
-    /// padded sizes): `bucket`'s ladder up to the head's rows, where the description takes such a graph (`RowTabs::graphs`) and the engine captures graphs at all; None: the
-    /// step runs eager. GLYD_ENGINE_ROWS_GRAPH=0 (a development build's) runs every such step eager, to compare.
+    /// padded sizes): `bucket`'s ladder up to `rows_top`, or n itself where a block of experts is in the expert cache (`rows_exact_sizes`); None: the step runs eager.
     fn rows_bucket(&self, n: usize) -> Option<usize> {
+        let top = self.rows_top()?;
+        if self.rows_exact_sizes() {
+            return (2..=top).contains(&n).then_some(n);
+        }
+        bucket(n, top)
+    }
+
+    /// Whether the graphs of steps of rows that decode are of every row count, not padded: where a block of experts is in the expert cache, whose plan a padding row's
+    /// choices would join (taking places, sending the host pairs), so that the cache's calls, and the host's sums, would not be the eager step's.
+    fn rows_exact_sizes(&self) -> bool {
+        self.big.moe.iter().any(|b| b.store().is_some())
+    }
+
+    /// The most rows a step of rows that decode replays a graph of (`rows_bucket`'s ladder's top), where the description takes such a graph (`RowTabs::graphs`) and the engine
+    /// captures graphs at all: the head's rows, the rows' tables' and a chunk's; and where a block of experts is in the expert cache (planned on the GPU: a block that reads
+    /// the router's choices on the host takes no graph at all), the most rows a decode step's call planned there has (`devplan::DEV_STEP_ROWS`). A call of more rows is the store's plan on
+    /// the host, which reads the router's choices there (its waves copy every miss where the misses outnumber the places, which the plan on the GPU does not do), so a
+    /// step of more rows runs eager. None: every such step runs eager. GLYD_ENGINE_ROWS_GRAPH=0 (a development build's) runs every such step eager, to compare.
+    fn rows_top(&self) -> Option<usize> {
         let rt = self.paged.as_ref()?.rows.as_ref().filter(|rt| rt.graphs)?;
         // (a traced pass runs eager: no graph holds a layer's end)
         if self.graphs_off.get()
@@ -1215,7 +1309,8 @@ impl Dyn {
         {
             return None;
         }
-        bucket(n, self.head_room().min(rt.rows).min(self.chunk))
+        let most = self.head_room().min(rt.rows).min(self.chunk);
+        Some(if self.rows_exact_sizes() { most.min(crate::devplan::DEV_STEP_ROWS) } else { most })
     }
 
     /// Whether steps of several rows that decode replay CUDA graphs (`rows_bucket`).
@@ -1224,14 +1319,30 @@ impl Dyn {
         self.rows_bucket(2).is_some()
     }
 
+    /// The most rows a step of rows that decode replays a graph of (`rows_top`; 0: none).
+    #[cfg(feature = "dev")]
+    pub(crate) fn rows_graph_top(&self) -> usize {
+        self.rows_top().unwrap_or(0)
+    }
+
+    /// The expert caches told whether the calls to come are a decode step's of rows (`ExpertStore::set_step_rows`).
+    fn step_rows(&self, on: bool) {
+        self.big.moe.iter().filter_map(|b| b.store()).for_each(|s| s.set_step_rows(on));
+    }
+
+    /// The graphs of steps of rows that decode captured, by their rows, and how many times each was replayed.
+    #[cfg(feature = "dev")]
+    pub(crate) fn rows_replays_by_size(&self) -> Vec<(usize, u64)> {
+        let mut v: Vec<(usize, u64)> = self.rgraphs.iter().map(|g| (g.rows, g.played.get())).collect();
+        v.sort_unstable();
+        v
+    }
+
     /// The graphs of steps of rows that decode, every size of `rows_bucket`'s ladder, captured before the first request (as vLLM captures its at start), so that no
     /// step waits on a capture: each after a warm-up pass of padding rows alone (position -1: no key read or written, no sequence's state touched).
     fn capture_rows(&mut self) -> Result<()> {
-        if self.rows_bucket(2).is_none() {
-            return Ok(());
-        }
-        let most = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).map_or(0, |rt| rt.rows).min(self.head_room()).min(self.chunk);
-        let mut sizes: Vec<usize> = (2..=most).filter_map(|n| bucket(n, most)).collect();
+        let Some(most) = self.rows_top() else { return Ok(()) };
+        let mut sizes: Vec<usize> = (2..=most).filter_map(|n| self.rows_bucket(n)).collect();
         sizes.dedup();
         for k in sizes {
             if self.rgraphs.iter().any(|g| g.rows == k) {
@@ -1245,8 +1356,10 @@ impl Dyn {
             // (a part of no row of its own: the pass is one over several sequences, its rows all the lead's)
             (self.parts, self.head_rows) = (vec![self.part_of(self.seq, 0, 1, 0)?], (0..k).collect());
             self.lead.set(k);
+            self.step_rows(true);
             // SAFETY: the engine's buffers, sized for the head's rows (k at most); the padding rows write no cache.
             let r = unsafe { self.embed(&vec![0u32; k]).and_then(|_| self.rows_replay(k, true)) };
+            self.step_rows(false);
             self.parts.clear();
             self.head_rows.clear();
             self.lead.set(0);
@@ -1263,6 +1376,7 @@ impl Dyn {
     unsafe fn rows_replay(&mut self, k: usize, start: bool) -> Result<()> {
         if let Some(i) = self.rgraphs.iter().position(|g| g.rows == k) {
             self.rgraphs[i].graph.launch(self.dev.stream)?;
+            self.rgraphs[i].played.set(self.rgraphs[i].played.get() + 1);
             self.replayed.set(true);
             self.rplayed.set(Some(i));
             self.dcalls.set(self.rgraphs[i].calls);
@@ -1290,10 +1404,11 @@ impl Dyn {
             _ => Vec::new(),
         };
         match g {
-            Ok(graph) => self.rgraphs.push(super::RowsGraph { rows: k, graph, marks, calls: self.dcalls.get() }),
+            Ok(graph) => self.rgraphs.push(super::RowsGraph { rows: k, graph, marks, calls: self.dcalls.get(), played: std::cell::Cell::new(0) }),
             Err(e) => {
                 // (the step ran; a capture that fails leaves such steps eager from here, as they were)
                 eprintln!("glyd: a decode step of {k} rows could not be captured as a CUDA graph ({e}): such steps run eager");
+                self.rows_lost.set(self.rows_lost.get() + 1);
                 if let Some(rt) = self.paged.as_mut().and_then(|pg| pg.rows.as_mut()) {
                     rt.graphs = false;
                 }
@@ -1716,6 +1831,7 @@ impl Dyn {
             // SAFETY: the graph was captured on these buffers (the selected sequence's).
             unsafe { self.graph.as_ref().expect("a graph").launch(s)? };
             self.replayed.set(true);
+            self.one_replays.set(self.one_replays.get() + 1);
             let slot = rows[0].pages[0] as usize;
             self.set_seq_n(slot, rows[0].pos + 1);
         } else {
@@ -2759,24 +2875,38 @@ mod tests {
         assert_eq!((bucket(33, 64), bucket(64, 64), bucket(17, 20)), (Some(64), Some(64), Some(20)));
     }
 
-    /// A step of rows that decode alone is one graph where every operation acts row by row, is an attention layer, or is a recurrent layer's that takes such rows, each
-    /// through its own state (the gated delta rule's and Mamba-2's); Kimi delta attention's operations and the latent attention keep it eager.
+    /// A step of rows that decode alone is one graph where every operation is capturable: it acts row by row, or takes the step's rows at once, each through its own
+    /// tables and states (the attention kind's; the gated delta rule's, Kimi delta attention's and Mamba-2's; the compressed attention's; the mean-pooled indexer's; the
+    /// latent attention kind acts on every row itself). A draft model's input, which holds the big model's last state, is no step of several sequences'.
     #[test]
-    fn steps_of_recurrent_layers_take_graphs() {
-        use super::super::Slot;
+    fn steps_of_every_kind_take_graphs() {
+        use super::super::{Slot, View};
         let lin = Op::Linear { w: 0, x: Slot::H, y: Slot::O, name: "product" };
         let gdn =
             [lin.clone(), Op::GdnConv { w: 0, state: 0, cd: 8, row: 8 }, Op::GdnDelta { a_log: 0, dt_bias: 0, state: 1, cd: 8, nk: 1, nv: 1 }, lin.clone()];
-        assert!(rows_graphable(gdn.iter()));
+        assert!(graphable_all(gdn.iter()));
         let mamba = [
             Op::MambaConv { w: 0, bias: 0, state: 0, cd: 8, row: 8, x_off: 0 },
             Op::MambaScan { dt_bias: 0, a_log: 0, d: 0, state: 1, cd: 8, row: 8, dt_off: 0, nh: 1, ng: 1 },
             Op::MambaNorm { w: 0, row: 8, di: 8, ng: 1 },
         ];
-        assert!(rows_graphable(mamba.iter()));
+        assert!(graphable_all(mamba.iter()));
         assert!(gdn.iter().chain(&mamba).filter(|op| rows_state(op)).count() == 4);
-        let kda = Op::KdaConv { w: 0, state: 0, c: 8, row: 8, w32: false };
-        assert!(!rows_state(&kda) && !rows_graphable([lin.clone(), kda].iter()));
+        let kda = [
+            Op::KdaConv { w: 0, state: 0, c: 8, row: 8, w32: true },
+            Op::KdaDelta { a_log: 0, dt_bias: 0, state: 1, heads: 1, bound: -5.0, ba: View::slot(Slot::Ba) },
+            Op::KdaOut { w: 0, heads: 1, w32: true, iq: View::slot(Slot::Iq) },
+        ];
+        assert!(kda[..2].iter().all(rows_state) && graphable_all(kda.iter()));
+        let comp = [
+            Op::CompKv { norm: 0, rope: 0, ring: 0 },
+            Op::IdxKeys { w: 0, norm: 0, rope: 0, ratio: 4, raw: 1, keys: 2 },
+            Op::CompAttn { ring: 0, cache: Some(1), ratio: 4, picked: true, sink: 0, rope: 0, heads: 8, hpg: 4 },
+            Op::IdxMean { heads: 1, dim: 32, block: 4, q_norm: 0, k_norm: 0, rope: 0, keys: 0, pools: 1 },
+        ];
+        assert!(comp.iter().all(takes_lead) && graphable_all(comp.iter().chain([lin.clone()].iter())));
+        assert!(!capturable(&Op::DraftIn { scale: 1.0 }));
+        assert_eq!((tab_at(0, 64, 3), tab_at(1000, 64, 3)), (0, 1000 + 4 * 3 * 64));
     }
 
     /// The step's metadata in one copy: positions from 0, slots after the chunk's positions, the state table after them at 8 bytes; only as far as what is written.

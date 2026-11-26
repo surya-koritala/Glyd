@@ -33,8 +33,8 @@ __device__ __forceinline__ float gm_sig(float x) { return 1.f / (1.f + expf(-x))
 // product (bf16), dtb [H 128] and alog [H] fp32, bb [n, H] the input gate's product (bf16), state fp32 [H, 128, 128] (S[i][j]), read and written back; core [n, H 128] the outputs (bf16, before the gated norm). Per token
 // and head: q and k l2-normed (x / sqrt(sum x^2 + 1e-6); q times 128^-0.5), beta = sigmoid(b) rounded to bf16, g[i] = bound * sigmoid(exp(A_log) * (fg[i] + dt_bias[i])) (fp32, the bound -5), S = diag(exp(g)) S;
 // S += k (beta (v - S^T k))^T; o = S^T q. A block a head, a thread a column of S (in registers); the heads' gates are one a thread, shared through shared memory.
-extern "C" __global__ void __launch_bounds__(128, 1) glm_kda_rec(const bf16* xc, const bf16* fg, const float* dtb, const float* alog, const bf16* bb, float* state, bf16* core, int n, int H, float bound) {
-    const int h = blockIdx.x, j = threadIdx.x, lane = j & 31, w = j >> 5;
+__device__ __forceinline__ void kda_rec_of(int h, const bf16* xc, const bf16* fg, const float* dtb, const float* alog, const bf16* bb, float* state, bf16* core, int n, int H, float bound) {
+    const int j = threadIdx.x, lane = j & 31, w = j >> 5;
     const int qd = H * GM_D;
     __shared__ __align__(16) float qk[3][GM_D];
     __shared__ float red[2][4];
@@ -94,6 +94,25 @@ extern "C" __global__ void __launch_bounds__(128, 1) glm_kda_rec(const bf16* xc,
     }
 #pragma unroll
     for (int i = 0; i < GM_D; i++) st[i * GM_D + j] = S[i];
+}
+
+extern "C" __global__ void __launch_bounds__(128, 1) glm_kda_rec(const bf16* xc, const bf16* fg, const float* dtb, const float* alog, const bf16* bb, float* state, bf16* core, int n, int H, float bound) {
+    kda_rec_of(blockIdx.x, xc, fg, dtb, alog, bb, state, core, n, H, bound);
+}
+
+// glm_kda_rec of a step's rows that decode, a token of a sequence each (grid H by rows, as qwen35.cu's gdn_recurrent_rows): row r's state at sts[r ss] (0: a padding row, whose
+// output is zeroed and which reads and writes no state), its rows of xc, fg, bb and core at r 3 H 128, r H 128, r H and r H 128. Each row's arithmetic is glm_kda_rec's on that
+// sequence's one token.
+extern "C" __global__ void __launch_bounds__(128, 1) glm_kda_rec_rows(const bf16* xc, const bf16* fg, const float* dtb, const float* alog, const bf16* bb, const unsigned long long* sts, int ss, bf16* core, int H,
+                                                                      float bound) {
+    const int r = blockIdx.y, qd = H * GM_D;
+    float* st = reinterpret_cast<float*>(sts[(size_t)r * ss]);
+    bf16* out = core + (size_t)r * qd;
+    if (!st) {
+        out[blockIdx.x * GM_D + threadIdx.x] = f2b(0.f);
+        return;
+    }
+    kda_rec_of(blockIdx.x, xc + (size_t)r * 3 * qd, fg + (size_t)r * qd, dtb, alog, bb + (size_t)r * H, st, out, 1, H, bound);
 }
 
 // The same rule over chunks of GM_L tokens (the WY form of the gated delta rule with a decay for each key channel: flash-linear-attention's chunk_kda, transformers' chunk_kimi_delta_attention), for a prompt. With

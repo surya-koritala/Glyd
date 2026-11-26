@@ -58,15 +58,38 @@ impl Dyn {
         let half = p.d.ropes[rope].pairs;
         let qk = p.slot(Slot::Qr) + self.rows_before((heads + 1) * dim);
         let iq = p.slot(Slot::Iq) + self.rows_before(heads * dim);
-        let (ik, pk) = ((self.cache(keys).0, self.table(keys)), (self.cache(pools).0, self.table(pools)));
+        let (ik, pk) = ((self.cache(keys).0, self.table(keys), 0), (self.cache(pools).0, self.table(pools), 0));
         let r3 = self.rope3(p);
         k.ix_prep_at(s, qk, p.small[q_norm].ptr, cs, sn, half, pos, r3, iq, ik, n, heads, p.d.eps, dim)?;
-        k.ix_cmp_at(s, ik, p.small[k_norm].ptr, cs, sn, half, pos, r3, pk, n, p.d.eps, dim, block)?;
+        k.ix_cmp_at(s, ik, p.small[k_norm].ptr, cs, sn, half, pos, r3, pk, (n, 1), p.d.eps, dim, block)?;
+        self.mark("indexer: queries and pools")
+    }
+
+    /// `Op::IdxMean` on the pass's first `rows` rows, each a decode row of its own sequence (`Dyn::lead`), at positions `pos`: one launch of each kernel for all of them, each
+    /// row's raw key and pool through its own block tables (`rows::RowTabs`), each row's pool the one its token completes (a call of one row each).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) unsafe fn idx_mean_lead(
+        &self,
+        p: &Part,
+        (heads, dim, block): (usize, usize, usize),
+        (q_norm, k_norm, rope): (usize, usize, usize),
+        (keys, pools): (usize, usize),
+        rows: usize,
+        pos: u64,
+    ) -> Result<()> {
+        let k = self.kqx.as_ref().ok_or_else(|| Error("an indexer in a model loaded without its kernels".into()))?;
+        let s = self.dev.stream;
+        let (cs, sn) = (self.ropes[rope].0.ptr, self.ropes[rope].1.ptr);
+        let half = p.d.ropes[rope].pairs;
+        let (ik, pk) = (self.lead_ring(keys), self.lead_ring(pools));
+        let r3 = self.rope3(p);
+        k.ix_prep_at(s, p.slot(Slot::Qr), p.small[q_norm].ptr, cs, sn, half, pos, r3, p.slot(Slot::Iq), ik, rows, heads, p.d.eps, dim)?;
+        k.ix_cmp_at(s, ik, p.small[k_norm].ptr, cs, sn, half, pos, r3, pk, (1, rows), p.d.eps, dim, block)?;
         self.mark("indexer: queries and pools")
     }
 
     /// `Op::IdxPick` of pooled keys (`IdxKeys::Pools`) of layer `l` on n rows of one sequence at positions `pos`: into the picks' room at the sequence's rows
-    /// (and each row's pick kept where a check traces them, `trace_row_picks`).
+    /// (and each row's pick kept where a check traces them, `trace_row_picked`).
     pub(super) unsafe fn idx_pick_pools(&self, p: &Part, l: usize, x: &IdxPick, n: usize, pos: u64) -> Result<()> {
         let r = self.picks.as_ref().ok_or_else(|| Error("an indexer's pick in a model loaded without its room".into()))?;
         let IdxKeys::Pools(pools) = x.keys else { return err("not an indexer of pooled keys") };
@@ -77,6 +100,7 @@ impl Dyn {
             keys: self.cache(pools).0,
             stride: x.dim(),
             tab: self.table(pools),
+            ts: 0,
             pos,
             rows: n,
             scores: r.scores.ptr,
@@ -87,7 +111,35 @@ impl Dyn {
             cand: super::mla::CandAt::default(),
         };
         self.idx_pick(x, &at)?;
-        self.trace_row_picks(p, l, x, n, row0)?;
+        self.trace_row_picked(p, l, x, &at, (n, 0), true)?;
+        self.mark("indexer: picks")
+    }
+
+    /// `Op::IdxPick` of pooled keys of layer `l` on the pass's first `rows` rows, each a decode row of its own sequence (`Dyn::lead`), at positions `pos`: one pick for all
+    /// of them, each row's pools through its own block table (`rows::RowTabs`), into the picks' room at the rows' places (and each row's pick kept where a check traces
+    /// them, `trace_row_picked`).
+    pub(super) unsafe fn pick_pools_lead(&self, p: &Part, l: usize, x: &IdxPick, rows: usize, pos: u64) -> Result<()> {
+        let r = self.picks.as_ref().ok_or_else(|| Error("an indexer's pick in a model loaded without its room".into()))?;
+        let IdxKeys::Pools(pools) = x.keys else { return err("not an indexer of pooled keys") };
+        let (keys, tab, ts) = self.lead_ring(pools);
+        let at = super::mla::PickAt {
+            q: p.slot(Slot::Iq),
+            w: if x.weighted { p.slot(Slot::Iw) } else { r.ones.ptr },
+            keys,
+            stride: x.dim(),
+            tab,
+            ts,
+            pos,
+            rows,
+            scores: r.scores.ptr,
+            emax: r.emax,
+            sel: r.sel.ptr,
+            sk: r.sk,
+            cnt: r.cnt.ptr,
+            cand: super::mla::CandAt::default(),
+        };
+        self.idx_pick(x, &at)?;
+        self.trace_row_picked(p, l, x, &at, (rows, 0), true)?;
         self.mark("indexer: picks")
     }
 
@@ -115,7 +167,32 @@ impl Dyn {
         let src = p.slot(a.src) + self.rows_before(a.stride);
         let out = p.slot(Slot::Att) + self.rows_before(a.nq * a.d);
         let (sel, cnt) = (r.sel.ptr + (row0 * r.sk * 4) as u64, r.cnt.ptr + (row0 * 4) as u64);
-        k.attn_sel_at(s, x.qo, a.nq * a.d, src, a.stride, (kc, vc, tab), sel, cnt, r.sk, out, a.nq * a.d, a.nq, a.nk, 0, 1, n)?;
+        k.attn_sel_at(s, x.qo, a.nq * a.d, src, a.stride, (kc, vc, tab, 0), sel, cnt, r.sk, out, a.nq * a.d, a.nq, a.nk, 0, 1, n)?;
+        self.mark("attention (the indexer's picks)")
+    }
+
+    /// `Op::Attn` with `picked` on the pass's first `rows.0` rows (of `rows.1`), each a decode row of its own sequence (`Dyn::lead`), at positions `pos`: their preparation in
+    /// one launch (the keys and values into the ring through each row's own block table, `rows::RowTabs`, as `attn_lead` prepares an attention layer's rows), then the
+    /// attention of each row over its picks, one launch, each row's positions through its own table.
+    pub(super) unsafe fn attn_picked_lead(&self, p: &Part, a: &AttnOp, (rows, _): (usize, usize), pos: u64) -> Result<()> {
+        let k = self.kqx.as_ref().ok_or_else(|| Error("a sparse attention in a model loaded without its kernels".into()))?;
+        let r = self.picks.as_ref().ok_or_else(|| Error("a sparse attention in a model loaded without its picks' room".into()))?;
+        let s = self.dev.stream;
+        let (tab, t, dup) = self.row_tab(a.ring);
+        let (kc, vc) = self.cache(a.ring);
+        let mut x = a.args(rows, p.d.eps);
+        (x.kc, x.vc, x.cap, x.tab, x.tstride) = (kc, vc, self.ring_cap[a.ring] as i32, tab, (dup * t) as i64);
+        (x.src, x.qo, x.qpos) = (p.slot(a.src), p.slot(Slot::Qo), pos);
+        if let Some((q, kk)) = a.weights() {
+            (x.qw, x.kw) = (p.small[q].ptr, p.small[kk].ptr);
+        }
+        if let Some(rp) = a.rope {
+            (x.cs, x.sn) = (self.ropes[rp.table].0.ptr, self.ropes[rp.table].1.ptr);
+            (x.rpos, x.rax) = self.rope3(p);
+        }
+        self.ka.prep(s, &x, a.nq + a.nk, (crate::kern::NextPf::default(), 0))?;
+        let (out, w, kv) = (p.slot(Slot::Att), a.nq * a.d, (kc, vc, tab, dup * t));
+        k.attn_sel_at(s, x.qo, w, p.slot(a.src), a.stride, kv, r.sel.ptr, r.cnt.ptr, r.sk, out, w, a.nq, a.nk, 0, 1, rows)?;
         self.mark("attention (the indexer's picks)")
     }
 }

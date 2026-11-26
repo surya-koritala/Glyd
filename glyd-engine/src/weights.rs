@@ -249,7 +249,7 @@ pub(crate) struct Packed {
     pub(crate) cols: usize,
 }
 
-fn i32_bytes(v: &[i32]) -> Vec<u8> {
+pub(crate) fn i32_bytes(v: &[i32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 

@@ -1578,16 +1578,21 @@ pub struct Dyn {
     parts: Vec<rows::Part>,
     at: std::cell::Cell<Option<usize>>,
     head_rows: Vec<usize>,
-    /// In such a pass: its first rows that decode, a token of a sequence each, whose attention runs as one (`attn::Dyn::attn_lead`, through `rows::RowTabs`); 0: none.
+    /// In such a pass: its first rows that decode, a token of a sequence each, whose operations on their caches and states run as one for all of them (`Dyn::op_lead`,
+    /// `attn::Dyn::attn_lead`, `Dyn::mla`, through `rows::RowTabs`); 0: none.
     lead: std::cell::Cell<usize>,
     /// The CUDA graphs of steps of rows that decode, one for each padded row count met so far (`rows::Dyn::rows_replay`), whether such graphs may be captured (graphs on, and
-    /// no block of experts that reads the host), the last one replayed (for `prof_take`), the replays and the captures made in a request's step rather than before the
-    /// first (`usercheck` counts them).
+    /// no block of experts that reads the host), the last one replayed (for `prof_take`), the replays, the captures made in a request's step rather than before the first,
+    /// and the steps of several rows that decode that ran eager (`usercheck` counts them).
     rgraphs: Vec<RowsGraph>,
     rgraph_on: bool,
     rplayed: std::cell::Cell<Option<usize>>,
     pub(crate) rows_replays: std::cell::Cell<u64>,
     pub(crate) rows_late: std::cell::Cell<u64>,
+    pub(crate) rows_eager: std::cell::Cell<u64>,
+    /// The steps of one row that replayed their sequence's own graph, and the graphs of steps of several rows that could not be captured (`usercheck` counts them).
+    pub(crate) one_replays: std::cell::Cell<u64>,
+    pub(crate) rows_lost: std::cell::Cell<u64>,
     /// Piecewise graphs of the passes no whole graph takes (src/dynamic/pieces.rs): the sets captured, how `forward` runs the pass being made, the pieces a capture makes,
     /// whether a piece's capture is open (to end it on an error), the set the last pass replayed and where its pieces' events go among the eager ones (`prof_take`), the
     /// pieces the last pass replayed, and the passes replayed so (`usercheck` counts them).
@@ -1712,12 +1717,13 @@ fn handed_over(d: &ModelDesc) -> Vec<(Slot, usize)> {
 /// tiered layout's step kernel to 8 rows), so each row's sums are a step's. Checked bit for bit on swift only; the range worker refuses verify on other levels.
 pub const VERIFY_ROWS: usize = 8;
 
-/// A step of rows that decode as a graph: its rows (padded), the graph, the events in it (`--prof`) and its attention's decode calls.
+/// A step of rows that decode as a graph: its rows (padded), the graph, the events in it (`--prof`), its attention's decode calls and its replays (`usercheck` counts them).
 struct RowsGraph {
     rows: usize,
     graph: Graph,
     marks: Vec<(&'static str, Ev)>,
     calls: usize,
+    played: std::cell::Cell<u64>,
 }
 
 /// The library's routes (glyd_gpu.h GLYD_GPU_ROUTE_*) `Dyn::decodes` reads: W decoded for the caller's dense product, the prompt kernel, W decoded ahead.
@@ -1847,41 +1853,49 @@ impl Dyn {
         }
     }
 
-    /// `trace_row_routes`' record of an indexer's pick of pools of `ratio` tokens (`Op::IdxPick` with `IdxKeys::Pools`) of layer `l` on n rows of one sequence,
-    /// the first at `row0` of the pass (`picked::PickRun`'s room): each row's pools picked (its picked tokens' whole pools, not the open one) and the scores of
-    /// the whole pools it could pick.
-    fn trace_row_picks(&self, p: &Part, l: usize, x: &mla::IdxPick, n: usize, row0: usize) -> Result<()> {
-        let ratio = x.ratio;
+    /// `trace_row_routes`' record of an indexer's pick `x` (`Op::IdxPick`) of layer `l` on the rows `at` names, rows `first` on of the operation's `rows` (their
+    /// sequences and places `row_tags`'), from the pick's own room as it left it: each row's whole pools of `x.ratio` tokens picked (`tokens`: a pick of tokens, each
+    /// taken as its pool, the open one not; else of entries, an entry a pool: a compressed attention's, DeepSeek-V4's) and the scores of every whole pool it could pick
+    /// (`at.scores`, `at.emax` a row). A row's picks and scores are read as far as its pick wrote them: its count of picks and the scores of its whole pools; the
+    /// rooms past them hold nothing a pick wrote. A row with no more whole pools than a pick takes has every one of them and no scores where the scores are fp32's
+    /// (kernels/mla.cu `idx_score` computes none there; the release's arithmetic, `idx_score_bf16`, writes every row's): its record says so, and a choice apart
+    /// there is no near tie.
+    fn trace_row_picked(&self, p: &Part, l: usize, x: &mla::IdxPick, at: &mla::PickAt, (rows, first): (usize, usize), tokens: bool) -> Result<()> {
         if !std::ptr::eq(p, &self.big) || self.row_routes.borrow().is_none() {
             return Ok(());
         }
-        let r = self.picks.as_ref().ok_or_else(|| Error("an indexer's pick in a model loaded without its room".into()))?;
-        self.dev.sync()?;
+        let tags: Vec<(usize, usize)> = self.row_tags(rows).into_iter().skip(first).take(at.rows).collect();
+        let n = tags.len();
         let mut cnt = vec![0i32; n];
-        r.cnt.read(row0 * 4, &mut cnt)?;
-        let tags = self.row_tags(n);
-        // (a row's picks and scores read as far as its pick wrote them: its `cnt` picks and the scores of its whole pools. The rooms past them hold nothing a
-        // pick wrote, and are not read. A row with no more whole pools than a pick takes has every one of them and no scores: kernels/mla.cu `idx_score`
-        // computes none there (the release's arithmetic, `idx_score_bf16`, writes every row's), so its record says so, and a choice apart there is no near tie)
+        self.dev.sync()?;
+        // SAFETY: the pick's counts of its rows into host memory of that size; synchronized after.
+        unsafe { crate::dev::copy_d2h_async(cnt.as_mut_ptr() as *mut _, at.cnt, cnt.len() * 4, self.dev.stream)? };
+        self.dev.sync()?;
+        let (ratio, div) = (x.ratio.max(1), if tokens { x.ratio.max(1) as i64 } else { 1 });
         let scored = |whole: usize| !matches!(x.score, mla::IdxScore::F32 { .. }) || whole > x.top_k;
-        let mut rows = Vec::with_capacity(n);
+        let mut read = Vec::with_capacity(n);
         for (i, &(_, pos)) in tags.iter().enumerate() {
-            let whole = ((pos + 1) / ratio.max(1)).min(r.emax);
-            let taken = (cnt[i].max(0) as usize).min(r.sk);
+            let whole = ((pos + 1) / ratio).min(at.emax);
+            let taken = (cnt[i].max(0) as usize).min(at.sk);
             let (mut sel, mut sc) = (vec![0i32; taken], vec![0f32; whole]);
-            if taken > 0 {
-                r.sel.read((row0 + i) * r.sk * 4, &mut sel)?;
+            // SAFETY: row i's picks as far as its count and its whole pools' scores, of the pick's room (`sk` picks and `emax` scores a row), into host memory of
+            // those sizes, which lives in `read` until the copies are synchronized below.
+            unsafe {
+                if taken > 0 {
+                    crate::dev::copy_d2h_async(sel.as_mut_ptr() as *mut _, at.sel + (i * at.sk * 4) as u64, taken * 4, self.dev.stream)?;
+                }
+                if whole > 0 && scored(whole) {
+                    crate::dev::copy_d2h_async(sc.as_mut_ptr() as *mut _, at.scores + (i * at.emax * 4) as u64, whole * 4, self.dev.stream)?;
+                } else {
+                    sc.fill(f32::NAN);
+                }
             }
-            if whole > 0 && scored(whole) {
-                r.scores.read(i * r.emax * 4, &mut sc)?;
-            } else {
-                sc.fill(f32::NAN);
-            }
-            rows.push((whole, sel, sc));
+            read.push((whole, sel, sc));
         }
+        self.dev.sync()?;
         if let Some(m) = self.row_routes.borrow_mut().as_mut() {
-            for ((slot, pos), (whole, sel, sc)) in tags.into_iter().zip(rows) {
-                let mut pools: Vec<i64> = sel.iter().map(|&t| t as i64 / ratio.max(1) as i64).filter(|&q| q >= 0 && (q as usize) < whole).collect();
+            for ((slot, pos), (whole, sel, sc)) in tags.into_iter().zip(read) {
+                let mut pools: Vec<i64> = sel.iter().map(|&t| t as i64 / div).filter(|&q| q >= 0 && (q as usize) < whole).collect();
                 (pools.sort_unstable(), pools.dedup());
                 let v = m.entry((slot, pos)).or_default();
                 v.retain(|c| !(c.layer == l && c.kind == ChoiceKind::Pick));
@@ -2502,6 +2516,9 @@ impl Dyn {
             rgraph_on: false,
             rplayed: std::cell::Cell::new(None),
             rows_replays: std::cell::Cell::new(0),
+            rows_eager: std::cell::Cell::new(0),
+            one_replays: std::cell::Cell::new(0),
+            rows_lost: std::cell::Cell::new(0),
             pieces: Default::default(),
             pmode: std::cell::Cell::new(pieces::Mode::Eager),
             pcap: Default::default(),
@@ -2577,6 +2594,11 @@ impl Dyn {
 
     pub fn has_graph(&self) -> bool {
         self.graph.is_some()
+    }
+
+    /// Whether the model's arithmetic simulates its release's quantizations (DeepSeek-V4's, `V4Dims::sim`); None for a model that has none to simulate.
+    pub fn simulates(&self) -> Option<bool> {
+        self.v4.as_ref().map(|v| v.dims.sim)
     }
 
     pub fn reset(&mut self) -> Result<()> {
@@ -3188,7 +3210,23 @@ impl Dyn {
             | Op::IdxPick(_)
             | Op::CompAttn { .. }
             | Op::OGroupLora { .. }
-            | Op::OGroupLoraStack { .. } => self.op_comp(p, op, n, pos.0),
+            | Op::OGroupLoraStack { .. } => self.op_comp(p, l, op, n, pos.0),
+        }
+    }
+
+    /// An operation on a sequence's caches or states (`rows::takes_lead`, the attention kind's apart: `attn_lead`, `attn_picked_lead`) on the pass's first `rows.0` rows of its
+    /// `rows.1`, each a decode row of its own sequence, at positions `pos`: one launch of each kernel for all of them, each row through its own block tables and states
+    /// (`rows::RowTabs`); each row's arithmetic is its own sequence's pass's on its one token.
+    unsafe fn op_lead(&self, p: &Part, l: usize, op: &Op, rows: (usize, usize), pos: u64) -> Result<()> {
+        match op {
+            op if rows::rows_state(op) => self.state_lead(p, op, rows),
+            Op::IdxMean { heads, dim, block, q_norm, k_norm, rope, keys, pools } => {
+                self.idx_mean_lead(p, (*heads, *dim, *block), (*q_norm, *k_norm, *rope), (*keys, *pools), rows.0, pos)
+            }
+            Op::IdxPick(x) if matches!(x.keys, IdxKeys::Pools(_)) => self.pick_pools_lead(p, l, x, rows.0, pos),
+            Op::NgramRows(x) => self.ngram_rows_lead(p, x, rows.0),
+            Op::NgramAdd(x) => self.ngram_add_lead(p, x, rows.0),
+            op => self.comp_lead(p, l, op, rows, pos),
         }
     }
 
@@ -3340,11 +3378,7 @@ impl Dyn {
                     // (the pass's first rows that decode, a token of a sequence each: an attention layer's, or a recurrent layer's operation that takes them (`rows::rows_state`),
                     // for all of them at once, each through its own table or state, which is what each row's own pass computes, bit for bit (the decode's plan is a sequence's
                     // own; the recurrent kernels the one-sequence ones' on a token))
-                    let lead = match op {
-                        Op::Attn(a) if !a.picked => self.lead.get(),
-                        op if rows::rows_state(op) => self.lead.get(),
-                        _ => 0,
-                    };
+                    let lead = if rows::takes_lead(op) { self.lead.get() } else { 0 };
                     let mut r = Ok(());
                     if let Op::Attn(a) = op {
                         if a.writes && self.pages12(p, a.ring).is_some() {
@@ -3352,10 +3386,13 @@ impl Dyn {
                             self.prepped.set(true);
                         }
                         if lead > 0 {
-                            r = self.attn_lead(p, l, i, a, (lead, n), pos, head);
+                            r = match a.picked {
+                                true => self.attn_picked_lead(p, a, (lead, n), pos.0),
+                                false => self.attn_lead(p, l, i, a, (lead, n), pos, head),
+                            };
                         }
                     } else if lead > 0 {
-                        r = self.state_lead(p, op, lead);
+                        r = self.op_lead(p, l, op, (lead, n), pos.0);
                     }
                     // (an operation on a sequence's cache or state: each sequence's rows by themselves, as a pass of that sequence alone runs them)
                     for (k, part) in self.parts.iter().enumerate().skip(lead) {
@@ -3627,6 +3664,7 @@ impl Dyn {
                 Some(g) if one && !self.graphs_off.get() && !self.tracing() => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
+                    self.one_replays.set(self.one_replays.get() + 1);
                     self.rplayed.set(None);
                     self.dcalls.set(self.gcalls);
                 }
@@ -4109,6 +4147,7 @@ impl Dyn {
                 Some(g) if !self.graphs_off.get() && !self.tracing() => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
+                    self.one_replays.set(self.one_replays.get() + 1);
                     self.rplayed.set(None);
                     self.dcalls.set(self.gcalls);
                     self.gap_end()?;

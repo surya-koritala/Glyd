@@ -256,24 +256,30 @@ sample on the device -> sampled-ids ring, token ids to pinned host memory
 record the step's fence
 ```
 
-The executor captures this as a graph per row-count bucket where the backend supports capture and every block is capturable
-(`LayerImpl::capturable`). Prompt chunks vary in length; the executor captures decode-only steps by row bucket and runs mixed steps
-eagerly or piecewise (attention outside the graph, products inside), as vLLM's piecewise mode does. A block that must read the router's
-choices on the host (an expert store without a device path) splits the graph at that layer; `dynamic/mod.rs:1201` already refuses to
-capture such a step.
+The executor captures this as a graph per row-count bucket where every operation of the description is capturable (the layer kind's word,
+`dynamic/rows.rs` `capturable`, per operation of the executor). Prompt chunks vary in length; the executor captures decode-only steps by row
+bucket and runs mixed steps eagerly or piecewise (attention outside the graph, products inside), as vLLM's piecewise mode does. A block that
+must read the router's choices on the host (an expert store without a device path) takes no graph at all (`Dyn::rgraph_on`).
 
-Built (#329): a decode-only step's rows are padded to 2, 4, 8, ... and replay one graph where every operation acts row by row, is an
-attention layer, or is a recurrent layer's convolution or recurrence (Gated DeltaNet, Mamba-2), each row through its own block table and
-its own state (a table of the rows' state addresses the host writes per step, as vLLM's state indices; a padding row's entry is 0 and
-touches no state). Every other pass (a prompt's chunk, prompts together, decode rows with prompt chunks, decode rows of a description with
-no whole graph) runs in pieces (`dynamic/pieces.rs`): the runs of row-wise operations between the attention and recurrent operations are
-graphs, the rest eager between them. Pieces are captured for a pass's exact row count, not a padded bucket, because a product's kernel
-(the library's route, cuBLAS's algorithm) turns on its rows: a replay is the eager pass bit for bit. The one size captured is a full
-pass's (the chunk's rows: the prompt budget fills a mixed step to it), when the scheduler's step is made, as the decode graphs are, and for
-descriptions whose decode steps take no whole graph (latent attention, picked attention, DeepSeek-V4) the decode steps' of 2 to 16, 32 and 64
-rows; the step's metadata (positions, slots, the state table) is one buffer written in one copy, which every graph reads. A pass of another
-size runs eager, and so does a pass whose products take cuBLAS (on an A10, 2026-11-23, in a run whose record was not kept, full
-gemma-4-12B passes in pieces took 0.7% more GPU time than eager; whether cuBLAS keeps its eager algorithm in a capture is not measured).
+Built (#329): a decode-only step's rows are padded to 2, 4, 8, ... and replay one graph. Every operation is capturable: it acts row by row,
+or it takes the step's rows that decode at once, each row through its own block tables and its own states (a table of the rows' state
+addresses the host writes per step, as vLLM's state indices; a padding row is at position -1, its slot -1 and its state entry 0, and reads
+and writes no cache row and no state): the attention kind (picked or not), the latent attention kind (its latents, indexer keys and pools,
+its attention over the latents cut into runs as a decode row's is), the compressed attention's window, compressors, indexer and attention,
+the mean-pooled indexer, the recurrent layers' convolutions and recurrences (Gated DeltaNet, Kimi delta attention, Mamba-2) and the n-gram
+embedding's state. Each row's kernels and sums are its own sequence's pass's on its one token. The ladder's top is the head's rows; where a
+block of experts is in the expert cache planned on the GPU it is that plan's 64 rows of a decode step (`devplan::DEV_STEP_ROWS`): a call of more rows is planned on
+the host, which reads the router's choices, so such a step runs eager; and there every row count has its own graph, unpadded (a padding row's
+choices would join the cache's plan, taking places and sending the host pairs). A latent attention whose ring is in 12-bit pages takes no whole graph:
+each sequence's pages are unpacked into the one staging ring by itself. Every other pass (a prompt's chunk, prompts together, decode rows
+with prompt chunks, decode rows of a description with no whole graph) runs in pieces (`dynamic/pieces.rs`): the runs of row-wise operations
+between the attention and recurrent operations are graphs, the rest eager between them. Pieces are captured for a pass's exact row count,
+not a padded bucket, because a product's kernel (the library's route, cuBLAS's algorithm) turns on its rows: a replay is the eager pass bit
+for bit. The one size captured is a full pass's (the chunk's rows: the prompt budget fills a mixed step to it), when the scheduler's step is
+made, as the decode graphs are, and for descriptions whose decode steps take no whole graph the decode steps' of 2 to 16, 32 and 64 rows;
+the step's metadata (positions, slots, the state table) is one buffer written in one copy, which every graph reads. A pass of another size
+runs eager, and so does a pass whose products take cuBLAS (on an A10, 2026-11-23, in a run whose record was not kept, full gemma-4-12B
+passes in pieces took 0.7% more GPU time than eager; whether cuBLAS keeps its eager algorithm in a capture is not measured).
 
 ## 3. The layer-kind interface
 
@@ -346,7 +352,6 @@ pub trait Backend: Send + Sync {
 
 pub trait LayerImpl<B: Backend>: Send {
     fn workspace(&self, shape: &StepShape) -> u64;            // bytes of the step arena it needs at this shape
-    fn capturable(&self) -> bool;
     fn run(&mut self, cx: &mut StepCx<B>, x: &mut B::Tensor) -> Result<()>;  // enqueue only; never waits on the device
 }
 ```
@@ -502,7 +507,7 @@ for the step in flight's sequences (`Sched::launch`), so the copies are of the s
 (the void pages a step made) is copied into the lane with the samples and read from there (`kv12_lost`). The operations that read the
 tokens (an n-gram embedding, routing by token) read the int32 ids `step_ids` writes beside the embedding's. The executor overlaps on one
 GPU where no layer's matrices are in the computer's memory and no block of experts reads the router's choices on the host (the blocks a
-decode graph captures): an expert cache's layers planned on the GPU (`--device`, src/devplan.rs) queue a decode call of up to eight rows
+decode graph captures): an expert cache's layers planned on the GPU (`--device`, src/devplan.rs) queue a decode step's call of up to 64 rows (another of up to eight)
 whole, and a call the store plans on the host (a prompt's chunk) synchronizes the stream itself. The store's end of a step
 (`ExpertStore::end_step`) reads what the GPU counted and writes the plan's next settings, so it runs only when a step lands with none
 queued after it: after 16 steps landed with a later one out, the step asks to be quiet (`ModelStep::quiet`) and the scheduler lands it
@@ -807,8 +812,9 @@ What is built (R12b, #327):
   (`Params`: the store's `Costs` and mode): the ones with the most pairs copied, as many as make the longer of the copies and the
   host's pairs shortest, the rest the host's; a hot miss the host keeps is promoted while the host's time leaves room for its copy.
   A copy is priced at the link's time for an expert, measured once at load (the GPU's own copies are not timed). Calls of up to
-  `DEV_ROWS` (8) rows are planned on the GPU; more rows are the host's plan, whose waves copy every miss where the misses
-  outnumber the places. (The first rule, a miss copied wherever a copy cost less than the host's pairs, ignored that the two run
+  `DEV_ROWS` (8) rows, and the calls of a step of rows that decode alone of up to `DEV_STEP_ROWS` (64, the most rows a request to the host's
+  half carries: #329's decode graphs of up to 64 rows; `ExpertStore::set_step_rows`), are planned on the GPU, whose misses the places cannot take are
+  the host's; more rows (a prompt's chunk) are the host's plan, whose waves copy every miss where the misses outnumber the places. (The first rule, a miss copied wherever a copy cost less than the host's pairs, ignored that the two run
   at once and copied every miss at 1 and 8 rows: 62-80% slower than the host's plan on an A10, 2026-11-23, in a run whose record was not kept.) The store's own plan
   (`LayerCache`) still plans a prompt's chunks: before such a call the GPU's table is read into it, after it written back.
   On the decode traces of the routing record `benchmarks/moe-skew-2026-10-09` its clock finds 0.5 to 0.6 points fewer of the pairs in places than the least-recently-used
@@ -816,7 +822,33 @@ What is built (R12b, #327):
   Its GPU check, `tiercheck --device-plan` in copy mode (the logits with the plan against the store's own, bit for bit), ran on an A10 on
   2026-11-25 on random DeepSeek-V4 and Kimi-K3 of release width: 0 of 646,400 and 0 of 20,480 logits differ (the run's record is not
   in this repository). In the modes where the host computes pairs its logits are not the copy mode's bits, and no bound holds
-  them. `storebench --device-plan` measures speed and is not run.
+  them. `storebench --device-plan` measures speed and is not run. A call planned on the GPU joins the host's pairs as the host's plan
+  does: for a layer whose sum adds each pair's own row (a block layout: DeepSeek-V4's and Kimi-K3's FP4 experts) the host answers
+  each pair's weighted row, `xp_rows` puts it in its pair's row of the workspace beside the GPU's, and the sum adds every pair in the
+  order of its choices, rounded once (`rows_sum`); the host's sums by token added after the GPU's pairs (`xp_take`, as before for
+  other layers) round apart from that, which on an A10 put a random DeepSeek-V4's row past the kind's bound at 8 rows.
+- **`storecheck`** (src/tiering.rs, a development build's) is the batched-decode test of a model larger than the GPU: n prompts
+  alone, then decode steps of n rows (1, 8 and 32) through the cache with fewer places than experts, against the same calls with
+  every expert on the GPU (a smaller cut that fits) or, for a model larger than the GPU, against the cache in copy mode planned on
+  the host. A run's rows are held bit for bit where the host computed no pair, else on the run's own routers' choices at the kind's
+  bound (`logits::Judge`, from a traced rerun whose bits must be the run's); each decode step's bytes read from the computer's memory
+  for its misses against its distinct missed experts' bytes, within 2%; each step's statistics, layer by layer, are the step's output
+  (`ModelStep::expert_stats`); the decode steps replay their graphs where the plan is on the GPU, and where the host plans a call (it
+  reads the router's choices, a wait no graph holds) or a description's decode rows have no tables, the line says why they run eager.
+  On an A10 (2026-11-26) with random models at the releases' widths: in copy mode the rows are the resident model's bits at 1, 8
+  and 32 rows for DeepSeek-V4, Kimi-K3, GLM-5.3-Flash in FP8 and the Qwen3.5 layout with experts (cuts of 13 to 16 GB), and the
+  same bits as the copy-mode cache for models of 26 to 40 GB; every decode step of every mode read its distinct missed experts'
+  bytes exactly (+0.00%; at 8 rows 1.3 to 9.2 GB a step); with the plan on the GPU every step of 1, 8 and 32 rows replayed its graph
+  (DeepSeek-V4, and Kimi-K3 with its latent attention: `kimirandom --real --mla`).
+  Where the host computes pairs at the releases' widths (DeepSeek-V4, Kimi-K3), rows went past the kind's bound within a few
+  steps (KL to 0.1-0.7). The cause is the random draws, not the host: each pair the host computes is the GPU's within one or two
+  bf16 last places (the fp32 order of its sums: `--pairs`, which also replays the host's FP4 pairs in an A10's tensor-core order), and
+  the same draws put the GPU against itself past the bound when only its experts' sums are split over K (`--floor`: KL 0.1-1.3 on
+  the DeepSeek-V4, Kimi-K3 and Qwen3.5-layout cuts, nearly every row a router choice apart by the first decode step). `floortrace`
+  shows the amplification: a reordering moves one layer's output 1e-3 of itself, and the residual's difference grows two to a
+  hundred times a layer from there. Open: the release-width makers drawn so that their floor is within a tenth of the bound (as
+  the small Kimi-K3 and DeepSeek-V4 draws were); until then `storecheck --floor` fails on them. DeepSeek-V4's indexer picks are in
+  the rows' histories now (`Dyn::trace_row_picked`).
 - **The slot policy and the hit-rate model at many rows**, checked on the same record's decode traces (20 generations, 1 to 20
   rows side by side): a call's experts are asked for in the order of their pairs, fewest first (`by_rows`), so the busiest stay in
   places across waves (1 to 7 points more pairs found at 16 and 20 rows, never fewer); the planner prices a step's misses as its

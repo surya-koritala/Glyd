@@ -1251,7 +1251,7 @@ pub(crate) fn engine_at(case: &str, dir: &Path, level: &str, layout: Layout) -> 
         return err(format!("{case} at {level} is packed {}, not {}", l.name(), layout.name()));
     }
     let o = dyn_opts(Some(layout));
-    match case {
+    match case_of_form(case) {
         "gemma4" | "gemma4-kv" => gemma4_at(dir, Some(layout)),
         "qwen35" | "qwen35-wide" | "qwen35moe" => boxed(crate::dynamic::qwen35::load(dir, &o)),
         "dense" => boxed(crate::dynamic::dense::load(dir, &o)),
@@ -1988,7 +1988,58 @@ pub fn qwen35_random(out: &Path) -> Result<()> {
 /// Gated DeltaNet and a gated full-attention one, each followed by 32 experts of which a token takes 10 and the gated shared expert): every tensor of its description at its
 /// shape, its values by `manifest_random`'s rules for each kind of tensor.
 pub fn qwen35moe_random(out: &Path) -> Result<()> {
-    let text = include_str!("../tests/fixtures/qwen35moe_tiny_config.json");
+    qwen35moe_draw(include_str!("../tests/fixtures/qwen35moe_tiny_config.json"), out)
+}
+
+/// The Qwen3.5 layout with experts at its release's width (tests/fixtures/qwen35_configs.json's Qwen3.5-35B-A3B: 2,048 wide, experts of 512 neurons, 8 a token, the
+/// shared expert of 512, its attention's and linear attention's heads, its kinds of layer in their order), `layers` layers of `experts` experts each, with the small
+/// case's vocabulary and rotation: drawn as `qwen35moe_random` draws its model. A model whose experts exceed a GPU's memory, for the expert cache's checks
+/// (`logitsmodel qwen35moe DIR --real --layers L --experts E`; `storecheck`).
+pub fn qwen35moe_random_real(out: &Path, layers: usize, experts: usize) -> Result<()> {
+    let js = |t: &str| serde_json::from_str::<Value>(t).map_err(|e| Error(e.to_string()));
+    let mut c = js(include_str!("../tests/fixtures/qwen35moe_tiny_config.json"))?;
+    let all = js(include_str!("../tests/fixtures/qwen35_configs.json"))?;
+    let rel =
+        all.get("Qwen/Qwen3.5-35B-A3B").map(|v| v.get("text_config").unwrap_or(v)).ok_or_else(|| Error("no Qwen3.5-35B-A3B config in the fixtures".into()))?;
+    for k in [
+        "hidden_size",
+        "moe_intermediate_size",
+        "shared_expert_intermediate_size",
+        "num_experts_per_tok",
+        "num_attention_heads",
+        "num_key_value_heads",
+        "head_dim",
+        "linear_num_key_heads",
+        "linear_num_value_heads",
+        "linear_key_head_dim",
+        "linear_value_head_dim",
+    ] {
+        c[k] = rel.get(k).cloned().ok_or_else(|| Error(format!("Qwen3.5-35B-A3B's config has no {k}")))?;
+    }
+    let kinds = rel["layer_types"].as_array().filter(|k| !k.is_empty()).ok_or_else(|| Error("Qwen3.5-35B-A3B's config has no layer_types".into()))?;
+    (c["num_hidden_layers"], c["num_experts"]) = (json!(layers.max(1)), json!(experts.max(1)));
+    c["layer_types"] = Value::Array((0..layers.max(1)).map(|l| kinds[l % kinds.len()].clone()).collect());
+    qwen35moe_draw(&c.to_string(), out)
+}
+
+/// `qwen35moe_random`'s model (with `real` (layers, experts): `qwen35moe_random_real`'s) with each layer's experts written as two stacked tensors
+/// (`mlp.experts.gate_up_proj` [experts, 2 inter, in], `mlp.experts.down_proj` [experts, out, inter]), the form Qwen3.8-2.4T-A95B is released in: the same weights
+/// to the bit (`stacked::restack`), as `logitsmodel qwen35moe DIR --stacked [--real --layers L --experts E]` makes it (the case `qwen35moe-st`: the stacked form
+/// of the case's own model).
+pub fn qwen35moe_stacked(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
+    let at = out.join("per-expert");
+    match real {
+        None => qwen35moe_random(&at)?,
+        Some((layers, experts)) => qwen35moe_random_real(&at, layers, experts)?,
+    }
+    let (named, _) = crate::runtime::describe::describe_dir(&at)?;
+    let held = crate::runtime::describe::describe_stacked(&crate::runtime::config::ModelConfig::load(&at)?)?;
+    crate::stacked::restack(&at, out, &named, &held)?;
+    std::fs::remove_dir_all(&at).map_err(|e| Error(format!("{}: {e}", at.display())))
+}
+
+/// `qwen35moe_random`'s draw of the model of config `text`.
+fn qwen35moe_draw(text: &str, out: &Path) -> Result<()> {
     let d = crate::runtime::describe::describe(&serde_json::from_str(text).map_err(|e| Error(e.to_string()))?)?;
     let tensors = d
         .names()
@@ -1996,6 +2047,15 @@ pub fn qwen35moe_random(out: &Path) -> Result<()> {
         .map(|n| d.shapes.get(&n).map(|s| json!([n, "BF16", s])).ok_or_else(|| Error(format!("the description has no shape for {n}"))))
         .collect::<Result<Vec<Value>>>()?;
     manifest_random(&json!({"config": text, "tensors": tensors}).to_string(), out, 0x2026_1124_0000_0333, false, "Qwen3.5-family mixture of experts")
+}
+
+/// A case that is another case's model in another stored form (the same weights): that case. `qwen35moe-st`: the Qwen3.5 layout with experts, each layer's
+/// experts stacked in two tensors as Qwen3.8-2.4T-A95B is released (`qwen35moe_stacked`).
+pub fn case_of_form(case: &str) -> &str {
+    match case {
+        "qwen35moe-st" => "qwen35moe",
+        other => other,
+    }
 }
 
 /// GLM-5.3's layout as a small random model (tests/fixtures/glm_moe_dsa_toy_config.json, `glm_moe_dsa`: four layers 256 wide of the latent attention, two heads
@@ -3274,15 +3334,29 @@ pub fn level_check(a: &crate::args::Args) -> Result<()> {
     }
 }
 
-/// `logitsmodel CASE DIR [--servable]`: the case's random model made in DIR (a model to run the other checks on: `kvtest DIR`, `run DIR`); `qwen4x-rel` the
+/// `logitsmodel CASE DIR [--servable] [--real [--layers L] [--experts E]] [--stacked]`: the case's random model made in DIR (`--real`: the Qwen3.5 layout with experts at its release's width; `--stacked`: its experts stacked, `qwen35moe_stacked`) (a model to run the other checks on: `kvtest DIR`, `run DIR`); `qwen4x-rel` the
 /// family's release's form (`qwen4x_release_random`); `CASE+q4` with its tables on the host stored at 4 bits.
 pub fn make_model(a: &crate::args::Args) -> Result<()> {
     let id = a.need(1, "CASE")?;
     let (base, q4) = q4_case(id);
     let dir = Path::new(a.need(2, "DIR")?);
     // (a case of the logits checks by its own maker; another random model `random_model` makes, the release's form among them; + q4: its tables at 4 bits)
+    let (real, stacked) = (a.has("real"), a.has("stacked"));
     match find_case(base).map(|c| c.weights) {
         Ok(Weights::Hub(h)) => return err(format!("{id}: a real model ({h}), not a random one")),
+        // (`--real --layers L --experts E`: the Qwen3.5 layout with experts at its release's width, `qwen35moe_random_real`; `--stacked`: its experts stacked as
+        // Qwen3.8-2.4T-A95B holds them, `qwen35moe_stacked`)
+        Ok(Weights::Random(_)) if real || stacked => match base {
+            "qwen35moe" => {
+                let r = real.then(|| Ok::<_, Error>((a.num("layers", 8usize)?, a.num("experts", 256usize)?))).transpose()?;
+                match (stacked, r) {
+                    (true, r) => qwen35moe_stacked(dir, r)?,
+                    (false, Some((l, e))) => qwen35moe_random_real(dir, l, e)?,
+                    (false, None) => unreachable!("--real or --stacked"),
+                }
+            }
+            id => return err(format!("--real and --stacked: the qwen35moe case's (not {id})")),
+        },
         Ok(Weights::Random(make)) => make(dir)?,
         Err(_) => random_model_of(base, dir)?,
     }
@@ -4865,7 +4939,7 @@ mod tests {
 
 /// The case's model in `dir` on the description executor.
 pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
-    Ok(match q4_case(case).0 {
+    Ok(match case_of_form(q4_case(case).0) {
         "gemma4" | "gemma4-kv" => {
             let c = crate::gemma4::ConfigG4::load(dir)?;
             Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
@@ -4952,6 +5026,7 @@ fn random_model_of(case: &str, dir: &Path) -> Result<()> {
         "qwen35" => qwen35_random(dir),
         "qwen35-wide" => qwen35_wide_random(dir),
         "qwen35moe" => qwen35moe_random(dir),
+        "qwen35moe-st" => qwen35moe_stacked(dir, None),
         "dense" => dense_random(dir),
         "muse" => crate::muse_ref::random(dir),
         "kimi" => crate::kimi_ref::random(dir, 1, true, 8),
@@ -5110,6 +5185,17 @@ fn users_drafted(case: &str, level: &str, users: usize, tokens: usize, k: usize)
 
 /// The plan `serve` makes of the case's random model at `level` on this GPU for `users` sequences, its draft model off (`plan::planned`): the plan the load takes,
 /// its context, prompt chunk, layout, sequences and their bytes; or why it gives none (a refusal is the planner's word that it would not load).
+/// The plan `serve DIR --users N` makes of the dynamic route's model in `dir` on this machine (src/cli.rs `dynamic_plan`, what `serve` loads), with the run's flags:
+/// `usercheck --dir DIR --ctx plan`'s.
+fn planned_dir(dir: &Path, users: usize) -> Result<crate::plan::LoadPlan> {
+    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
+    let family = crate::dynamic::split::family(&text).ok_or_else(|| Error(format!("{}: not a model of the dynamic route", dir.display())))?;
+    let words = ["serve".to_string(), dir.display().to_string(), "--users".into(), users.to_string()];
+    crate::cli::dynamic_plan(&crate::args::Args::from(words), &crate::cli::short_name(&dir.display().to_string()), family, dir, false)
+        .map(|p| p.3)
+        .map_err(|r| Error(format!("the planner: {} ({})", r.what, r.fix)))
+}
+
 fn planned_for(case: &str, level: &str, users: usize) -> Result<crate::plan::LoadPlan> {
     let dir = std::env::temp_dir().join(format!("glyd-planned-{case}-{}", std::process::id()));
     let got = (|| -> Result<crate::plan::LoadPlan> {
@@ -5627,6 +5713,8 @@ pub(crate) struct Judge {
     pub reported: usize,
     pub failed: usize,
     held_kl: f64,
+    /// The bound the rows with no choice apart are held to (KL mean, max): the kind's (`BESIDE_KL`), or a tenth of it for a draw's own floor.
+    bound: (f64, f64),
     /// Every row's figures, held or not (the line's words).
     pub all: Beside,
     /// A line for each row reported or failed.
@@ -5634,13 +5722,18 @@ pub(crate) struct Judge {
 }
 
 impl Judge {
-    /// The rows judged: `routers` measure a router's choice apart (None: such a choice is never a near tie).
+    /// The rows judged at the kind's bound: `routers` measure a router's choice apart (None: such a choice is never a near tie).
     pub(crate) fn of(rows: &[Judged], routers: Option<&Routers>) -> Result<Judge> {
+        Judge::of_at(rows, routers, BESIDE_KL)
+    }
+
+    /// `of` with the rows that show no choice apart held to `bound` (KL mean, max).
+    pub(crate) fn of_at(rows: &[Judged], routers: Option<&Routers>, bound: (f64, f64)) -> Result<Judge> {
         let pairs: Vec<(&[f32], &[f32])> = rows.iter().map(|r| (r.alone, r.beside)).collect();
-        let mut j = Judge { all: Beside::of(&pairs), ..Default::default() };
+        let mut j = Judge { all: Beside::of(&pairs), bound, ..Default::default() };
         for (i, r) in rows.iter().enumerate() {
             let b = Beside::of(&[(r.alone, r.beside)]);
-            let within = b.finite && b.kl_max <= BESIDE_KL.1 && b.top_same == b.clear;
+            let within = b.finite && b.kl_max <= bound.1 && b.top_same == b.clear;
             let (first, unseen) = match &r.choices {
                 (Some(a), Some(c)) => first_apart(routers, a, c)?,
                 _ => (None, usize::MAX),
@@ -5666,7 +5759,8 @@ impl Judge {
                 }
                 None => {
                     j.failed += 1;
-                    j.notes.push(format!("row {i}: FAILED, past the kind's bound with no choice apart in its history{seen}; {figures}"));
+                    let past = if bound == BESIDE_KL { "the kind's bound" } else { "a tenth of the kind's bound" };
+                    j.notes.push(format!("row {i}: FAILED, past {past} with no choice apart in its history{seen}; {figures}"));
                 }
             }
         }
@@ -5675,17 +5769,19 @@ impl Judge {
 
     /// Whether the rows hold: none failed, and the held rows' KL mean within the bound's.
     pub(crate) fn ok(&self) -> bool {
-        self.failed == 0 && self.held_kl / self.held.max(1) as f64 <= BESIDE_KL.0
+        self.failed == 0 && self.held_kl / self.held.max(1) as f64 <= self.bound.0
     }
 
     /// The counts in words, and the held rows' KL mean.
     pub(crate) fn words(&self) -> String {
         format!(
-            "experts computed on the host: bits not held; {} rows held to the kind's bound (KL mean {:.3e}, at most {:e}; max at most {:e}; the best token where the lead clears {CLEAR_LEAD}), {} reported: a near tie taken the other way, {} failed",
+            "{}: bits not held; {} rows held to {} (KL mean {:.3e}, at most {:e}; max at most {:e}; the best token where the lead clears {CLEAR_LEAD}), {} reported: a near tie taken the other way, {} failed",
+            if self.bound == BESIDE_KL { "experts computed on the host" } else { "the experts' sums in another order" },
             self.held,
+            if self.bound == BESIDE_KL { "the kind's bound" } else { "a tenth of the kind's bound" },
             self.held_kl / self.held.max(1) as f64,
-            BESIDE_KL.0,
-            BESIDE_KL.1,
+            self.bound.0,
+            self.bound.1,
             self.reported,
             self.failed
         )
@@ -7052,11 +7148,23 @@ impl crate::sampler::View for CandsOnly {
     }
 }
 
-/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device-plan]] | --ctx C] [--prompt-tokens P] [--stagger D] [--pack P [--precise]]` (gemma4, qwen35, muse, kimi, glm, qwen4x, qwen4x-s2): the case's random model on the
-/// description executor (or the model in DIR, with `--places` its experts in the expert cache, with `--pack` Condor's from its pack of codebook experts; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
+/// Replies' tokens and their sample logits' bits (each reply's in turn, its length first) as one SHA-256, in hex.
+fn replies_digest(tokens: &[Vec<u32>], logits: &[Vec<u32>]) -> String {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    for v in tokens.iter().chain(logits) {
+        h.update((v.len() as u64).to_le_bytes());
+        v.iter().for_each(|x| h.update(x.to_le_bytes()));
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device-plan] | --ctx plan]] | --ctx C] [--prompt-tokens P] [--stagger D] [--pack P [--precise]]` (gemma4, qwen35, muse, kimi, glm, qwen4x, qwen4x-s2): the case's random model on the
+/// description executor (or the model in DIR, with `--places` its experts in the expert cache, with `--ctx plan` as `serve --users N` plans and loads it (a model larger than the GPU: its experts in the expert cache, every user's keys, values and states first), with `--pack` Condor's from its pack of codebook experts; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
-/// bits: `roundcheck` measures the logits). The round is one step of the rows that decode and the prompts' chunks unless GLYD_ENGINE_ONE_STEP=0, and some step must then have held both.
+/// bits: `roundcheck` measures the logits); their tokens and sample logits are printed as one digest, which runs held to the same bits compare (GLYD_TABLES=gpu against
+/// host). The round is one step of the rows that decode and the prompts' chunks unless GLYD_ENGINE_ONE_STEP=0, and some step must then have held both.
 /// Then the prompts at once twice more, with no graph at all (every pass eager) and with every graph on and every pass that is no whole graph's in pieces
 /// (src/dynamic/pieces.rs): the replies the same token for token and each sample's logit to the bit, and where pieces can run, some pass replayed them. With
 /// GLYD_ENGINE_OVERLAP=1, where steps are launched ahead, the prompts at once launched ahead and not: the same tokens and logits. With `--places` every run (each reference, alone,
@@ -7095,7 +7203,13 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     }
     // (--ctx plan: the plan `serve` makes of the random model for these users on this GPU, which the load takes (its context, chunk, layout, sequences and their bytes:
     // `take_plan`); the GPU's memory the load and the step's sequences take is held to the plan's figure, and the users to the plan's)
-    let plan = if a.flag("ctx") == Some("plan") { Some(planned_for(case, level, users)?) } else { None };
+    // (with --dir DIR, the plan `serve DIR --users N` makes of that model on this machine, which the load takes too: its experts in the expert cache where the GPU
+    // does not hold them, every user's keys, values and states first and the places what is left)
+    let plan = match (a.flag("ctx") == Some("plan"), a.flag("dir")) {
+        (true, Some(d)) => Some(planned_dir(Path::new(d), users)?),
+        (true, None) => Some(planned_for(case, level, users)?),
+        _ => None,
+    };
     // (whether the plan is of the pages this run holds. The planner plans no 12-bit pages where the description has no ring in pools they take (heads of 64, the
     // compressed attention's entries: `rows::twelve_bit_rings`): there --kv12 runs them at the bf16 plan's context in pools of what the GPU has free, and its
     // memory is not held to that plan, which is of other pages)
@@ -7103,7 +7217,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let mib = |b: u64| b as f64 / (1u64 << 20) as f64;
     if let Some(lp) = &plan {
         println!(
-            "the random {case} model at the planner's plan for this GPU{}: {} tokens of context for each of {} users ({:.1} MiB of keys, values and states planned in {}{}), prompts of up to {} and {tokens} made",
+            "{} at the planner's plan for this GPU{}: {} tokens of context for each of {} users ({:.1} MiB of keys, values and states planned in {}{}), prompts of up to {} and {tokens} made",
+            a.flag("dir").map_or(format!("the random {case} model"), |d| format!("the model in {d}")),
             if kv12 { " with GLYD_KV=lossless" } else { "" },
             lp.context,
             lp.users,
@@ -7134,6 +7249,29 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         None => crate::offload::Mode::Copy,
     };
     let (mut e, routers): (Dyn, Option<Routers>) = match (a.flag("dir"), places) {
+        // (`--dir DIR --ctx plan`: the model in DIR as `serve` loads it, by its plan (src/dynamic/split.rs `open_plan`: the plan's places, sequences and their bytes;
+        // `--mode` the misses', copy by default): its GPU memory held to the plan below, its users to the plan's)
+        (Some(d), _) if plan.is_some() => {
+            let lp = plan.as_ref().expect("a plan");
+            let offload = crate::offload::Offload { mode, device: a.has("device-plan"), ..Default::default() };
+            match crate::dynamic::split::open_plan(Path::new(d), lp, offload)? {
+                crate::dynamic::split::Run::One(e) => {
+                    // (the planner's times held where they start, so that two runs from one state plan alike: each run below starts from the cold cache, `Sched::cold`)
+                    e.stores().iter().for_each(|st| st.hold_costs());
+                    println!(
+                        "{d}: as `serve` loads it by its plan, {}, mode {}",
+                        lp.experts.map_or("every expert on the GPU".to_string(), |c| format!(
+                            "its experts in the expert cache, {} places a layer of {}",
+                            c.slots, c.experts
+                        )),
+                        mode.name()
+                    );
+                    let r = routers_of(Path::new(d), &e)?;
+                    (e, r)
+                }
+                _ => return err("the plan cuts the model over GPUs or across them: --dir with --ctx plan checks a plan on one GPU"),
+            }
+        }
         // (`--places N`: the model in DIR with its experts in the expert cache, N places a layer and every expert in the computer's memory (src/offload.rs; `--mode`, copy by default, `--device-plan`: the
         // decode calls planned on the GPU, src/devplan.rs): a model larger than the GPU, its replies alone against its replies at once)
         (Some(d), places) if places > 0 => {
@@ -7209,6 +7347,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // (what a server says of its keys and values, /v1/glyd/info's `precision.kv`, is read from the engine at load, before the pools are made: the format asked for, which the pools then hold)
     let kv_said = crate::conv::Gen::held(&e).map_or("", |h| h.kv_type);
     let (batchable, exact, host) = (e.batchable(), e.rows_exact(), host_experts(&e));
+    // (the one-row steps that replayed their sequence's graph so far: the replies above, which are no scheduler's; the check below counts the scheduler's alone)
+    let ones_before = e.one_replays.get();
     let Some((k, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
     let chunk = crate::sched::ModelStep::chunk(step);
     // (--ctx plan: the GPU memory the load and the step's sequences took, against the plan's (its weights, sequences and work: `planned_gpu_used_bytes`), and the users it holds)
@@ -7355,8 +7495,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         );
     }
     let together = ask(&mut s, &prompts, 0)?;
+    let together_logits = seen(&s);
     let same = together.iter().zip(&reference).filter(|(a, b)| a == b).count();
-    let same_logits = seen(&s).iter().zip(&alone_logits).filter(|(a, b)| a == b).count();
+    let same_logits = together_logits.iter().zip(&alone_logits).filter(|(a, b)| a == b).count();
     let together_rows: Vec<Seen> = together.iter().cloned().zip(seen_rows(&s)).collect();
     // (with a page budget too small for all of them at once (GLYD_ENGINE_PAGES), sequences give their blocks back and run again from their tokens, the generated ones as a prompt: the
     // replies are then counted, not required to be the same)
@@ -7504,6 +7645,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         }
     }
     println!("  at once against alone, logit for logit: {same_logits} of {} replies' every sample logit the same bits", prompts.len());
+    // (the replies at once and their sample logits as one digest, which two runs held to the same bits compare: the tables an embedding kind reads by rows on the GPU
+    // against on the host (GLYD_TABLES), whose rows are the same bits)
+    println!("  at once, the replies' tokens and sample logits: digest {}", replies_digest(&together, &together_logits));
     // (where the engine computes experts on the host (an expert cache whose mode gives the host pairs, `host_experts`): which of a call's misses the host computes, and which are
     // copied or promoted, turns on the call's pairs and the places' state, and the host sums a pair in another order than the GPU, so a row's last bits turn on the rows beside
     // it: at once is held to alone at the kind's bound, row for row; runs of the same calls are held to the bit)
@@ -7581,20 +7725,31 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     fails += !held_to_plan("after the runs")? as usize;
     // (the sampler's candidates the step makes on the GPU (src/dynamic/rows.rs `Cands`), against its rows' logits)
     let swapped = s.stats.swapped;
+    // (the scheduler's decode steps of one row in every run above)
+    let one_steps = s.context().sched[19].load(std::sync::atomic::Ordering::Relaxed);
     s.stop_rows();
     drop(s);
-    // (decode steps of several rows replay a CUDA graph of their padded rows where the description takes one (src/dynamic/rows.rs `rows_bucket`): with prompts one a pass, a
-    // description with experts decodes a sequence a step)
-    let (replays, late) = (e.rows_replays.get(), e.rows_late.get());
+    // (decode steps of several rows replay a CUDA graph of their padded rows where the description takes one (src/dynamic/rows.rs `rows_bucket`), every kind's (`capturable`),
+    // up to the ladder's top (`rows_top`: the head's rows, or the expert cache's plan on the GPU's, 64, each row count its own); with prompts one a pass, a description with experts decodes a
+    // sequence a step. A step of one row replays its sequence's own graph)
+    let (replays, late, eager, top, ones) =
+        (e.rows_replays.get(), e.rows_late.get(), e.rows_eager.get(), e.rows_graph_top(), e.one_replays.get() - ones_before);
     // (steps launched ahead, GLYD_ENGINE_OVERLAP=1, run as passes of parts: no graph of rows and no pieces there yet)
     let ahead = crate::sched::ModelStep::overlaps(&e);
     if crate::sched::overlap_asked() {
         println!("steps launched before the step before lands (GLYD_ENGINE_OVERLAP=1): {}", if ahead { "yes" } else { "no, this model's steps land first" });
     }
     let graphs = e.rows_graphs() && !(one_a_pass && !e.rows_exact()) && !ahead;
+    // (where the engine computes experts on the host the runs above recorded every row's logits and traced the routers' choices, for the kind's bound (`recording_rows`), and a
+    // traced pass runs eager (`Dyn::tracing`): no step of theirs replays a graph, so the run of graphs on below is the one counted)
+    let traced = host;
+    let by: Vec<String> = e.rows_replays_by_size().iter().map(|(r, n)| format!("{r}:{n}")).collect();
     println!(
-        "decode steps of several rows replayed from a CUDA graph: {replays}, graphs captured in a request's step: {late}{}",
-        if graphs { "" } else { " (this description's steps of several rows run eager)" }
+        "decode steps of several rows replayed from a CUDA graph: {replays}, run eager: {eager} (graphs up to {top} rows; replays by the graph's rows {}), graphs captured \
+         in a request's step: {late}{}; decode steps of one row replayed from their sequence's graph: {ones} of {one_steps}{}",
+        by.join(" "),
+        if graphs || k < 2 { "" } else { " (this description's steps of several rows run eager)" },
+        if traced { " (runs that traced the routers' choices, every pass eager: the run of graphs on below is counted)" } else { "" }
     );
     // (a step of several rows that decode and nothing else: more of them than steps that held a prompt's chunk beside; else every one may have held one, as where each
     // prompt runs while the one before decodes, prompts that fill a long planned context)
@@ -7602,8 +7757,22 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     if graphs && batchable && k > 1 && steps[2..].iter().any(|&x| x > 0) && !alone_rows {
         println!("decode steps of several rows alone: not asked (no more of them than the {mixed} steps that held a prompt's chunk beside)");
     }
-    if graphs && batchable && k > 1 && alone_rows && replays == 0 {
+    if !traced && graphs && batchable && k > 1 && alone_rows && replays == 0 {
         println!("FAIL no decode step of several rows replayed a graph");
+        fails += 1;
+    }
+    // (every step of several rows that decode within the ladder replays its graph: where the users fit it, none runs eager)
+    if !traced && graphs && k <= top && eager > 0 {
+        println!("FAIL {eager} decode steps of several rows ran eager, where the graphs of up to {top} rows hold them");
+        fails += 1;
+    }
+    // (a graph that could not be captured turns the description's graphs of several rows off: not a pass)
+    if e.rows_lost.get() > 0 {
+        println!("FAIL {} graphs of decode steps of several rows could not be captured (such steps then ran eager)", e.rows_lost.get());
+        fails += 1;
+    }
+    if !traced && e.graphs_taken() && !ahead && steps[1] > 0 && ones == 0 {
+        println!("FAIL no decode step of one row replayed its sequence's graph");
         fails += 1;
     }
     // (every size captured before the first request (rows.rs `capture_rows`): no step waits on a capture)
@@ -7616,11 +7785,14 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // same rows in the same order, so the replies are the same token for token, and where pieces can run, passes replayed them. Not where sequences are sent back for room,
     // which turns on timings)
     let pieces_on = e.pieces_for_check(true, true);
-    // (a run of the prompts at once, its replies and its sample logits: launched ahead or not where the step can be, `overlapping`)
+    // (a run of the prompts at once, its replies and its sample logits: launched ahead or not where the step can be, `overlapping`; its scheduler's decode steps of one row
+    // in `run_ones`)
+    let run_ones = std::cell::Cell::new(0u64);
     let run = |e: &mut Dyn, ahead: bool| -> Result<(Vec<Vec<u32>>, Vec<Vec<u32>>)> {
         let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
         let mut s = Sched::new(step, k).keeping(false).recording(true).overlapping(ahead);
         let got = ask(&mut s, &prompts, 0)?;
+        run_ones.set(s.context().sched[19].load(std::sync::atomic::Ordering::Relaxed));
         Ok((got, seen(&s)))
     };
     let same = |a: &(Vec<Vec<u32>>, Vec<Vec<u32>>), b: &(Vec<Vec<u32>>, Vec<Vec<u32>>)| {
@@ -7629,18 +7801,24 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     if !squeezed && std::env::var_os("GLYD_KV12_POOL").is_none() && (pieces_on || e.graphs_taken()) {
         let eager = run(&mut e, ahead)?;
         e.pieces_for_check(true, false);
-        let (before, rows_before) = (e.piece_replays.get(), e.rows_replays.get());
-        let graphs = run(&mut e, ahead)?;
+        let (before, rows_before, eager_before, ones_on_before) = (e.piece_replays.get(), e.rows_replays.get(), e.rows_eager.get(), e.one_replays.get());
+        let on = run(&mut e, ahead)?;
         let (played, rows_played) = (e.piece_replays.get() - before, e.rows_replays.get() - rows_before);
+        let (eager_on, ones_on, one_steps_on) = (e.rows_eager.get() - eager_before, e.one_replays.get() - ones_on_before, run_ones.get());
         e.pieces_for_check(false, false);
-        let (same_t, same_l) = same(&graphs, &eager);
-        let ok = same_t == prompts.len() && same_l == prompts.len() && (played > 0 || !pieces_on || ahead);
+        let (same_t, same_l) = same(&on, &eager);
+        // (pieces are of a full pass's rows, a step's chunk's: prompts that fit one chunk together make one pass of prompt tokens at most, which need take none (one-token
+        // prompts are rows that decode: their pass is the decode steps' graph))
+        let no_full = prompts.iter().map(Vec::len).sum::<usize>() <= chunk;
+        let ok = same_t == prompts.len() && same_l == prompts.len() && (played > 0 || !pieces_on || ahead || no_full);
         println!(
             "{} graphs on against off: {same_t} of {} replies at once the eager passes', token for token, {same_l} logit for logit; {played} passes replayed their pieces, \
              {rows_played} decode steps their graph{}",
             if ok { "PASS" } else { "FAIL" },
             prompts.len(),
-            if pieces_on {
+            if pieces_on && no_full {
+                " (the prompts fit one step's chunk together: no pass need replay pieces)"
+            } else if pieces_on {
                 ""
             } else if !e.stores().is_empty() {
                 " (no pieces with an expert cache: a prompt's chunk plans its calls on the host)"
@@ -7649,6 +7827,25 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             }
         );
         fails += !ok as usize;
+        // (runs that traced the routers' choices: the run of graphs on held to what the checks above hold an untraced run to)
+        if traced {
+            println!(
+                "  the run of graphs on: {rows_played} decode steps of several rows replayed their graph, {eager_on} ran eager; {ones_on} of its {one_steps_on} decode steps of \
+                 one row replayed their sequence's graph"
+            );
+            if graphs && batchable && k > 1 && rows_played == 0 {
+                println!("FAIL no decode step of several rows replayed a graph in the run of graphs on");
+                fails += 1;
+            }
+            if graphs && k <= top && eager_on > 0 {
+                println!("FAIL {eager_on} decode steps of several rows ran eager in the run of graphs on, where the graphs of up to {top} rows hold them");
+                fails += 1;
+            }
+            if e.graphs_taken() && !ahead && one_steps_on > 0 && ones_on == 0 {
+                println!("FAIL no decode step of one row replayed its sequence's graph in the run of graphs on");
+                fails += 1;
+            }
+        }
     }
     // (launched ahead against not, GLYD_ENGINE_OVERLAP=1: the same steps, each landed before the next is launched in the second run)
     if ahead && !squeezed {

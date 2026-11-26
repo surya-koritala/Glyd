@@ -529,11 +529,12 @@ pub fn random_dsa(out: &Path) -> Result<()> {
 }
 
 /// `random` at the release's widths (a width of 7,168, 96 delta heads of 128, experts of 3,072 neurons on a latent of 3,584, 16 of `experts` a token, 2 shared), every layer
-/// delta attention, the first a small dense MLP as released and the others experts, a vocabulary of 4,096 (its embedding small): a model as large as the GPU's memory or larger
+/// delta attention (with `mla` and 8 layers, the latent attention at layers 4 and 8 as `random`'s: a model whose decode rows have tables, so that a step of several rows is
+/// a graph), the first a small dense MLP as released and the others experts, a vocabulary of 4,096 (its embedding small): a model as large as the GPU's memory or larger
 /// (4 layers, 3 of 320 experts: 18 GB) to run through the expert cache. Its router is not the small model's decisive one: the scores spread and a bias of 0.01 at most, so that
 /// the choices spread over the experts as a trained router's do over a batch.
-pub fn random_real(out: &Path, layers: usize, experts: usize) -> Result<()> {
-    random_with(out, 1, false, layers.min(8), Some(experts), false, RANDOM_SEED)
+pub fn random_real(out: &Path, layers: usize, experts: usize, mla: bool) -> Result<()> {
+    random_with(out, 1, mla, layers.min(8), Some(experts), false, RANDOM_SEED)
 }
 
 fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<usize>, dsa: bool, seed: u64) -> Result<()> {

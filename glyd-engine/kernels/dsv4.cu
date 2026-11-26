@@ -62,6 +62,10 @@ __device__ __forceinline__ void v4_fp4_group(float* v, int m, int lanes) {
 // Row r of a ring: through the sequence's block table (16 rows a block) where it has one, else r modulo the ring's `cap` rows (0: r).
 __device__ __forceinline__ size_t v4_place(const int* tab, int r, int cap) { return tab ? (size_t)tab[r >> 4] * 16 + (r & 15) : (size_t)(cap ? r % cap : r); }
 
+// A step's row t's block table: tab + t ts where the step's rows that decode each read their own sequence's (src/dynamic/rows.rs `RowTabs`), tab where ts is 0; none where tab is null. A row at a
+// negative position is a graph's padding row: it reads and writes no ring and no state, and its outputs are zeros or as they were.
+__device__ __forceinline__ const int* v4_row_tab(const int* tab, long long ts, int t) { return tab ? tab + (size_t)t * ts : tab; }
+
 // The rotary on a pair (a, b) at the angle whose cosine and sine are given (inverse: by the conjugate), rounded to bf16.
 __device__ __forceinline__ void v4_rot(float& a, float& b, float c, float s) {
     const float x = a * c - b * s, y = a * s + b * c;
@@ -101,7 +105,7 @@ extern "C" __global__ void __launch_bounds__(128) v4_q_prep(bf16* q, const float
 #pragma unroll
         for (int i = 0; i < 4; i++) v[i] = b2f(f2b(v[i] * r));
     }
-    if (c >= V4_HD - V4_RD) {
+    if (c >= V4_HD - V4_RD && pos[t] >= 0) {
         const float* ct = cs + (size_t)pos[t] * (V4_RD / 2);
         const float* st = sn + (size_t)pos[t] * (V4_RD / 2);
         const int p = (c - (V4_HD - V4_RD)) / 2;
@@ -113,9 +117,11 @@ extern "C" __global__ void __launch_bounds__(128) v4_q_prep(bf16* q, const float
 }
 
 // The key-value row of each row: kv [n, 512] (the product's) normed with w (rounded once), the rotary on its last 64 channels, its first 448 rounded to E4M3 in blocks of 64 (act_quant, the release's simulation),
-// written to the window's ring [cap, 512] at the row's position (through tab). Block a row, 128 threads of 4 channels (a block of 64 channels is 16 lanes).
-extern "C" __global__ void __launch_bounds__(128) v4_kv_prep(const bf16* kv, const bf16* w, const float* cs, const float* sn, const int* pos, bf16* ring, int cap, const int* tab, float eps, int sim) {
+// written to the window's ring [cap, 512] at the row's position (through row t's table, v4_row_tab). Block a row, 128 threads of 4 channels (a block of 64 channels is 16 lanes).
+extern "C" __global__ void __launch_bounds__(128) v4_kv_prep(const bf16* kv, const bf16* w, const float* cs, const float* sn, const int* pos, bf16* ring, int cap, const int* tab, long long ts, float eps, int sim) {
     const int t = blockIdx.x, c = threadIdx.x * 4;
+    if (pos[t] < 0) return;
+    tab = v4_row_tab(tab, ts, t);
     const bf16* kr = kv + (size_t)t * V4_HD;
     float v[4], ss = 0.f;
 #pragma unroll
@@ -223,9 +229,7 @@ extern "C" __global__ void __launch_bounds__(256) v4_lin32_1(const bf16* x, cons
 // back): kvs and scs [rows, W] (rows = 2 ratio overlapping: the previous window's then the current's; else ratio). Each row goes to its window's place; where it completes a window, the window's entry
 // (softmax over its rows of each channel's scores, the kv weighted by it; overlapping: channel c of the previous window's first half and of the current's second half) into pooled [n / ratio + 1, d] (fp32;
 // the k-th window completed in the chunk) and, overlapping, the current window's rows become the previous. A thread a channel c of d (its columns c and, overlapping, d + c: all its state is its own).
-extern "C" __global__ void v4_comp_pool(const float* proj, const float* ape, float* kvs, float* scs, float* pooled, const int* pos, int n, int ratio, int d, int overlap) {
-    const int c = blockIdx.x * blockDim.x + threadIdx.x;
-    if (c >= d) return;
+__device__ __forceinline__ void v4_comp_pool_of(int c, const float* proj, const float* ape, float* kvs, float* scs, float* pooled, const int* pos, int n, int ratio, int d, int overlap) {
     const int W = overlap ? 2 * d : d, first = pos[0] / ratio;
     for (int t = 0; t < n; t++) {
         const int p = pos[t], m = p % ratio, row = overlap ? ratio + m : m;
@@ -262,6 +266,22 @@ extern "C" __global__ void v4_comp_pool(const float* proj, const float* ape, flo
     }
 }
 
+extern "C" __global__ void v4_comp_pool(const float* proj, const float* ape, float* kvs, float* scs, float* pooled, const int* pos, int n, int ratio, int d, int overlap) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c < d) v4_comp_pool_of(c, proj, ape, kvs, scs, pooled, pos, n, ratio, d, overlap);
+}
+
+// v4_comp_pool of a step's rows that decode, a token of a sequence each (grid ceil(d / 128) by rows): row r's states kvs and scs at sts[r ss] and sts[r ss + 1] (a table of addresses, the state
+// table's two entries of the compressor's state: src/dynamic/rows.rs `RowTabs`; 0: a padding row, which reads and writes no state and pools nothing), its row of proj at r 2W, its window's entry
+// (where it completes one) into pooled row r. Each row's arithmetic is v4_comp_pool's on that sequence's one token.
+extern "C" __global__ void v4_comp_pool_rows(const float* proj, const float* ape, const unsigned long long* sts, int ss, float* pooled, const int* pos, int ratio, int d, int overlap) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x, r = blockIdx.y, W = overlap ? 2 * d : d;
+    float* kvs = reinterpret_cast<float*>(sts[(size_t)r * ss]);
+    float* scs = reinterpret_cast<float*>(sts[(size_t)r * ss + 1]);
+    if (c >= d || !kvs || pos[r] < 0) return;
+    v4_comp_pool_of(c, proj + (size_t)r * 2 * W, ape, kvs, scs, pooled + (size_t)r * d, pos + r, 1, ratio, d, overlap);
+}
+
 // An indexer key's channel c (a thread a channel, 128 threads) after its norm: the rotary on its last 64 channels (cosines and sines ct, st at the key's position), the Hadamard rotation, E2M1 in blocks of
 // 32 where `sim`; through shared memory hs [128].
 __device__ __forceinline__ float v4_idx_tail(float v, float* hs, int c, const float* ct, const float* st, int sim) {
@@ -290,9 +310,14 @@ __device__ __forceinline__ float v4_idx_tail(float v, float* hs, int c, const fl
 // Each window the chunk completed (block k: the k-th, window g = pos[0] / ratio + k; nothing where the chunk does not complete it): its pooled entry rounded to bf16, normed with w (rounded once), the rotary on
 // its last 64 channels at the window's first position, then (mode 0, the attention's: d = 512) its first d - 64 channels to E4M3 in blocks of 64, or (mode 1, the indexer's: d = 128) the Hadamard rotation and
 // E2M1 in blocks of 32; into cache [entries, d] at entry g (through tab). Where `raw` ([entries, d], through tab: a ring of the cache's group), the normed entry before the rotary too, exact in
-// bf16 (a shared compressed attention's indexer keys are made of it: v4_idx_keys). 128 threads, d / 128 channels each.
-extern "C" __global__ void __launch_bounds__(128) v4_comp_out(const float* pooled, const bf16* w, const float* cs, const float* sn, const int* pos, int n, bf16* cache, const int* tab, int ratio, int d, int mode,
-                                                              float eps, int sim, bf16* raw) {
+// bf16 (a shared compressed attention's indexer keys are made of it: v4_idx_keys). 128 threads, d / 128 channels each. Grid y: a step's rows that decode, a sequence's each (n 1): row y's position at
+// pos + y, its pooled entry at row y of pooled, its table v4_row_tab's (gridDim.y 1: one sequence's rows); a negative position (a graph's padding row) writes nothing.
+extern "C" __global__ void __launch_bounds__(128) v4_comp_out(const float* pooled, const bf16* w, const float* cs, const float* sn, const int* pos, int n, bf16* cache, const int* tab, long long ts, int ratio, int d,
+                                                              int mode, float eps, int sim, bf16* raw) {
+    pos += blockIdx.y;
+    pooled += (size_t)blockIdx.y * d;
+    tab = v4_row_tab(tab, ts, blockIdx.y);
+    if (pos[0] < 0) return;
     const int k = blockIdx.x, g = pos[0] / ratio + k, m = d / 128, c = threadIdx.x * m;
     if ((g + 1) * ratio - 1 > pos[n - 1]) return;  // (the whole block)
     __shared__ float hs[V4_IDX];
@@ -328,9 +353,12 @@ extern "C" __global__ void __launch_bounds__(128) v4_comp_out(const float* poole
 // The indexer's keys of a shared compressed attention's entries (`Op::IdxKeys`, DeepSeek-V4.1's CSA2): each window the chunk completed (block k, window g = pos[0] / ratio + k), of raw [entries, 512] (its
 // compressor's entry normed, before the rotary: v4_comp_out's), by wk [128, 512] (bf16) in fp32 rounded to bf16 (the release's bf16 product), normed with w (rounded once), then as an indexer entry of
 // v4_comp_out: the rotary at the window's first position, the Hadamard rotation, E2M1 where `sim`; into keys [entries, 128] at g. Both rings of the entries' group: rows through its table tab. 128
-// threads, a channel each.
-extern "C" __global__ void __launch_bounds__(128) v4_idx_keys(const bf16* raw, const int* tab, const bf16* wk, const bf16* w, const float* cs, const float* sn, const int* pos, int n, bf16* keys, int ratio, float eps,
-                                                              int sim) {
+// threads, a channel each. Grid y as v4_comp_out's.
+extern "C" __global__ void __launch_bounds__(128) v4_idx_keys(const bf16* raw, const int* tab, long long ts, const bf16* wk, const bf16* w, const float* cs, const float* sn, const int* pos, int n, bf16* keys, int ratio,
+                                                              float eps, int sim) {
+    pos += blockIdx.y;
+    tab = v4_row_tab(tab, ts, blockIdx.y);
+    if (pos[0] < 0) return;
     const int k = blockIdx.x, g = pos[0] / ratio + k, c = threadIdx.x;
     if ((g + 1) * ratio - 1 > pos[n - 1]) return;  // (the whole block)
     __shared__ float xs[V4_HD];
@@ -357,7 +385,7 @@ extern "C" __global__ void __launch_bounds__(128) v4_idx_q(bf16* q, const float*
     float v = b2f(qr[c]);
     hs[c] = v;
     __syncthreads();
-    if (c >= V4_IDX - V4_RD) {
+    if (c >= V4_IDX - V4_RD && pos[t] >= 0) {
         const int p = (c - (V4_IDX - V4_RD)) / 2;
         const float a = hs[c & ~1], b = hs[c | 1], cc = cs[(size_t)pos[t] * (V4_RD / 2) + p], sv = sn[(size_t)pos[t] * (V4_RD / 2) + p];
         v = b2f(f2b((c & 1) ? a * sv + b * cc : a * cc - b * sv));
@@ -396,10 +424,12 @@ __device__ __forceinline__ const bf16* v4_key_row(int j, int p, int window, cons
 }
 
 // The scores q_h . key_j x scale of row t (q [n, H, 512]) into sc [n, H, lmax] (fp32). Block (row, V4_KC keys, V4_SG heads), 8 warps: a warp a key at a time, a lane 16 of its channels, the heads' queries in
-// shared memory.
-extern "C" __global__ void __launch_bounds__(256) v4_attn_scores(const bf16* q, const bf16* ring, int cap, const int* ktab, const bf16* cache, const int* ctab, const int* sel, const int* cnt, int k, const int* pos,
-                                                                 float* sc, int H, int lmax, int window, int ratio, float scale, const int* last) {
+// shared memory. Row t's window and entries through its tables (v4_row_tab: kts and cts, the window's group's and the entries' group's).
+extern "C" __global__ void __launch_bounds__(256) v4_attn_scores(const bf16* q, const bf16* ring, int cap, const int* ktab, long long kts, const bf16* cache, const int* ctab, long long cts, const int* sel,
+                                                                 const int* cnt, int k, const int* pos, float* sc, int H, int lmax, int window, int ratio, float scale, const int* last) {
     const int t = blockIdx.x, h0 = blockIdx.z * V4_SG, w = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    ktab = v4_row_tab(ktab, kts, t);
+    ctab = v4_row_tab(ctab, cts, t);
     const int p = pos[t], L = v4_keys(p, window, ratio, cnt, t, last);
     __shared__ __align__(16) bf16 qs[V4_SG][V4_HD];
     for (int i = threadIdx.x * 8; i < V4_SG * V4_HD; i += 256 * 8) *reinterpret_cast<uint4*>(&qs[0][0] + i) = h0 * V4_HD + i < H * V4_HD ? *reinterpret_cast<const uint4*>(q + ((size_t)t * H + h0) * V4_HD + i) : make_uint4(0u, 0u, 0u, 0u);
@@ -483,9 +513,13 @@ extern "C" __global__ void v4_attn_soft(float* sc, const float* sink, float* den
 
 // The output of row t's heads: sum over keys of bf16(p_j) key_j / den, rounded, the rotary taken off its last 64 channels at the row's position (the conjugate), into o in the grouped low rank's order: head h of
 // row t0 + t at ((h / hpg) n + t0 + t) hpg + h % hpg (a group's heads, then its rows: each group's rows one matrix for its product; t0: the first of the rows given, which are
-// taken a group of rows at a time). Block (row, 8 / V4_AQ heads), V4_AQ warps a head; the keys through shared memory, 32 a round.
-extern "C" __global__ void __launch_bounds__(256) v4_attn_out(const float* pr, const float* den, const bf16* ring, int cap, const int* ktab, const bf16* cache, const int* ctab, const int* sel, const int* cnt, int k,
-                                                              const int* pos, const float* cs, const float* sn, bf16* o, int n, int H, int hpg, int lmax, int window, int ratio, int t0, const int* last) {
+// taken a group of rows at a time). Block (row, 8 / V4_AQ heads), V4_AQ warps a head; the keys through shared memory, 32 a round. Row t's tables as v4_attn_scores'; a row at a negative position
+// (a graph's padding row: no keys) gives zeros.
+extern "C" __global__ void __launch_bounds__(256) v4_attn_out(const float* pr, const float* den, const bf16* ring, int cap, const int* ktab, long long kts, const bf16* cache, const int* ctab, long long cts,
+                                                              const int* sel, const int* cnt, int k, const int* pos, const float* cs, const float* sn, bf16* o, int n, int H, int hpg, int lmax, int window, int ratio,
+                                                              int t0, const int* last) {
+    ktab = v4_row_tab(ktab, kts, blockIdx.x);
+    ctab = v4_row_tab(ctab, cts, blockIdx.x);
     // (a head's 512 channels on V4_AQ warps, 4 a lane: 8 / V4_AQ heads a block; each channel's sum over the keys in their order, as one warp a head summed them)
     constexpr int C = V4_HD / V4_AQ / 32;  // (a lane's channels)
     const int t = blockIdx.x, w = threadIdx.x >> 5, lane = threadIdx.x & 31, h = blockIdx.y * (8 / V4_AQ) + w / V4_AQ, d0 = (w % V4_AQ) * (V4_HD / V4_AQ) + lane * C;
@@ -536,7 +570,7 @@ extern "C" __global__ void __launch_bounds__(256) v4_attn_out(const float* pr, c
     float v[C];
 #pragma unroll
     for (int i = 0; i < C; i++) v[i] = b2f(f2b(acc[i] / dn));
-    if (d0 >= V4_HD - V4_RD) {
+    if (d0 >= V4_HD - V4_RD && p >= 0) {
         const float* ct = cs + (size_t)p * (V4_RD / 2);
         const float* st = sn + (size_t)p * (V4_RD / 2);
         const int p0 = (d0 - (V4_HD - V4_RD)) / 2;

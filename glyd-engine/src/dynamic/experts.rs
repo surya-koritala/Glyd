@@ -407,25 +407,79 @@ impl Stacked<'_> {
         }
     }
 
-    /// Every expert's matrix, stacked [experts rows, cols]: bf16 words.
-    fn words(&self, ck: &Checkpoint, experts: usize) -> Result<Vec<u16>> {
-        let (rows, cols) = self.dims(ck, None, experts)?;
+    /// Expert `e`'s matrix [rows, cols] (`dims`'), bf16 words: its own tensors, or its rows of the one tensor of them all, read by their range of the file
+    /// alone (a layer's stacked tensor of a large release is tens of GB, never read whole).
+    fn expert(&self, ck: &Checkpoint, e: usize, rows: usize, cols: usize) -> Result<Vec<u16>> {
         match self {
-            Stacked::Each(v) => item_words(ck, &Item { members: v.iter().flatten().cloned().collect(), rows: experts * rows, cols }),
+            Stacked::Each(v) => item_words(ck, &Item { members: v[e].clone(), rows, cols }),
             Stacked::One(n) => {
-                let mut w = vec![0u16; experts * rows * cols];
-                ck.read_bf16(n, &mut w).map_err(|e| Error(format!("{n}: {e}")))?;
+                let mut w = vec![0u16; rows * cols];
+                ck.read_rows_bf16(n, e * rows, (e + 1) * rows, &mut w).map_err(|x| Error(format!("{n}: expert {e}: {x}")))?;
                 Ok(w)
             }
         }
     }
 
-    /// Expert `e`'s matrix [rows, cols] (`all`: every expert's, where the checkpoint holds them as one tensor).
-    fn expert(&self, ck: &Checkpoint, e: usize, all: &[u16], rows: usize, cols: usize) -> Result<Vec<u16>> {
-        match self {
-            Stacked::Each(v) => item_words(ck, &Item { members: v[e].clone(), rows, cols }),
-            Stacked::One(_) => Ok(all[e * rows * cols..(e + 1) * rows * cols].to_vec()),
+    /// Rows `r0..r0 + rn` of each of the `experts` experts' matrices [rows, cols], stacked [experts rn, cols] (every expert's whole: `r0` 0, `rn` its
+    /// rows; a GPU's rows of each across a group of GPUs): an expert at a time, each by its range of the file where the experts are one tensor.
+    fn rows_of_each(&self, ck: &Checkpoint, experts: usize, (rows, cols): (usize, usize), r0: usize, rn: usize) -> Result<Vec<u16>> {
+        let mut w = Vec::with_capacity(experts * rn * cols);
+        for e in 0..experts {
+            match self {
+                Stacked::Each(_) => w.extend_from_slice(&self.expert(ck, e, rows, cols)?[r0 * cols..(r0 + rn) * cols]),
+                Stacked::One(n) => {
+                    let at = w.len();
+                    w.resize(at + rn * cols, 0);
+                    let (a, b) = (e * rows + r0, e * rows + r0 + rn);
+                    ck.read_rows_bf16(n, a, b, &mut w[at..]).map_err(|x| Error(format!("{n}: expert {e}: {x}")))?;
+                }
+            }
         }
+        Ok(w)
+    }
+
+    /// The exponents' counts of every expert's matrix (`glyd_gpu::pack::histogram` of the stack), read an expert at a time.
+    fn histogram(&self, ck: &Checkpoint, experts: usize, (rows, cols): (usize, usize)) -> Result<[u64; 256]> {
+        let mut h = [0u64; 256];
+        for e in 0..experts {
+            for (a, b) in h.iter_mut().zip(glyd_gpu::pack::histogram(&self.expert(ck, e, rows, cols)?)) {
+                *a += b;
+            }
+        }
+        Ok(h)
+    }
+
+    /// Every expert's matrix stacked ([experts rows, cols]) as one pack in the tiered layout of the stack's tiers (`h`, `histogram`'s), each step checked:
+    /// `pack_tiered_checked`'s bytes of the stack, packed an expert at a time (`pack_tiered_parts_checked`), so that no more than one expert's weights are
+    /// held beside the pack.
+    fn tiered(&self, ck: &Checkpoint, experts: usize, h: &[u64; 256]) -> Result<Tiered> {
+        let (rows, cols) = self.dims(ck, None, experts)?;
+        glyd_gpu::pack::pack_tiered_parts_checked(experts, rows, cols, h, &mut |e| self.expert(ck, e, rows, cols))?
+            .ok_or_else(|| Error(format!("{}: decoded to other bits than its weights", self.name())))
+    }
+
+    /// The lossless level's one pack of every expert's matrix stacked, as `pack_words` makes it at `level` of the stack read whole (the smaller of the
+    /// tiered and 12-bit layouts at penguin): the tiered pack made an expert at a time (`tiered`) where it is the one `pack_words` keeps, else the stack
+    /// read, an expert at a time, and packed whole.
+    fn lossless(&self, ck: &Checkpoint, experts: usize, level: Layout) -> Result<Packed> {
+        use glyd_gpu::pack::{cold_steps, tiered_bytes, twelve_bytes, COLD_SHARE, STEP};
+        let (rows, cols) = self.dims(ck, None, experts)?;
+        if level == Layout::Tiered {
+            let h = self.histogram(ck, experts, (rows, cols))?;
+            let t = self.tiered(ck, experts, &h)?;
+            let steps = experts * rows * cols / STEP;
+            if tiered_bytes(&t) <= twelve_bytes(&h, experts * rows, cols) && cold_steps(&t.block_base) * COLD_SHARE.1 <= steps * COLD_SHARE.0 {
+                return Ok(Packed {
+                    data: t.data,
+                    b1: t.blocks,
+                    b2: crate::weights::i32_bytes(&t.block_base),
+                    words: Words::Tiered { blocks: 0, block_base: 0, tiers: t.tiers },
+                    rows: t.rows,
+                    cols: t.cols,
+                });
+            }
+        }
+        pack_words(&self.rows_of_each(ck, experts, (rows, cols), 0, rows)?, experts * rows, cols, level, &self.name())
     }
 }
 
@@ -487,13 +541,12 @@ pub(crate) fn pack_of(ck: &Checkpoint, v7: V7, members: &[String], layout: Layou
     read_pack(ck, v7, &Pack35 { key: Pack35::saved(&members[0]).to_string(), parts, cols }, layout)
 }
 
-/// Expert `e`'s matrix of `s` ([rows, cols]; `all` every expert's, where the checkpoint holds them as one tensor) as a pack of `layout` (a row layout: its
-/// transpose, a row a neuron), as the checkpoint holds it (`pack_of`).
-#[allow(clippy::too_many_arguments)]
-fn expert_pack(ck: &Checkpoint, v7: V7, s: &Stacked, e: usize, all: &[u16], rows: usize, cols: usize, layout: Layout) -> Result<Tiered> {
+/// Expert `e`'s matrix of `s` ([rows, cols]) as a pack of `layout` (a row layout: its transpose, a row a neuron), as the checkpoint holds it (`pack_of`; its
+/// rows of the one tensor of them all, read alone).
+fn expert_pack(ck: &Checkpoint, v7: V7, s: &Stacked, e: usize, (rows, cols): (usize, usize), layout: Layout) -> Result<Tiered> {
     let p = match s {
         Stacked::Each(v) => pack_of(ck, v7, &v[e], layout),
-        Stacked::One(_) => pack_words(&s.expert(ck, e, all, rows, cols)?, rows, cols, layout, &s.name_of(e)),
+        Stacked::One(_) => pack_words(&s.expert(ck, e, rows, cols)?, rows, cols, layout, &s.name_of(e)),
     }?;
     let Words::Tiered { tiers, .. } = p.words else { return err(format!("{}: an expert that is not in a block or row layout", s.name_of(e))) };
     Ok(Tiered { rows: p.rows, cols: p.cols, data: p.data, blocks: p.b1, block_base: Vec::new(), tiers })
@@ -502,14 +555,9 @@ fn expert_pack(ck: &Checkpoint, v7: V7, s: &Stacked, e: usize, all: &[u16], rows
 /// A block level's experts (`up`, `down`: their roles' tensors, `e` of them), each expert's two packs at `level` joined (`Joined`, `DownHost`), as the checkpoint
 /// holds them (`pack_of`): where the experts' activation is relu squared (`act`), their second matrices in the level's row layout, the transpose a row a neuron
 /// (the sparse product skips the neurons relu squared leaves at zero, src/moe_rows.rs; a development build's GLYD_ENGINE_DENSE_DOWN keeps the block layout).
-/// Where the checkpoint holds a matrix of every expert as one tensor, it is read once and cut per expert.
+/// Where the checkpoint holds a matrix of every expert as one tensor, each expert's rows of it are read alone, as its turn comes.
 fn block_packs(up: &Stacked, down: &Stacked, ck: &Checkpoint, v7: V7, e: usize, level: Layout, act: kinds::Act) -> Result<(Joined, DownHost)> {
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
-    let all = |s: &Stacked| match s {
-        Stacked::One(_) => s.words(ck, e),
-        Stacked::Each(_) => Ok(Vec::new()),
-    };
-    let (all_up, all_down) = (all(up)?, all(down)?);
     let (du, dd) = (up.dims(ck, v7, e)?, down.dims(ck, v7, e)?);
     let rows = act == kinds::Act::Relu2 && crate::tune!("GLYD_ENGINE_DENSE_DOWN").is_none();
     let down_layout = if rows { level.row_of().unwrap_or(level) } else { level };
@@ -519,8 +567,8 @@ fn block_packs(up: &Stacked, down: &Stacked, ck: &Checkpoint, v7: V7, e: usize, 
         threads,
         2 * threads,
         &|k| {
-            let (s, all, (r, c), layout) = if k % 2 == 0 { (up, &all_up, du, level) } else { (down, &all_down, dd, down_layout) };
-            expert_pack(ck, v7, s, k / 2, all, r, c, layout)
+            let (s, d, layout) = if k % 2 == 0 { (up, du, level) } else { (down, dd, down_layout) };
+            expert_pack(ck, v7, s, k / 2, d, layout)
         },
         |k, t| {
             (if k % 2 == 0 { &mut ups } else { &mut downs }).push(t);
@@ -712,12 +760,11 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
                 let (up, down, cache) = crate::tiering::cached_stacks(&ju, &jd, cg.places, store, ix.moe, h.ordinal, cpu)?;
                 return with8(MoeLayer::new(c, MoeWeights { router, bias, escale: None, up, down }, shared)?, shared8)?.with_cache(cache);
             }
-            // (lossless bf16: each stack's one lossless pack in the tiered layout, whatever the level of the rest, cut per expert)
+            // (lossless bf16: each stack's one lossless pack in the tiered layout, whatever the level of the rest, made an expert at a time and cut per
+            // expert: the computer's memory holds the packs, never a stack's bf16)
             let places = |s: &Stacked| -> Result<crate::tiering::TieredPlaces> {
-                let (rows, cols) = s.dims(ck, v7, e)?;
-                let p = glyd_gpu::pack::pack_tiered_checked(&s.words(ck, e)?, e * rows, cols)
-                    .ok_or_else(|| Error(format!("{}: decoded to other bits than its weights", s.name())))?;
-                crate::tiering::TieredPlaces::of(&p, e)
+                let h = s.histogram(ck, e, s.dims(ck, v7, e)?)?;
+                crate::tiering::TieredPlaces::of(s.tiered(ck, e, &h)?, e)
             };
             let (pu, pd) = (places(&up)?, places(&down)?);
             let (up, down, cache) = crate::tiering::cached_tiered(&pu, &pd, cg.places, store, ix.moe, h.ordinal)?;
@@ -732,16 +779,15 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
     let (up, down) = if lossless {
         let stack = |s: &Stacked| -> Result<ExpertStack> {
             let (rows, cols) = s.dims(ck, v7, e)?;
-            let w = s.words(ck, e)?;
             let Some(t) = across else {
-                return ExpertStack::lossless(upload_packed(pack_words(&w, e * rows, cols, level, &s.name())?)?, e);
+                return ExpertStack::lossless(upload_packed(s.lossless(ck, e, level)?)?, e);
             };
-            // (a group of GPUs: this GPU's rows of each expert's, stacked)
+            // (a group of GPUs: this GPU's rows of each expert's, stacked, read alone)
             if rows % (64 * t.n) != 0 {
                 return err(format!("{}: experts of {rows} rows across {} GPUs: each GPU's rows in 64s are wanted", s.name(), t.n));
             }
             let (r0, rn) = t.rows(rows);
-            let mine: Vec<u16> = (0..e).flat_map(|x| w[(x * rows + r0) * cols..(x * rows + r0 + rn) * cols].iter().copied()).collect();
+            let mine = s.rows_of_each(ck, e, (rows, cols), r0, rn)?;
             let mut st = ExpertStack::lossless(upload_packed(pack_words(&mine, e * rn, cols, level, &s.name())?)?, e)?;
             st.tp_rows = rows;
             Ok(st)
@@ -1664,6 +1710,74 @@ mod tests {
             for members in [first, vec![one("shared_down")]] {
                 let (pa, pb) = (pack_of(&a, None, &members, Layout::Int5).unwrap(), pack_of(&b, v7.as_ref(), &members, Layout::Int5).unwrap());
                 assert!(pa.data == pb.data && pa.b1 == pb.b1 && pa.b2 == pb.b2 && (pa.rows, pa.cols) == (pb.rows, pb.cols), "{members:?}");
+            }
+            blocks += 1;
+        }
+        assert_eq!(blocks, 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Qwen3.5 layout's random model with experts and the same model with each layer's experts stacked in two tensors (Qwen3.8-2.4T-A95B's form): the
+    /// kind's block reads an expert's matrix of a stacked tensor, by its rows alone, as the per-expert tensors' bytes, and makes the same packs of both forms:
+    /// a block level's (every expert's, joined), a lossless level's one pack of a stack (the bytes of the stack read whole and packed, as before), a GPU's
+    /// rows of each expert, and the expert cache's tiered places.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn stacked_experts_are_read_as_the_same_packs() {
+        use super::{block_packs, Stacked};
+        use crate::tiering::TieredPlaces;
+        use crate::weights::{pack_words, Layout, Packed};
+        use glyd_gpu::safetensors::Checkpoint;
+        let dir = std::env::temp_dir().join(format!("glyd-experts-stacked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (each, stacked) = (dir.join("each"), dir.join("stacked"));
+        crate::logits::qwen35moe_random(&each).unwrap();
+        crate::logits::random_model("qwen35moe-st", &stacked).unwrap();
+        let ((de, _), (ds, _)) = (crate::runtime::describe::describe_dir(&each).unwrap(), crate::runtime::describe::describe_dir(&stacked).unwrap());
+        let (ce, cs) = (Checkpoint::open(&each).unwrap(), Checkpoint::open(&stacked).unwrap());
+        let same = |a: &Packed, b: &Packed| {
+            a.data == b.data && a.b1 == b.b1 && a.b2 == b.b2 && (a.rows, a.cols) == (b.rows, b.cols) && format!("{:?}", a.words) == format!("{:?}", b.words)
+        };
+        let mut blocks = 0;
+        for ((_, m, re), (_, _, rs)) in super::of_layers(&de, (0, 4), 2).zip(super::of_layers(&ds, (0, 4), 2)) {
+            let e = m.experts;
+            let find = |roles: &[(String, super::Source)], r: &str| roles.iter().find(|(n, _)| n == r).map(|(_, s)| s.clone());
+            let (fe, fs) =
+                (["experts_gate_up", "experts_down"].map(|r| find(re, r).unwrap()), ["experts_gate_up", "experts_down"].map(|r| find(rs, r).unwrap()));
+            let (ue, de_) = (Stacked::of(Some(&fe[0]), e, "up").unwrap(), Stacked::of(Some(&fe[1]), e, "down").unwrap());
+            let (us, ds_) = (Stacked::of(Some(&fs[0]), e, "up").unwrap(), Stacked::of(Some(&fs[1]), e, "down").unwrap());
+            assert!(matches!((&ue, &us), (Stacked::Each(_), Stacked::One(_))), "a tensor an expert's, and one of them all");
+            for (a, b) in [(&ue, &us), (&de_, &ds_)] {
+                let (r, c) = a.dims(&ce, None, e).unwrap();
+                assert_eq!(b.dims(&cs, None, e).unwrap(), (r, c));
+                let whole: Vec<u16> = (0..e).flat_map(|x| a.expert(&ce, x, r, c).unwrap()).collect();
+                for x in 0..e {
+                    assert_eq!(b.expert(&cs, x, r, c).unwrap(), whole[x * r * c..(x + 1) * r * c], "expert {x}");
+                }
+                // (a GPU's rows of each: the second 64 of each expert's)
+                let mine: Vec<u16> = (0..e).flat_map(|x| whole[(x * r + 64) * c..(x * r + 128) * c].iter().copied()).collect();
+                assert!(a.rows_of_each(&ce, e, (r, c), 64, 64).unwrap() == mine && b.rows_of_each(&cs, e, (r, c), 64, 64).unwrap() == mine);
+                // (the lossless level's one pack of the stack, at penguin and in the 12-bit layout: the stack read whole and packed)
+                for level in [Layout::Tiered, Layout::Twelve] {
+                    let w = pack_words(&whole, e * r, c, level, "the stack").unwrap();
+                    assert!(same(&a.lossless(&ce, e, level).unwrap(), &w) && same(&b.lossless(&cs, e, level).unwrap(), &w), "{}", level.name());
+                }
+                // (the expert cache's places: the stack's tiered pack cut per expert)
+                let p = glyd_gpu::pack::pack_tiered_checked(&whole, e * r, c).unwrap();
+                let (pa, pb, pw) = (
+                    TieredPlaces::of(a.tiered(&ce, e, &a.histogram(&ce, e, (r, c)).unwrap()).unwrap(), e).unwrap(),
+                    TieredPlaces::of(b.tiered(&cs, e, &b.histogram(&cs, e, (r, c)).unwrap()).unwrap(), e).unwrap(),
+                    TieredPlaces::of(p, e).unwrap(),
+                );
+                for x in [&pa, &pb] {
+                    assert!(x.data == pw.data && x.blocks == pw.blocks && x.entries == pw.entries && x.tiers == pw.tiers && x.stride == pw.stride);
+                }
+            }
+            for level in [Layout::Int6, Layout::Int4] {
+                let ((ja, da), (jb, db)) =
+                    (block_packs(&ue, &de_, &ce, None, e, level, m.expert.act).unwrap(), block_packs(&us, &ds_, &cs, None, e, level, m.expert.act).unwrap());
+                assert!(ja.data == jb.data && ja.scales == jb.scales && (ja.rows, ja.cols, ja.experts) == (jb.rows, jb.cols, jb.experts));
+                assert!(da.bytes() == db.bytes(), "{}", level.name());
             }
             blocks += 1;
         }

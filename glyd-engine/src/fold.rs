@@ -4002,7 +4002,7 @@ fn moe_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec
     // the expert cache's places: the tiered stack cut per expert (tiering::TieredPlaces: each place its blocks and entries), glyd_gpu_mma_moe_placed
     let w: Vec<u16> =
         (0..(e * o) as usize * kk).map(|_| (((next() >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.1).to_bits().wrapping_shr(16) as u16).collect();
-    let places = crate::tiering::TieredPlaces::of(&glyd_gpu::pack::pack_tiered(&w, (e * o) as usize, kk), e as usize)?;
+    let places = crate::tiering::TieredPlaces::of(glyd_gpu::pack::pack_tiered(&w, (e * o) as usize, kk), e as usize)?;
     let pb = upload_packed(crate::weights::Packed {
         data: places.data.clone(),
         b1: places.blocks.clone(),

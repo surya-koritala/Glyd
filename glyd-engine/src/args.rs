@@ -66,6 +66,7 @@ const SWITCHES: &[&str] = &[
     "best",
     "last",
     "no-mla",
+    "mla",
     "no-speed",
     "peaked",
     "random-tokens",
@@ -77,6 +78,7 @@ const SWITCHES: &[&str] = &[
     "expect-apart",
     "tables",
     "decoded",
+    "stacked",
 ];
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] = &[
@@ -124,6 +126,7 @@ const BY_COMMAND: &[(&str, &str, bool)] = &[
     ("ceiling", "fp8", true),
     ("quality", "bar", true),
     ("dsv4gen", "score", true),
+    ("stackcheck", "load", true),
 ];
 
 #[derive(Clone)]
