@@ -697,12 +697,14 @@ pub fn get(repo: &str, dir: &Path, a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `glyd-engine servecheck CASE [--tokens N] [--gpus G,.. --split CUT,..]`: the family's HTTP server (`http`) on the expert cache's random case
-/// (`logits::qwen4x_cb_random`, CASE `qwen4x-cb`: its pack, a tokenizer and chat template made for it; or `qwen4x-rel`, the release's form: a slim checkpoint,
-/// its n-gram table at 4 bits, `logits::qwen4x_release_random`) against the common scheduler in this process on the same
-/// model, pack and places on one GPU (`load_cached` as `http` loads it): for a short prompt and one past a chunk, the served completion's tokens (greedy, N of
-/// them, by their ids) the scheduler's for the same tokens. With `--gpus` and `--split` the server cuts the layers over those GPUs (`open_cached`), which the
-/// one-GPU scheduler's tokens then hold to. An error where one differs.
+/// `glyd-engine servecheck CASE [--tokens N] [--gpus G,.. --split CUT,..] [--serve-mode precise | best | fast] [--sidecar]`: the family's HTTP server (`http`) on the
+/// expert cache's random case (`logits::qwen4x_cb_random`, CASE `qwen4x-cb`: its pack, a tokenizer and chat template made for it; or `qwen4x-rel`, the release's
+/// form: a slim checkpoint, its n-gram table at 4 bits, `logits::qwen4x_release_random`; `--sidecar`: a sidecar `hot/` over its pack, `logits::codes_sidecar`)
+/// against the common scheduler in this process on the same model, pack, form and places on one GPU (`load_cached` as `http` loads it, `form_of` the server's
+/// flags): for a short prompt and one past a chunk, the served completion's tokens (greedy, N of them, by their ids) the scheduler's for the same tokens.
+/// `--serve-mode`: tools/serve.sh's words for that mode and its pack's folder name (precise `--precise --layout i6 --hi i6` of `precise-v2`, best `--no-side
+/// --layout i6 --hi i6` of `best-v2`, fast none of `fast`); none: the pack as made, no flags. With `--gpus` and `--split` the server cuts the layers over those
+/// GPUs (`open_cached`), which the one-GPU scheduler's tokens then hold to. An error where one differs.
 #[cfg(feature = "dev")]
 pub fn serve_check(a: &crate::args::Args) -> Result<()> {
     use crate::sched::{Ev, Finish, Reply, Sched, Submit};
@@ -718,7 +720,21 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
     std::fs::create_dir_all(&dir).map_err(|e| crate::ffi::Error(e.to_string()))?;
     crate::logits::random_model(case, &dir)?;
     crate::logits::write_serving_files(&dir, include_str!("../../tests/fixtures/chat_qwen38_tools.jinja"))?;
-    let pack = dir.join("pack");
+    if a.has("sidecar") {
+        crate::logits::codes_sidecar(&dir)?;
+    }
+    // (tools/serve.sh's words for the mode asked, and its pack's folder by the mode's name: the pack as made renamed so)
+    let (folder, mode_words): (&str, &[&str]) = match a.flag("serve-mode") {
+        None => ("pack", &[]),
+        Some("precise") => ("precise-v2", &["--precise", "--layout", "i6", "--hi", "i6"]),
+        Some("best") => ("best-v2", &["--no-side", "--layout", "i6", "--hi", "i6"]),
+        Some("fast") => ("fast", &[]),
+        Some(m) => return err(format!("--serve-mode {m}: precise, best or fast (tools/serve.sh's modes)")),
+    };
+    let pack = dir.join(folder);
+    if folder != "pack" {
+        std::fs::rename(dir.join("pack"), &pack).map_err(|e| crate::ffi::Error(format!("{}: {e}", pack.display())))?;
+    }
     let (ctx, chunk, places, users) = (1024usize, 64usize, 3usize, 2usize);
     let port = std::net::TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).map_err(|e| crate::ffi::Error(e.to_string()))?.port();
     let words: Vec<String> = ["qwenserve", &dir.display().to_string(), &pack.display().to_string(), "--port", &port.to_string()]
@@ -726,8 +742,11 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
         .map(String::from)
         .chain(["--ctx", &ctx.to_string(), "--chunk", &chunk.to_string(), "--places", &places.to_string(), "--users", &users.to_string()].map(String::from))
         .chain(["gpus", "split"].into_iter().filter_map(|f| a.flag(f).map(|v| [format!("--{f}"), v.to_string()])).flatten())
+        .chain(mode_words.iter().map(|w| w.to_string()))
         .collect();
     let served = crate::args::Args::from(words);
+    let form = form_of(&served, &pack)?;
+    println!("servecheck {case}: the server's form {form:?}");
     let (d2, p2) = (dir.clone(), pack.clone());
     std::thread::spawn(move || {
         if let Err(e) = http(&d2, &p2, &served) {
@@ -782,8 +801,8 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
         got.push(ids);
     }
     // the same model, pack and places on the scheduler in this process, the same prompts one after another
-    let o = Opts { ctx, chunk, graph: true, device: 0, layout: Some(Layout::Int4) };
-    let mut k = Caching::new(&pack, PackMode::of(&pack, false), users);
+    let o = Opts { ctx, chunk, graph: true, device: 0, layout: Some(form.layout) };
+    let mut k = Caching::of_form(&pack, &form, users);
     k.places = Some(places);
     let mut e = load_cached(&dir, &o, &k)?;
     let Some((n, step)) = crate::conv::Gen::as_step(&mut e, users)? else { return err("servecheck: no scheduler's step") };
