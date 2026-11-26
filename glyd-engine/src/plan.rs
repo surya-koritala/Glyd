@@ -8075,6 +8075,12 @@ mod tests {
         let (with, without) = (plan(Some(Int5), Vec::new()), plan(None, Vec::new()));
         assert_eq!(with.weights, without.weights + more);
         assert!(with.spread.as_ref().unwrap().places[0] <= without.spread.as_ref().unwrap().places[0]);
+        // (the Monitor's places, as v0.34.2's server gave them: the plan's places a layer and their GB, a place the pack's largest expert)
+        let form = crate::dynamic::qwen4x::Form { mode: crate::qwen4x::PackMode::Fast, sides: Vec::new(), layout: Int4, hi: Some(Int5) };
+        let sp = with.spread.as_ref().unwrap();
+        let (gb, per) = crate::dynamic::qwen4x::monitor_places(sp, &c, &pack, &form).unwrap();
+        let place = (0..nl).map(|l| cb.place_bytes(l)).max().unwrap();
+        assert!(per == sp.places[0] && per > 0 && (gb - (per * nl * place) as f64 / 1e9).abs() < 1e-9, "{gb} GB, {per} a layer");
         // (a sidecar the form names is opened: one that is not there is refused, none is the pack's own)
         let r = crate::dynamic::qwen4x::serve_plan(
             &dir,

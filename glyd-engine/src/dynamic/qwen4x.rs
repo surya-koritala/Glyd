@@ -551,6 +551,9 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     let addr = server::listen_loading(&format!("{host}:{port}"), &name, ctx - 2, key, server::is_loopback_addr(host), tx.clone(), loading.clone())?;
     println!("Qwen3.8-Flash-Next on Glyd: the chat at http://{addr}/, the API at http://{addr}/v1 (OpenAI and Anthropic). Loading the model...");
     let sp = plan.spread.clone().ok_or_else(|| crate::ffi::Error(format!("{FAMILY}: a codes pack's plan spreads the model")))?;
+    // (the Monitor's places, as v0.34.2's server gave them: the chat page's "Experts kept on the GPU")
+    let (gb, per_layer) = monitor_places(&sp, &m, pack, &form)?;
+    crate::monitor::places(gb, per_layer);
     let o = Opts { ctx, chunk, graph: true, device: sp.devices[0], layout: Some(layout) };
     if gpus.len() > 1 {
         println!(
@@ -597,6 +600,21 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     }
     server::work_with(&mut crate::sched::Sched::new(step, n), shared, &rx, &tx);
     Ok(())
+}
+
+/// The places a plan `sp` gives the experts of the pack in `pack` as the form `f` opens it (its sidecars), as v0.34.2's server told its Monitor (`monitor::places`,
+/// `/v1/glyd/status`'s `places`, the chat page's "Experts kept on the GPU"): their GB on the GPUs (each part's places a layer times its layers times a place's
+/// bytes, the largest expert's of the pack: `CbPack::place_bytes`), and the fewest places a layer of any part.
+pub(crate) fn monitor_places(sp: &crate::plan::Spread, m: &ModelConfig, pack: &Path, f: &Form) -> Result<(f64, usize)> {
+    let (nl, hidden, inter) = (m.num("num_hidden_layers").unwrap_or(0), m.num("hidden_size").unwrap_or(0), m.num("moe_intermediate_size").unwrap_or(0));
+    let mut cb = CbPack::open_dims(pack, hidden, inter)?;
+    for side in &f.sides {
+        cb = cb.with_side(side)?;
+    }
+    let place = (0..nl).filter(|&l| cb.has(l)).map(|l| cb.place_bytes(l)).max().unwrap_or(0);
+    let bounds: Vec<usize> = std::iter::once(0).chain(sp.cuts.iter().copied()).chain(std::iter::once(nl)).collect();
+    let bytes: usize = bounds.windows(2).zip(&sp.places).map(|(w, &p)| (w[0]..w[1]).filter(|&l| cb.has(l)).count() * p * place).sum();
+    Ok((bytes as f64 / 1e9, sp.places.iter().copied().min().unwrap_or(0)))
 }
 
 /// `qwenget REPO DIR [--precise | --best]`: the model from the Hugging Face Hub (src/hub.rs: large files as ranges on several connections, resumed where they stopped, checked by SHA-256) into the Hub's cache, which
