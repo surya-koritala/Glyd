@@ -771,9 +771,13 @@ fn random_with(out: &Path, real: Option<(usize, usize)>, dspark: bool) -> Result
         t.push((format!("{name}.scale"), "F8_E8M0", vec![gr as u64, gc as u64], s));
     };
     let (d, hd, nh) = (c.hidden, c.head_dim, c.heads);
+    // (the head: the small model's U(-0.05, 0.05); at the release's widths half the matrices' scale, the logits' RMS about 0.5 as GLM-5.3's and Kimi-K3's random models
+    // draw them: narrower than 0.05 by the root of the width alone (the small model's RMS, 0.9), a cut of two layers moved its rows with no choice apart by KL mean
+    // 1.65e-5 against itself with its experts' sums in another order, past a tenth of the kind's bound; `storecheck --floor`)
+    let hs = if real.is_some() { 0.5 * (3.0 / d as f32).sqrt() } else { 0.05 };
     let mut tensors_bf16: Vec<(String, Vec<u64>, f32, f32)> = vec![
         ("embed.weight".into(), vec![c.vocab as u64, d as u64], -1.0, 1.0),
-        ("head.weight".into(), vec![c.vocab as u64, d as u64], -0.05, 0.05),
+        ("head.weight".into(), vec![c.vocab as u64, d as u64], -hs, hs),
         ("norm.weight".into(), vec![d as u64], 0.9, 1.1),
     ];
     let mut tensors_f32: Vec<(String, Vec<u64>, f32, f32)> = vec![

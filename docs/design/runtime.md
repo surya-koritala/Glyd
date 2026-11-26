@@ -846,9 +846,22 @@ What is built (R12b, #327):
   the same draws put the GPU against itself past the bound when only its experts' sums are split over K (`--floor`: KL 0.1-1.3 on
   the DeepSeek-V4, Kimi-K3 and Qwen3.5-layout cuts, nearly every row a router choice apart by the first decode step). `floortrace`
   shows the amplification: a reordering moves one layer's output 1e-3 of itself, and the residual's difference grows two to a
-  hundred times a layer from there. Open: the release-width makers drawn so that their floor is within a tenth of the bound (as
-  the small Kimi-K3 and DeepSeek-V4 draws were); until then `storecheck --floor` fails on them. DeepSeek-V4's indexer picks are in
-  the rows' histories now (`Dyn::trace_row_picked`).
+  hundred times a layer from there. So the release-width cuts are drawn for width, not depth: the fewest layers that hold two
+  blocks of experts (Kimi-K3: its dense MLP, then two blocks, its latent attention last, `kimirandom --real --layers 3 --mla`;
+  DeepSeek-V4 `--layers 2`, the first routed by token; the Qwen3.5 layout `--layers 2`, delta attention then full attention; GLM-5.3
+  in FP8 `--layers 2`), the head drawn for logits of an RMS about 0.5 (as GLM-5.3's and Kimi-K3's random models), and Kimi-K3's
+  release width the small model's conditioned draw (its decisive router, the depth mix, values and decay). On an A10 their floors
+  hold (the rows with no choice apart KL mean 4.3e-6 to 4.5e-6 on Kimi-K3 3 x 256 and DeepSeek-V4 2 x 128, 1.5e-6 to 2.1e-6 on the
+  Qwen3.5 layout 2 x 256, 67 to 100% of the rows judged so; GLM-5.3 in FP8 not measured: the library never splits its products),
+  and every host mode, the plan on the GPU too, holds the kind's bound on the run's own choices at 1, 8 and 32 rows (Kimi-K3: the
+  held rows' KL mean 2.4e-7 to 4.4e-6; the Qwen3.5 layout and GLM-5.3 in FP8 have no host half: their rows are the GPU's bits).
+  DeepSeek-V4 with the release's simulated quantizations is held in three parts, as its logits case (`logits::dsv4_also`): the
+  judged lines without them, the quantizing operations bit for bit, the whole model with them printed as INFO. A row whose history
+  first parts at a router prints the routers' inputs there, layer by layer: on the small Kimi-K3 (8 layers) at 32 rows in cpu mode
+  they part by 2.7e-3 after the first block of experts the host computed (one bf16 place of its output) and by 1.1e-2 at layer 7,
+  where the decisive router's margin moved 5.5e-2: the draw's depth, not the host; its three-layer cut (`kimirandom --layers 3`,
+  its latent attention last) holds every mode at 1, 8 and 32 rows. DeepSeek-V4's indexer picks are in the rows' histories now
+  (`Dyn::trace_row_picked`).
 - **The slot policy and the hit-rate model at many rows**, checked on the same record's decode traces (20 generations, 1 to 20
   rows side by side): a call's experts are asked for in the order of their pairs, fewest first (`by_rows`), so the busiest stay in
   places across waves (1 to 7 points more pairs found at 16 and 20 rows, never fewer); the planner prices a step's misses as its
