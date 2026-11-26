@@ -71,6 +71,11 @@ pub trait Device {
     fn release_primary(dev: i32) -> Result<()>;
     /// A context of its own on the GPU, current on this thread after it.
     fn new_ctx(dev: i32) -> Result<Self::Ctx>;
+    /// A context `new_ctx` made destroyed, with everything in it (its memory, modules and streams), and popped where it is current.
+    ///
+    /// # Safety
+    /// `ctx` is a context `new_ctx` made, destroyed once, and nothing of it is used after.
+    unsafe fn ctx_destroy(ctx: Self::Ctx) -> Result<()>;
     /// # Safety
     /// `ctx` is a context this process retained or made and still holds.
     unsafe fn set_current(ctx: Self::Ctx) -> Result<()>;
@@ -322,6 +327,11 @@ impl Device for CudaDevice {
     fn release_primary(dev: i32) -> Result<()> {
         // SAFETY: no pointers; a retain of `primary_ctx` let go.
         unsafe { cu("cuDevicePrimaryCtxRelease", (driver()?.cuDevicePrimaryCtxRelease_v2)(dev)) }
+    }
+
+    unsafe fn ctx_destroy(ctx: *mut c_void) -> Result<()> {
+        // SAFETY: a context new_ctx made, destroyed once (the caller's contract).
+        unsafe { cu("cuCtxDestroy", (driver()?.cuCtxDestroy_v2)(ctx)) }
     }
 
     fn new_ctx(dev: i32) -> Result<*mut c_void> {

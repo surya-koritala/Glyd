@@ -255,6 +255,7 @@ table! {
         fn cuCtxGetCurrent(*mut *mut c_void) -> c_int;
         fn cuCtxGetDevice(*mut c_int) -> c_int;
         fn cuCtxCreate_v2(*mut *mut c_void, c_uint, c_int) -> c_int;
+        fn cuCtxDestroy_v2(*mut c_void) -> c_int;
         fn cuCtxSynchronize() -> c_int;
         fn cuDeviceCanAccessPeer(*mut c_int, c_int, c_int) -> c_int;
         fn cuCtxEnablePeerAccess(*mut c_void, c_uint) -> c_int;
@@ -339,7 +340,7 @@ mod hip {
     const LIBS: [&str; 2] = ["amdhip64_7.dll", "amdhip64_6.dll"];
 
     /// The driver table's functions by HIP's names (ROCm 6.4 on: hipEventRecordWithFlags), all but the two adapters' below.
-    const NAMES: [(&str, &str); 52] = [
+    const NAMES: [(&str, &str); 53] = [
         ("cuInit", "hipInit"),
         ("cuDriverGetVersion", "hipDriverGetVersion"),
         ("cuDeviceGet", "hipDeviceGet"),
@@ -348,6 +349,7 @@ mod hip {
         ("cuDeviceTotalMem_v2", "hipDeviceTotalMem"),
         ("cuDevicePrimaryCtxRetain", "hipDevicePrimaryCtxRetain"),
         ("cuCtxCreate_v2", "hipCtxCreate"),
+        ("cuCtxDestroy_v2", "hipCtxDestroy"),
         ("cuDevicePrimaryCtxRelease_v2", "hipDevicePrimaryCtxRelease"),
         ("cuCtxSetCurrent", "hipCtxSetCurrent"),
         ("cuCtxGetCurrent", "hipCtxGetCurrent"),

@@ -77,6 +77,8 @@ pub struct Dev {
     module: CuModule,
     /// The context the Dev's memory, stream and kernels are in (the GPU's primary one, or its own: `new_own`).
     ctx: *mut c_void,
+    /// Its context is its own (`new_own`): `let_go` destroys it.
+    own: bool,
 }
 
 impl Dev {
@@ -160,7 +162,8 @@ impl Dev {
         Dev::open(ordinal, false)
     }
 
-    /// The GPU in a context of its own, not its primary one (what a second GPU is to the engine, where there is one GPU: the check of a model split over GPUs, `--gpus 0,0`). Current on this thread after it.
+    /// The GPU in a context of its own, not its primary one (what a second GPU is to the engine, where there is one GPU: the check of a model split over GPUs, `--gpus 0,0`; a
+    /// rate measured, destroyed after by `let_go`). Current on this thread after it.
     pub fn new_own(ordinal: i32) -> Result<Dev> {
         Dev::open(ordinal, true)
     }
@@ -215,7 +218,7 @@ impl Dev {
             module = unsafe { D::module_load(fatbin.as_ptr() as *const c_void)? };
             MODULES.lock().unwrap_or_else(|e| e.into_inner()).push((ctx as usize, module as usize));
         }
-        Ok(Dev { ordinal, name, cc: (major, minor), sms, total_mem: total, stream: s, module, ctx })
+        Ok(Dev { ordinal, name, cc: (major, minor), sms, total_mem: total, stream: s, module, ctx, own })
     }
 
     /// A kernel of kernels/engine.cu by name.
@@ -246,11 +249,12 @@ impl Dev {
         in_ctx(self.ctx as usize, D::mem_info)
     }
 
-    /// This Dev let go of what it made in its context, its stream and the engine's module it loaded (the kernels `here` looked up there are looked up again,
-    /// from a module still loaded): the GPU's memory is what it was before the Dev, but for what the context itself holds. What a short look at a GPU opens and
-    /// leaves behind it (a rate measured, `costs::probe_rates`), so a command that measures one before its plan reads the GPU's free memory as one that does
-    /// not (`fit` reads it before it measures, `run` and `serve` after: the plans said 39.1 and 39.0 GiB free of an A100). Every buffer, event and kernel of
-    /// it are gone before.
+    /// This Dev let go of what it made: its stream and the engine's module it loaded (the kernels `here` looked up in its context are looked up again, from a
+    /// module still loaded there), and a context of its own (`new_own`) destroyed with all it held. A Dev in a context of its own let go leaves the GPU's memory
+    /// as it was before it; one in the primary context leaves what that context keeps once a kernel has run in it. What a short look at a GPU opens and leaves
+    /// behind it (a rate measured, `costs::probe_rates`), so a command that measures one before its plan reads the GPU's free memory as one that does not
+    /// (`fit` reads it before it measures, `run` and `serve` after: 39.1 and 39.0 GiB free of an A100 in their plans; 28 MiB apart on an RTX A6000 with the
+    /// module unloaded, none with the context destroyed). Every buffer, event and kernel of it are gone before.
     pub fn let_go(self) -> Result<()> {
         self.sync()?;
         let (ctx, module) = (self.ctx as usize, self.module as usize);
@@ -268,7 +272,13 @@ impl Dev {
                 }
             }
             Ok(())
-        })
+        })?;
+        if self.own {
+            // SAFETY: the context `new_own` made for this Dev alone, of which nothing is used after (its buffers dropped, its module and stream let go above);
+            // the thread's current context is set again by the caller where it was this one (`keeping_context`).
+            unsafe { D::ctx_destroy(self.ctx)? };
+        }
+        Ok(())
     }
 
     /// The work queued on the stream captured into a graph: `body` runs with the stream capturing, nothing in it executes.

@@ -1288,10 +1288,10 @@ fn quick_rates() -> Result<Rates> {
 /// GPU `ordinal`'s memory as a kernel streams it, its link from pinned host memory and the computer's memory as all its threads read it, measured now (256 MiB,
 /// 5 passes each after one more): the planner's rate probe (src/plan.rs `rates_in`, on a GPU's first use).
 pub fn probe_rates(ordinal: i32) -> Result<Rates> {
-    // (the GPU's memory as it was after: the Dev, its module and its stream let go, so a plan made after a rate is measured reads the free memory one made
-    // before it reads; the thread's context as it was too)
+    // (in a context of its own, destroyed after: the GPU's memory as it was, so a plan made after a rate is measured reads the free memory one made before
+    // it reads (a kernel run in the primary context leaves it 28 MiB more on an RTX A6000); the thread's context as it was too)
     crate::dev::keeping_context(|| {
-        let dev = crate::dev::Dev::new(ordinal)?;
+        let dev = crate::dev::Dev::new_own(ordinal)?;
         let r = rates_on(&dev);
         dev.let_go()?;
         r
