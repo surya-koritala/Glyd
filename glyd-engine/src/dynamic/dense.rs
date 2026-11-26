@@ -37,5 +37,10 @@ pub fn lowered_of(dir: &Path, c: &ModelConfig) -> Result<ModelDesc> {
 
 /// The model in `dir` on the executor: a Hub-format directory packed here at `o.layout` (the GPU's where none), a glyd-v7 directory read as saved.
 pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
-    Dyn::new(dir, lowered(dir)?, None, o)
+    load_of(dir, &ModelConfig::load(dir)?, o)
+}
+
+/// `load` of a config.json parsed once (`m`: `dir`'s).
+pub fn load_of(dir: &Path, m: &ModelConfig, o: &Opts) -> Result<Dyn> {
+    Dyn::new(dir, m, lowered_of(dir, m)?, None, o)
 }

@@ -610,6 +610,18 @@ fn current_ctx() -> Result<usize> {
     Ok(D::current()? as usize)
 }
 
+/// `f` run, the context current on this thread as it was again after: a look at the GPUs (`Dev::probe`, a rate measured) makes each one's current in turn, and
+/// an engine on one GPU runs its work on the thread that loaded it, whose current context is its GPU's.
+pub fn keeping_context<R>(f: impl FnOnce() -> R) -> R {
+    let now = D::current().ok();
+    let r = f();
+    if let Some(c) = now {
+        // SAFETY: the context current before (a Dev's or a probe's, retained for the process; or none).
+        let _ = unsafe { D::set_current(c) };
+    }
+    r
+}
+
 /// `f` run with context `ctx` current (as it was again after; `ctx` 0: as it is).
 fn in_ctx<R>(ctx: usize, f: impl FnOnce() -> Result<R>) -> Result<R> {
     let now = current_ctx()?;

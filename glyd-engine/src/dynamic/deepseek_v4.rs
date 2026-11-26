@@ -12,6 +12,7 @@ use crate::ffi::{err, Error, Result};
 use crate::kern35::Mat;
 use crate::moe::{Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeWeights, Router, Scoring, Shared};
 use crate::moe_rows::Down;
+use crate::runtime::config::ModelConfig;
 use crate::runtime::describe::Source;
 use crate::runtime::kinds::Body;
 use crate::weights::{as_bytes, pack_words, upload_bytes, upload_packed, Layout, PackBuf};
@@ -155,9 +156,13 @@ fn tables(f: &[f32], mp: usize) -> Result<(Buf, Buf)> {
 
 /// The model's layers (its compressed attention blocks), its end tokens (generation_config.json's, else the config's) and its context, from its config.
 pub fn ends(dir: &Path) -> Result<(usize, Vec<i64>, usize)> {
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    ends_of(dir, &ModelConfig::load(dir)?)
+}
+
+/// `ends` of a config.json parsed once (`c`: `dir`'s).
+pub fn ends_of(dir: &Path, c: &ModelConfig) -> Result<(usize, Vec<i64>, usize)> {
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, c)?;
     let layers = kinds.desc.blocks.iter().filter(|b| matches!(b.body, Body::Mixer(_))).count();
-    let c = crate::runtime::config::ModelConfig::load(dir)?;
     let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
     let mut eos = crate::runtime::config::eos_ids(&c.text, generation.as_deref());
     if eos.is_empty() {
@@ -174,12 +179,13 @@ pub fn ends(dir: &Path) -> Result<(usize, Vec<i64>, usize)> {
 }
 
 pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
-    load_stage(dir, o, Stage::whole(ends(dir)?.0))
+    let m = ModelConfig::load(dir)?;
+    load_stage_hb(dir, &m, o, Stage::whole(ends_of(dir, &m)?.0), None)
 }
 
 /// Stage `st` of the model (its layers; the embedding where it is the first, the head where the last).
 pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
-    load_stage_hb(dir, o, st, None)
+    load_stage_hb(dir, &ModelConfig::load(dir)?, o, st, None)
 }
 
 /// A rotary table's frequencies from its kind: model.py's (`freqs`), YaRN's stretch where the kind has it.
@@ -202,20 +208,21 @@ fn scale_blocks(rows: usize, cols: usize, shape: &[u64]) -> Option<[usize; 2]> {
 
 /// `load_stage` with a hummingbird directory's experts in the expert cache (`caching`: the stage's places and memory, src/hbg_store.rs). The model's layer kinds
 /// lowered (`lower_comp::lower`), each index of its operations loaded as the plan says, in the release's formats.
-pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
-    load_stage_with(dir, o, st, caching, V4Opts::of(o.layout.unwrap_or(Layout::Tiered), o.ctx))
+pub fn load_stage_hb(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    load_stage_with(dir, m, o, st, caching, V4Opts::of(o.layout.unwrap_or(Layout::Tiered), o.ctx))
 }
 
 /// The whole model with the release's simulated quantizations on or off (`V4Opts::sim`, which GLYD_V4_SIM sets in every other load): a check's engine of
 /// either kind (src/logits.rs) without the environment's say.
 pub fn load_sim(dir: &Path, o: &Opts, sim: bool) -> Result<Dyn> {
     let vo = V4Opts { sim, ..V4Opts::of(o.layout.unwrap_or(Layout::Tiered), o.ctx) };
-    load_stage_with(dir, o, Stage::whole(ends(dir)?.0), None, vo)
+    let m = ModelConfig::load(dir)?;
+    load_stage_with(dir, &m, o, Stage::whole(ends_of(dir, &m)?.0), None, vo)
 }
 
 /// `load_stage_hb` with the options `vo` given.
-pub fn load_stage_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>, vo: V4Opts) -> Result<Dyn> {
-    load_with(dir, o, st, caching, vo, None)
+pub fn load_stage_with(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>, vo: V4Opts) -> Result<Dyn> {
+    load_with(dir, m, o, st, caching, vo, None)
 }
 
 /// The whole model of `dir` on one GPU with its draft head (its DSpark drafter: `lower::draft_head` of the compressed attention's lowering, src/dynamic/head.rs)
@@ -224,13 +231,22 @@ pub fn load_stage_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::
 pub fn load_drafting(dir: &Path, o: &Opts, k: usize, sim: Option<bool>) -> Result<Dyn> {
     let vo = V4Opts::of(o.layout.unwrap_or(Layout::Tiered), o.ctx);
     let vo = V4Opts { sim: sim.unwrap_or(vo.sim), ..vo };
-    load_with(dir, o, Stage::whole(ends(dir)?.0), None, vo, Some(k))
+    let m = ModelConfig::load(dir)?;
+    load_with(dir, &m, o, Stage::whole(ends_of(dir, &m)?.0), None, vo, Some(k))
 }
 
 /// `load_stage_with`, with the model's draft head drafting `draft` tokens a round where given (the whole model on one GPU, no expert cache).
-fn load_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>, vo: V4Opts, draft: Option<usize>) -> Result<Dyn> {
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
-    let (_, eos, max_pos) = ends(dir)?;
+fn load_with(
+    dir: &Path,
+    cfg: &ModelConfig,
+    o: &Opts,
+    st: Stage,
+    caching: Option<&crate::hbg_store::HbCaching>,
+    vo: V4Opts,
+    draft: Option<usize>,
+) -> Result<Dyn> {
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, cfg)?;
+    let (_, eos, max_pos) = ends_of(dir, cfg)?;
     let layout = o.layout.unwrap_or(Layout::Tiered);
     let (mut desc, plan) = super::lower_comp::lower(&kinds, eos.clone(), max_pos, &st, &vo).map_err(|e| e.context(&label))?;
     // (a draft head: the model's own lowering of its blocks, its tensors in a plan of its own; the model's taps of its target layers for it)
@@ -248,7 +264,6 @@ fn load_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store:
             Some((h, k))
         }
     };
-    let cfg = crate::runtime::config::ModelConfig::load(dir)?;
     let inter = cfg.text.get("moe_intermediate_size").and_then(|v| v.as_u64()).ok_or_else(|| Error(format!("{label}: no moe_intermediate_size")))? as usize;
     let dev = Dev::new(o.device)?;
     let ck = io(Checkpoint::open(dir))?;

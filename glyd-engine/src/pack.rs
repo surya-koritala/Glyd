@@ -298,12 +298,9 @@ pub fn desc_plan(d: &crate::dynamic::ModelDesc, f32: &dyn Fn(&str) -> bool) -> S
 /// The save plan of the level `level` for the model in `dir` where it is a Gemma 4, a plain dense, a Qwen3.5 layout's (dense or with experts), a NemotronH or a
 /// GLM-5.3-Flash one (`gemma4_plan`, `desc_plan`, `qwen35_plan`, `nemotron_plan`, `glm_plan`), else none. A config of GLM-5.3-Flash, or of the Qwen3.5 layout,
 /// that the engine does not run is an error that says why, not a model of no known kind. `config`: the directory's config.json parsed once. Where there is none,
-/// or its keys do not parse, there is no plan, but for a GLM-5.3-Flash release's (its names tell it): its error names the key.
-fn level_plan(dir: &Path, level: Layout, config: Option<&ModelConfig>) -> Result<Option<String>> {
-    let Some(c) = config else {
-        let glm = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|t| crate::glm::is_glm(&t));
-        return if glm { ConfigGlm::load(dir).map(|_| None) } else { Ok(None) };
-    };
+/// or its keys do not parse, there is no plan, but for a GLM-5.3-Flash release's (its names tell it): `glm`, its error, which names the key.
+fn level_plan(dir: &Path, level: Layout, config: Option<&ModelConfig>, glm: Option<Error>) -> Result<Option<String>> {
+    let Some(c) = config else { return glm.map_or(Ok(None), Err) };
     let (label, generation) = (dir.join("config.json").display().to_string(), ModelConfig::generation(dir));
     if let Ok(g) = crate::gemma4::ConfigG4::of(c, generation.as_deref(), false) {
         return Ok(Some(gemma4_plan(&g)));
@@ -338,10 +335,17 @@ pub fn run(model: &str, out: &Path, threads: usize, layout: Layout) -> Result<()
 /// `run`, saying nothing where `quiet` (a caller with a bar of its own).
 pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: bool) -> Result<()> {
     let source = io(Source::find(model))?;
+    let (config, glm) = match ModelConfig::load_or_name(&source.dir) {
+        Ok(c) => (Some(c), None),
+        Err((e, family)) => (None, (family == Some(Family::Glm)).then_some(e)),
+    };
+    run_of(&source, config.as_ref(), glm, out, threads, layout, quiet)
+}
+
+/// `run_with` of the model `source`, its config.json parsed once (`config`; `glm`: where its keys do not parse, a GLM-5.3-Flash release's error: `level_plan`).
+pub fn run_of(source: &Source, config: Option<&ModelConfig>, glm: Option<Error>, out: &Path, threads: usize, layout: Layout, quiet: bool) -> Result<()> {
     // (a Gemma 4 model's and a plain dense one's penguin is a glyd-v7 save too: the executor reads its packs as saved)
-    let config = ModelConfig::load(&source.dir).ok();
-    let saved_penguin =
-        config.as_ref().is_some_and(|c| c.is_dense() || crate::gemma4::ConfigG4::of(c, ModelConfig::generation(&source.dir).as_deref(), false).is_ok());
+    let saved_penguin = config.is_some_and(|c| c.is_dense() || crate::gemma4::ConfigG4::of(c, ModelConfig::generation(&source.dir).as_deref(), false).is_ok());
     let t0 = Instant::now();
     let mut have = out.join("glyd.json").exists();
     if have && crate::weights::earlier_format(out).is_some() {
@@ -371,14 +375,14 @@ pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: 
         // (and penguin of a Gemma 4 model or a plain dense one: the executor reads the packs as saved, a glyd-v7 directory of level penguin)
         let planned =
             if matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H | Layout::Int3) || (layout == Layout::Tiered && saved_penguin) {
-                level_plan(&source.dir, layout, config.as_ref())?
+                level_plan(&source.dir, layout, config, glm)?
             } else {
                 None
             };
         let s = match planned {
-            Some(plan) if layout == Layout::Tiered => io(save::save_penguin(&source, out, threads, 5 << 30, &plan))?,
-            Some(plan) => io(save::save_planned(&source, out, threads, 5 << 30, layout, &plan))?,
-            None => io(save::save(&source, out, threads, 5 << 30, true, layout))?,
+            Some(plan) if layout == Layout::Tiered => io(save::save_penguin(source, out, threads, 5 << 30, &plan))?,
+            Some(plan) => io(save::save_planned(source, out, threads, 5 << 30, layout, &plan))?,
+            None => io(save::save(source, out, threads, 5 << 30, true, layout))?,
         };
         if !quiet {
             eprintln!(

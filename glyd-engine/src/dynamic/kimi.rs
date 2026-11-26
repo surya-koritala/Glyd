@@ -17,6 +17,7 @@ use crate::glm::GlmKind;
 use crate::kimi::ConfigKimi;
 use crate::moe::Act;
 use crate::offload::ExpertStore;
+use crate::runtime::config::ModelConfig;
 use crate::weights::Layout;
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
@@ -43,23 +44,23 @@ pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
 
 /// Stage `st` of the model (its layers; the embedding where it is the first, the final mix, norm and head where the last), every expert on the GPU.
 pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
-    load_with_places(dir, o, st, None)
+    load_with_places(dir, &ModelConfig::load(dir)?, o, st, None)
 }
 
 /// The dynamic route's stage (src/dynamic/split.rs `StageLoad`): `load_stage_hb` with the caching given; with none, a development build's GLYD_KIMI_PLACES (the
 /// experts of a layer on the GPU, the rest in the expert cache's host tier: `load_with_places`).
-pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+pub fn stage(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     if caching.is_some() {
-        return load_stage_hb(dir, o, st, caching);
+        return load_stage_hb(dir, m, o, st, caching);
     }
-    load_with_places(dir, o, st, crate::tune!("GLYD_KIMI_PLACES").and_then(|v| v.parse::<usize>().ok()))
+    load_with_places(dir, m, o, st, crate::tune!("GLYD_KIMI_PLACES").and_then(|v| v.parse::<usize>().ok()))
 }
 
 /// Stage `st` with `places` of each mixture-of-experts layer's experts on the GPU (None, or as many as it has: all; fewer: the expert cache, its host tier pinned),
 /// nothing else of the expert cache asked: `load_stage_hb`'s.
-pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) -> Result<Dyn> {
+pub fn load_with_places(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, places: Option<usize>) -> Result<Dyn> {
     let caching = places.map(|places| crate::hbg_store::HbCaching { places, ram: None, offload: Default::default(), dense: 0 });
-    load_stage_hb(dir, o, st, caching.as_ref())
+    load_stage_hb(dir, m, o, st, caching.as_ref())
 }
 
 /// Stage `st` with its experts as `caching` says, where it is given (the stage's places and memory, src/hbg_store.rs): a hummingbird directory's in the expert
@@ -68,18 +69,18 @@ pub fn load_with_places(dir: &Path, o: &Opts, st: Stage, places: Option<usize>) 
 /// each layer's experts are the Moe kind's latent block (`experts::latent_block`). Every layer is across the thread's group of GPUs where it has one
 /// (src/dynamic/tp.rs): this GPU's slice of a big matrix's rows, of each expert's; the stage's last layers' matrices in the computer's memory where the cache
 /// says so (src/dense_ram.rs).
-pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+pub fn load_stage_hb(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's; the cache's places are the release's where
     // there is none)
     let hb = crate::hb_pack::HbDir::open(dir)?;
     let places = caching.map(|c| c.places).filter(|_| hb.is_none());
-    let c = ConfigKimi::load(dir)?;
+    let c = m.read_with(dir, ConfigKimi::of)?;
     let (kd, md) = (&c.kda, &c.mla);
     if kd.dim != crate::kern::GM_D || c.hidden % 64 != 0 || c.hidden > 8192 || md.kv_rank > 512 || (md.kv_rank + md.rope) % 64 != 0 {
         return err(format!("delta heads of {}, a width of {}, latents of {} + {}: this engine runs heads of 128, widths of 64s up to 8,192 and latents up to 512 (with the shared part, in 64s)", kd.dim, c.hidden, md.kv_rank, md.rope));
     }
     let dev = Dev::new(o.device)?;
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
     let w32 = dtypes(&io(Checkpoint::open(dir))?, &c)?;
     let hb_store = caching.map(crate::hbg_store::store_for);
     let threads = std::thread::available_parallelism().map_or(8, |n| n.get());
@@ -121,7 +122,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
         return err(format!("experts of {} x {} across {n} GPUs: each GPU's rows in 64s are wanted", 2 * c.experts.inter, c.experts.latent));
     }
     let early = guessing && places.is_some_and(|p| p < c.experts.experts);
-    let d = lowered(dir, &c, &st, &w32, early).map_err(|e| e.context(&label))?;
+    let d = lowered_of(dir, m, &c, &st, &w32, early).map_err(|e| e.context(&label))?;
     let held =
         LatentHeld { hb: hb.as_ref(), hb_store: hb_store.as_ref(), caching, places, tp_rank: tp_rank.as_ref(), tpr, store: &store, threads, ordinal: o.device };
     let guess = |top_k: usize| -> Result<Option<Guess>> {
@@ -151,7 +152,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hb
     };
     let placing = Placing { across: true, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, caching.map_or(0, |x| x.dense)), hi: None };
     let o = Opts { layout: Some(o.layout.unwrap_or(Layout::Tiered)), ..o.clone() };
-    Dyn::new_placed(dir, d, None, st, &o, &experts, &placing)
+    Dyn::new_placed(dir, m, d, None, st, &o, &experts, &placing)
 }
 
 /// Kimi-K3's latent attention as the layer kind's operation (`MlaOp`, its matrices, small tensors and ring at 0: `MlaOp::placed` puts a layer's): q_a, the
@@ -250,7 +251,12 @@ pub(crate) fn dtypes(ck: &Checkpoint, c: &ConfigKimi) -> Result<Vec<(bool, bool)
 /// `describe` with the names left out (the loader's own description names none). `w32` the delta layers' dtypes (`dtypes`), `early` whether the cached experts
 /// are guessed and copied ahead (the `MoeEarly` step).
 pub fn lowered(dir: &Path, c: &ConfigKimi, st: &Stage, w32: &[(bool, bool)], early: bool) -> Result<ModelDesc> {
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    lowered_of(dir, &ModelConfig::load(dir)?, c, st, w32, early)
+}
+
+/// `lowered` of a config.json parsed once (`m`: `dir`'s).
+pub fn lowered_of(dir: &Path, m: &ModelConfig, c: &ConfigKimi, st: &Stage, w32: &[(bool, bool)], early: bool) -> Result<ModelDesc> {
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
     let lowered = super::lower::kimi(&kinds, c.eos.clone(), c.max_pos, st, w32, early)?;
     super::lower::agree(nameless(&lowered), &describe(c, st, w32, early)?, &label)?;
     Ok(lowered)

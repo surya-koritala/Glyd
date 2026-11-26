@@ -1,6 +1,7 @@
 //! The tokenizer of the model's directory (tokenizer.json) through the `tokenizers` crate; a tiktoken model's (tiktoken.model: Kimi-K3's) made into one.
 
 use crate::ffi::{Error, Result};
+use crate::runtime::config::ModelConfig;
 use std::path::Path;
 use tokenizers::Tokenizer;
 
@@ -14,19 +15,32 @@ pub struct Tok {
 
 impl Tok {
     pub fn load(dir: &Path) -> Result<Tok> {
+        Ok(Tok::of(Tok::read(dir)?, dir))
+    }
+
+    /// `load` of a config.json parsed once (`m`: `dir`'s): its end tokens are read from it.
+    pub fn load_with(dir: &Path, m: &ModelConfig) -> Result<Tok> {
+        Ok(Tok::with_config(Tok::read(dir)?, dir, Some(m)))
+    }
+
+    /// The directory's tokenizer.
+    fn read(dir: &Path) -> Result<Tokenizer> {
         let p = dir.join("tokenizer.json");
         if !p.exists() && dir.join("tiktoken.model").exists() {
             let json = tiktoken_json(dir)?;
-            let t = parse(json.as_bytes()).map_err(|e| Error(format!("{}: {e}", dir.join("tiktoken.model").display())))?;
-            return Ok(Tok::of(t, dir));
+            return parse(json.as_bytes()).map_err(|e| Error(format!("{}: {e}", dir.join("tiktoken.model").display())));
         }
         let bytes = std::fs::read(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        let t = parse(&bytes).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        Ok(Tok::of(t, dir))
+        parse(&bytes).map_err(|e| Error(format!("{}: {e}", p.display())))
     }
 
     fn of(t: Tokenizer, dir: &Path) -> Tok {
-        let mut ends = ends_of(dir);
+        Tok::with_config(t, dir, ModelConfig::load(dir).ok().as_ref())
+    }
+
+    /// The tokenizer `t` of `dir`, its end tokens read from the directory's config.json `config` (None where it has none that reads).
+    fn with_config(t: Tokenizer, dir: &Path, config: Option<&ModelConfig>) -> Tok {
+        let mut ends = ends_of(dir, config);
         if ends.is_empty() {
             // (the tokenizer's own end token, as tokenizer_config.json names it)
             let name = std::fs::read_to_string(dir.join("tokenizer_config.json")).ok().and_then(|t| glyd_gpu::json::parse(&t).ok()).and_then(|c| {
@@ -285,8 +299,8 @@ pub fn engram_map(dir: &Path, vocab: usize, size: usize, pad: u32) -> Result<Opt
 }
 
 /// The end-of-sequence ids of the model's directory: generation_config.json's where it gives any, else config.json's (or its text_config's).
-fn ends_of(dir: &Path) -> Vec<u32> {
-    let Some(config) = crate::runtime::config::ModelConfig::load(dir).ok() else {
+fn ends_of(dir: &Path, config: Option<&ModelConfig>) -> Vec<u32> {
+    let Some(config) = config else {
         return Vec::new();
     };
     let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();

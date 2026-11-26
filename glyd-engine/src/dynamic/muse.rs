@@ -12,6 +12,7 @@ use crate::dev::Dev;
 use crate::dynamic::experts::MoeBlock;
 use crate::ffi::Result;
 use crate::muse::ConfigMuse;
+use crate::runtime::config::ModelConfig;
 use crate::weights::Layout;
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
@@ -33,15 +34,15 @@ pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
 
 /// Stage `st` of the model (its layers; the embedding where it is the first, the final norm and the head where the last).
 pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
-    load_stage_hb(dir, o, st, None)
+    load_stage_hb(dir, &ModelConfig::load(dir)?, o, st, None)
 }
 
 /// `load_stage` with its experts in the expert cache (`hc`: the stage's places and memory): a hummingbird directory's (src/hbg_store.rs), or the release's
 /// lossless experts (src/tiering.rs `cached_tiered`); the stage's last layers' matrices in the computer's memory where the cache says so (src/dense_ram.rs).
 /// Every layer is across the thread's group of GPUs where it has one (src/dynamic/tp.rs): this GPU's slice of a big matrix's rows, of each expert's.
-pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
-    let d = lowered(dir, &kinds, &st).map_err(|e| e.context(&label))?;
+pub fn load_stage_hb(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, hc: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
+    let d = lowered_of(dir, m, &kinds, &st).map_err(|e| e.context(&label))?;
     // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's)
     let hb = crate::hb_pack::HbDir::open(dir)?;
     let store = hc.map(crate::hbg_store::store_for);
@@ -58,13 +59,18 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, st: Stage, hc: Option<&crate::hbg_sto
     };
     let placing = Placing { across: true, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, hc.map_or(0, |x| x.dense)), hi: None };
     let o = Opts { layout: Some(o.layout.unwrap_or(Layout::Tiered)), ..o.clone() };
-    Dyn::new_placed(dir, d, None, st, &o, &experts, &placing)
+    Dyn::new_placed(dir, m, d, None, st, &o, &experts, &placing)
 }
 
 /// Muse Spark's executor description for stage `st` of the model in `dir`, whose layer kinds are `kinds` (R3a): lowered (`lower::muse`), its end tokens and
 /// its longest context the family's reader's.
 pub fn lowered(dir: &Path, kinds: &crate::runtime::describe::Described, st: &Stage) -> Result<ModelDesc> {
-    let c = ConfigMuse::load(dir)?;
+    lowered_of(dir, &ModelConfig::load(dir)?, kinds, st)
+}
+
+/// `lowered` of a config.json parsed once (`m`: `dir`'s).
+pub fn lowered_of(dir: &Path, m: &ModelConfig, kinds: &crate::runtime::describe::Described, st: &Stage) -> Result<ModelDesc> {
+    let c = m.read_with(dir, ConfigMuse::of)?;
     super::lower::muse(kinds, c.eos.clone(), c.max_pos, st)
 }
 

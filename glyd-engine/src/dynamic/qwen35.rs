@@ -15,6 +15,7 @@ use crate::dynamic::experts::MoeBlock;
 use crate::ffi::err;
 use crate::ffi::{Error, Result};
 use crate::qwen35::Kind;
+use crate::runtime::config::ModelConfig;
 use crate::runtime::describe::Described;
 use crate::runtime::kinds::{Body, Ffn};
 use crate::weights::Layout;
@@ -22,15 +23,20 @@ use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
 pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
-    load_stage(dir, o, Stage::whole(ends(dir)?.0))
+    load_of(dir, &ModelConfig::load(dir)?, o)
+}
+
+/// `load` of a config.json parsed once (`m`: `dir`'s).
+pub fn load_of(dir: &Path, m: &ModelConfig, o: &Opts) -> Result<Dyn> {
+    stage(dir, m, o, Stage::whole(ends(dir, m)?.0), None)
 }
 
 /// The model's layers and end-of-sequence ids (the dynamic route's `split::Loader::ends`): the dense layout's config's (`Config35`), the layout with experts'
 /// by its description (a block of attention and one of its feed-forward a layer) and its config's ids, as `load_experts` takes them.
-pub fn ends(dir: &Path) -> Result<(usize, Vec<i64>)> {
-    match with_experts(dir) {
-        Some((kinds, _)) => Ok((kinds.desc.blocks.len() / 2, experts_config(dir)?.0)),
-        None => crate::qwen35::Config35::load(dir).map(|c| (c.layers, c.eos)),
+pub fn ends(dir: &Path, m: &ModelConfig) -> Result<(usize, Vec<i64>)> {
+    match with_experts(dir, m) {
+        Some((kinds, _)) => Ok((kinds.desc.blocks.len() / 2, experts_config(dir, m)?.0)),
+        None => crate::qwen35::Config35::load_of(dir, m).map(|c| (c.layers, c.eos)),
     }
 }
 
@@ -46,13 +52,12 @@ pub fn saved(c: &crate::runtime::config::ModelConfig) -> Result<(ModelDesc, Vec<
 }
 
 /// The description of the model in `dir` and its label, where a layer's feed-forward is a mixture of experts (None: the dense layout, or no description).
-fn with_experts(dir: &Path) -> Option<(Described, String)> {
-    crate::runtime::describe::describe_dir(dir).ok().filter(|(k, _)| k.desc.blocks.iter().any(|b| matches!(b.body, Body::Ffn(Ffn::Moe(_)))))
+fn with_experts(dir: &Path, m: &ModelConfig) -> Option<(Described, String)> {
+    crate::runtime::describe::describe_dir_of(dir, m).ok().filter(|(k, _)| k.desc.blocks.iter().any(|b| matches!(b.body, Body::Ffn(Ffn::Moe(_)))))
 }
 
 /// The layout with experts' end-of-sequence ids (generation_config.json's, else its text model's config's, else the top level's) and its longest context.
-fn experts_config(dir: &Path) -> Result<(Vec<i64>, usize)> {
-    let cfg = crate::runtime::config::ModelConfig::load(dir)?;
+fn experts_config(dir: &Path, cfg: &ModelConfig) -> Result<(Vec<i64>, usize)> {
     let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
     let mut eos = crate::runtime::config::eos_ids(&cfg.text, generation.as_deref());
     if eos.is_empty() {
@@ -64,11 +69,11 @@ fn experts_config(dir: &Path) -> Result<(Vec<i64>, usize)> {
 
 /// The dynamic route's stage (src/dynamic/split.rs `StageLoad`): `load_stage`, the layout with experts' experts in the expert cache where `caching` is given
 /// (`load_experts`); the dense layout has none to keep there, and refuses a caching.
-pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
-    match (with_experts(dir), caching) {
-        (Some((kinds, label)), _) => load_experts(dir, o, st, &kinds, caching).map_err(|e| e.context(&label)),
+pub fn stage(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    match (with_experts(dir, m), caching) {
+        (Some((kinds, label)), _) => load_experts(dir, m, o, st, &kinds, caching).map_err(|e| e.context(&label)),
         (None, Some(_)) => crate::ffi::err(format!("{}: the dense Qwen3.5 layout has no experts to keep in the expert cache", dir.display())),
-        (None, None) => load_stage(dir, o, st),
+        (None, None) => load_dense(dir, m, o, st),
     }
 }
 
@@ -77,19 +82,21 @@ pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store:
 /// weight in fp32, a saved directory's packs as saved). A model whose feed-forwards are mixtures of experts (the layout with experts, `Qwen3_5MoeForCausalLM`) loads by its
 /// layer kinds alone (`load_experts`).
 pub fn load_stage(dir: &Path, o: &Opts, st: Stage) -> Result<Dyn> {
-    if let Some((kinds, label)) = with_experts(dir) {
-        return load_experts(dir, o, st, &kinds, None).map_err(|e| e.context(&label));
-    }
-    let c = crate::qwen35::Config35::load(dir)?;
-    Dyn::new_stage(dir, lowered(dir, &c, &st)?, None, st, o)
+    stage(dir, &ModelConfig::load(dir)?, o, st, None)
+}
+
+/// The dense layout's stage `st`, as `load_stage` loads it, from a config.json parsed once.
+fn load_dense(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage) -> Result<Dyn> {
+    let c = crate::qwen35::Config35::load_of(dir, m)?;
+    Dyn::new_stage(dir, m, lowered_of(dir, m, &c, &st)?, None, st, o)
 }
 
 /// The layout with experts: its kinds lowered (`lower::qwen35`), each layer's experts the Moe kind's block (`experts::block`: the softmax router, the experts
 /// and the gated shared expert at the level of the other matrices), the stage's layers' in order: every expert on the GPU, or in the expert cache as `caching`
 /// says where it is given (src/tiering.rs: its places a layer on the GPU, every expert in the computer's memory, the cache's layer a block's number among the
 /// model's blocks of experts), and the stage's last layers' matrices in the computer's memory where it says so (src/dense_ram.rs).
-fn load_experts(dir: &Path, o: &Opts, st: Stage, kinds: &Described, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
-    let (eos, max_pos) = experts_config(dir)?;
+fn load_experts(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, kinds: &Described, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    let (eos, max_pos) = experts_config(dir, m)?;
     let d = super::lower::qwen35(kinds, eos, max_pos, &st)?;
     let store = caching.map(crate::hbg_store::store_for);
     let held = super::experts::Held { hb: None, cache: caching.zip(store.as_ref()), ordinal: o.device, f8: None, dense: None, codebooks: None, codes: None };
@@ -103,7 +110,7 @@ fn load_experts(dir: &Path, o: &Opts, st: Stage, kinds: &Described, caching: Opt
             .collect()
     };
     let placing = Placing { across: false, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, caching.map_or(0, |x| x.dense)), hi: None };
-    Dyn::new_placed(dir, d, None, st, o, &experts, &placing)
+    Dyn::new_placed(dir, m, d, None, st, o, &experts, &placing)
 }
 
 /// A layer's matrices and small tensors as the loader holds them: a linear-attention layer's qkvz, ba and out products and its MLP's two; its input and
@@ -119,7 +126,12 @@ pub(crate) fn per_layer(k: Kind) -> (usize, usize) {
 /// Qwen3.5's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::qwen35`); `c` the same config as the
 /// family's reader takes it, for its end tokens and its context. What the loader runs (the tests hold it to `describe` below).
 pub fn lowered(dir: &Path, c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    lowered_of(dir, &ModelConfig::load(dir)?, c, st)
+}
+
+/// `lowered` of a config.json parsed once (`m`: `dir`'s).
+pub fn lowered_of(dir: &Path, m: &ModelConfig, c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
     super::lower::qwen35(&kinds, c.eos.clone(), c.max_pos, st).map_err(|e| e.context(&label))
 }
 
@@ -303,7 +315,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("config.json"), include_str!("../../tests/fixtures/qwen35moe_tiny_config.json")).unwrap();
         let loader = crate::dynamic::split::loader(&describe(&tiny()).unwrap()).unwrap();
-        let (got, routed) = (super::ends(&dir), (loader.ends)(&dir));
+        let m = crate::runtime::config::ModelConfig::load(&dir).unwrap();
+        let (got, routed) = (super::ends(&dir, &m), (loader.ends)(&dir, &m));
         let dense = crate::qwen35::Config35::load(&dir).map(|c| c.layers);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!((got.unwrap(), routed.unwrap()), ((4, vec![2]), (4, vec![2])));

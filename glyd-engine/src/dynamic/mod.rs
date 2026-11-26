@@ -61,6 +61,7 @@ use crate::kern::{pf_kib, KernG4, NextPf};
 use crate::kern::{KernMamba2, SsdWs};
 use crate::kern35::{Kern35, Mat};
 use crate::launch;
+use crate::runtime::config::ModelConfig;
 use crate::runtime::kinds::Rounding;
 use crate::sched::Sample;
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
@@ -1199,17 +1200,16 @@ fn load_part(
     want: Option<&[bool]>,
     experts: &Experts,
     placing: &Placing,
+    hi: &[bool],
     dev: &Dev,
 ) -> Result<Part> {
     let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
     let v7 = stored(dir)?;
-    // (the attention blocks' own matrices and the LM head at `placing.hi` where it is given, each other at `layout`: packed here, not a save's)
-    let hi = match placing.hi {
-        None => vec![false; d.mats.len()],
-        Some(_) if v7.is_some() => return err(format!("{}: a saved directory's matrices are at its saved layout, not a second one", dir.display())),
-        Some(_) => at_hi(&d, &crate::runtime::describe::describe_dir(dir)?.0.attention_and_head()),
-    };
-    let level = |k: usize| placing.hi.filter(|_| hi[k]).unwrap_or(layout);
+    // (the matrices `hi` marks (`at_hi`: the attention blocks' own, the LM head) at `placing.hi` where it is given, each other at `layout`: packed here, not a save's)
+    if placing.hi.is_some() && v7.is_some() {
+        return err(format!("{}: a saved directory's matrices are at its saved layout, not a second one", dir.display()));
+    }
+    let level = |k: usize| placing.hi.filter(|_| hi.get(k).copied().unwrap_or(false)).unwrap_or(layout);
     // (every layer across a group of GPUs: this GPU's slice of the rows of a matrix a product multiplies by, packed here; the embedding, read by row, whole)
     let sl = if placing.across && v7.is_none() { tp::slicer() } else { None };
     if sl.is_some() && placing.ram.count() > 0 {
@@ -2037,25 +2037,35 @@ impl Dyn {
         Ok(())
     }
 
-    /// A description's model from `dir` by the generic loader (`ModelDesc::mats`, `small`, `ropes`), and a draft model's.
-    pub fn new(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, o: &Opts) -> Result<Dyn> {
+    /// A description's model from `dir` by the generic loader (`ModelDesc::mats`, `small`, `ropes`), and a draft model's. `m`: `dir`'s config.json, parsed once
+    /// (every constructor below reads the model's images from it).
+    pub fn new(dir: &Path, m: &ModelConfig, d: ModelDesc, draft: Option<DraftSpec>, o: &Opts) -> Result<Dyn> {
         let st = Stage::whole(d.layers.len());
-        Dyn::new_stage(dir, d, draft, st, o)
+        Dyn::new_stage(dir, m, d, draft, st, o)
     }
 
     /// Stage `st` of the model of `dir` (its layers, and the embedding or the head where it holds them), on `o.device`: a split model's part.
-    pub fn new_stage(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts) -> Result<Dyn> {
-        Dyn::new_with(dir, d, draft, st, o, &|_, _| Ok(Vec::new()))
+    pub fn new_stage(dir: &Path, m: &ModelConfig, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts) -> Result<Dyn> {
+        Dyn::new_with(dir, m, d, draft, st, o, &|_, _| Ok(Vec::new()))
     }
 
     /// `new_stage` of a description with experts: `experts` reads its blocks of experts (`Op::Moe`'s, in its order) from the checkpoint.
-    pub fn new_with(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts) -> Result<Dyn> {
-        Dyn::new_placed(dir, d, draft, st, o, experts, &Placing::default())
+    pub fn new_with(dir: &Path, m: &ModelConfig, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts) -> Result<Dyn> {
+        Dyn::new_placed(dir, m, d, draft, st, o, experts, &Placing::default())
     }
 
     /// `new_with`, the stage's packed matrices held as `placing` says.
     #[allow(clippy::too_many_arguments)]
-    pub fn new_placed(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts, placing: &Placing) -> Result<Dyn> {
+    pub fn new_placed(
+        dir: &Path,
+        m: &ModelConfig,
+        d: ModelDesc,
+        draft: Option<DraftSpec>,
+        st: Stage,
+        o: &Opts,
+        experts: &Experts,
+        placing: &Placing,
+    ) -> Result<Dyn> {
         // (across GPUs a draft head of the model drafts on the last stage, which holds the model's last state (`head::state`) and its LM head; a draft
         // model, or a head elsewhere, is not split)
         let head_drafts = draft.as_ref().is_some_and(|x| matches!(x.desc.first, Op::MtpIn { .. }));
@@ -2107,7 +2117,12 @@ impl Dyn {
         if head_drafts {
             want[d.embed] = true;
         }
-        let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want), experts, placing, &dev)?;
+        // (the matrices at `placing.hi`: the description's attention blocks' own and its LM head, by the config parsed once)
+        let hi = match placing.hi {
+            Some(_) => at_hi(&d, &crate::runtime::describe::describe_dir_of(dir, m)?.0.attention_and_head()),
+            None => Vec::new(),
+        };
+        let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want), experts, placing, &hi, &dev)?;
         // (a draft model is packed lossy here: the big model checks every draft token, so its precision moves only how many are kept; a draft head of the model
         // at the model's layout, a chunk's rows (it reads each prompt row's streams), its rings after the model's, its LM head and embedding the model's)
         let draft = match draft {
@@ -2119,18 +2134,18 @@ impl Dyn {
                 let mut want = hd.wanted(&Stage::whole(hd.layers.len()));
                 (want[hd.embed], want[hd.lm]) = (false, false);
                 let none: &Experts = &|_, _| Ok(Vec::new());
-                let p = load_part(x.dir, hd, layout, threads, ch, 1, Some(&want), x.experts.unwrap_or(none), &Placing::default(), &dev)?;
+                let p = load_part(x.dir, hd, layout, threads, ch, 1, Some(&want), x.experts.unwrap_or(none), &Placing::default(), &[], &dev)?;
                 Some(Draft { p, k: x.k.min(VERIFY_ROWS - 1), pos: Buf::zeroed(8)?, head: Some(HeadState::default()) })
             }
             Some(x) => Some(Draft {
-                p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None, x.experts.unwrap_or(&|_, _| Ok(Vec::new())), &Placing::default(), &dev)?,
+                p: load_part(x.dir, x.desc, Layout::Int6, threads, 1, 1, None, x.experts.unwrap_or(&|_, _| Ok(Vec::new())), &Placing::default(), &[], &dev)?,
                 k: x.k,
                 pos: Buf::zeroed(8)?,
                 head: None,
             }),
         };
         let mut e = Dyn::build(dev, big, draft, ropes, layout, st, o)?;
-        e.see_with(dir)?;
+        e.see_with(dir, m)?;
         Ok(e)
     }
 
@@ -2138,8 +2153,8 @@ impl Dyn {
     /// rows (the first, or the model on this GPU whole; a stage after it turns its rows by the same positions), the images' bounds and token set for the
     /// requests' threads (`vision::PREP`), the step graph captured again to read the rows' positions. A tower this engine cannot run leaves the model served
     /// for text, the reason said.
-    fn see_with(&mut self, dir: &Path) -> Result<()> {
-        match images::Images::open(dir, &self.big.d, self.chunk.max(VERIFY_ROWS), &self.dev, self.stage.first) {
+    fn see_with(&mut self, dir: &Path, m: &ModelConfig) -> Result<()> {
+        match images::Images::open(dir, m, &self.big.d, self.chunk.max(VERIFY_ROWS), &self.dev, self.stage.first) {
             Ok(Some(v)) => {
                 eprintln!(
                     "images: up to {} pixels each ({} tokens)",
