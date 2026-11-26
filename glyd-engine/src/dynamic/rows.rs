@@ -982,6 +982,8 @@ impl Dyn {
         // them; such rows of one that does run eager where its graph is not taken (GLYD_ENGINE_ROWS_GRAPH=0))
         let whole = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).is_some_and(|rt| rt.graphs);
         let pieces = !whole || jobs.iter().any(|j| j.1.len() > 1 || !j.2);
+        // (a step of rows that decode and nothing else: the expert cache's plan on the GPU takes its calls of up to `devplan::DEV_STEP_ROWS` rows, eager as in its graph)
+        self.step_rows(decode);
         // SAFETY: live buffers of the engine and of each sequence, the pass's rows within a chunk's (a graph's padded rows within the head's).
         let r = unsafe { self.embed(&tokens) }.and_then(|_| self.stage_images(&spans)).and_then(|_| unsafe {
             match graph {
@@ -990,6 +992,7 @@ impl Dyn {
                 None => self.forward(&self.big, n, (pp, pp), asked),
             }
         });
+        self.step_rows(false);
         self.parts.clear();
         self.head_rows.clear();
         self.lead.set(0);
@@ -1024,7 +1027,7 @@ impl Dyn {
 
     /// The most rows a step of rows that decode replays a graph of (`rows_bucket`'s ladder's top), where the description takes such a graph (`RowTabs::graphs`) and the engine
     /// captures graphs at all: the head's rows, the rows' tables' and a chunk's; and where a block of experts is in the expert cache (planned on the GPU: a block that reads
-    /// the router's choices on the host takes no graph at all), the most rows a call planned there has (`devplan::DEV_ROWS`). A call of more rows is the store's plan on
+    /// the router's choices on the host takes no graph at all), the most rows a decode step's call planned there has (`devplan::DEV_STEP_ROWS`). A call of more rows is the store's plan on
     /// the host, which reads the router's choices there (its waves copy every miss where the misses outnumber the places, which the plan on the GPU does not do), so a
     /// step of more rows runs eager. None: every such step runs eager. GLYD_ENGINE_ROWS_GRAPH=0 (a development build's) runs every such step eager, to compare.
     fn rows_top(&self) -> Option<usize> {
@@ -1039,7 +1042,7 @@ impl Dyn {
             return None;
         }
         let most = self.head_room().min(rt.rows).min(self.chunk);
-        Some(if self.rows_exact_sizes() { most.min(crate::devplan::DEV_ROWS) } else { most })
+        Some(if self.rows_exact_sizes() { most.min(crate::devplan::DEV_STEP_ROWS) } else { most })
     }
 
     /// Whether steps of several rows that decode replay CUDA graphs (`rows_bucket`).
@@ -1052,6 +1055,11 @@ impl Dyn {
     #[cfg(feature = "dev")]
     pub(crate) fn rows_graph_top(&self) -> usize {
         self.rows_top().unwrap_or(0)
+    }
+
+    /// The expert caches told whether the calls to come are a decode step's of rows (`ExpertStore::set_step_rows`).
+    fn step_rows(&self, on: bool) {
+        self.big.moe.iter().filter_map(|b| b.store()).for_each(|s| s.set_step_rows(on));
     }
 
     /// The graphs of steps of rows that decode captured, by their rows, and how many times each was replayed.
@@ -1080,8 +1088,10 @@ impl Dyn {
             // (a part of no row of its own: the pass is one over several sequences, its rows all the lead's)
             (self.parts, self.head_rows) = (vec![self.part_of(self.seq, 0, 1, 0)?], (0..k).collect());
             self.lead.set(k);
+            self.step_rows(true);
             // SAFETY: the engine's buffers, sized for the head's rows (k at most); the padding rows write no cache.
             let r = unsafe { self.embed(&vec![0u32; k]).and_then(|_| self.rows_replay(k, true)) };
+            self.step_rows(false);
             self.parts.clear();
             self.head_rows.clear();
             self.lead.set(0);

@@ -268,7 +268,7 @@ and writes no cache row and no state): the attention kind (picked or not), the l
 its attention over the latents cut into runs as a decode row's is), the compressed attention's window, compressors, indexer and attention,
 the mean-pooled indexer, the recurrent layers' convolutions and recurrences (Gated DeltaNet, Kimi delta attention, Mamba-2) and the n-gram
 embedding's state. Each row's kernels and sums are its own sequence's pass's on its one token. The ladder's top is the head's rows; where a
-block of experts is in the expert cache planned on the GPU it is that plan's 64 rows (`devplan::DEV_ROWS`): a call of more rows is planned on
+block of experts is in the expert cache planned on the GPU it is that plan's 64 rows of a decode step (`devplan::DEV_STEP_ROWS`): a call of more rows is planned on
 the host, which reads the router's choices, so such a step runs eager; and there every row count has its own graph, unpadded (a padding row's
 choices would join the cache's plan, taking places and sending the host pairs). A latent attention whose ring is in 12-bit pages takes no whole graph:
 each sequence's pages are unpacked into the one staging ring by itself. Every other pass (a prompt's chunk, prompts together, decode rows
@@ -507,7 +507,7 @@ for the step in flight's sequences (`Sched::launch`), so the copies are of the s
 (the void pages a step made) is copied into the lane with the samples and read from there (`kv12_lost`). The operations that read the
 tokens (an n-gram embedding, routing by token) read the int32 ids `step_ids` writes beside the embedding's. The executor overlaps on one
 GPU where no layer's matrices are in the computer's memory and no block of experts reads the router's choices on the host (the blocks a
-decode graph captures): an expert cache's layers planned on the GPU (`--device`, src/devplan.rs) queue a decode call of up to 64 rows
+decode graph captures): an expert cache's layers planned on the GPU (`--device`, src/devplan.rs) queue a decode step's call of up to 64 rows (another of up to eight)
 whole, and a call the store plans on the host (a prompt's chunk) synchronizes the stream itself. The store's end of a step
 (`ExpertStore::end_step`) reads what the GPU counted and writes the plan's next settings, so it runs only when a step lands with none
 queued after it: after 16 steps landed with a later one out, the step asks to be quiet (`ModelStep::quiet`) and the scheduler lands it
@@ -812,11 +812,11 @@ What is built (R12b, #327):
   (`Params`: the store's `Costs` and mode): the ones with the most pairs copied, as many as make the longer of the copies and the
   host's pairs shortest, the rest the host's; a hot miss the host keeps is promoted while the host's time leaves room for its copy.
   A copy is priced at the link's time for an expert, measured once at load (the GPU's own copies are not timed). Calls of up to
-  `DEV_ROWS` (64, the most rows a request to the host's half carries: #329's decode graphs of up to 64 rows; it was 8) rows are planned on
-  the GPU, whose misses the places cannot take are the host's; more rows are the host's plan, whose waves copy every miss where the misses
-  outnumber the places. (The first rule, a miss copied wherever a copy cost less than the host's pairs, ignored that the two run
+  `DEV_ROWS` (8) rows, and the calls of a step of rows that decode alone of up to `DEV_STEP_ROWS` (64, the most rows a request to the host's
+  half carries: #329's decode graphs of up to 64 rows; `ExpertStore::set_step_rows`), are planned on the GPU, whose misses the places cannot take are
+  the host's; more rows (a prompt's chunk) are the host's plan, whose waves copy every miss where the misses outnumber the places. (The first rule, a miss copied wherever a copy cost less than the host's pairs, ignored that the two run
   at once and copied every miss at 1 and 8 rows: 62-80% slower than the host's plan on an A10, 2026-11-23, in a run whose record was not kept.) The store's own plan
-  (`LayerCache`) still plans a call of more rows (a prompt's chunk): before such a call the GPU's table is read into it, after it written back.
+  (`LayerCache`) still plans a prompt's chunks: before such a call the GPU's table is read into it, after it written back.
   On the decode traces of the routing record `benchmarks/moe-skew-2026-10-09` its clock finds 0.5 to 0.6 points fewer of the pairs in places than the least-recently-used
   cache at one row (60.7, 72.8 and 79.4% at 17, 32 and 46% of the experts), and at 8 rows 5.1 more to 0.6 fewer.
   Its GPU check, `tiercheck --device-plan` in copy mode (the logits with the plan against the store's own, bit for bit), ran on an A10 on
