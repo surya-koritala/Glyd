@@ -143,13 +143,14 @@ pub fn erf(x: f64) -> f64 {
     }
 }
 
-/// W [rows, cols] times x, each row's sum in f64, rounded to f32. A product of 2^19 weights or more has its rows split over threads, one for each 2^18
-/// weights up to the computer's cores (`matvec_on`), each thread's rows four at a time (`rows_into`): a row's sum is the same terms in the same order
-/// whichever thread takes it and whatever rows beside it, so the result is the same bits (`tests::a_product_over_threads_is_the_same_bits`).
+/// W [rows, cols] times x, each row's sum in f64, rounded to f32. A product of 2^21 weights or more has its rows split over threads, one for each 2^20
+/// weights (a thread's start is a few hundredths of its work) up to the computer's cores (`matvec_on`), each thread's rows four at a time (`rows_into`): a
+/// row's sum is the same terms in the same order whichever thread takes it and whatever rows beside it, so the result is the same bits
+/// (`tests::a_product_over_threads_is_the_same_bits`).
 pub fn matvec(w: &[f32], cols: usize, x: &[f32]) -> Vec<f32> {
     static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     let cores = *CORES.get_or_init(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
-    matvec_on(w, cols, x, cores.min(w.len() >> 18))
+    matvec_on(w, cols, x, cores.min(w.len() >> 20))
 }
 
 /// `matvec` with its rows in `threads` runs of consecutive rows, each on a thread of its own (one or none: on this thread).
@@ -875,7 +876,7 @@ mod tests {
             w.chunks(cols).map(|r| (r.iter().zip(x).map(|(&a, &b)| a as f64 * b as f64).sum::<f64>() as f32).to_bits()).collect()
         };
         let bits = |v: Vec<f32>| v.into_iter().map(f32::to_bits).collect::<Vec<u32>>();
-        for (rows, cols, extra) in [(1, 64, 0), (5, 37, 0), (1000, 37, 0), (999, 129, 17), (4096, 256, 0)] {
+        for (rows, cols, extra) in [(1, 64, 0), (5, 37, 0), (1000, 37, 0), (999, 129, 17), (4096, 256, 0), (6001, 1024, 0)] {
             let (mut w, mut x) = (fill("mv.w", rows * cols + extra, -1.0, 1.0), fill("mv.x", cols, -2.0, 2.0));
             // (a row of negative weights on a zero input is a sum of negative zeros, whose sign an empty sum's start decides)
             if rows == 5 {

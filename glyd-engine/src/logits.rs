@@ -8218,8 +8218,9 @@ fn users_ref(e: &mut Dyn, case: &str, level: &str, from: &Path, prompts: &[Vec<u
     let taking = level == "penguin" && !moe.is_empty();
     // (the reference holds the weights its description reads in f32, and a tied head's twice: past this computer's free memory, nothing is held)
     let d = crate::runtime::describe::describe_dir(from)?.0;
-    let need: u64 = 4 * d.shapes.values().map(|s| s.iter().product::<usize>() as u64).sum::<u64>()
-        + if d.head.is_none() { 4 * d.shapes.get(&d.embed).map_or(0, |s| s.iter().product::<usize>() as u64) } else { 0 };
+    let ck = io(glyd_gpu::safetensors::Checkpoint::open(from))?;
+    let words = |n: &str| ck.get(n).map_or(0, |(_, t)| t.shape.iter().product::<u64>());
+    let need = 4 * (d.names().iter().map(|n| words(n)).sum::<u64>() + if d.head.is_none() { words(&d.embed) } else { 0 });
     let gib = |b: u64| b as f64 / (1u64 << 30) as f64;
     match crate::offload::host_memory() {
         Some(free) if need > free => {
@@ -8339,11 +8340,12 @@ pub(crate) fn served_at_once(
     let fig = |i: usize| s.context().sched[i].load(Relaxed);
     let (steps, rows, by_rows) = (fig(3), fig(4), (18..27).map(fig).collect::<Vec<u64>>());
     println!(
-        "{} prompts of {} to {} tokens asked at once, {} tokens each, in {took:.1} s: {steps} decode steps of {rows} rows ({:.1} a step; steps by rows {by_rows:?}){}",
+        "{} prompts of {} to {} tokens asked at once, {} tokens each, in {:.0} ms: {steps} decode steps of {rows} rows ({:.1} a step; steps by rows {by_rows:?}){}",
         prompts.len(),
         prompts.iter().map(Vec::len).min().unwrap_or(0),
         prompts.iter().map(Vec::len).max().unwrap_or(0),
         reply.max_new,
+        took * 1e3,
         rows as f64 / steps.max(1) as f64,
         if taking { "; the routers' choices traced, every pass eager" } else { "" }
     );
