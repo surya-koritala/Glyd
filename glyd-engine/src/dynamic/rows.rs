@@ -517,10 +517,30 @@ pub(crate) struct SeqRoom {
 }
 
 /// Whether the engine keeps a model's states at each sequence's mark and at block boundaries, where it has states and no draft model (`ModelStep::keeps`): unless
-/// GLYD_ENGINE_KEEP=0 or GLYD_ENGINE_BATCH_PREFILL=0 says not.
+/// GLYD_ENGINE_KEEP=0 or GLYD_ENGINE_BATCH_PREFILL=0 (`batch_prefill`) says not. The plan counts the marks by this too (`SeqRoom::of`, `sizing::pools_of`), so
+/// `fit`, `run` and `serve` plan alike with either switch.
 pub(crate) fn marks_kept() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_KEEP").is_none_or(|v| v != "0")) && Dyn::batch_prefill()
+    *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_KEEP").is_none_or(|v| v != "0")) && batch_prefill()
+}
+
+/// Whether the prompts of sequences that arrive together run in one pass (a step of their rows: by default), or each prompt in a pass of its own, the rows
+/// that decode in passes of at most `EXACT_ROWS`, and no finished sequence kept (`marks_kept`), so that every reply is the reply alone, bit for bit: the
+/// product's GLYD_ENGINE_BATCH_PREFILL=0 (docs/serve-api.md). The one reader of it: the engine's steps, the plan's sequences and the checks that hold
+/// replies to the bit.
+pub(crate) fn batch_prefill() -> bool {
+    #[cfg(test)]
+    if let Some(on) = BATCH_PREFILL_ASKED.with(std::cell::Cell::get) {
+        return on;
+    }
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_none_or(|v| v != "0"))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's word in place of GLYD_ENGINE_BATCH_PREFILL on its thread (`batch_prefill`): the switch at 0 and at 1 in one process.
+    pub(crate) static BATCH_PREFILL_ASKED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
 /// Whether this process's engines that no plan sized take their pools (and an expert cache its places: src/dynamic/qwen4x.rs) from the GPU's free memory: a
@@ -1573,11 +1593,6 @@ impl Dyn {
         !self.states.is_empty()
     }
 
-    fn batch_prefill() -> bool {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_none_or(|v| v != "0"))
-    }
-
     /// A round is one step of the rows that decode and the prompts' chunks (`ModelStep::round`, docs/design/runtime.md section 5), each weight read once for both: a reply does not stop
     /// while a prompt that came in is run. GLYD_ENGINE_ONE_STEP=0: the round of two passes, a prompt pass and then a decode step. The record that set it:
     /// benchmarks/gpu/rtx4080-one-step-round-2026-11-22 (gemma-4-12B, 8 requests coming in: the gap between a reply's tokens, 99th percentile, 282 to 144 ms with 1k prompts and 465 to
@@ -2318,7 +2333,7 @@ impl Dyn {
         if rows.len() > self.head_room() {
             return err(format!("a step of {} rows, where the head holds {}", rows.len(), self.head_room()));
         }
-        if rows.len() == 1 || !self.batchable() || (!Self::batch_prefill() && !self.rows_exact()) {
+        if rows.len() == 1 || !self.batchable() || (!batch_prefill() && !self.rows_exact()) {
             // (one sequence's step as a reply alone takes it, its graph where it has one, on the blocks the scheduler's growth took; several one after another, the last
             // first, each one's head row (logits, token, largest) moved to its place in the head's rows before the next step writes its own over the first)
             let mut out = vec![None; rows.len()];
@@ -2333,7 +2348,7 @@ impl Dyn {
         }
         let jobs: Vec<(usize, [u32; 1])> = rows.iter().map(|r| (r.pages[0] as usize, [r.token])).collect();
         let jobs: Vec<(usize, &[u32], bool)> = jobs.iter().map(|(s, t)| (*s, &t[..], true)).collect();
-        if !Self::batch_prefill() && rows.len() > EXACT_ROWS {
+        if !batch_prefill() && rows.len() > EXACT_ROWS {
             // (GLYD_ENGINE_BATCH_PREFILL=0, where every reply is to be the reply alone bit for bit: passes of at most EXACT_ROWS rows, the last first, each one's logits rows moved to
             // their place in the head's rows before the next writes its own over the first)
             let mut out = vec![None; rows.len()];
@@ -2394,7 +2409,7 @@ impl ModelStep for Dyn {
         Ok(r)
     }
     fn prefill_rows(&self) -> usize {
-        if self.batchable() && Self::batch_prefill() {
+        if self.batchable() && batch_prefill() {
             self.seqs.len().min(self.head_room())
         } else {
             1
@@ -2423,7 +2438,7 @@ impl ModelStep for Dyn {
         Ok(r)
     }
     fn one_step(&self) -> bool {
-        Self::one_step_asked() && self.batchable() && Self::batch_prefill()
+        Self::one_step_asked() && self.batchable() && batch_prefill()
     }
     fn prompt_budget(&self, rows: usize) -> usize {
         Self::step_tokens().unwrap_or(self.chunk).saturating_sub(rows).max(STEP_LEAST).min(self.chunk.saturating_sub(rows))

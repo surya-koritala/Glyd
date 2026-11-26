@@ -7936,6 +7936,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
+    /// GLYD_ENGINE_BATCH_PREFILL (a product's switch: at 0 prompts run one a pass and no finished sequence is kept) is read in one place, which the engine's
+    /// steps, the plan's sequences and the checks share (`dynamic::batch_prefill`): `fit --users 8` plans what `serve --users 8` does with it at 0 and at 1,
+    /// and each sequence's states have a copy at its mark at 1 alone. On a model with states, the release's shapes with its codes pack (planned as `glyd serve`
+    /// and Condor's server plan it).
+    #[test]
+    fn fit_and_serve_plan_alike_with_the_batch_prefill_switch_at_0_and_1() {
+        let (dir, c, table, pack) = qx_release("qx-switch");
+        let row = crate::support::row(crate::support::Family::FlashNext);
+        let host = 64u64 << 30;
+        let devs = [free_gpu(0, 22, host)];
+        let model = dir.to_str().unwrap();
+        let plan = |cmd: &str, on: bool| {
+            crate::dynamic::BATCH_PREFILL_ASKED.with(|a| a.set(Some(on)));
+            let a = args(&[cmd, model, "--users", "8", "--context", "4096"]);
+            let p = sizing::codes_plan(&a, "m", &table, &c, row, &pack, &devs, Some(host));
+            crate::dynamic::BATCH_PREFILL_ASKED.with(|a| a.set(None));
+            p.unwrap_or_else(|r| panic!("{cmd} at {on}: {}", r.what))
+        };
+        let (off, on) = (plan("serve", false), plan("serve", true));
+        assert_eq!(plan("fit", false), off, "the switch at 0");
+        assert_eq!(plan("fit", true), on, "the switch at 1");
+        assert_eq!((off.users, on.users), (8, 8));
+        assert!(off.kv < on.kv, "the marks' copies at 1 alone: {} and {}", off.kv, on.kv);
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
     /// Condor's server (`qwenserve`) loads by its plan (`qwen4x::serve_plan`, the planned route's rule): its users and context, the always-on matrices at its
     /// level (four bits: more places than the lossless layout leaves on the same GPU), `--places` held; a GPU named twice shares its memory between its two
     /// parts; a GPU too small, and a cut that does not name a layer for each GPU after the first, refused in words.
