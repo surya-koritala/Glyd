@@ -337,6 +337,8 @@ impl Dyn {
         if let Some(v) = &self.tok {
             v.write(0, &tok.iter().map(|&t| t as i32).collect::<Vec<i32>>())?;
         }
+        // (an n-gram block's table on the host: its rows staged from the tokens, as a pass's embedding stages them)
+        self.stage_ngram(tok)?;
         self.start.set(at);
         let pp = self.pos.ptr;
         // (what `forward` makes before a pass's operations: the decode's rows' lengths and first tokens, which the attention's decode steps read)
