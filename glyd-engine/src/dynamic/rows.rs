@@ -2508,14 +2508,21 @@ impl ModelStep for Dyn {
                 Some(m) if m > 0 && m <= upto && self.can_mark() && !self.snaps.is_empty() => m,
                 _ => return Ok(0),
             };
+            // (the rings held in 12-bit pages: their pages are the lossless pools', with no bf16 rows in the rings' buffers to copy a block into)
+            let twelve: Vec<bool> =
+                (0..self.big.d.rings.len()).map(|r| self.lossless.as_ref().is_some_and(|lx| lx.rings.get(r).is_some_and(Option::is_some))).collect();
             let pg = self.paged.as_mut().expect("paged");
             if !pg.pages.holds(f, m, chunk) {
                 return Ok(0);
             }
-            pg.pages.share(f, t, m, chunk);
             // the block the mark is in, in each group where it is not a whole block (a group of larger blocks, compressed entries', may have one where the others do not): one of `to`'s
-            // own, with `from`'s bytes in every ring of the group
+            // own, with `from`'s bytes in every ring of the group. A ring in 12-bit pages has no such copy: the start is not shared, and the prompt runs whole (its blocks to a
+            // boundary whose states are kept are found by name, above)
             let parts: Vec<Option<usize>> = (0..pg.pages.groups()).map(|g| pg.pages.partial(g, m)).collect();
+            if (0..pg.group.len()).any(|r| twelve[r] && parts[pg.group[r]].is_some()) {
+                return Ok(0);
+            }
+            pg.pages.share(f, t, m, chunk);
             if parts.iter().any(Option::is_some) {
                 if !pg.pages.grow(t, m) {
                     pg.pages.release(t);

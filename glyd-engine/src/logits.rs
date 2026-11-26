@@ -5881,7 +5881,7 @@ fn sizes_done(case: &str, fails: usize) -> Result<()> {
     Ok(())
 }
 
-/// `keepcheck CASE [--level L] [--dir MODEL --ctx N --chunk N]` (gemma4, qwen35, muse, kimi, glm; R4c's first step): a finished sequence kept in its slot and gone on with, as a
+/// `keepcheck CASE [--level L] [--dir MODEL --ctx N --chunk N] [--kv12]` (gemma4, qwen35, muse, kimi, glm; R4c's first step; `--kv12`: the pools in 12-bit pages): a finished sequence kept in its slot and gone on with, as a
 /// conversation's next turn does (`ModelStep::resume` and `mark`, src/dynamic/rows.rs), on the case's random model, or the model in MODEL (a real one). Every comparison is of logits, bit for bit, against a second slot that ran the same tokens
 /// in the same passes and was never resumed (where the engine computes experts on the host, at the kind's lossless bound: `host_experts`, `Beside`):
 ///   - the whole of a sequence (a prompt, then tokens a step at a time) gone on with a further chunk: every family;
@@ -5911,6 +5911,14 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         }
         None => random_dyn_routed(case, level, level_layout(level)?, "keepcheck", None)?,
     };
+    // (--kv12: the pools in 12-bit lossless pages, of tables made on prompts of the model's tokens, as a server's that takes them)
+    if a.has("kv12") {
+        let v = e.desc().vocab as u32;
+        let prompts: Vec<Vec<u32>> = (0..4u32).map(|k| (0..320u32).map(|i| 3 + (i * 7919 + k * 104_729) % (v - 3)).collect()).collect();
+        let t = crate::dynamic::kv12::calibrate(&mut e, &prompts, "keepcheck")?;
+        e.set_kv12(Some(t));
+    }
+    let twelve = Gen::held(&e).is_some_and(|h| h.kv_type == crate::plan::kv_format_of(true));
     let (vocab, cuts, marks, window, host) = (e.desc().vocab as u32, e.cuts(), e.can_mark(), e.least_window(), host_experts(&e));
     // (a model with recurrent states keeps them at boundaries (src/dynamic/snaps.rs); this check's prompts are short, so at boundaries 32 tokens apart, or as far apart as the
     // largest blocks: DeepSeek-V4's compressed entries' are found by name whole)
@@ -6067,11 +6075,12 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
             s.release(&[0, 1])?;
         }
     }
-    // a start shared with an empty slot: of a sequence of a prompt (marked at its end) and 24 steps, what a request that has its first 50 tokens can have
+    // a start shared with an empty slot: of a sequence of a prompt (marked at its end) and 24 steps, what a request that has its first 50 tokens can have (none where the mark
+    // is inside a block of rings in 12-bit pages, which `share` does not copy: the prompt runs whole)
     {
         let should = if cuts {
             cut / 16 * 16
-        } else if marks {
+        } else if marks && !(twelve && p.len() % 16 != 0) {
             p.len()
         } else {
             0
@@ -7226,11 +7235,13 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             fails += 1;
         }
     }
-    // (decode steps of several rows where the replies' decoding can meet: a sequence decodes its tokens while the next prompt's passes run, so where every next prompt
-    // takes more passes than the tokens made (prompts that fill a long planned context, `--ctx plan`), no two of them decode alone together)
-    let meet = (1..users).any(|k| (len(k) - len(k - 1)).div_ceil(chunk.max(1)) < tokens);
+    // (decode steps of several rows where the replies' decoding can meet: the scheduler runs the prompts' chunks in the order they came (a step's `chunk` tokens, the
+    // oldest prompt first: `Sched`'s picks), so a sequence decodes its tokens, one a pass, while the next prompt's passes run, all of them: where every next prompt takes
+    // more passes than the tokens made (prompts that fill a long planned context, `--ctx plan`), no two of them decode together. On an A10, 8 users of qwen35 at its
+    // planned 32,768 tokens (prompts of 4,089 to 32,712, each 4,089 past the one before) decoded one row a step, bf16 and 12-bit pages alike)
+    let meet = (1..users).any(|k| len(k).div_ceil(chunk.max(1)) + 1 < tokens);
     if batchable && k > 1 && !meet {
-        println!("decode steps of several rows: not asked (each prompt is more passes past the one before than the {tokens} tokens made)");
+        println!("decode steps of several rows: not asked (each prompt after the first takes more passes than the {tokens} tokens made)");
     }
     if batchable && k > 1 && meet && steps[2..].iter().all(|&x| x == 0) {
         println!("FAIL no decode step had more than one row");
