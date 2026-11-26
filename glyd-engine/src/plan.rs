@@ -4598,9 +4598,9 @@ pub mod sizing {
         }
     }
 
-    /// The experts of a description as a lossy level holds them (`MoeShape::of`): which layers have a block of the Moe kind, a layer's experts and a token's, and an
+    /// The experts of a description as a lossy level holds them (`MoeShape::of`): which layers have a block of the Moe kind, a layer's experts and a token's, an
     /// expert's two matrices' shapes (its first's rows: twice its width inside where it is gated; the width it reads: its latent's where it works in one, else the
-    /// model's).
+    /// model's), and whether the release stores them quantized, each matrix with its scales (`Described::scales`).
     pub(crate) struct MoeShape {
         moe: Vec<bool>,
         experts: usize,
@@ -4609,6 +4609,7 @@ pub mod sizing {
         width: usize,
         gated: bool,
         latent: usize,
+        scaled: bool,
     }
 
     impl MoeShape {
@@ -4618,7 +4619,8 @@ pub mod sizing {
             use crate::runtime::describe::Source;
             use crate::runtime::kinds::{Body, Ffn};
             let (nl, nb) = (m.num("num_hidden_layers").unwrap_or(0), d.desc.blocks.len().max(1));
-            let mut x = MoeShape { moe: vec![false; nl], experts: 0, top_k: 0, inter: 0, width: 0, gated: false, latent: 0 };
+            let mut x = MoeShape { moe: vec![false; nl], experts: 0, top_k: 0, inter: 0, width: 0, gated: false, latent: 0, scaled: false };
+            let mut seen = false;
             for (b, (blk, roles)) in d.desc.blocks.iter().zip(&d.blocks).enumerate() {
                 let Body::Ffn(Ffn::Moe(e)) = &blk.body else { continue };
                 if let Some(f) = x.moe.get_mut(b * nl / nb) {
@@ -4633,6 +4635,13 @@ pub mod sizing {
                 if let Some(&[w, i, ..]) = down.map(Vec::as_slice) {
                     (x.width, x.inter) = (w, i);
                 }
+                // (stored quantized: every matrix of an expert, the first's as each's, with its scales)
+                let scaled = roles.iter().filter(|(r, _)| r.starts_with("experts_")).all(|(_, s)| match s {
+                    Source::Experts(v) => v.first().is_some_and(|e| e.iter().all(|n| d.scales.contains_key(n))),
+                    _ => false,
+                });
+                x.scaled = scaled && (x.scaled || !seen);
+                seen = true;
             }
             x.moe.contains(&true).then_some(x)
         }
@@ -4662,6 +4671,22 @@ pub mod sizing {
             let up = if self.gated { 2 * self.inter } else { self.inter };
             let ((ud, us), (dd, ds)) = (crate::moe::expert_strides(tag, up, self.width)?, crate::moe::expert_strides(tag, self.width, self.inter)?);
             Ok(ud + us + dd + ds)
+        }
+
+        /// An expert's bytes as a loader that packs each expert itself holds it (`ExpertCache::Packed`): its two matrices in each layout of `tags`, the largest
+        /// (the layout its scales allow is the load's); an error where the release does not store them quantized with their scales, the form such a loader
+        /// packs from.
+        pub(crate) fn packed(&self, tags: &[u32]) -> crate::ffi::Result<u64> {
+            if !self.scaled {
+                return crate::ffi::err("its loader packs experts released quantized, each matrix with its scales, and this model's experts are not");
+            }
+            let up = if self.gated { 2 * self.inter } else { self.inter };
+            let mut most = 0;
+            for &tag in tags {
+                let ((ud, us), (dd, ds)) = (crate::moe::expert_strides(tag, up, self.width)?, crate::moe::expert_strides(tag, self.width, self.inter)?);
+                most = most.max(ud + us + dd + ds);
+            }
+            Ok(most)
         }
 
         /// Its experts at `layout` as the one expert-cache rule takes them (`expert_cache_with`): a place's bytes (`place`), every expert's, and the rest of the
@@ -4877,25 +4902,25 @@ pub mod sizing {
         })
     }
 
-    /// The experts of a family whose loader packs them itself (`ExpertCache::Packed`, Kimi-K3's: each expert `kimi::expert_bytes`, every one in the computer's
-    /// memory), of `c` (its config, parsed once) with the tensors of `table`, its `nl` layers, its bf16 matrices in the 12-bit layout where `twelve` (an HBM GPU's
-    /// faster product, a few hundred places fewer). `across` GPUs every layer is across (src/dynamic/tp.rs; 1: its layers cut): each GPU holds its slice of the
-    /// rows of each big matrix (the embedding whole, and every matrix too small or of rows that do not divide), its release's matrices besides the experts as
-    /// released but bf16's, and a slice of each place.
-    pub(crate) fn packed_experts(table: &crate::sizes::Table, m: &ModelConfig, nl: usize, twelve: bool, across: usize) -> Done<CacheOf> {
-        let c = crate::kimi::ConfigKimi::of(m, "config.json", None).map_err(cannot)?;
+    /// The experts of a row whose loader packs them itself (`ExpertCache::Packed`: each expert in the layouts of `tags`, every one in the computer's memory), from
+    /// the Moe kind's shape in the description of `m` (its config, parsed once: `MoeShape`, an expert's bytes `MoeShape::packed`), with the tensors of `table`,
+    /// its `nl` layers, its bf16 matrices in the 12-bit layout where `twelve` (an HBM GPU's faster product, a few hundred places fewer). `across` GPUs every
+    /// layer is across (src/dynamic/tp.rs; 1: its layers cut): each GPU holds its slice of the rows of each big matrix (the embedding whole, and every matrix
+    /// too small or of rows that do not divide), its release's matrices besides the experts as released but bf16's, and a slice of each place.
+    pub(crate) fn packed_experts(table: &crate::sizes::Table, m: &ModelConfig, nl: usize, twelve: bool, across: usize, tags: &[u32]) -> Done<CacheOf> {
+        let d = crate::runtime::describe::describe_config(m).map_err(cannot)?;
+        let x = MoeShape::of(&d, m).ok_or_else(|| cannot("its description has no block of experts"))?;
         let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
-        let expert = crate::dynamic::kimi::expert_bytes(&c).map_err(cannot)?;
-        let e = &c.experts;
-        let all = (c.moe.iter().filter(|&&m| m).count() * e.experts) as u64 * expert;
+        let expert = x.packed(tags).map_err(cannot)?;
+        let all = (x.moe.iter().filter(|&&f| f).count() * x.experts) as u64 * expert;
         let of = |dense, base, ram, place| CacheOf {
             dense,
             base,
             ram,
-            moe: c.moe.clone(),
+            moe: x.moe.clone(),
             place,
-            experts: e.experts,
-            top_k: e.top_k,
+            experts: x.experts,
+            top_k: x.top_k,
             all,
             disk: false,
             across: across.max(1),
@@ -4905,9 +4930,7 @@ pub mod sizing {
             let n = across as u64;
             let mut held = 0u64;
             for t in &table.rows {
-                if t.name.contains(".block_sparse_moe.experts.")
-                    || matches!(crate::sizes::classify(&t.name, c.layers), crate::sizes::Part::Vision | crate::sizes::Part::Mtp)
-                {
+                if routed(&t.name) || matches!(crate::sizes::classify(&t.name, nl), crate::sizes::Part::Vision | crate::sizes::Part::Mtp) {
                     continue;
                 }
                 let matrix = t.shape.len() == 2 && t.shape.iter().all(|&d| d >= 256);
@@ -4915,13 +4938,18 @@ pub mod sizing {
                 let sliced = matrix && !t.name.contains("embed_tokens") && t.shape[0] % (64 * n) == 0 && t.bytes >= 16 << 20;
                 held += if sliced { b / n } else { b };
             }
-            return Ok(of(vec![0; c.moe.len()], held, Vec::new(), expert / n));
+            return Ok(of(vec![0; x.moe.len()], held, Vec::new(), expert / n));
         }
-        let (dense, base) =
-            crate::dynamic::split::layer_bytes_table(table, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !n.contains(".block_sparse_moe.experts."));
+        let (dense, base) = crate::dynamic::split::layer_bytes_table(table, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !routed(n));
         let family = crate::dynamic::split::family_in(m).unwrap_or("");
         let ram = crate::dynamic::split::ram_bytes_table(table, nl, family, crate::dynamic::split::CODED_PCT, bf16);
         Ok(of(dense, base, ram, expert))
+    }
+
+    /// Whether a table's tensor is a routed expert's (a matrix of one, its scales, or a stack of every expert's): by the word every naming convention gives
+    /// them (a shared expert's is not one).
+    fn routed(name: &str) -> bool {
+        name.contains(".experts.")
     }
 
     /// The bytes the last `held` layers' dense matrices take in the computer's memory (`split::places_plan_dense`'s layers).
@@ -4958,7 +4986,7 @@ pub mod sizing {
     /// Qwen3.5 layout's) in the lossless tiered layout, about 11 bits of 16, sized at a bf16 matrix's share as held): a place the mean of the experts' bytes as
     /// held, every one in the computer's memory (the disk holds hummingbird directories' experts alone). `m`: its config, parsed once.
     pub(crate) fn release_experts(table: &crate::sizes::Table, m: &ModelConfig, nl: usize, twelve: bool) -> Done<CacheOf> {
-        let expert = |n: &str| n.contains(".experts.");
+        let expert = routed;
         let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
         let (dense, base) = crate::dynamic::split::layer_bytes_table(table, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !expert(n));
         // (each expert as the cache holds it, in a place and in the computer's memory: a bf16 one in the lossless tiered layout, at the share of its bytes the
@@ -5599,14 +5627,17 @@ pub mod sizing {
         // its experts itself (`ExpertCache::Packed`), every layer across the GPUs where they take it so (`packed_experts` of each GPU's share, `CacheOf::across`)
         let has_experts = table.rows.iter().any(|r| r.name.contains(".experts."));
         let release_cached = route.expert_cache == ExpertCache::Release && has_experts && !hb && cut.is_none() && !chosen;
-        let packed = route.expert_cache == ExpertCache::Packed && !hb && cut.is_none() && !chosen;
+        let packed = match route.expert_cache {
+            ExpertCache::Packed(tags) if !hb && cut.is_none() && !chosen => Some(tags),
+            _ => None,
+        };
         let across = across && !hb && !release_cached;
         let source = if let Some(dir) = hb_dir.filter(|_| cut.is_none() && !chosen) {
             Some(hb_dir_experts(dir, c, nl, hbm)?)
         } else if release_cached {
             Some(release_experts(table, c, nl, hbm)?)
-        } else if packed && !across {
-            Some(packed_experts(table, c, nl, hbm, 1)?)
+        } else if let Some(tags) = packed.filter(|_| !across) {
+            Some(packed_experts(table, c, nl, hbm, 1, tags)?)
         } else {
             None
         };
@@ -5650,8 +5681,10 @@ pub mod sizing {
             (Some(c), _) => Some(c),
             (None, Some(src)) => Some(expert_cache(src, &room, name, &kv_layers, host, hb)?),
             // (every layer across the GPUs: each its slice of the big matrices, its sequence's bytes whole, and a slice of each place)
-            (None, None) if packed && across => Some(expert_cache(&packed_experts(table, c, nl, hbm, tp_room.len())?, &tp_room, name, &with(0), host, hb)?),
-            (None, None) => None,
+            (None, None) => match packed.filter(|_| across) {
+                Some(tags) => Some(expert_cache(&packed_experts(table, c, nl, hbm, tp_room.len(), tags)?, &tp_room, name, &with(0), host, hb)?),
+                None => None,
+            },
         };
         let held = kv_layers.iter().sum::<u64>();
         // (the weights alone: the sequences' bytes held with them where the layers were cut are counted apart)
@@ -5959,15 +5992,84 @@ mod tests {
     /// after `#[cfg(test)]`, and the tests' module), a line naming a family's row (`Family::`), its typed config (`ConfigG4`, ...), its module (`crate::gemma4::`,
     /// `dynamic::nemotron::`, ...), its plan's engine (`Kind::Gemma4`, ...), its architecture or model type in words (`ForCausalLM`, `.contains("nemotron`,
     /// ...) fails here unless it is listed, each with the reason it stays.
+    /// The experts of a row whose loader packs them itself (`ExpertCache::Packed`, Kimi-K3's) are planned from the Moe kind's shape in the description and the
+    /// row's layouts (`packed_experts`): on Kimi-K3's and Kimi-K3.1-Pro's released headers, every layer cut over GPUs and every layer across 8, the source is
+    /// the one its family's own reader made (`kimi::ConfigKimi`, the loader's `dynamic::kimi::expert_bytes`, the experts' tensors by their names), to the byte;
+    /// a release whose experts are not stored with their scales, which that loader does not read, is refused in words.
+    #[test]
+    fn a_loaders_own_packs_are_planned_from_the_description() {
+        use sizing::CacheOf;
+        let tags = match crate::support::row(crate::support::Family::Kimi).route.expert_cache {
+            crate::support::ExpertCache::Packed(t) => t,
+            other => panic!("{other:?}"),
+        };
+        // (the family's own reader's source, as the planner made it before)
+        let by_family = |table: &crate::sizes::Table, m: &ModelConfig, nl: usize, twelve: bool, across: usize| -> CacheOf {
+            let c = crate::kimi::ConfigKimi::of(m, "config.json", None).unwrap();
+            let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
+            let expert = crate::dynamic::kimi::expert_bytes(&c).unwrap();
+            let e = &c.experts;
+            let all = (c.moe.iter().filter(|&&m| m).count() * e.experts) as u64 * expert;
+            let of = |dense, base, ram, place| CacheOf {
+                dense,
+                base,
+                ram,
+                moe: c.moe.clone(),
+                place,
+                experts: e.experts,
+                top_k: e.top_k,
+                all,
+                disk: false,
+                across: across.max(1),
+                starts: if across > 1 { Vec::new() } else { sizing::stage_starts(m, nl) },
+            };
+            if across > 1 {
+                let n = across as u64;
+                let mut held = 0u64;
+                for t in &table.rows {
+                    if t.name.contains(".block_sparse_moe.experts.")
+                        || matches!(crate::sizes::classify(&t.name, c.layers), crate::sizes::Part::Vision | crate::sizes::Part::Mtp)
+                    {
+                        continue;
+                    }
+                    let matrix = t.shape.len() == 2 && t.shape.iter().all(|&d| d >= 256);
+                    let b = if t.dtype == "BF16" && matrix { t.bytes * bf16 / 100 } else { t.bytes };
+                    let sliced = matrix && !t.name.contains("embed_tokens") && t.shape[0] % (64 * n) == 0 && t.bytes >= 16 << 20;
+                    held += if sliced { b / n } else { b };
+                }
+                return of(vec![0; c.moe.len()], held, Vec::new(), expert / n);
+            }
+            let (dense, base) =
+                crate::dynamic::split::layer_bytes_table(table, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !n.contains(".block_sparse_moe.experts."));
+            let ram = crate::dynamic::split::ram_bytes_table(table, nl, "Kimi-K3", crate::dynamic::split::CODED_PCT, bf16);
+            of(dense, base, ram, expert)
+        };
+        for release in ["Kimi-K3", "Kimi-K3.1-Pro"] {
+            let (text, table) = recorded_release(release);
+            let m = mc(&text);
+            let nl = m.num("num_hidden_layers").unwrap();
+            for (twelve, across) in [(false, 1), (true, 1), (false, 8), (true, 8)] {
+                let got = sizing::packed_experts(&table, &m, nl, twelve, across, tags).unwrap_or_else(|r| panic!("{release}: {}", r.what));
+                let want = by_family(&table, &m, nl, twelve, across);
+                assert_eq!(format!("{got:?}"), format!("{want:?}"), "{release}, 12-bit {twelve}, across {across}");
+            }
+        }
+        // (experts not stored with their scales: the release's config without its quantization)
+        let (text, table) = recorded_release("Kimi-K3");
+        let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        v["text_config"].as_object_mut().unwrap().remove("quantization_config");
+        let m = mc(&v.to_string());
+        let r = sizing::packed_experts(&table, &m, 93, false, 1, tags).unwrap_err();
+        assert!(r.what.contains("packs experts released quantized, each matrix with its scales"), "{}", r.what);
+    }
+
     #[test]
     fn the_planner_and_the_command_line_name_no_family() {
         // (a line that stays, by a part of it, and why)
-        let allowed: [(&str, &str, &str); 15] = [
+        let allowed: [(&str, &str, &str); 13] = [
             ("plan.rs", "use crate::qwen35::Pack35;", "the save's pack: every description's matrices (`pack::described`), the type named where it began"),
             ("plan.rs", "kept: Vec<crate::qwen35::Tensor35>,", "the save's kept tensor: every description's, as above"),
             ("plan.rs", "kind: Kind::Qwen3,", "`dense_fit`, the one sizer of the rows sized `Sizing::Dense`: its plans' engine is the plain dense kind's"),
-            ("plan.rs", "let c = crate::kimi::ConfigKimi::of(m, \"config.json\", None)", "`packed_experts`, the dynamic route's `ExpertCache::Packed` (its row's loader packs each expert itself): left for the next piece"),
-            ("plan.rs", "let expert = crate::dynamic::kimi::expert_bytes(&c)", "as above: an expert as that loader packs it"),
             ("plan.rs", "mode: crate::qwen4x::PackMode::of(pack, false),", "`codes_plan`, the rows whose experts come from a codes pack (`ExpertCache::Codes`): the pack's modes, its format's"),
             ("plan.rs", "pub mode: crate::qwen4x::PackMode,", "as above"),
             ("plan.rs", "sides: crate::qwen4x::PackMode::of(pack, false).side(pack)", "as above: the sidecars the pack's mode names"),

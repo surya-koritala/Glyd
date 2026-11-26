@@ -170,8 +170,9 @@ pub enum Across {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExpertCache {
     None,
-    /// An expert as the loader packs it, and each layer's own cache for the context (`kimi_cache`).
-    Packed,
+    /// An expert as the loader packs it, in the layouts of these tags (glyd_gpu::pack's), each place the largest of its bytes in them (the layout its scales
+    /// allow is the load's), from the Moe kind's shape in the model's description and the experts as it records them released (src/plan.rs `packed_experts`).
+    Packed(&'static [u32]),
     /// An expert's bytes as released, each the same (`release_cache`).
     Release,
     /// A codes pack of the experts beside the release's weights at the hummingbird level (src/cb_pack.rs, src/moe_cb.rs): places of the pack's largest expert
@@ -204,6 +205,9 @@ const PENGUIN: &[&str] = &["penguin"];
 /// Lossless, or the routed experts at hummingbird's bits (a directory `glyd-engine pack --layout hummingbird --usage` makes: src/hb_pack.rs).
 const PENGUIN_HB: &[&str] = &["penguin", "hummingbird"];
 const HB: &[&str] = &["hummingbird"];
+/// A loader's own pack of an expert released in four-bit floats with their scales (MXFP4): the FP4 layout with its scales packed where they allow (FP4R),
+/// else as released (src/dynamic/experts.rs `pack_into_host`).
+const FP4_PACKS: &[u32] = &[glyd_gpu::pack::FP4R_TAG, glyd_gpu::pack::FP4_TAG];
 
 pub static TABLE: [Support; 11] = [
     Support {
@@ -278,7 +282,7 @@ pub static TABLE: [Support; 11] = [
             sizing: Sizing::Dynamic,
             bf16_twelve: true,
             across: Across::Default,
-            expert_cache: ExpertCache::Packed,
+            expert_cache: ExpertCache::Packed(FP4_PACKS),
             ram_linears: RamLinears::Products,
         },
         saves: None,

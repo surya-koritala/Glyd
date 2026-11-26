@@ -2158,6 +2158,7 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
                 }
             }
             let si = n_shared * moe_inter;
+            // (an expert's matrices at their rows and columns, on the latent: its codes as released are two to a byte, their scales `scales`')
             shape_roles(
                 &mut shapes,
                 &x,
@@ -2165,6 +2166,8 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
                     ("router", vec![ne, d]),
                     ("latent_down", vec![lat, d]),
                     ("latent_up", vec![d, lat]),
+                    ("experts_gate_up", vec![moe_inter, lat]),
+                    ("experts_down", vec![lat, moe_inter]),
                     ("shared_gate", vec![si, d]),
                     ("shared_up", vec![si, d]),
                     ("shared_down", vec![d, si]),
