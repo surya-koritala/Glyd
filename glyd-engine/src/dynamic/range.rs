@@ -11,12 +11,13 @@ use crate::chat::{Chat, Message};
 use crate::conv::Gen;
 use crate::ffi::{err, Error, Result};
 use crate::qwen35::{Config35, Kind};
-use crate::sampler::{Params, Sampler};
+use crate::sampler::{Params, Sampler, DRAWS};
 use crate::tok::Tok;
 use crate::weights::{lossless_manifest, v7_manifest, Layout};
 use glyd_gpu::json::{self, Value};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
 
@@ -588,7 +589,7 @@ fn sampler_of(v: &Value, defaults: &Params, ctx: usize) -> Result<Sampler> {
 
 /// The status as session `who` sees it (the earliest begun of those open where None: with one session, the one): the stage's state (cancelling while a request of
 /// this session runs after its cancel, running while any request runs, cancelled where this session is), this session's handle, cancel and tokens, the request
-/// running (and the session it names), and every open session's.
+/// running (and the session it names), every open session's, and the process's draws.
 fn status(l: &Live, inc: u64, who: Option<&str>) -> Vec<(&'static str, Value)> {
     let ses = match who {
         Some(h) => l.sessions.iter().find(|x| x.0 == h),
@@ -621,6 +622,8 @@ fn status(l: &Live, inc: u64, who: Option<&str>) -> Vec<(&'static str, Value)> {
             }),
         ),
         ("sessions", list(l.sessions.iter().map(|x| obj(vec![("session", text(&x.0)), ("tokens", num(x.1)), ("cancelled", Value::Bool(cancelled(x)))])))),
+        // (the sampled draws this process made, by `sched::draw_row`: from what its GPU made of the row, and by reading the row (`sampler::DRAWS`))
+        ("draws", obj(vec![("from_gpu", num(DRAWS[1].load(Relaxed))), ("read_row", num(DRAWS[0].load(Relaxed)))])),
     ]
 }
 
@@ -1149,7 +1152,7 @@ fn digest(toks: &[u32], lg: &[Vec<f32>]) -> String {
 }
 
 /// Every step's logits and token of `b` against `a`'s, bit for bit: Ok with a line, or the first difference.
-#[cfg(feature = "dev")]
+#[cfg(any(test, feature = "dev"))]
 fn same(what: &str, a: &(Vec<u32>, Vec<Vec<f32>>), b: &(Vec<u32>, Vec<Vec<f32>>)) -> Result<String> {
     if a.0.len() != b.0.len() || a.1.len() != b.1.len() {
         return err(format!("{what}: {} tokens and {} logit rows, where the whole model gave {} and {}", b.0.len(), b.1.len(), a.0.len(), a.1.len()));
@@ -1191,7 +1194,7 @@ fn chain(ws: &mut [Client], tokens: &[u32], at: usize, head: bool, last: Vec<(&s
     chain_with(ws, tokens, at, head, &[], last)
 }
 
-/// `chain` with `every`'s fields in every stage's request (a verify chunk's `verify` and `keep_previous`: a decode chunk).
+/// `chain` with `every`'s fields in every stage's request (a verify chunk's `verify` and `keep_previous`: a decode chunk); `last` may say `logits` false (a sampled reply with no rows' body).
 #[cfg(feature = "dev")]
 fn chain_with(ws: &mut [Client], tokens: &[u32], at: usize, head: bool, every: &[(&str, Value)], last: Vec<(&str, Value)>) -> Result<Frame> {
     let n = ws.len();
@@ -1212,8 +1215,12 @@ fn chain_with(ws: &mut [Client], tokens: &[u32], at: usize, head: bool, every: &
             pairs.push(("rows", num(tokens.len())));
         }
         if k + 1 == n {
-            pairs.push(("logits", Value::Bool(head)));
-            pairs.extend(last.take().unwrap_or_default());
+            // (the last stage's own `logits`, where `last` does not say: the rows' body comes back where the head ran)
+            let last = last.take().unwrap_or_default();
+            if !last.iter().any(|x| x.0 == "logits") {
+                pairs.push(("logits", Value::Bool(head)));
+            }
+            pairs.extend(last);
         }
         let r = w.call("run_chunk", pairs, std::mem::take(&mut body))?;
         if k + 1 == n {
@@ -1231,6 +1238,12 @@ fn picked(r: &Frame) -> Result<(u32, Vec<f32>)> {
     Ok((tok, bytes_words(&r.body).into_iter().map(|w| f32::from_bits((w as u32) << 16)).collect()))
 }
 
+/// The `logit` of a last stage's reply: the model's logit of the token it gave (NaN where the reply has none).
+#[cfg(feature = "dev")]
+fn logit_of(r: &Frame) -> f32 {
+    get_f32(&r.head, "logit").unwrap_or(f32::NAN)
+}
+
 /// Every worker in a fresh session (the one open ended): the states zeroed, position 0.
 #[cfg(feature = "dev")]
 fn fresh(ws: &mut [Client]) -> Result<()> {
@@ -1245,7 +1258,7 @@ fn fresh(ws: &mut [Client]) -> Result<()> {
 }
 
 /// The prompt through the workers in chunks (the head on the last, with `last`'s fields), then `new` - 1 steps (step i's `last` fields from `each(i)`): the
-/// tokens and every step's logits.
+/// tokens, every step's logits (where the reply had its body) and every reply's `logit`.
 #[cfg(feature = "dev")]
 fn generate(
     ws: &mut [Client],
@@ -1253,7 +1266,7 @@ fn generate(
     chunk: usize,
     new: usize,
     each: &dyn Fn(usize) -> Vec<(&'static str, Value)>,
-) -> Result<(Vec<u32>, Vec<Vec<f32>>)> {
+) -> Result<(Vec<u32>, Vec<Vec<f32>>, Vec<f32>)> {
     let mut at = 0;
     let mut out = None;
     for ch in prompt.chunks(chunk) {
@@ -1261,16 +1274,21 @@ fn generate(
         out = Some(chain(ws, ch, at, end, if end { each(0) } else { Vec::new() })?);
         at += ch.len();
     }
-    let (mut tok, l) = picked(&out.ok_or_else(|| Error("an empty prompt".into()))?)?;
-    let (mut toks, mut lg) = (vec![tok], vec![l]);
+    let first = out.ok_or_else(|| Error("an empty prompt".into()))?;
+    let (mut tok, l) = picked(&first)?;
+    let (mut toks, mut lg, mut lo) = (vec![tok], vec![l].into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>(), vec![logit_of(&first)]);
     for i in 1..new {
-        let (t, l) = picked(&chain(ws, &[tok], at, true, each(i))?)?;
+        let r = chain(ws, &[tok], at, true, each(i))?;
+        let (t, l) = picked(&r)?;
         at += 1;
         tok = t;
         toks.push(tok);
-        lg.push(l);
+        lo.push(logit_of(&r));
+        if !l.is_empty() {
+            lg.push(l);
+        }
     }
-    Ok((toks, lg))
+    Ok((toks, lg, lo))
 }
 
 /// One session's run through the workers, a pass at a time (`lane_step`): its prompt in chunks, then plain steps, or verify chunks (`drafts`).
@@ -1285,12 +1303,25 @@ struct Lane {
     p0: usize,
     rounds: usize,
     seen: Vec<usize>,
+    /// The request its tokens are drawn by (plain steps only), else the greedy token.
+    draw: Option<&'static Draw>,
 }
 
 #[cfg(feature = "dev")]
 impl Lane {
     fn new(prompt: &[u32], hk: usize) -> Lane {
-        Lane { prompt: prompt.to_vec(), at: 0, toks: Vec::new(), lg: Vec::new(), keep: None, p0: 0, rounds: 0, seen: vec![0; hk.max(1)] }
+        Lane { prompt: prompt.to_vec(), at: 0, toks: Vec::new(), lg: Vec::new(), keep: None, p0: 0, rounds: 0, seen: vec![0; hk.max(1)], draw: None }
+    }
+
+    /// The lane's tokens drawn by `d`.
+    fn drawing(mut self, d: &'static Draw) -> Lane {
+        self.draw = Some(d);
+        self
+    }
+
+    /// The `sampling` of the reply that gives the answer's token `step` (none for a greedy lane).
+    fn sampling(&self, step: usize) -> Vec<(&'static str, Value)> {
+        self.draw.map(|d| d.request(step)).unwrap_or_default()
     }
 
     fn prompted(&self) -> bool {
@@ -1306,7 +1337,7 @@ fn lane_step(ws: &mut [Client], l: &mut Lane, chunk: usize, drafts: Option<(&[u3
     if !l.prompted() {
         let ch = l.prompt[l.at..(l.at + chunk).min(l.prompt.len())].to_vec();
         let end = l.at + ch.len() == l.prompt.len();
-        let r = chain(ws, &ch, l.at, end, vec![])?;
+        let r = chain(ws, &ch, l.at, end, if end { l.sampling(0) } else { Vec::new() })?;
         l.at += ch.len();
         if end {
             let (t, g) = picked(&r)?;
@@ -1317,7 +1348,7 @@ fn lane_step(ws: &mut [Client], l: &mut Lane, chunk: usize, drafts: Option<(&[u3
     }
     let last = *l.toks.last().ok_or_else(|| Error("no token after the prompt".into()))?;
     let Some((plain, hk)) = drafts else {
-        let (t, g) = picked(&chain(ws, &[last], l.at, true, vec![])?)?;
+        let (t, g) = picked(&chain(ws, &[last], l.at, true, l.sampling(l.toks.len()))?)?;
         l.at += 1;
         l.toks.push(t);
         l.lg.push(g);
@@ -1425,6 +1456,130 @@ fn fmt_bytes(b: usize) -> String {
         out.push(c);
     }
     out
+}
+
+/// A sampled request of `rangecheck`: what a `sampling` carries (a worker takes no penalty, bias or grammar: they need the tokens so far) and, as `params`, the scheduler's reply to the same
+/// request. The kinds of the cut that `samplecheck` draws: a nucleus at a temperature, a flat top-p whose cut lies past the GPU's 64 candidates, a top-k of 200 with a min-p.
+#[cfg(any(test, feature = "dev"))]
+struct Draw {
+    what: &'static str,
+    temperature: f32,
+    top_p: f32,
+    top_k: usize,
+    min_p: f32,
+    seed: u64,
+}
+
+#[cfg(any(test, feature = "dev"))]
+static SAMPLED: [Draw; 3] = [
+    Draw { what: "temperature 0.8, top-p 0.95, top-k 40", temperature: 0.8, top_p: 0.95, top_k: 40, min_p: 0.0, seed: 1234 },
+    Draw { what: "a flat top-p 0.999 at temperature 1.2", temperature: 1.2, top_p: 0.999, top_k: 0, min_p: 0.0, seed: 6 },
+    Draw { what: "top-k 200, top-p 0.9, min-p 0.02", temperature: 0.9, top_p: 0.9, top_k: 200, min_p: 0.02, seed: 8 },
+];
+
+#[cfg(any(test, feature = "dev"))]
+impl Draw {
+    /// The `sampling` of the run_chunk that gives the answer's token `step`: every field, so that none comes from the model's generation_config.json.
+    fn request(&self, step: usize) -> Vec<(&'static str, Value)> {
+        let fields = vec![
+            ("temperature", num(self.temperature)),
+            ("top_p", num(self.top_p)),
+            ("top_k", num(self.top_k)),
+            ("min_p", num(self.min_p)),
+            ("seed", num(self.seed)),
+            ("step", num(step)),
+        ];
+        vec![("sampling", obj(fields))]
+    }
+
+    /// The scheduler's `Params` for the same request, over the model's defaults as a worker takes them (its repetition_penalty is 1: no penalty is applied there).
+    fn params(&self, defaults: &Params) -> Params {
+        Params {
+            temperature: self.temperature,
+            top_p: self.top_p,
+            top_k: self.top_k,
+            min_p: self.min_p,
+            repetition_penalty: 1.0,
+            seed: self.seed,
+            ..defaults.clone()
+        }
+    }
+}
+
+/// The sampled draws a worker's `status` counts (`sampler::DRAWS`): from what its GPU made of the row, and by reading the row.
+#[cfg(any(test, feature = "dev"))]
+fn draws_of(status: &Value) -> Option<(u64, u64)> {
+    let d = status.get("draws")?;
+    Some((get_u64(d, "from_gpu")?, get_u64(d, "read_row")?))
+}
+
+/// A worker's sampled run against one GPU's scheduler's reply to the same request (`one`: its tokens and the model's row each was drawn from; `got`: the worker's tokens and, where it sent its
+/// rows' body, those): the rows and tokens bit for bit (`same`), else the tokens alone; and each reply's `logit` (`logit`, where it has them) the bits of the model's logit of the token drawn.
+#[cfg(any(test, feature = "dev"))]
+fn like_one_gpu(what: &str, one: &(Vec<u32>, Vec<Vec<f32>>), got: &(Vec<u32>, Vec<Vec<f32>>), logit: &[f32]) -> Result<String> {
+    let mut line = if got.1.is_empty() {
+        if let Some(i) = (0..one.0.len().max(got.0.len())).find(|&i| one.0.get(i) != got.0.get(i)) {
+            return err(format!("{what}: token {i} is {:?}, where one GPU's scheduler drew {:?}", got.0.get(i), one.0.get(i)));
+        }
+        format!("{what}: every token the same: {} tokens", got.0.len())
+    } else {
+        same(what, one, got)?
+    };
+    for (i, (&t, x)) in got.0.iter().zip(logit).enumerate() {
+        let want = one.1.get(i).and_then(|r| r.get(t as usize)).copied();
+        if want.map(f32::to_bits) != Some(x.to_bits()) {
+            return err(format!("{what}: step {i}: the reply's logit of token {t} is {x} ({:#010x}), where the model's row has {want:?}", x.to_bits()));
+        }
+    }
+    if !logit.is_empty() {
+        line.push_str(&format!("; every reply's logit the model's, to the bit ({})", logit.len()));
+    }
+    Ok(line)
+}
+
+/// The first of `texts` that `tok` gives back as it was given (a random model's character-level tokenizer spells ASCII, a release's tokenizer every text).
+#[cfg(any(test, feature = "dev"))]
+fn spelled<'a>(tok: &Tok, texts: &[&'a str]) -> Option<&'a str> {
+    texts.iter().copied().find(|t| tok.encode(t).and_then(|ids| tok.decode_with(&ids, true)).is_ok_and(|back| back == *t))
+}
+
+/// One GPU's scheduler's reply to `prompt` under `params`: `Sched` over the whole model's step, as serve runs it (the end token ignored, `new` tokens); its tokens and the model's row each was
+/// drawn from, and the draws that read a row on the host (none is to).
+#[cfg(feature = "dev")]
+fn served(r: &mut Run, prompt: &[u32], params: Params, new: usize) -> Result<((Vec<u32>, Vec<Vec<f32>>), u64)> {
+    use crate::sched::{Ev, Reply, Sched, Submit};
+    let Some((k, step)) = r.as_step(1)? else { return err("the whole model is no scheduler's step") };
+    let mut s = Sched::new(step, k).keeping(false).recording_rows(true);
+    let (tx, rx) = mpsc::channel();
+    let reply = Reply { params, max_new: new, ignore_eos: true, logprobs: None, stop_ids: Vec::new() };
+    s.submit(Submit {
+        prompt: prompt.to_vec(),
+        reply,
+        out: tx,
+        abort: Default::default(),
+        resumed: Default::default(),
+        cached: Default::default(),
+        created: Default::default(),
+        salt: 0,
+        pin: 0,
+        images: Vec::new(),
+    });
+    while !s.idle() {
+        s.tick()?;
+    }
+    let mut toks = Vec::new();
+    loop {
+        match rx.recv().map_err(|_| Error("the scheduler dropped a sequence".into()))? {
+            Ev::Token(t) => toks.push(t),
+            Ev::Lp(_) => {}
+            Ev::End(f) => {
+                f.map_err(|e| Error(e.msg))?;
+                break;
+            }
+        }
+    }
+    let rows = s.rows.take().unwrap_or_default().into_iter().map(|x| x.1).collect();
+    Ok(((toks, rows), s.stats.row_reads))
 }
 
 /// `rangecheck MODEL[:level] [--prompt 1024] [--new 256] [--cut L | --cuts A,B] [--ctx N] [--chunk N] [--device D] [--no-graph] [--workers [--worker-exe PATH] [--sessions 2]]` (docs/range-worker.md): the whole model's
@@ -1571,6 +1726,31 @@ pub fn rangecheck(a: &Args) -> Result<()> {
     }
     drop(r);
     let whole = (whole.0, whole.1);
+
+    // 1b. one GPU's scheduler's sampled replies (`SAMPLED`, `m` tokens each; with --sessions 2 the third on the second prompt too): what the workers' draws are held to below. The whole model again: the
+    // scheduler's pools take the GPU's free memory, which the workers need
+    let m = new.min(16);
+    let defaults = crate::sampler::generation_defaults(&dir);
+    let (mut refs, mut ref_b) = (Vec::new(), (Vec::new(), Vec::new()));
+    if a.has("workers") {
+        let t0 = Instant::now();
+        let mut r = Run::new(nl, cfg.eos.clone(), &[], &[o.device], &o, make.clone())?;
+        let mut reads = 0;
+        for d in &SAMPLED {
+            let (one, read) = served(&mut r, &prompt, d.params(&defaults), m)?;
+            println!("one GPU's scheduler, sampled ({}, seed {}): {m} tokens {:?}; {read} rows read on the host", d.what, d.seed, one.0);
+            (refs.push(one), reads += read);
+        }
+        if sessions > 1 {
+            let (one, read) = served(&mut r, &prompt_b, SAMPLED[2].params(&defaults), m)?;
+            (ref_b, reads) = (one, reads + read);
+        }
+        drop(r);
+        if reads > 0 {
+            return err(format!("one GPU's scheduler read {reads} rows on the host for its draws (none is to be)"));
+        }
+        println!("one GPU's scheduler: its sampled replies made in {:.1} s, no row read on the host", t0.elapsed().as_secs_f64());
+    }
 
     // 2. the stages in this process
     let t0 = Instant::now();
@@ -1797,7 +1977,9 @@ pub fn rangecheck(a: &Args) -> Result<()> {
 
         // tokenize and detokenize, on the control thread: a text and back; the same as a chat of one user message
         let w0 = &mut ws[0];
-        let say = "The range worker's text: 12 layers, ünïcödé, 東京 🦀.";
+        // (a release's tokenizer spells any text; a random model's, character by character, ASCII: the text it gives back as it was given)
+        let says = ["The range worker's text: 12 layers, ünïcödé, 東京 🦀.", "The range worker's text: 12 layers, plain ASCII."];
+        let say = Tok::load(&dir).ok().and_then(|t| spelled(&t, &says)).unwrap_or(says[0]);
         let t = Instant::now();
         let ids =
             w0.call("tokenize", vec![("text", text(say)), ("chat", Value::Bool(false))], vec![])?.head.get("ids").and_then(Value::as_u64s).unwrap_or_default();
@@ -1833,41 +2015,56 @@ pub fn rangecheck(a: &Args) -> Result<()> {
         }
         println!("{}: tokenize messages: one user turn the same {} ids as chat true; a four-turn chat {} ids, every turn in it", w0.tag, one.len(), four.len());
 
-        // a seeded sampled run, twice from fresh sessions: the same tokens; the same as serve's sampler drawing token after token over the same logits
-        let m = new.min(16);
-        let (temperature, top_p, top_k, seed) = (0.8f32, 0.95f32, 40usize, 1234u64);
-        let sampling = |i: usize| {
-            vec![(
-                "sampling",
-                obj(vec![("temperature", num(temperature)), ("top_p", num(top_p)), ("top_k", num(top_k)), ("seed", num(seed)), ("step", num(i))]),
-            )]
-        };
-        fresh(&mut ws)?;
-        let a1 = generate(&mut ws, &prompt, o.chunk, m, &sampling)?;
-        fresh(&mut ws)?;
-        let t = Instant::now();
-        let a2 = generate(&mut ws, &prompt, o.chunk, m, &sampling)?;
-        let t_run = t.elapsed().as_secs_f64() * 1e3;
-        if a1.0 != a2.0 {
-            return err(format!("a seeded sampled run twice: {:?}, then {:?}", a1.0, a2.0));
-        }
-        let mut sm = crate::sampler::Sampler::new(Params { temperature, top_p, top_k, seed, ..Params::default() }, &[]);
-        let host: Vec<u32> = a2.1.iter().map(|row| sm.sample(row)).collect();
-        if host != a2.0 {
-            return err(format!("sampled through the workers {:?}, where serve's sampler over the same logits draws {host:?}", a2.0));
-        }
-        let off = (0..m).filter(|&i| a2.0[i] != whole.0[i]).count();
-        println!("workers: sampled (temperature {temperature}, top_p {top_p}, top_k {top_k}, seed {seed}), {m} tokens twice in {t_run:.1} ms: the same both times, and the same as serve's sampler token after token over the same logits: {:?}; {off} of {m} differ from greedy", a2.0);
-        // the last sampled step's request again: the kept reply, not a new draw
+        // seeded sampled runs (`SAMPLED`, `m` tokens each) from fresh sessions, one with the rows' body asked for and one without: the same tokens and logits both times; the same as serve's sampler drawing
+        // token after token over the same logits; and one GPU's scheduler's reply to the request (1b): every token, every row and every reply's `logit` bit for bit. The worker's draws, all made from what its
+        // GPU made of the row (its `status`'s `draws`), none by reading the row
         let k = ws.len() - 1;
+        let drew = |ws: &mut [Client]| -> Result<(u64, u64)> {
+            let st = ws[ws.len() - 1].call("status", vec![], vec![])?;
+            draws_of(&st.head).ok_or_else(|| Error(format!("no draws in the last stage's status: {}", json::to_compact(&st.head))))
+        };
+        let before = drew(&mut ws)?;
+        let (mut made, mut last) = (0usize, (Vec::new(), Vec::new()));
+        for (d, one) in SAMPLED.iter().zip(&refs) {
+            let what = format!("workers, sampled ({}, seed {})", d.what, d.seed);
+            let mut runs = Vec::new();
+            let mut ms = 0f64;
+            for body in [false, true] {
+                fresh(&mut ws)?;
+                let t = Instant::now();
+                runs.push(generate(&mut ws, &prompt, o.chunk, m, &|i| {
+                    let mut f = d.request(i);
+                    f.extend((!body).then_some(("logits", Value::Bool(false))));
+                    f
+                })?);
+                ms = t.elapsed().as_secs_f64() * 1e3;
+            }
+            let (bare, full) = (&runs[0], &runs[1]);
+            if bare.0 != full.0 || bare.2.iter().zip(&full.2).any(|(x, y)| x.to_bits() != y.to_bits()) {
+                return err(format!("{what}: the tokens {:?} with no rows' body, {:?} with it", bare.0, full.0));
+            }
+            let mut sm = Sampler::new(d.params(&defaults), &[]);
+            let host: Vec<u32> = full.1.iter().map(|row| sm.sample(row)).collect();
+            if host != full.0 {
+                return err(format!("{what}: sampled through the workers {:?}, where serve's sampler over the same logits draws {host:?}", full.0));
+            }
+            let line = like_one_gpu(&what, one, &(full.0.clone(), full.1.clone()), &full.2)?;
+            let line_bare = like_one_gpu(&what, one, &(bare.0.clone(), Vec::new()), &bare.2)?;
+            let off = (0..m).filter(|&i| full.0[i] != whole.0[i]).count();
+            println!("{line}\n{line_bare} (no rows' body asked for); the same as serve's sampler token after token over the same logits; {m} tokens in {ms:.1} ms; {off} of {m} differ from greedy: {:?}", full.0);
+            made += 2 * m;
+            last = (full.0.clone(), full.1.clone());
+        }
+        // the last sampled step's request again: the kept reply, not a new draw
         let req = ws[k].last.clone().expect("a request was sent");
         let st0 = ws[k].call("status", vec![], vec![])?;
         ws[k].send_frame(&req)?;
         let again = ws[k].recv()?;
         let st1 = ws[k].call("status", vec![], vec![])?;
         let (tok, row) = picked(&again)?;
-        if tok != a2.0[m - 1]
-            || row.iter().zip(&a2.1[m - 1]).any(|(x, y)| x.to_bits() != y.to_bits())
+        if tok != last.0[m - 1]
+            || row.len() != last.1[m - 1].len()
+            || row.iter().zip(&last.1[m - 1]).any(|(x, y)| x.to_bits() != y.to_bits())
             || get_u64(&st0.head, "tokens") != get_u64(&st1.head, "tokens")
         {
             return err(format!(
@@ -1883,6 +2080,43 @@ pub fn rangecheck(a: &Args) -> Result<()> {
             get_str(&req.head, "id"),
             get_u64(&st1.head, "tokens")
         );
+        let after = drew(&mut ws)?;
+        if after.0 - before.0 != made as u64 || after.1 != before.1 {
+            return err(format!(
+                "the last worker's draws: {} from the GPU's view of the row and {} by reading it, where {made} sampled tokens were drawn and none is to read the row",
+                after.0 - before.0,
+                after.1 - before.1
+            ));
+        }
+        println!(
+            "workers: the last stage's draws: {made} sampled tokens, {made} drawn from what its GPU made of the row, {} by reading the row",
+            after.1 - before.1
+        );
+        // a penalty needs the tokens so far: refused (before the chunk runs: the session as it was)
+        let (ses, at) = (ws[k].session.clone(), get_u64(&st1.head, "tokens").unwrap_or(0));
+        let penalty = obj(vec![("temperature", num(0.8)), ("seed", num(1)), ("step", num(0)), ("repetition_penalty", num(1.1))]);
+        let r = ws[k].call_raw(
+            "run_chunk",
+            vec![
+                ("session", text(&ses)),
+                ("phase", text("decode")),
+                ("position_start", num(at)),
+                ("rows", num(1)),
+                ("head", Value::Bool(true)),
+                ("sampling", penalty),
+            ],
+            vec![0u8; 4 * cfg.hidden],
+        )?;
+        let e = get_str(&r.head, "error").unwrap_or("");
+        let st2 = ws[k].call("status", vec![], vec![])?;
+        if get_bool(&r.head, "ok") != Some(false) || !e.contains("not taken here") || get_u64(&st2.head, "tokens") != Some(at) {
+            return err(format!(
+                "a sampling with a repetition penalty was not refused as it was: {} (tokens {at}, then {:?})",
+                json::to_compact(&r.head),
+                get_u64(&st2.head, "tokens")
+            ));
+        }
+        println!("workers: a sampling with a repetition penalty: refused, the session still at {at} tokens: {e}");
 
         // the head on hk rows: the prompt, then the first hk greedy tokens as one chunk; every row's token and logits the whole model's
         if let Some((picks, words)) = &rows_ref {
@@ -2069,6 +2303,31 @@ pub fn rangecheck(a: &Args) -> Result<()> {
                     println!("workers, {what}: {:.2} ms a turn of two passes ({turns} turns)", ms / turns.max(1) as f64);
                 }
             }
+            // 4. both sampled (A: the first kind on the prompt, B: the third on the second prompt), a pass each in turn: each one's tokens and rows one GPU's scheduler's reply to its request, bit for bit,
+            // and the last stage's draws all from the GPU's view of the row
+            end_all(&mut ws, &hb)?;
+            fresh(&mut ws)?;
+            hb = begin_all(&mut ws)?;
+            let (mut la, mut lb) = (Lane::new(&prompt, hk).drawing(&SAMPLED[0]), Lane::new(&prompt_b, hk).drawing(&SAMPLED[2]));
+            let before = drew(&mut ws)?;
+            interleave(&mut ws, &mut hb, &mut la, None, m, &mut lb, None, m, o.chunk, new, cfg.vocab)?;
+            let after = drew(&mut ws)?;
+            println!("{}", like_one_gpu(&format!("session A sampled ({}), a pass each in turn with B", SAMPLED[0].what), &refs[0], &(la.toks, la.lg), &[])?);
+            println!("{}", like_one_gpu(&format!("session B sampled ({}), on the second prompt", SAMPLED[2].what), &ref_b, &(lb.toks, lb.lg), &[])?);
+            if after.0 - before.0 != 2 * m as u64 || after.1 != before.1 {
+                return err(format!(
+                    "the last worker's draws with two sessions: {} from the GPU's view of the row and {} by reading it, where {} sampled tokens were drawn",
+                    after.0 - before.0,
+                    after.1 - before.1,
+                    2 * m
+                ));
+            }
+            println!(
+                "workers, two sessions sampled: {} tokens drawn, {} from what the last stage's GPU made of the row, {} by reading the row",
+                2 * m,
+                after.0 - before.0,
+                after.1 - before.1
+            );
             end_all(&mut ws, &hb)?;
         }
 
@@ -2278,6 +2537,85 @@ mod tests {
         ] {
             assert!(sampler_of(&json::parse(bad).unwrap(), &defaults, 4096).err().unwrap().msg.contains(says), "{bad}");
         }
+    }
+
+    /// A sampled request of `rangecheck` carries every field of the scheduler's `Params` for it, so that the worker's sampler, over a model's own defaults (a generation_config.json's, unlike the
+    /// request's), draws what the scheduler's does token after token; with the defaults a request does not say, it would not.
+    #[test]
+    fn a_sampled_request_is_the_references_params() {
+        let mut x = 11u64;
+        let rows: Vec<Vec<f32>> = (0..24)
+            .map(|_| {
+                (0..1000)
+                    .map(|_| {
+                        x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                        (x >> 40) as f32 / (1u64 << 24) as f32 * 6.0
+                    })
+                    .collect()
+            })
+            .collect();
+        let defaults = Params { temperature: 0.3, top_p: 0.5, top_k: 7, min_p: 0.4, repetition_penalty: 1.3, ..Params::default() };
+        for d in &SAMPLED {
+            let mut one = Sampler::new(d.params(&defaults), &[]);
+            let want: Vec<u32> = rows.iter().map(|r| one.sample(r)).collect();
+            let got: Vec<u32> = rows.iter().enumerate().map(|(i, r)| sampler_of(&d.request(i)[0].1, &defaults, 4096).unwrap().sample(r)).collect();
+            assert_eq!(got, want, "{}", d.what);
+            assert_eq!(d.params(&defaults).repetition_penalty, 1.0, "{}: a worker applies no penalty", d.what);
+            // (the defaults do change a draw: a request that left a field to them would not be the reference's)
+            let mut lean = Sampler::new(Params { temperature: d.temperature, seed: d.seed, ..defaults.clone() }, &[]);
+            assert_ne!(rows.iter().map(|r| lean.sample(r)).collect::<Vec<u32>>(), want, "{}", d.what);
+        }
+    }
+
+    /// The status says the process's sampled draws, as `rangecheck` reads them from the last stage: both counts, and no other status has them.
+    #[test]
+    fn the_status_says_the_draws() {
+        let (a, b) = (DRAWS[1].load(Relaxed), DRAWS[0].load(Relaxed));
+        let (gpu, row) = draws_of(&obj(status(&Live::default(), 1, None))).expect("a status has its draws");
+        assert!(gpu >= a && gpu <= DRAWS[1].load(Relaxed) && row >= b && row <= DRAWS[0].load(Relaxed));
+        assert_eq!(draws_of(&obj(vec![("state", text("idle"))])), None);
+        assert_eq!(draws_of(&obj(vec![("draws", obj(vec![("from_gpu", num(1))]))])), None);
+    }
+
+    /// A worker's sampled run is one GPU's scheduler's, or the first difference is said: a token, a bit of a row, a bit of a reply's `logit`, a missing token; with no rows' body only the tokens and
+    /// the logits are held.
+    #[test]
+    fn a_sampled_run_is_one_gpus_to_the_bit() {
+        let rows = vec![vec![0.5f32, -1.0, 2.0, 0.25], vec![1.5, 0.0, -3.0, 4.0], vec![-0.5, 8.0, 0.125, 2.0]];
+        let one = (vec![2u32, 3, 1], rows.clone());
+        let logit = [2.0f32, 4.0, 8.0];
+        let said = |got: &(Vec<u32>, Vec<Vec<f32>>), logit: &[f32]| like_one_gpu("w", &one, got, logit).map_err(|e| e.msg);
+        assert!(said(&one, &logit).unwrap().contains("every reply's logit the model's"));
+        assert!(said(&(one.0.clone(), Vec::new()), &logit).unwrap().contains("3 tokens"));
+        assert!(said(&one, &[]).is_ok());
+        let wrong = said(&(vec![2, 3, 0], rows.clone()), &logit).unwrap_err();
+        assert!(wrong.contains("step 2: token 0"), "{wrong}");
+        let wrong = said(&(vec![2, 0, 1], Vec::new()), &logit).unwrap_err();
+        assert!(wrong.contains("token 1 is Some(0)") && wrong.contains("drew Some(3)"), "{wrong}");
+        let wrong = said(&(vec![2, 3], Vec::new()), &logit).unwrap_err();
+        assert!(wrong.contains("token 2 is None"), "{wrong}");
+        let mut off = rows.clone();
+        off[1][2] = f32::from_bits(off[1][2].to_bits() ^ 1);
+        let wrong = said(&(one.0.clone(), off), &logit).unwrap_err();
+        assert!(wrong.contains("step 1: logit 2"), "{wrong}");
+        let wrong = said(&(one.0.clone(), Vec::new()), &[2.0, f32::from_bits(4.0f32.to_bits() + 1), 8.0]).unwrap_err();
+        assert!(wrong.contains("step 1: the reply's logit of token 3"), "{wrong}");
+        let wrong = said(&one, &[2.0, 4.0, f32::NAN]).unwrap_err();
+        assert!(wrong.contains("step 2"), "{wrong}");
+    }
+
+    /// The text a check sends to a worker's tokenizer is one the tokenizer gives back as it was given: a character-level random model's tokenizer does not spell what a release's does.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_tokenizer_spells_what_it_gives_back() {
+        let dir = std::env::temp_dir().join(format!("glyd-range-spell-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::logits::write_serving_files(&dir, "{{ messages }}").unwrap();
+        let tok = Tok::load(&dir).unwrap();
+        let says = ["ünïcödé, 東京 🦀", "plain ASCII, 12 layers."];
+        assert_eq!(spelled(&tok, &says), Some(says[1]));
+        assert_eq!(spelled(&tok, &says[..1]), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The status as a session sees it: a cancel asked is that session's alone; a request running is the stage's (running) and, where it names the session and its

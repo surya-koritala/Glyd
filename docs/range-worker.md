@@ -95,7 +95,7 @@ before anything is allocated, and the worker ends (the stream is not trusted pas
 | `commit` | `instance` | `committed`, `ready`. Nothing runs before it |
 | `begin_session` | `instance` | `session` (a handle), `context_tokens`, `kv_bytes`, `state_bytes` (the session's own), `tokens` 0. The states zeroed. While fewer than `limits.sessions` are open |
 | `run_chunk` | `session`, `phase` (prefill, decode), `position_start`, `head` (true: the last stage runs the head on the last row), the first stage: `tokens` [ids]; a later stage: `rows` and the body (the boundary of the stage before); the last stage: `logits` true for the body, `head_rows` k (1 by default: the head on the last k rows, at most the chunk and `--head-rows`), `sampling` {temperature, top_p, top_k, min_p, seed, step} (below; with head_rows 1); any stage: `verify` true (a verify chunk: phase decode, 1 to `verify_rows` rows), `keep_previous` K (below: drafted tokens) | `rows`, `position_end`; a stage that is not the last: the body (the boundary) and `body` {what, rows, bytes}; the last, with `head`: `token`, `logit` (the last row's: the greedy token, or the drawn one and its logit), `tokens` [the greedy token of each of the k rows] where `head_rows` was given, and the logits' body where asked (`body` {what, dtype, rows k, width, bytes}) |
-| `status` | `session` (optional) | `state` (empty, idle, running, cancelling, cancelled), `incarnation`, `instance`, `session`, `session_cancelled`, `tokens` (the named session's, else the earliest begun open one's), `running` {id, op, ms, session} or null, `sessions` [{session, tokens, cancelled}] (every open one, in the order begun). Answered by the control thread at once, whatever runs |
+| `status` | `session` (optional) | `state` (empty, idle, running, cancelling, cancelled), `incarnation`, `instance`, `session`, `session_cancelled`, `tokens` (the named session's, else the earliest begun open one's), `running` {id, op, ms, session} or null, `sessions` [{session, tokens, cancelled}] (every open one, in the order begun), `draws` {from_gpu, read_row} (the sampled tokens this process drew from what its GPU made of the row, and by reading the whole row: none is to be of the second). Answered by the control thread at once, whatever runs |
 | `cancel` | `session` | the status (that session's). The session takes no more chunks; a chunk under way runs to its end, its output is withdrawn (its reply is an error), the state has it. Another session is not touched. `end_session` closes it |
 | `end_session` | `session` | `ended`, `tokens`, `cancelled`. Waits its turn behind a chunk under way |
 | `unload` | `instance` | `unloaded`, `retained_bytes` (the engine's buffers left: 0). Refused while a session is open |
@@ -127,7 +127,10 @@ generator starts from the seed and draws once a sampled token; the worker starts
 draws, so the request alone says the token: the same seed, step and logits give serve's token, and a repeat of the request
 gives the same. No penalties (repetition, presence, frequency) and no logit_bias: they need the tokens so far; a request
 with one is refused, and a model's default repetition_penalty is not applied. Ask for the logits and apply them on your
-side if needed. The sampler reads the row on the host: a top_p with no top_k sorts the whole vocabulary (some ms).
+side if needed. The token is drawn on the worker's GPU as one GPU's scheduler draws it (`sched::draw_row`): from the row's
+candidates and, where the cut or the point lies past them, the weights and tokens of ranges of the row, every sum exact in any
+order; the row is not read on the host for it (its body only where `logits` is true, and the drawn token's `logit` is the
+model's logit of it, whether or not the body comes). `status`'s `draws` counts them.
 
 Repeated requests: the worker keeps the last 256 requests by id with their replies (their bodies up to 64 MiB in all; the
 oldest bodies are let go first). The same id with the same request comes back from the kept reply and is never run
@@ -229,12 +232,17 @@ from another build of the program (a release build's) against this build's whole
 One process, one GPU: the whole model loaded, a prompt of N random tokens (`report::random_prompt`, the bench's) and
 `--new` greedy tokens, every step's logits (the bf16 words) and token kept; the whole model freed; the stages loaded
 (`Split`, each stage's weights once, cut before each of `--cuts`, or in the middle), the same run, every step's logits and
-token compared bit for bit; with `--workers`, the stages again as `glyd-engine rangeworker` processes chained through the
+token compared bit for bit; with `--workers`, the whole model once more (the scheduler's sampled replies made between the two), and the stages again as `glyd-engine rangeworker` processes chained through the
 protocol, compared the same way, then the protocol's rules: a repeated request id, a conflicting repeat, a stale position,
 another incarnation's handle, an unknown op, `status` during a chunk, `cancel` during a chunk; then `tokenize` and
-`detokenize` (a text there and back, and as a chat), a seeded sampled run of up to 16 tokens twice from fresh sessions (the
-same tokens, and the same as serve's sampler drawing token after token over the same logits), the last sampled request
-sent again (the kept reply), and the head on 8 rows (the prompt, then the first 8 greedy tokens as one chunk with
+`detokenize` (a text there and back, and as a chat; the text is one the model's tokenizer gives back as it was given, so a
+random model made with `logitsmodel CASE DIR --servable` is one the check can use), three kinds of seeded sampled runs of up
+to 16 tokens each (a temperature with top-p and top-k, a flat top-p past the GPU's candidates, a top-k of 200 with top-p and
+min-p) from fresh sessions, with the rows' body asked for and without it: the same tokens and `logit`s both ways, the same as
+serve's sampler drawing token after token over the same logits, and one GPU's scheduler's reply to the same request (the
+whole model's `sched::Sched`, its tokens and the row each was drawn from) token for token, every row and every reply's `logit`
+bit for bit; the last sampled request sent again (the kept reply, not a new draw); the last worker's `draws`: every sampled
+token from the GPU's view of the row, none by reading it; a repetition penalty refused with the session as it was; and the head on 8 rows (the prompt, then the first 8 greedy tokens as one chunk with
 `head_rows` 8: every row's token and logits equal to the whole model's on the same chunk, bit for bit; the last worker runs
 with `--head-rows 8`); drafting (the prompt, then verify chunks of 8 rows whose 7 drafts are the plain run's next a
 tokens and then wrong ones, a = 0 to 7 in turn, each next chunk with `keep_previous: a + 1`: every kept row's token and
@@ -242,7 +250,7 @@ logits equal to the plain run's, bit for bit) and its refusals; with `--sessions
 sessions on every worker, a pass of each in turn (a prompt chunk, a step or a verify chunk): A on the prompt, B on another
 (the prompt backwards, a quarter shorter); a third session refused; both plain to half the tokens, then A cancelled (its
 status cancelled, B's idle, A's next chunk refused), B 4 steps alone, A ended, a session C on A's room from position 0 in
-turn with B to the end; then A drafted with B plain, then both drafted. Every session's tokens and logits against its own
+turn with B to the end; then A drafted with B plain, then both drafted; then both sampled (A's first kind, B's third on its own prompt), each against one GPU's scheduler's reply to its request, and the draws counted again. Every session's tokens and logits against its own
 prompt's whole-model run, bit for bit. Then `end_session`, `unload`, `exit`. Before the stages, the whole model times a
 step, a verify pass of 8 rows, its states' copy and a rewind to each keep; with `--sessions 2` also a second sequence's
 bytes and graph capture, and a step of each in turn against a step alone. Prints "all checks passed", or the first
