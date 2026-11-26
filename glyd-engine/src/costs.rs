@@ -622,8 +622,8 @@ impl Profile {
     }
 
     /// The whole profile as JSON. `work`: the workload the numbers that depend on one are given at; `alloc`: what a loaded engine holds (measured), where one is loaded;
-    /// `predictions`: the predictor's rows and the tiers they used, where asked.
-    pub fn json(&self, work: &Workload, alloc: Option<&Allocated>, predictions: Option<(Value, Value)>) -> Value {
+    /// `predictions`: the predictor's rows and the tiers they used, where asked; `gpu`: the GPU the `device` field says (a served model's own).
+    pub fn json(&self, work: &Workload, alloc: Option<&Allocated>, predictions: Option<(Value, Value)>, gpu: i32) -> Value {
         let s = |t: &str| Value::from(t);
         let opt = |t: &Option<String>| t.as_deref().map_or(Value::Null, Value::from);
         let (kv_at_ctx, state) = (self.kv_per_token() * work.ctx as u64, self.state());
@@ -687,7 +687,7 @@ impl Profile {
                     ("state", s(self.state_type)),
                 ]),
             ),
-            ("device", device_json()),
+            ("device", device_json(gpu)),
             ("host", host_json()),
             ("workload", work.json()),
             ("observed_at", numf(crate::monitor::clock(), 3)),
@@ -810,12 +810,13 @@ fn numf(x: f64, places: usize) -> Value {
     Value::Number(format!("{x:.places$}"))
 }
 
-fn device_json() -> Value {
+/// GPU `ordinal` as the driver reports it now (a look: the thread's context stays as it was, `Dev::probe`), or null with `--no-gpu`.
+fn device_json(ordinal: i32) -> Value {
     if NO_GPU.load(std::sync::atomic::Ordering::Relaxed) {
         return Value::Null;
     }
-    let Ok(g) = crate::dev::Dev::probe(0) else { return Value::Null };
-    crate::dev::Dev::release(0);
+    let Ok(g) = crate::dev::Dev::probe(ordinal) else { return Value::Null };
+    crate::dev::Dev::release(ordinal);
     obj(vec![
         ("ordinal", num(g.ordinal.max(0) as u64)),
         ("name", Value::from(g.name.as_str())),
@@ -1008,7 +1009,7 @@ pub fn tiers_cmd(a: &crate::args::Args) -> Result<()> {
     let v = obj(vec![
         ("object", Value::from("glyd.tiers")),
         ("schema", Value::from(SCHEMA)),
-        ("device", device_json()),
+        ("device", device_json(0)),
         ("host", host_json()),
         ("directory", dir.as_ref().map_or(Value::Null, |d| Value::from(d.to_string_lossy().as_ref()))),
         ("buffer_bytes", num(bytes as u64)),
@@ -1276,7 +1277,7 @@ pub fn costs_json(model: &str, a: &crate::args::Args) -> Result<Value> {
     } else {
         None
     };
-    Ok(p.json(&w, alloc.as_ref(), predictions))
+    Ok(p.json(&w, alloc.as_ref(), predictions, 0))
 }
 
 /// The GPU's memory, its link and the computer's memory measured now, briefly (256 MiB, 5 passes), for a prediction without a tiers file.
@@ -1329,7 +1330,8 @@ pub fn probe_rates(ordinal: i32) -> Result<Rates> {
     Ok(Rates { vram, link, ram, ssd: 0.0 })
 }
 
-/// The costs object of /v1/glyd/info for the model served from `dir`, its config.json `c` (parsed once, the load's) (never an error: what went wrong, where it did).
+/// The costs object of /v1/glyd/info for the model served from `dir`, its config.json `c` (parsed once, the load's), on GPU `gpu` (its first, where it is
+/// cut over several) (never an error: what went wrong, where it did).
 #[allow(clippy::too_many_arguments)]
 pub fn served(
     dir: &Path,
@@ -1339,6 +1341,7 @@ pub fn served(
     ctx: usize,
     chunk: usize,
     held: Option<crate::dev::Held>,
+    gpu: i32,
 ) -> Value {
     let f = Found { id: id.to_string(), tag: requested.map(str::to_string), dir: Some(dir.to_path_buf()), repo: None, revision: None, remote: None };
     let f = match find(&dir.to_string_lossy()) {
@@ -1346,7 +1349,7 @@ pub fn served(
         Err(_) => f,
     };
     match Profile::from_found(&f, Some(c)) {
-        Ok(p) => p.json(&Workload { ctx, prompt: 0, output: 0, chunk }, held.map(|h| Allocated::now(h, ctx)).as_ref(), None),
+        Ok(p) => p.json(&Workload { ctx, prompt: 0, output: 0, chunk }, held.map(|h| Allocated::now(h, ctx)).as_ref(), None, gpu),
         Err(e) => obj(vec![("object", Value::from("glyd.costs")), ("status", Value::from("unavailable")), ("error", Value::from(e.msg.as_str()))]),
     }
 }
@@ -1548,7 +1551,7 @@ mod tests {
     #[test]
     fn the_json_has_the_three_fields_and_nulls_where_nothing_is_measured() {
         let p = tiny();
-        let v = p.json(&Workload { ctx: 64, prompt: 32, output: 16, chunk: 8 }, None, None);
+        let v = p.json(&Workload { ctx: 64, prompt: 32, output: 16, chunk: 8 }, None, None, 0);
         let at = |path: &[&str]| path.iter().try_fold(&v, |x, k| x.get(k)).cloned();
         assert_eq!(at(&["totals", "resident_bytes"]).and_then(|x| x.as_u64()), Some(p.resident()));
         assert_eq!(at(&["totals", "active_bytes_per_token"]).and_then(|x| x.as_u64()), Some(p.active()));
@@ -1567,7 +1570,7 @@ mod tests {
         );
         // with an allocation: the working memory is measured and the engine's bytes at the context include it
         let a = Allocated { weights: 4607, kv: 1024, state: 1000, working: 500, engine: 7131, ctx: 64 };
-        let v = p.json(&Workload { ctx: 64, prompt: 32, output: 16, chunk: 8 }, Some(&a), None);
+        let v = p.json(&Workload { ctx: 64, prompt: 32, output: 16, chunk: 8 }, Some(&a), None, 0);
         assert_eq!(v.get("totals").and_then(|t| t.get("working_bytes")).and_then(Value::as_u64), Some(500));
         assert_eq!(v.get("allocated").and_then(|t| t.get("kv_bytes_per_token")).and_then(Value::as_u64), Some(16));
     }

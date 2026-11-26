@@ -100,8 +100,13 @@ impl Dev {
         self.cc
     }
 
-    /// The GPU `ordinal`: its name, compute capability, memory (total and free now) and the driver's CUDA version.
+    /// The GPU `ordinal`: its name, compute capability, memory (total and free now) and the driver's CUDA version. A look: the context current on this thread
+    /// is the same after it (`keeping_context`), so a look at any GPU leaves an engine on another one its own context on the thread it runs on.
     pub fn probe(ordinal: i32) -> Result<Gpu> {
+        keeping_context(|| Dev::probe_now(ordinal))
+    }
+
+    fn probe_now(ordinal: i32) -> Result<Gpu> {
         let (count, version) = (D::count()?, D::version()?);
         if count == 0 || ordinal >= count {
             return err(format!("no GPU {ordinal}: the driver sees {count}"));
@@ -236,9 +241,9 @@ impl Dev {
         D::stream_sync(self.stream)
     }
 
-    /// (free, total) device memory in bytes.
+    /// (free, total) device memory of this Dev's GPU in bytes, whichever context is current on the thread (it is the same after).
     pub fn mem_info(&self) -> Result<(usize, usize)> {
-        D::mem_info()
+        in_ctx(self.ctx as usize, D::mem_info)
     }
 
     /// The work queued on the stream captured into a graph: `body` runs with the stream capturing, nothing in it executes.
@@ -610,8 +615,8 @@ fn current_ctx() -> Result<usize> {
     Ok(D::current()? as usize)
 }
 
-/// `f` run, the context current on this thread as it was again after: a look at the GPUs (`Dev::probe`, a rate measured) makes each one's current in turn, and
-/// an engine on one GPU runs its work on the thread that loaded it, whose current context is its GPU's.
+/// `f` run, the context current on this thread as it was again after: a look at a GPU (`Dev::probe`) or a rate measured on one (`Dev::new` of each GPU) makes
+/// its context current, and an engine on one GPU runs its work on the thread that loaded it, whose current context is its GPU's.
 pub fn keeping_context<R>(f: impl FnOnce() -> R) -> R {
     let now = D::current().ok();
     let r = f();
@@ -1162,7 +1167,8 @@ impl Drop for Side {
 
 /// `bufcheck` (R1a: a buffer belongs to its context): two contexts on GPU 0, its primary one and one of its own (as the split's check on one GPU makes). A buffer of the
 /// second is written, read, zeroed and freed while the first is current, and the other way round: each does it in its own context, the thread's context is the same
-/// after, and the GPU's free memory comes back when the buffer goes (it was freed, not lost).
+/// after, and the GPU's free memory comes back when the buffer goes (it was freed, not lost). A look at the GPU (`Dev::probe`, as a report or the planner makes
+/// one after a load) and a Dev's free memory leave the thread's context the one current before, as an engine on another GPU needs of the thread it runs on.
 #[cfg(feature = "dev")]
 pub fn buf_check() -> Result<()> {
     let a = Dev::new(0)?;
@@ -1210,6 +1216,15 @@ pub fn buf_check() -> Result<()> {
     }
     drop(Buf::none());
     say(true, "a buffer of no bytes dropped".to_string());
+    // (a look made the GPU's primary context current, and an engine in another context then launched that one's kernels: a model on GPU 1 of two, 2026-11-26)
+    b.make_current()?;
+    let seen = Dev::probe(0)?;
+    say(current_ctx()? == ctx(&b), format!("a look at GPU 0 ({}) while another context is current: the thread's context the same after", seen.name));
+    let mine = a.mem_info()?;
+    say(
+        current_ctx()? == ctx(&b) && mine.1 == seen.total as usize,
+        "a Dev's free memory read while another context is current: its GPU's, the thread's context the same".to_string(),
+    );
     a.make_current()?;
     // a side's stream, copied, outlives the side as a stream: an event records on it, and the next side of the context takes it; a hundred sides one after
     // another make no stream past the first

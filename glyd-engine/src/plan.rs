@@ -761,6 +761,16 @@ pub enum Placement {
     ExpertsInRam { gpu: usize, cache: u64, hit: f64, disk: u64 },
 }
 
+impl Placement {
+    /// The GPU the model's first layers load on (its index in the machine's list: a probed machine's ordinals), where `run` and `serve` load the plan.
+    pub fn first_gpu(&self) -> usize {
+        match self {
+            Placement::Gpu(g) | Placement::ExpertsInRam { gpu: g, .. } => *g,
+            Placement::Split(v) => v.first().copied().unwrap_or(0),
+        }
+    }
+}
+
 /// One level and placement considered.
 #[derive(Clone, Debug)]
 pub struct Candidate {
@@ -1703,6 +1713,13 @@ pub struct LoadPlan {
 }
 
 impl LoadPlan {
+    /// The GPU the plan loads its first layers on, which `run` and `serve` load it on and a check of the plan loads and measures it on: its first stage's where it
+    /// spreads the model (`Spread::devices`), else the one the planner sized it for (`sized_for`, the ladder's choice of its candidate: the GPU with the most free
+    /// memory), else the first.
+    pub fn first_gpu(&self, sized_for: Option<&Placement>) -> i32 {
+        self.spread.as_ref().and_then(|s| s.devices.first().copied()).or(sized_for.map(|p| p.first_gpu() as i32)).unwrap_or(0)
+    }
+
     /// The weights the GPU holds: all of them, or all but the experts the computer's memory holds, and the expert cache.
     pub fn weights_on_gpu(&self) -> u64 {
         if let Some(s) = &self.spread {
@@ -8724,6 +8741,35 @@ mod tests {
         assert_eq!(p.context, 4096, "--ctx is --context");
         assert_eq!(fit(model, a100s, &[]).plan.chosen.unwrap().level, "penguin", "lossless where it fits, over two GPUs");
         assert_ne!(fit(model, "rtx4090", &[]).plan.chosen.unwrap().level, "penguin");
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    /// The GPU a plan names is the GPU its model loads on and is measured on, whichever it is: on two RTX A6000s, a Qwen3.5-layout model one of them holds is
+    /// planned on the one with more memory free, at penguin (the dynamic route: `Spread::devices`) and at kestrel (one GPU: the ladder's `Placement`); the dynamic
+    /// route's opener loads it there (`split::plan_opts`) and `usercheck --ctx plan` loads and measures it there (`LoadPlan::first_gpu`), not on GPU 0 for being
+    /// the first. (A machine of two GPUs, 2026-11-26: usercheck took GPU 0 for a plan of GPU 1, read 0 MiB taken there and launched GPU 0's kernels.)
+    #[test]
+    fn a_plan_is_loaded_and_measured_on_the_gpu_it_names() {
+        let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
+        let dir = model_dir("q35-two-gpus", "Qwen3.5-9B", &json::to_compact(q35.get("Qwen/Qwen3.5-9B").unwrap()));
+        header_only_checkpoint(&dir, &qwen35_tensors("Qwen3.5-9B").unwrap());
+        let model = dir.to_str().unwrap();
+        let gpu = |free: f64| format!(r#"{{"name": "NVIDIA RTX A6000", "cc": [8, 6], "total_gib": 48, "free_gib": {free}}}"#);
+        for (frees, want) in [([30.0, 46.0], 1usize), ([46.0, 30.0], 0)] {
+            let machine = dir.parent().unwrap().join(format!("2xa6000-{want}.json"));
+            std::fs::write(&machine, format!(r#"{{"name": "2xa6000", "gpus": [{}, {}], "ram_free_gib": 200}}"#, gpu(frees[0]), gpu(frees[1]))).unwrap();
+            for level in ["penguin", "kestrel"] {
+                let f = planned(&args(&["fit", &format!("{model}:{level}"), "--machine", machine.to_str().unwrap()])).unwrap();
+                let c = f.plan.chosen.unwrap_or_else(|| panic!("{level} {frees:?}: {:?}", f.refusal));
+                let lp = c.load.clone().unwrap_or_else(|| panic!("{level} {frees:?}: an estimate alone"));
+                assert_eq!(c.placement.as_ref().map(Placement::first_gpu), Some(want), "{level} {frees:?}: the ladder's GPU");
+                assert_eq!(lp.first_gpu(c.placement.as_ref()), want as i32, "{level} {frees:?}: usercheck's GPU");
+                if let Some(sp) = &lp.spread {
+                    assert_eq!(sp.devices, vec![want as i32], "{level} {frees:?}: whole on one GPU");
+                    assert_eq!(crate::dynamic::split::plan_opts(&lp).unwrap().device, want as i32, "{level} {frees:?}: the opener's GPU");
+                }
+            }
+        }
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
