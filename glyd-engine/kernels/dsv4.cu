@@ -408,16 +408,17 @@ extern "C" __global__ void __launch_bounds__(128) v4_idx_q(bf16* q, const float*
 // (the indexer's scores and its pick of the entries: kernels/mla.cu's `idx_score_bf16` and `idx_pick`, every indexer's)
 
 // ---- the attention ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-// The keys row t reads, in order: the window's (positions max(0, p - window + 1) to p, from the ring [cap, 512] through ktab), then the cache's entries (through ctab): the indexer's picks (sel [n, k]
-// and cnt [n]: ratio 4), or every entry complete at p (the others), or none (no cache). Their number, and the j-th's row.
-__device__ __forceinline__ int v4_keys(int p, int window, int ratio, const int* cnt, int t) {
-    const int nw = min(window, p + 1);
+// The keys row t reads, in order: the window's (positions max(0, p - window + 1) to p, from the ring [cap, 512] through ktab; to the pass's last row's position `last` where
+// it is given: a block of rows that see each other, DSpark's), then the cache's entries (through ctab): the indexer's picks (sel [n, k] and cnt [n]: ratio 4), or every
+// entry complete at p (the others), or none (no cache). Their number, and the j-th's row.
+__device__ __forceinline__ int v4_keys(int p, int window, int ratio, const int* cnt, int t, const int* last) {
+    const int nw = min(window, p + 1) + (last ? *last - p : 0);
     if (ratio == 0) return nw;
     return nw + (cnt ? cnt[t] : (p + 1) / ratio);
 }
-__device__ __forceinline__ const bf16* v4_key_row(int j, int p, int window, const bf16* ring, int cap, const int* ktab, const bf16* cache, const int* ctab, const int* sel, int k, int t) {
-    const int nw = min(window, p + 1);
-    if (j < nw) return ring + v4_place(ktab, p - nw + 1 + j, cap) * V4_HD;
+__device__ __forceinline__ const bf16* v4_key_row(int j, int p, int window, const int* last, const bf16* ring, int cap, const int* ktab, const bf16* cache, const int* ctab, const int* sel, int k, int t) {
+    const int nb = min(window, p + 1), nw = nb + (last ? *last - p : 0);
+    if (j < nw) return ring + v4_place(ktab, p - nb + 1 + j, cap) * V4_HD;
     j -= nw;
     return cache + v4_place(ctab, sel ? sel[(size_t)t * k + j] : j, 0) * V4_HD;
 }
@@ -425,11 +426,11 @@ __device__ __forceinline__ const bf16* v4_key_row(int j, int p, int window, cons
 // The scores q_h . key_j x scale of row t (q [n, H, 512]) into sc [n, H, lmax] (fp32). Block (row, V4_KC keys, V4_SG heads), 8 warps: a warp a key at a time, a lane 16 of its channels, the heads' queries in
 // shared memory. Row t's window and entries through its tables (v4_row_tab: kts and cts, the window's group's and the entries' group's).
 extern "C" __global__ void __launch_bounds__(256) v4_attn_scores(const bf16* q, const bf16* ring, int cap, const int* ktab, long long kts, const bf16* cache, const int* ctab, long long cts, const int* sel,
-                                                                 const int* cnt, int k, const int* pos, float* sc, int H, int lmax, int window, int ratio, float scale) {
+                                                                 const int* cnt, int k, const int* pos, float* sc, int H, int lmax, int window, int ratio, float scale, const int* last) {
     const int t = blockIdx.x, h0 = blockIdx.z * V4_SG, w = threadIdx.x >> 5, lane = threadIdx.x & 31;
     ktab = v4_row_tab(ktab, kts, t);
     ctab = v4_row_tab(ctab, cts, t);
-    const int p = pos[t], L = v4_keys(p, window, ratio, cnt, t);
+    const int p = pos[t], L = v4_keys(p, window, ratio, cnt, t, last);
     __shared__ __align__(16) bf16 qs[V4_SG][V4_HD];
     for (int i = threadIdx.x * 8; i < V4_SG * V4_HD; i += 256 * 8) *reinterpret_cast<uint4*>(&qs[0][0] + i) = h0 * V4_HD + i < H * V4_HD ? *reinterpret_cast<const uint4*>(q + ((size_t)t * H + h0) * V4_HD + i) : make_uint4(0u, 0u, 0u, 0u);
     __syncthreads();
@@ -441,7 +442,7 @@ extern "C" __global__ void __launch_bounds__(256) v4_attn_scores(const bf16* q, 
     for (int u = 0; u < KW; u++) {
         const int j = jb + 8 * u;
         if (j < je) {
-            const bf16* kr = v4_key_row(j, p, window, ring, cap, ktab, cache, ctab, sel, k, t) + lane * 16;
+            const bf16* kr = v4_key_row(j, p, window, last, ring, cap, ktab, cache, ctab, sel, k, t) + lane * 16;
             ka[u] = *reinterpret_cast<const uint4*>(kr);
             kb[u] = *reinterpret_cast<const uint4*>(kr + 8);
         }
@@ -492,10 +493,10 @@ extern "C" __global__ void __launch_bounds__(256) v4_attn_scores(const bf16* q, 
 }
 
 // Each (row, head)'s softmax over its keys with the sink: the largest score M (of the keys), each score made exp(s - M) in place, and den [n, H] = their sum + exp(sink_h - M). A warp a (row, head).
-extern "C" __global__ void v4_attn_soft(float* sc, const float* sink, float* den, const int* pos, const int* cnt, int H, int lmax, int window, int ratio) {
+extern "C" __global__ void v4_attn_soft(float* sc, const float* sink, float* den, const int* pos, const int* cnt, int H, int lmax, int window, int ratio, const int* last) {
     const int t = blockIdx.x, h = blockIdx.y * (blockDim.x >> 5) + (threadIdx.x >> 5), lane = threadIdx.x & 31;
     if (h >= H) return;
-    const int L = v4_keys(pos[t], window, ratio, cnt, t);
+    const int L = v4_keys(pos[t], window, ratio, cnt, t, last);
     float* s = sc + ((size_t)t * H + h) * lmax;
     float mx = -INFINITY;
     for (int j = lane; j < L; j += 32) mx = fmaxf(mx, s[j]);
@@ -516,13 +517,13 @@ extern "C" __global__ void v4_attn_soft(float* sc, const float* sink, float* den
 // (a graph's padding row: no keys) gives zeros.
 extern "C" __global__ void __launch_bounds__(256) v4_attn_out(const float* pr, const float* den, const bf16* ring, int cap, const int* ktab, long long kts, const bf16* cache, const int* ctab, long long cts,
                                                               const int* sel, const int* cnt, int k, const int* pos, const float* cs, const float* sn, bf16* o, int n, int H, int hpg, int lmax, int window, int ratio,
-                                                              int t0) {
+                                                              int t0, const int* last) {
     ktab = v4_row_tab(ktab, kts, blockIdx.x);
     ctab = v4_row_tab(ctab, cts, blockIdx.x);
     // (a head's 512 channels on V4_AQ warps, 4 a lane: 8 / V4_AQ heads a block; each channel's sum over the keys in their order, as one warp a head summed them)
     constexpr int C = V4_HD / V4_AQ / 32;  // (a lane's channels)
     const int t = blockIdx.x, w = threadIdx.x >> 5, lane = threadIdx.x & 31, h = blockIdx.y * (8 / V4_AQ) + w / V4_AQ, d0 = (w % V4_AQ) * (V4_HD / V4_AQ) + lane * C;
-    const int p = pos[t], L = v4_keys(p, window, ratio, cnt, t);
+    const int p = pos[t], L = v4_keys(p, window, ratio, cnt, t, last);
     // (keys a round through shared memory, with their probabilities; the next round's loads issued before this one's sums, so that a round waits on less than its two trips to memory, the
     // lookup of a picked key's row and the row)
     constexpr int R = 32, PT = R * V4_HD / 8 / 256;
@@ -539,7 +540,7 @@ extern "C" __global__ void __launch_bounds__(256) v4_attn_out(const float* pr, c
 #pragma unroll
         for (int q = 0; q < PT; q++) {
             const int jj = q * 4 + (threadIdx.x >> 6);
-            if (j0 + jj < L) nx[q] = *reinterpret_cast<const uint4*>(v4_key_row(j0 + jj, p, window, ring, cap, ktab, cache, ctab, sel, k, t) + c8);
+            if (j0 + jj < L) nx[q] = *reinterpret_cast<const uint4*>(v4_key_row(j0 + jj, p, window, last, ring, cap, ktab, cache, ctab, sel, k, t) + c8);
         }
         if (threadIdx.x < R && j0 + (int)threadIdx.x < L) np = ph[j0 + threadIdx.x];
     };

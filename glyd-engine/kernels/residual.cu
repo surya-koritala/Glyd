@@ -21,6 +21,16 @@ extern "C" __global__ void hc_streams(const bf16* e, bf16* x, int D, int ns) {
     for (int s = 0; s < ns; s++) x[((size_t)blockIdx.x * ns + s) * D + d] = v;
 }
 
+// A block draft head's tap of a layer's input (`Op::Tap`, kinds::DSpark's target layers): the mean of the row's ns streams x [n, ns, D] (summed in order in fp32, then a
+// quarter for four: the power of two's exact division), rounded, into its place `at` of a row of `of` places: out [n, of, D]. Block (row, 256 columns).
+extern "C" __global__ void hc_tap(const bf16* x, bf16* out, int D, int ns, int at, int of) {
+    const int d = blockIdx.y * blockDim.x + threadIdx.x;
+    if (d >= D) return;
+    float acc = 0.f;
+    for (int s = 0; s < ns; s++) acc += b2f(x[((size_t)blockIdx.x * ns + s) * D + d]);
+    out[((size_t)blockIdx.x * of + at) * D + d] = f2b(acc / (float)ns);
+}
+
 // ---- the mixing weights and the collapse -----------------------------------------------------------------------------------------------------------------------------------------------
 // The rest of a mixing kernel, once tot [HC_NP + 1] (the 24 projections' sums and the sum of squares of the row) is in shared memory: the weights, `iters` rounds of Sinkhorn-Knopp, the collapse and the norm. Called by a
 // block of 512 threads a row (hc_mix and hc_fin); pp [HC_NP] is shared memory too.

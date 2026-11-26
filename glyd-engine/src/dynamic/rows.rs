@@ -410,6 +410,8 @@ pub(super) fn row_wise(op: &Op) -> bool {
             | Op::MambaNorm { .. }
             // (DeepSeek-V4's: by row, or over the rows as the pass lays them out; its attention's output is laid out by group over the pass's rows, which its low rank reads)
             | Op::Fp8 { .. }
+            // (a block draft head's tap of the model's streams)
+            | Op::Tap { .. }
             | Op::CompQ { .. }
             | Op::IdxQ { .. }
             | Op::OGroupLora { .. }
@@ -692,6 +694,12 @@ impl Dyn {
     /// Bytes before the rows of the sequence an operation runs on now, in a slot of `width` values a row (0 outside a pass over several sequences).
     pub(super) fn rows_before(&self, width: usize) -> u64 {
         self.at.get().map_or(0, |k| (self.parts[k].row0 * width * 2) as u64)
+    }
+
+    /// Ring `ring` of the engine as part `p`'s description holds it: the model's rings, then a draft head's after them (`head::shift_rings`).
+    pub(super) fn ring_of<'a>(&self, p: &'a super::Part, ring: usize) -> &'a super::Ring {
+        let first = if std::ptr::eq(p, &self.big) { 0 } else { self.big.d.rings.len() };
+        &p.d.rings[ring - first]
     }
 
     /// Ring `ring`'s keys and values: the sequence's an operation runs on now in a pass over several, else the selected sequence's.
