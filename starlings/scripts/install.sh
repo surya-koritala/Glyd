@@ -1,5 +1,5 @@
 #!/bin/bash
-# Installs this directory's starlings, glyd-engine and GPU library for the current user (no root):
+# Installs this directory's starlings and glyd-engine for the current user (no root):
 # files in ~/.local/lib/starlings, the command in ~/.local/bin. `install.sh --uninstall` removes
 # them (state in ~/.local/state/starlings and downloaded models are kept). Only a directory this
 # script installed (it holds .starlings-install) is ever replaced or removed.
@@ -38,7 +38,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-cp "$here/starlings" "$here/glyd-engine" "$here/libglyd_gpu_cuda13.so" \
+cp "$here/starlings" "$here/glyd-engine" \
     "$here/LICENSE-glyd-engine" "$here/install.sh" "$here/SHA256SUMS" "$stage/"
 touch "$stage/.starlings-install"
 # A broken binary or unsupported host must not remove a working installation.
