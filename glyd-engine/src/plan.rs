@@ -7551,7 +7551,17 @@ mod tests {
             args(&w)
         };
         let serve_for = |users: usize, a: &crate::args::Args, devs: &[Target], layout: crate::weights::Layout| {
-            crate::dynamic::qwen4x::serve_plan(&dir, &pack, crate::qwen4x::PackMode::Precise, a, (32768, users, 1024), layout, devs, Some(host))
+            crate::dynamic::qwen4x::serve_plan(
+                &dir,
+                &ModelConfig::load(&dir).unwrap(),
+                &pack,
+                crate::qwen4x::PackMode::Precise,
+                a,
+                (32768, users, 1024),
+                layout,
+                devs,
+                Some(host),
+            )
         };
         let serve = |a: &crate::args::Args, devs: &[Target], layout: crate::weights::Layout| serve_for(4, a, devs, layout);
         let l4 = [free_gpu(0, 22, host)];

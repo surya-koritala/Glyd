@@ -293,12 +293,21 @@ pub fn users_of(a: &crate::args::Args) -> Result<usize> {
 
 /// The model in `dir` with its routed experts in the expert cache (`k`) as a plan spreads it: its layers cut before each of `cuts` over `devices`, part i's
 /// places a layer `places[i]` (`load_cached_stage`; a part the plan gives none is refused where no development check said to size it from free memory).
-pub fn open_planned(dir: &Path, o: &Opts, k: &Caching, cuts: &[usize], devices: &[i32], places: &[usize]) -> Result<super::split::Run> {
-    let c = crate::qwen4x::ConfigQx::load(dir)?;
+/// `m`: the directory's config.json as its caller parsed it, once.
+pub fn open_planned(
+    dir: &Path,
+    m: std::sync::Arc<ModelConfig>,
+    o: &Opts,
+    k: &Caching,
+    cuts: &[usize],
+    devices: &[i32],
+    places: &[usize],
+) -> Result<super::split::Run> {
+    let c = m.read_with(dir, crate::qwen4x::ConfigQx::of)?;
     let (owned, k, at, places) = (dir.to_path_buf(), k.clone(), cuts.to_vec(), places.to_vec());
     let make = move |st: Stage, o: &Opts| {
         let part = at.iter().take_while(|&&x| x <= st.layers.0).count();
-        load_cached_stage(&owned, o, &Caching { places: places.get(part).copied(), ..k.clone() }, st)
+        load_cached_stage(&owned, &m, o, &Caching { places: places.get(part).copied(), ..k.clone() }, st)
     };
     super::split::Run::new(c.layers, c.eos, cuts, devices, o, std::sync::Arc::new(make))
 }
@@ -310,6 +319,7 @@ pub fn open_planned(dir: &Path, o: &Opts, k: &Caching, cuts: &[usize], devices: 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn serve_plan(
     snap: &Path,
+    c: &ModelConfig,
     pack: &Path,
     mode: PackMode,
     a: &crate::args::Args,
@@ -319,7 +329,6 @@ pub(crate) fn serve_plan(
     host: Option<u64>,
 ) -> Result<crate::plan::LoadPlan> {
     use crate::ffi::Error;
-    let c = crate::runtime::config::ModelConfig::load(snap)?;
     let table = crate::sizes::Table::from_dir(snap).map_err(Error)?;
     let row = crate::support::row_named(FAMILY).ok_or_else(|| Error(format!("no family named {FAMILY}")))?;
     let nl = c.num("num_hidden_layers").unwrap_or(0);
@@ -375,7 +384,9 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     let (chunk, layout) = (a.num("chunk", 1024usize)?, a.layout()?.unwrap_or(Layout::Int4));
     let host_free = crate::offload::host_memory();
     let devs = gpus.iter().map(|&g| Ok(crate::plan::sizing::target(&Dev::probe(g)?))).collect::<Result<Vec<_>>>()?;
-    let plan = serve_plan(snap, pack, mode, a, (ctx, users, chunk), layout, &devs, host_free)?;
+    // (config.json parsed once: the plan's and the loader's)
+    let m = std::sync::Arc::new(ModelConfig::load(snap)?);
+    let plan = serve_plan(snap, &m, pack, mode, a, (ctx, users, chunk), layout, &devs, host_free)?;
     println!("Plan: {}.", plan.text());
     if let Some(p) = a.flag("image-pixels") {
         let n = p.parse::<usize>().ok().filter(|&n| n > 0).ok_or_else(|| crate::ffi::Error(format!("--image-pixels {p}: a number of pixels")))?;
@@ -419,7 +430,7 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
             }
         );
     }
-    let mut e = open_planned(snap, &o, &Caching::new(pack, mode, plan.users), &sp.cuts, &sp.devices, &sp.places)?;
+    let mut e = open_planned(snap, m, &o, &Caching::new(pack, mode, plan.users), &sp.cuts, &sp.devices, &sp.places)?;
     // (its sequences' keys, values and states the plan's: on one GPU the pools take its bytes, no more)
     crate::conv::Gen::take_plan(&mut e, plan.users, plan.kv);
     let vocab = crate::qwen4x::ConfigQx::load(snap)?.vocab;
