@@ -29,6 +29,8 @@
 //! | MLP: SwiGLU, its limits, gelu-tanh, situ (Gemma 4, the Qwen3.5 layout, Kimi-K3, GLM-5.3-Flash) | 1e-2 | gate and up rounded before the activation, the activation's product rounded, down's sums in fp32 | 6.1e-3 |
 //! | MoE: sigmoid routers with a choice bias, sqrt-softplus and hash routers, shared and latent experts, expert norms (the Nemotron-H layout, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4) | 2e-2 | each expert's activations bf16, the weighted sum's order; a router's choice near a tie as above (none past the bound) | 9.9e-3 |
 //! | residual and norms: RMS (w, 1 + w, input-scaled, Kimi's two roundings), sandwich norms and the layer scalar, the gated residual, mHC's streams, the depth mix, each family's final norm and collapse (all seven) | 2e-2 | the residual bf16 after each add, the normed value rounded, mHC's Sinkhorn and the depth mix's softmax in fp32 on the GPU's bf16 inputs | 1.6e-2 |
+//! | embedding: its rows, scale, norm (Muse's) and streams, with the residual's operations into the first block (every case; the residual's class) | 2e-2 | the scaled row rounded to bf16, then as the residual's operations | 6.9e-3 (A10, 2026-11-26) |
+//! | head: the LM head of the GPU's own final-normed row, times its scale, soft-capped (every case; the MLP's class: one product) | 1e-2 | the product's fp32 sums in another order, rounded into the bf16 logits; the soft-cap's roundings where the head rounds | 3.9e-3 (A10, 2026-11-26) |
 //!
 //! Each comparison runs the CUDA backend's entry point of its kind (`runtime::cuda`: the executor's own operations through `Dyn::op`). The
 //! embedding (its rows, scale, norm and streams, with the residual's operations into the first block) is held at the residual's bound; the
