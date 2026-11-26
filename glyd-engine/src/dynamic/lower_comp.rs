@@ -502,7 +502,7 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
 
 /// The whole of a description of compressed attention layers lowered (`lower`) with its loader's plan, as a draft head's blocks are lowered by its model's
 /// lowering (`lower::draft_head`): the head's own tensors go into the plan, a matrix the release holds in FP8 (`fp8`, the description's scales) by the
-/// lowering's rule of FP8 products (`V4Opts`), another as the bf16 it is (a table looked up by row: held as it is).
+/// lowering's rule of FP8 products (`V4Opts`), another as the bf16 it is (one held as it is: `LinForm::Table`).
 pub struct Lowered {
     pub desc: ModelDesc,
     pub plan: Plan,
@@ -526,12 +526,12 @@ impl super::lower::Lowered for Lowered {
         &mut self.desc
     }
 
-    fn own_mat(&mut self, name: &str, rows: usize, cols: usize, table: bool, shape: super::lower::Shape) -> Result<(usize, bool)> {
+    fn own_mat(&mut self, name: &str, rows: usize, cols: usize, dense: bool, shape: super::lower::Shape) -> Result<(usize, bool)> {
         if let Some(s) = shape(name).filter(|s| s[..] != [rows, cols]) {
             return err(format!("{name}: {s:?}, where the head reads {rows}x{cols}"));
         }
         let mut n = (self.plan.lins.iter().filter(|x| !x.f8).count(), self.plan.lins.iter().filter(|x| x.f8).count());
-        let lin = if table {
+        let lin = if dense {
             self.plan.lins.push(LinLoad { name: name.to_string(), form: LinForm::Table, f8: false });
             Lin::next(&mut n, false)
         } else if self.fp8.contains(name) {
@@ -764,6 +764,9 @@ mod drafters {
             }
         }
         assert!(markov.0 < mats && markov.1 < mats && norm_hidden < h.plan.small.len());
+        // (the Markov head's matrices held as they are: a table, and a small product's matrix of the rank's columns)
+        let form = |i: usize| h.plan.lins.iter().filter(|x| !x.f8).nth(i).map(|x| x.form.clone());
+        assert_eq!((form(markov.0), form(markov.1)), (Some(LinForm::Table), Some(LinForm::Table)));
         assert_eq!(h.plan.moe.len(), layers);
         let names = d.names();
         for x in h.plan.lins.iter().filter(|x| x.form != LinForm::Absent) {

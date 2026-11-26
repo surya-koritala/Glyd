@@ -2293,8 +2293,10 @@ impl Dyn {
             }
         }
         if let Some(dr) = &draft {
-            // (a draft model's products at one row; a draft head's at a chunk's rows, its streams' product at a stream a row, and its experts' own products)
-            let most = if dr.head.is_some() { ch * dr.p.d.streams().max(1) } else { 1 };
+            // (a draft model's products at one row; a draft head's at a chunk's rows, a head of the model's streams' front product at a stream a row, and its
+            // experts' own products)
+            let streams = if matches!(dr.p.d.first, Op::MtpIn { front: MtpFront::Streams { .. }, .. }) { dr.p.d.streams().max(1) } else { 1 };
+            let most = if dr.head.is_some() { ch * streams } else { 1 };
             let mut ds: Vec<(i64, i64, bool)> = dr.p.mats.iter().filter_map(Mat::packed_opt).map(|m| (m.pack.rows, m.pack.cols, m.pack.is_twelve())).collect();
             ds.extend(dr.p.moe.iter().flat_map(|b| b.pack_shapes()));
             ds.sort_unstable();

@@ -683,9 +683,10 @@ pub type Blocks = fn(&Described, Vec<i64>, usize) -> Result<ModelDesc>;
 /// tensors: by name in the description's lists (`ModelDesc` itself: `mats`, `small`), or in a plan of the compressed attention's lowering (`lower_comp::Lowered`).
 pub trait Lowered {
     fn desc(&mut self) -> &mut ModelDesc;
-    /// The head's own matrix `name` of `rows` x `cols` (held as the checkpoint has it: a row's table where `table`): its index, and whether it is in the FP8
-    /// matrices' list (`Op::F8Lin`'s) rather than the matrices'.
-    fn own_mat(&mut self, name: &str, rows: usize, cols: usize, table: bool, shape: Shape) -> Result<(usize, bool)>;
+    /// The head's own matrix `name` of `rows` x `cols` (held as the checkpoint has it, bf16 and not packed, where `dense`: a table looked up by row, or a
+    /// product's matrix of columns no product route of the packed layouts takes, which `Mat::Dense`'s small product multiplies): its index, and whether it
+    /// is in the FP8 matrices' list (`Op::F8Lin`'s) rather than the matrices'.
+    fn own_mat(&mut self, name: &str, rows: usize, cols: usize, dense: bool, shape: Shape) -> Result<(usize, bool)>;
     /// The head's own small tensor `name`: its index.
     fn own_small(&mut self, name: &str) -> usize;
     /// The model's embedding and LM head, which the head reads as the model's: not loaded with it.
@@ -697,9 +698,9 @@ impl Lowered for ModelDesc {
         self
     }
 
-    fn own_mat(&mut self, name: &str, rows: usize, cols: usize, table: bool, shape: Shape) -> Result<(usize, bool)> {
-        if table {
-            return err(format!("{name}: a table looked up by row among a description's matrices by name, which the executor packs"));
+    fn own_mat(&mut self, name: &str, rows: usize, cols: usize, dense: bool, shape: Shape) -> Result<(usize, bool)> {
+        if dense {
+            return err(format!("{name}: a matrix held as it is among a description's matrices by name, which the executor packs"));
         }
         self.mats.push(item(vec![name.to_string()], shape)?);
         let it = &self.mats[self.mats.len() - 1];
@@ -847,9 +848,11 @@ fn block_head<L: Lowered>(d: &Described, eos: Vec<i64>, max_pos: usize, blocks: 
     let (hidden, vocab, taps) = (d.desc.hidden, d.desc.vocab, ds.targets.len());
     let main = l.own_mat(&one("main_proj")?, hidden, taps * hidden, false, &shape).map_err(|e| e.context(what))?;
     let main_norm = l.own_small(&one("main_norm")?);
+    // (the Markov head's matrices held as they are: the first a table looked up by row, the second multiplied by `Mat::Dense`'s small product, its columns
+    // (the rank) no product route of the packed layouts)
     let (me, mh) = (
         l.own_mat(&one("markov_embed")?, vocab, ds.markov_rank, true, &shape).map_err(|e| e.context(what))?,
-        l.own_mat(&one("markov_head")?, vocab, ds.markov_rank, false, &shape).map_err(|e| e.context(what))?,
+        l.own_mat(&one("markov_head")?, vocab, ds.markov_rank, true, &shape).map_err(|e| e.context(what))?,
     );
     if me.1 || mh.1 {
         return err(format!("{what}: its Markov head's matrices held FP8, where its products are the matrices'"));
