@@ -4,6 +4,7 @@
 
 use crate::ffi::{err, Error, Result};
 use crate::runtime::config::ModelConfig;
+use crate::runtime::describe::{standard_rope, QWEN35_HEAD, QWEN35_PARTIAL};
 use crate::weights::{eos_ids, num};
 use glyd_gpu::json::{self, Value};
 use std::collections::{HashMap, HashSet};
@@ -14,6 +15,12 @@ use std::path::Path;
 pub enum Kind {
     Linear,
     Full,
+}
+
+/// The words of a refusal of `what` in a Qwen3.5-layout config: the dense reader's (`Config35`) and the lowering's (`dynamic::lower::qwen35`, which the layout
+/// with experts and the dense one both go through) alike, so each refuses a thing the engine does not run in the same words.
+pub(crate) fn not_run(what: &str) -> String {
+    format!("{what}, which the engine does not run")
 }
 
 /// What the engine reads of a Qwen3.5 config.json.
@@ -115,7 +122,7 @@ impl Config35 {
         }
         let get = |k: &str| t.get(k).ok_or_else(|| Error(format!("{label}: no {k}")));
         let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
-        let refuse = |what: &str| err(format!("{label}: {what}, which the engine does not run"));
+        let refuse = |what: &str| err(format!("{label}: {}", not_run(what)));
         if t.get("hidden_act").and_then(Value::as_str).is_some_and(|a| a != "silu") {
             return refuse("an activation other than silu");
         }
@@ -137,19 +144,21 @@ impl Config35 {
         }
         let heads = u("num_attention_heads")?;
         let kv_heads = u("num_key_value_heads")?;
-        let head_dim = t.get("head_dim").and_then(Value::as_u64).map(|x| x as usize).unwrap_or(u("hidden_size")? / heads.max(1));
+        // (a config without `head_dim` has transformers' 256: not the hidden size over the heads)
+        let head_dim = t.get("head_dim").and_then(Value::as_u64).map_or(QWEN35_HEAD, |x| x as usize);
         if heads == 0 || kv_heads == 0 || !heads.is_multiple_of(kv_heads) {
             return err(format!("{label}: {heads} query heads to {kv_heads} KV heads"));
         }
-        let rope = get("rope_parameters")?;
-        let rope_type = rope.get("rope_type").and_then(Value::as_str).unwrap_or("default");
+        // (the rope parameters as transformers makes them: a theta and a partial rotary factor they lack from the config's own keys, else 10,000 and a quarter)
+        let rope = serde_json::Value::Object(standard_rope(t, Some(QWEN35_PARTIAL)));
+        let rope_type = rope.get("rope_type").or_else(|| rope.get("type")).and_then(Value::as_str).unwrap_or("default");
         if rope_type != "default" {
             return refuse(&format!("rope of type {rope_type}"));
         }
         let theta = num(rope.get("rope_theta").ok_or_else(|| Error(format!("{label}: no rope_theta")))?, "rope_theta")?;
         let factor = match rope.get("partial_rotary_factor") {
             Some(f) => num(f, "partial_rotary_factor")?,
-            None => 0.25,
+            None => QWEN35_PARTIAL,
         };
         // (transformers: int(head_dim * partial_rotary_factor))
         let rotary_dim = (head_dim as f64 * factor) as usize;

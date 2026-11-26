@@ -418,6 +418,29 @@ fn legacy_rope(k: &Keys, head_dim: usize, max_pos: Option<usize>) -> Result<Rope
     rope(&m, head_dim, max_pos, &format!("{} rope", k.what))
 }
 
+/// The rope parameters of a text config as transformers' config classes make them (`modeling_rope_utils.py`, `convert_rope_params_to_dict`): the older
+/// `rope_scaling` where it is given, else `rope_parameters`; a `rope_theta` those lack from the config's own key, else 10,000 (`default_theta`); a
+/// `partial_rotary_factor` they lack from the config's own key, else `default_partial` (the Qwen3.5 classes' `setdefault("partial_rotary_factor", 0.25)`; None where
+/// the class has no default, which leaves the whole head rotated).
+pub(crate) fn standard_rope(t: &Map<String, Value>, default_partial: Option<f64>) -> Map<String, Value> {
+    let given = |k: &str| t.get(k).filter(|v| !v.is_null());
+    let object = |k: &str| t.get(k).and_then(Value::as_object).filter(|o| !o.is_empty());
+    let mut m = object("rope_scaling").or_else(|| object("rope_parameters")).cloned().unwrap_or_default();
+    m.entry("rope_theta").or_insert_with(|| given("rope_theta").cloned().unwrap_or_else(|| Value::from(10_000.0)));
+    if let Some(p) = given("partial_rotary_factor").cloned().or_else(|| default_partial.map(Value::from)) {
+        m.entry("partial_rotary_factor").or_insert(p);
+    }
+    m
+}
+
+/// The rope of a Qwen3.5-layout text config (`qwen35`'s and `qwen4x`'s), by `standard_rope`: every key it reads is marked read.
+fn standard_rope_of(k: &Keys, head_dim: usize, max_pos: Option<usize>, default_partial: Option<f64>) -> Result<Rope> {
+    for key in ["rope_scaling", "rope_parameters", "rope_theta", "partial_rotary_factor"] {
+        k.raw(key);
+    }
+    rope(&standard_rope(k.m, default_partial), head_dim, max_pos, &format!("{} rope_parameters", k.what))
+}
+
 fn gated(act: Act) -> Mlp {
     Mlp { act, gated: true, bias: false, clamp: None }
 }
@@ -664,16 +687,17 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
     Ok(out)
 }
 
+/// The head width of the Qwen3.5 layout's config classes (`head_dim`), and the fraction of it the Qwen3.5 classes rotate where a config gives no `partial_rotary_factor`.
+pub(crate) const QWEN35_HEAD: usize = 256;
+pub(crate) const QWEN35_PARTIAL: f64 = 0.25;
+
 fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, have: Option<&BTreeSet<String>>) -> Result<Described> {
     let k = Keys::new(tc, mt);
     let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
-    let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.usize("head_dim")?);
+    // (the defaults of a key a config leaves out are transformers' `Qwen3_5TextConfig` and `Qwen3_5MoeTextConfig`: heads of 256, the rotary on a quarter of them)
+    let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.opt_usize("head_dim")?.unwrap_or(QWEN35_HEAD));
     let max_pos = k.opt_usize("max_position_embeddings")?;
-    k.opt_f64("partial_rotary_factor")?;
-    let rp = match k.raw("rope_parameters") {
-        Some(Value::Object(o)) => rope(o, hd, max_pos, &format!("{mt} rope_parameters"))?,
-        _ => legacy_rope(&k, hd, max_pos)?,
-    };
+    let rp = standard_rope_of(&k, hd, max_pos, Some(QWEN35_PARTIAL))?;
     // (the routed experts' stored form, which the config does not say: each expert's matrices a tensor, unless the checkpoint holds the layer's experts stacked)
     let first = names::HF.layer(prefix, 0);
     let stacked = have.is_some_and(|h| {
@@ -684,14 +708,13 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let lin_gate = act(k.str("output_gate_type")?.unwrap_or("swish"))?;
     let act = act(k.str("hidden_act")?.unwrap_or("silu"))?;
     k.expect("mamba_ssm_dtype", &Value::from("float32"))?;
-    k.opt_usize("full_attention_interval")?;
-    let types: Vec<String> = k
-        .raw("layer_types")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| Error(format!("{mt}: no layer_types")))?
-        .iter()
-        .map(|x| x.as_str().unwrap_or("").to_string())
-        .collect();
+    let interval = k.opt_usize("full_attention_interval")?.unwrap_or(4);
+    // (a config without `layer_types` has transformers': a full attention at every interval-th layer, the others linear)
+    let types: Vec<String> = match k.raw("layer_types").and_then(|v| v.as_array()) {
+        Some(a) => a.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect(),
+        None if interval == 0 => return err(format!("{mt}: full_attention_interval 0 and no layer_types")),
+        None => (0..layers).map(|l| if (l + 1) % interval == 0 { "full_attention" } else { "linear_attention" }.to_string()).collect(),
+    };
     if types.len() != layers {
         return err(format!("{mt}: {} layer_types for {layers} layers", types.len()));
     }
@@ -709,10 +732,11 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     };
     let mut dense_inter = None;
     let (mut moe_inter, mut shared_inter) = (0, 0);
-    let moe = if k.raw("num_experts").is_some() {
-        let ne = k.usize("num_experts")?;
-        moe_inter = k.usize("moe_intermediate_size")?;
-        shared_inter = k.opt_usize("shared_expert_intermediate_size")?.unwrap_or(0);
+    // (the Qwen3.5 layout's mixture of experts is its `moe` model types': 256 experts, 8 a token, 512 wide and a gated shared expert of 512, where a config says nothing)
+    let moe = if k.raw("num_experts").is_some() || mt.starts_with("qwen3_5_moe") {
+        let ne = k.opt_usize("num_experts")?.unwrap_or(256);
+        moe_inter = k.opt_usize("moe_intermediate_size")?.unwrap_or(512);
+        shared_inter = k.opt_usize("shared_expert_intermediate_size")?.unwrap_or(512);
         let shared = shared_inter > 0;
         Some(Moe {
             router: Router {
@@ -720,7 +744,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                 logit_scale: 1.0,
                 bias: false,
                 groups: None,
-                top_k: k.usize("num_experts_per_tok")?,
+                top_k: k.opt_usize("num_experts_per_tok")?.unwrap_or(8),
                 renorm: k.bool("norm_topk_prob", true)?,
                 scale: 1.0,
                 hash: false,
@@ -861,13 +885,9 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
 fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
     let k = Keys::new(tc, mt);
     let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
-    let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.usize("head_dim")?);
+    let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.opt_usize("head_dim")?.unwrap_or(QWEN35_HEAD));
     let max_pos = k.opt_usize("max_position_embeddings")?;
-    k.opt_f64("partial_rotary_factor")?;
-    let rp = match k.raw("rope_parameters") {
-        Some(Value::Object(o)) => rope(o, hd, max_pos, &format!("{mt} rope_parameters"))?,
-        _ => legacy_rope(&k, hd, max_pos)?,
-    };
+    let rp = standard_rope_of(&k, hd, max_pos, None)?;
     k.expect("attention_bias", &Value::Bool(false))?;
     let gate = k.bool("attn_output_gate", true)?;
     let act = act(k.str("hidden_act")?.unwrap_or("silu"))?;
@@ -915,7 +935,8 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         _ => return err(format!("{mt}: the indexer's keys come together ({}), and some are missing", IX.join(", "))),
     };
     let ne = k.opt_usize("num_experts")?.unwrap_or(512);
-    let (inter, shared_inter) = (k.usize("moe_intermediate_size")?, k.usize("shared_expert_intermediate_size")?);
+    // (a config without the experts' widths has transformers' `Qwen4ExpTextConfig`: 512 and a shared expert of 512)
+    let (inter, shared_inter) = (k.opt_usize("moe_intermediate_size")?.unwrap_or(512), k.opt_usize("shared_expert_intermediate_size")?.unwrap_or(512));
     let moe = Moe {
         router: Router {
             score: RouterScore::Softmax,

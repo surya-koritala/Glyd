@@ -940,7 +940,15 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
             att.head_dim, lin.k_dim, lin.v_dim, lin.conv
         ));
     }
+    // (the layout's tables are the plain rotary's: a rope that scales its frequencies is refused, with and without experts, in the words the dense reader's refusal has)
     let rope = att.rope.as_ref().ok_or_else(|| Error("Qwen3.5: attention with no rotary".into()))?;
+    if let Some(ty) = rope.not_plain() {
+        return err(crate::qwen35::not_run(&format!("rope of type {ty}")));
+    }
+    // (and its gated norm's gate is the SiLU the executor's kernel computes: the dense reader's refusal of any other, with experts too)
+    if lin.gate_act != crate::runtime::kinds::Act::Silu {
+        return err(crate::qwen35::not_run(&format!("a linear-attention output gate of type {}", lin.gate_act.name())));
+    }
     let rotary = 2 * rope.freqs;
     // (the MLP's width, the first dense layer's: 0 where every layer's feed-forward is experts)
     let inter = match sparse.iter().position(|&s| !s) {
