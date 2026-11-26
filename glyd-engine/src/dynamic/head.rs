@@ -926,13 +926,13 @@ fn blocks_held(dir: &std::path::Path, blocks: &[BlockTrace], fx: &crate::logits:
         Ok((r.logits[..m].to_vec(), rows, apart, r.tokens))
     };
     let (mut engine, mut on_choices, mut own, mut on_ref) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let (mut passes, mut routes_apart, mut routed, mut tokens_apart, mut taps_worst, mut taps_size) = (0, 0, 0, 0, 0f32, 0f32);
+    let (mut passes, mut routes_apart, mut routed, mut tokens_apart, mut taps_rel) = (0, 0, 0, 0, Vec::new());
     for s in &seqs {
-        // (the reference model's own taps of the sequence's tokens)
+        // (the reference model's own taps of the sequence's tokens: each row's difference from the model's relative to its size, L2)
         let want = crate::logits::ref_taps(dir, &s.tokens)?;
         for (a, b) in s.taps.iter().zip(&want) {
-            taps_worst = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(taps_worst, f32::max);
-            taps_size = b.iter().map(|x| x.abs()).fold(taps_size, f32::max);
+            let (d, n) = a.iter().zip(b).fold((0f64, 0f64), |(d, n), (x, y)| (d + ((x - y) as f64).powi(2), n + (*y as f64).powi(2)));
+            taps_rel.push((d / n.max(1e-30)).sqrt());
         }
         for (c, t) in &s.blocks {
             let BlockTrace::Block { pos, drafts, logits, .. } = t else { unreachable!() };
@@ -976,9 +976,15 @@ fn blocks_held(dir: &std::path::Path, blocks: &[BlockTrace], fx: &crate::logits:
         raw.top1.1,
         engine.len()
     );
+    taps_rel.sort_by(f64::total_cmp);
+    let at = |q: f64| taps_rel.get(((taps_rel.len() as f64 - 1.0) * q) as usize).copied().unwrap_or(0.0);
     println!(
-        "     the model's taps against the reference model's own ({} sequences): largest difference {taps_worst:.4} of values up to {taps_size:.4}; the head on those taps and its own choices: KL mean {:.2e} max {:.2e}, best token {}/{}",
+        "     the model's taps against the reference model's own on its own choices ({} sequences, {} rows): a row's difference relative to its size: median {:.2e}, 90% {:.2e}, largest {:.2e}; the head on those taps and its own choices: KL mean {:.2e} max {:.2e}, best token {}/{}",
         seqs.len(),
+        taps_rel.len(),
+        at(0.5),
+        at(0.9),
+        at(1.0),
         taps.mean_kl,
         taps.max_kl,
         taps.top1.0,
