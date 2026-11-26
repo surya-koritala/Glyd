@@ -229,11 +229,6 @@ pub(crate) fn rotary(theta: f64, dim: usize, pairs: usize, max_pos: usize) -> (V
     (c, s)
 }
 
-/// Whether config.json's text is a Gemma 4 model's (its model_type, or its text config's).
-pub fn is_gemma4(text: &str) -> bool {
-    crate::runtime::config::family_of(text) == Some(crate::support::Family::Gemma4)
-}
-
 impl ConfigG4 {
     /// The matrices the engine packs, in load order: per layer the projection (q, k[, v]), o, gate + up, down; then the embedding (the tied LM head).
     pub(crate) fn items(&self) -> Vec<Item> {

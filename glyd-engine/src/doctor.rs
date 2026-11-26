@@ -227,9 +227,11 @@ impl Facts {
 /// The plan `run` would load for the sample model on this machine (the level the ladder takes), or why none fits.
 pub fn sample_plan(m: &Machine) -> Result<LoadPlan, String> {
     let a = Args::from(["fit".to_string(), SAMPLE_MODEL.to_string()]);
-    let row = crate::support::row(crate::support::family(SAMPLE_CONFIG, SAMPLE_MODEL).map_err(|r| r.what)?);
-    let sh = plan::Shape::from_config(SAMPLE_CONFIG)?;
-    match plan::exact_options(&a, SAMPLE_MODEL, SAMPLE_CONFIG, None, row, &sh, m, 1, true, plan::POSITIONS) {
+    // (the sample's config.json parsed once)
+    let c = crate::support::parsed(SAMPLE_CONFIG, SAMPLE_MODEL).map_err(|r| r.what)?;
+    let row = crate::support::row(crate::support::family_in(&c, SAMPLE_MODEL).map_err(|r| r.what)?);
+    let sh = plan::Shape::from_model(&c)?;
+    match plan::exact_options(&a, SAMPLE_MODEL, &c, None, row, &sh, m, 1, true, plan::POSITIONS) {
         Some((options, refusals)) => match plan::choose(&options, plan::TARGET_CTX) {
             Some(c) => c.load.ok_or_else(|| "no plan".to_string()),
             None => Err(refusals.into_iter().next().map_or_else(|| "nothing fits".to_string(), |r| format!("{} ({})", r.what, r.fix))),

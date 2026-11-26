@@ -148,7 +148,11 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
             "qwenserve serves over HTTP: qwenserve CKPT PACK --port PORT, then POST /v1/completions (a prompt of token ids, max_tokens, logprobs) in place of a \
              JSON line on the standard input, a protocol of the model's own engine, which is gone",
         ),
-        Some(c) if dev.is_some() => (dev.unwrap())(c, &a),
+        // (a development command: an engine no plan sized takes the GPU's free memory, and says so here: src/dynamic/rows.rs `free_sized`)
+        Some(c) if dev.is_some() => {
+            crate::dynamic::size_by_free_memory();
+            (dev.unwrap())(c, &a)
+        }
         _ => err(USAGE),
     }
 }
