@@ -5,7 +5,8 @@
 //! `QxMoeCb`, the misses on the host). The MTP layer is a draft head of the model (`load_drafting`: `lower::draft_head`, src/dynamic/head.rs). Across GPUs
 //! the layers are cut by the generic split (src/dynamic/split.rs): a stage's experts all on its GPU (`load_stage`, `open_split`; the head on the last), or in
 //! an expert cache of its own (`load_cached_stage`, `open_cached`; `qwenserve --gpus 0,1`). The vision tower is the description's (src/dynamic/images.rs: every
-//! loader of the executor opens it on a model on one GPU; a model across GPUs reads no images yet). The table of n-grams and the embedding are read on the host
+//! loader of the executor opens it, on the first stage of a model cut across GPUs, whose every stage turns its rows by the images' positions). The table of
+//! n-grams and the embedding are read on the host
 //! from the checkpoint's files mapped, their rows copied up with each pass, as the description holds them (`kinds::TableAt::Host`: src/dynamic/tables.rs).
 
 use super::{Dyn, ModelDesc, Op, Opts, ResidentMoe, Stage};
@@ -323,7 +324,7 @@ fn bf16_pct(layout: Option<Layout>) -> u64 {
 /// the model's, at a temperature of 0.5 at most with min-p 0.1. `--gpus 0,1`: the layers cut over those GPUs through the generic split (`open_cached`: each
 /// part's experts in a cache of its own, the cut `parts`' rule), one request at a time (each part would hold its share of every sequence). Images (PNG, JPEG)
 /// come as OpenAI image_url parts (a data: URL or an http(s) one) and Anthropic image blocks, read by the model's vision tower on one GPU (src/dynamic/images.rs),
-/// `--image-pixels N` the most pixels each is resized to (1,048,576 by default); across GPUs a request with images is refused in words. Not on the executor yet:
+/// `--image-pixels N` the most pixels each is resized to (1,048,576 by default); across GPUs the first part's GPU runs the tower. Not on the executor yet:
 /// the draft head over the expert cache (its verify pass takes experts held whole on the GPU: src/dynamic/head.rs).
 pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     use crate::server;

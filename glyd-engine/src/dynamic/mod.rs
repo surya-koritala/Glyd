@@ -2014,14 +2014,12 @@ impl Dyn {
         Ok(e)
     }
 
-    /// The images of the model in `dir`, where its description has a vision tower (src/dynamic/images.rs) and the model is on this GPU whole: its tower opened,
-    /// the images' bounds and token set for the requests' threads (`vision::PREP`), the step graph captured again to read the rows' positions. A tower this
-    /// engine cannot run leaves the model served for text, the reason said.
+    /// The images of the model in `dir`, where its description has a vision tower (src/dynamic/images.rs): its tower opened on the stage that stages the image
+    /// rows (the first, or the model on this GPU whole; a stage after it turns its rows by the same positions), the images' bounds and token set for the
+    /// requests' threads (`vision::PREP`), the step graph captured again to read the rows' positions. A tower this engine cannot run leaves the model served
+    /// for text, the reason said.
     fn see_with(&mut self, dir: &Path) -> Result<()> {
-        if !(self.stage.first && self.stage.last) {
-            return Ok(());
-        }
-        match images::Images::open(dir, &self.big.d, self.chunk.max(VERIFY_ROWS), &self.dev) {
+        match images::Images::open(dir, &self.big.d, self.chunk.max(VERIFY_ROWS), &self.dev, self.stage.first) {
             Ok(Some(v)) => {
                 eprintln!(
                     "images: up to {} pixels each ({} tokens)",
@@ -3456,6 +3454,8 @@ impl Dyn {
         unsafe {
             if self.stage.first {
                 self.embed(tokens)?;
+                // (an image's rows over its tokens' embedding: this stage holds the tower, the stages after it turn the rows by the same positions)
+                self.stage_images(&[(self.seq, 0, at, n)])?;
             } else {
                 // (the rows' tokens, which an operation of a later stage may read as the embedding hands them to the first: the n-gram embedding's rows, hash routing)
                 if let Some(v) = &self.tok {
