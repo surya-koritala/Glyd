@@ -7,6 +7,10 @@
 //!                                                             dense matrices in the computer's memory too, src/dense_ram.rs): every position's logits compared, the same bits in copy mode
 //!                                                             (--device-plan: the decode calls planned on the GPU, src/devplan.rs, and the decode step one graph, checked; --pairs: each host pair against
 //!                                                             the GPU's; --join: each call through a host half against copy mode from the same inputs)
+//!   glyd-engine stackcheck [--dirs EACH,STACKED] [--levels penguin,kestrel,swift,wren] [--places 4] [--tokens 16] | --load DIR [--layout i6] [--places N]   the Qwen3.5 layout's random
+//!                                                             model with experts a tensor an expert's matrix and with each layer's experts stacked (Qwen3.8-2.4T-A95B's form, logitsmodel qwen35moe DIR --stacked):
+//!                                                             the same logits bits resident and through the expert cache at each level, the same save at each lossy level (src/stacked.rs);
+//!                                                             --load: a model through the cache alone, the process's peak memory against the experts packed
 //!   glyd-engine actcheck   the activations the expert cache's host computes beside the GPU (situ, the release's SiLU), the host's against the GPU kernels' on every bf16 input up to 64 (src/cpu_fp4.rs)
 //!   glyd-engine storebench MODEL [--places 16] [--rows 1,8,32] [--steps 8] [--mode auto] [--device-plan] [--out FILE]   batched decode through the expert cache: each count of rows' step time and layer statistics (bytes read for
 //!                                                             the misses against the distinct missed experts'), FILE's JSON lines for ceiling --stats (src/tiering.rs)
@@ -109,6 +113,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "hbtoy" => cmd_hbtoy(a),
         "calibrate-experts" => cmd_calibrate_experts(a),
         "tiercheck" => glyd_engine::tiering::check(a),
+        "stackcheck" => glyd_engine::stacked::check(a),
         "storebench" => glyd_engine::tiering::bench(&a),
         "storecheck" => glyd_engine::tiering::rows_check(&a),
         "floortrace" => glyd_engine::tiering::floor_trace(&a),

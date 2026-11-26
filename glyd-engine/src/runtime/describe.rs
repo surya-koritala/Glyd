@@ -16,7 +16,7 @@ use super::names::{self, all, part, Convention};
 use crate::ffi::{err, Error, Result};
 use serde_json::{Map, Value};
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Where a role's tensor comes from in the checkpoint.
 #[derive(Clone, Debug, PartialEq)]
@@ -439,9 +439,57 @@ pub fn describe_held(cfg: &Value, have: &BTreeSet<String>) -> Result<Described> 
     describe_config_in(&ModelConfig::from_value(cfg)?, Some(have))
 }
 
+/// Where a checkpoint holds a role's experts as one tensor of them all, [experts, rows, cols] (`held`: its description held to its index, `describe_held`),
+/// and `named` (the same model's description from its config alone) names each expert's matrix a tensor (or its rows stacked: an expert's gate and up):
+/// each such tensor's name, with the stacked tensor and its rows there (the stacked tensor seen as [experts rows, cols]), expert e's members its rows
+/// `e rows..(e + 1) rows` in order, each as many as its own shape says. Every other role, and a checkpoint that holds a tensor an expert's matrix, adds
+/// nothing. A shape the two descriptions do not agree on is refused.
+pub fn stacked_rows(named: &Described, held: &Described) -> Result<BTreeMap<String, (String, usize, usize)>> {
+    if named.blocks.len() != held.blocks.len() {
+        return err(format!("{} blocks from the config, {} as the checkpoint holds them", named.blocks.len(), held.blocks.len()));
+    }
+    let shape = |d: &Described, n: &str| d.shapes.get(n).cloned().ok_or_else(|| Error(format!("the description has no shape for {n}")));
+    let mut out = BTreeMap::new();
+    for (b, (nr, hr)) in named.blocks.iter().zip(&held.blocks).enumerate() {
+        for (role, hs) in hr {
+            let (Source::Tensor(t), Some((_, Source::Experts(each)))) = (hs, nr.iter().find(|(r, _)| r == role)) else { continue };
+            let [n, rows, cols] = shape(held, t)?[..] else {
+                return err(format!("block {b}: {t}: {:?}, where experts stacked are three-dimensional", shape(held, t)?));
+            };
+            if n != each.len() {
+                return err(format!("block {b}: {t} holds {n} experts, where the config has {}", each.len()));
+            }
+            for (e, members) in each.iter().enumerate() {
+                let mut at = e * rows;
+                for m in members {
+                    match shape(named, m)?[..] {
+                        [r, c] if c == cols => {
+                            out.insert(m.clone(), (t.clone(), at, at + r));
+                            at += r;
+                        }
+                        ref s => return err(format!("block {b}: {m}: {s:?}, where rows of {t}'s {cols} columns are")),
+                    }
+                }
+                if at != (e + 1) * rows {
+                    return err(format!("block {b}: {t}: expert {e}'s matrices take {} of its {rows} rows", at - e * rows));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The description of a config.json parsed once.
 pub fn describe_config(c: &ModelConfig) -> Result<Described> {
     describe_config_in(c, None)
+}
+
+/// The description of a config.json parsed once as a checkpoint that stacks each layer's experts holds it, where the layout has that form besides a tensor
+/// an expert's matrix (the Qwen3.5 layout's: transformers' form, the one Qwen3.8-2.4T-A95B is released in); else the config's own.
+pub fn describe_stacked(c: &ModelConfig) -> Result<Described> {
+    let first = names::HF.layer(c.prefix(), 0);
+    let have: BTreeSet<String> = names::roles(part::QWEN_MOE_STACKED, &first, 0, |r| r == "experts_gate_up").iter().flat_map(|(_, s)| s.names()).collect();
+    describe_config_in(c, Some(&have))
 }
 
 /// The description of a config.json parsed once, in the stored form of the checkpoint whose tensor names are `have` where its config does not say how it
