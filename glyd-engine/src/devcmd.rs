@@ -19,6 +19,9 @@
 //!   glyd-engine glmfmtcheck FIXTURE_DIR   the four formats of the pack (tern, cb2, cb3, cb4) against fixtures the pack writer made (tools/fmtfix.py)
 //!   glyd-engine cb2check PACK_DIR [--layer L] [--expert E]   one expert of a glyd-hbr-codes/2 pack (src/cpu_cb.rs) against the pack's testvec.safetensors
 //!   glyd-engine hbcheck [CASE...] [--speed] [--no-check]      the Hummingbird layer's kernels (src/moe_hb.rs, kernels/moe_hb.cu) against the CPU reference on random experts at 3 and 2 bits, all there and through places, and their speed (src/kcheck_hb.rs)
+//!   glyd-engine visioncheck make|tower|logits|compare|sched ...   the vision tower kind on the executor (src/vision_check.rs): a random model of the release's shape with its tower, the
+//!                                                             tower against its CPU reference stage by stage, an image prompt's logits for the release's engine to be held to, prompts with
+//!                                                             images through the common scheduler against each alone
 //!   glyd-engine run MODEL [--prompt TEXT] [--no-think] [--context N] [--port N] [--host H] [--temp T]
 //!                                                             what `glyd run` starts: the model made ready on the first run (downloaded, packed for this GPU
 //!                                                             at its level), then a chat in the terminal, or one answer with --prompt
@@ -48,7 +51,7 @@
 //!   glyd-engine keepcheck CASE                                a finished sequence kept in its slot and gone on with (a conversation's next turn): against a sequence that ran the same tokens without ending, bit for bit
 //!   glyd-engine twomodels [A B]                               two cases' random models in this process, each with a scheduler and a runtime context of its own: each reply beside the other model against alone
 //!   glyd-engine foldcheck [--only WORD]                   R17: what the engine folded from the GPU library (ways, the GPU's class, KV sizes; the products, the KV cache and the FP8 format by its own kernels) against the library's own (--only: the kernels' checks whose line has WORD)
-//!   glyd-engine splitcheck CASE [--split CUTS --devices GPUS] [--level L] [--tokens T]   a random model of a dynamic-route family (qwen35, qwen35-wide, glm, kimi, muse, nemotron, deepseek-v4) as `run` opens it, on one GPU and with its layers in stages: every pass's logits the same bits
+//!   glyd-engine splitcheck CASE [--split CUTS --devices GPUS] [--level L] [--tokens T]   a random model of a dynamic-route family (qwen35, qwen35-wide, glm, kimi, muse, nemotron, deepseek-v4, qwen4x, qwen4x-s2; qwen4x-cb with its pack in an expert cache a stage) as `run` opens it, on one GPU and with its layers in stages: every pass's logits the same bits
 //!   glyd-engine bufcheck                                  a buffer belongs to its context: one of a second context on GPU 0 written, read, zeroed and freed while the first is current
 //!   glyd-engine bandwidth [--gib N]                           the GPU's streaming read bandwidth
 //!   glyd-engine rangecheck MODEL[:level] [--prompt 1024] [--new 256] [--cut L | --cuts A,B] [--ctx N] [--chunk N] [--workers [--sessions 2]]   a Qwen3.5 model whole, then as stages of layers chained in this process and (--workers) as worker processes
@@ -279,6 +282,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "g4prefill" => glyd_engine::gemma4::prefill_prof(a),
         "qxtq" => glyd_engine::qx_trellis::cmd(a),
         "qxvision" => glyd_engine::vision::check(a),
+        "visioncheck" => glyd_engine::vision_check::run(a),
         _ => err("usage: glyd-engine run|serve|doctor|login|supports|fetch|prepare, or a development command (see the top of src/devcmd.rs)"),
     }
 }

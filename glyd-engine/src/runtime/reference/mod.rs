@@ -54,6 +54,7 @@ pub mod mtp;
 pub mod ngram;
 pub mod norm;
 pub mod rope;
+pub mod vision;
 
 #[cfg(test)]
 mod hf_tests;

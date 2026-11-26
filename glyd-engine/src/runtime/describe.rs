@@ -68,6 +68,30 @@ pub struct Described {
     pub unread: Vec<String>,
     /// Per draft head of `desc.mtp` whose tensors are mapped: its blocks' roles' sources, and its own roles' (DSpark's `main_proj`, `markov_embed`, ...).
     pub mtp: Vec<(Vec<Vec<(String, Source)>>, Vec<(String, Source)>)>,
+    /// The vision tower's roles (`desc.vision`), where the description reads one.
+    pub vision: Option<VisionRoles>,
+}
+
+/// A vision tower's roles (`kinds::VisionDesc`): its own (`names::part::VISION`: the patch product, the position table, the merger), then each block's
+/// (`VISION_BLOCK`).
+#[derive(Clone, Debug, Default)]
+pub struct VisionRoles {
+    pub own: Vec<(String, Source)>,
+    pub blocks: Vec<Vec<(String, Source)>>,
+}
+
+impl VisionRoles {
+    /// Role `r`'s tensor: the tower's own (`block` None) or block `b`'s.
+    pub fn tensor(&self, block: Option<usize>, r: &str) -> Result<&str> {
+        let roles = match block {
+            None => &self.own,
+            Some(b) => self.blocks.get(b).ok_or_else(|| Error(format!("the vision tower has no block {b}")))?,
+        };
+        match roles.iter().find(|(x, _)| x == r) {
+            Some((_, Source::Tensor(n))) => Ok(n),
+            _ => err(format!("the vision tower has no tensor for its role {r}")),
+        }
+    }
 }
 
 impl Described {
@@ -85,6 +109,11 @@ impl Described {
         }
         for (blocks, own) in &self.mtp {
             for (_, src) in blocks.iter().flatten().chain(own) {
+                s.extend(src.names());
+            }
+        }
+        if let Some(v) = &self.vision {
+            for (_, src) in v.own.iter().chain(v.blocks.iter().flatten()) {
                 s.extend(src.names());
             }
         }
@@ -401,7 +430,7 @@ pub fn describe_config(c: &ModelConfig) -> Result<Described> {
     match mt {
         t if LLAMA.contains(&t) => llama(tc, prefix, mt, tied_top),
         "qwen3_5_text" | "qwen3_5_moe_text" | "qwen3_5" | "qwen3_5_moe" => qwen35(tc, prefix, mt, tied_top),
-        "qwen4_exp_text" => qwen4x(tc, prefix, mt, tied_top),
+        "qwen4_exp_text" => qwen4x(tc, prefix, mt, tied_top).and_then(|d| with_tower(d, c)),
         "gemma4_text" | "gemma4_unified_text" => gemma4(tc, prefix, mt, tied_top),
         "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
         "" => err("config.json names no model_type"),
@@ -434,6 +463,7 @@ fn finish(k: &Keys, desc: ModelDesc, cv: &Convention, prefix: &str, blocks: Vec<
         convention: cv.name,
         unread: cv.unread(),
         mtp: Vec::new(),
+        vision: None,
     })
 }
 
@@ -720,8 +750,8 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
 /// `hc_count` streams (`Residual::GatedStreams`), the final mixer (`Collapse::GatedMix`), and the hashed n-gram embedding (`Body::Ngram`)
 /// before each layer `ple_layer_ids` names. A layer is two blocks, three with the n-gram embedding. The MTP layers are the draft head
 /// (`MtpInput::Streams`: each an indexed attention and its experts in gated residuals, as the model's layers, its front's norms and products
-/// and its own final mixer, `names::part::QX_MTP`). Not read: the vision tower. The defaults of a key a config leaves out are transformers'
-/// (`Qwen4ExpTextConfig`). Each tensor's shape is said.
+/// and its own final mixer, `names::part::QX_MTP`). The vision tower is the multimodal config's (`with_tower`). The defaults of a key a config leaves
+/// out are transformers' (`Qwen4ExpTextConfig`). Each tensor's shape is said.
 fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
     let k = Keys::new(tc, mt);
     let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
@@ -1050,6 +1080,116 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         out.unread.retain(|p| p != "mtp.");
     }
     Ok(out)
+}
+
+/// The Qwen-VL vision tower of a multimodal config (`kinds::VisionDesc`, `vision_config`) added to its text model's description `d`: the kind's
+/// parameters, the image token (the top level's `image_token_id`), its roles under `model.visual` (`names::part::VISION`, `VISION_BLOCK`) and each
+/// tensor's shape; its tensors then read, no longer a part left. `d` as it is where the config has no tower, or is the language model alone
+/// (`language_model_only`). The tower's tokens take M-RoPE positions in the text: the text's rotary must have interleaved sections. A tower with
+/// deepstack layers (its features added into the text's layers too) is refused, and so is a key the builder does not know.
+fn with_tower(mut d: Described, c: &ModelConfig) -> Result<Described> {
+    let Some(v) = c.top.get("vision_config").filter(|v| !v.is_null()) else { return Ok(d) };
+    if c.top.get("language_model_only").and_then(Value::as_bool) == Some(true) {
+        return Ok(d);
+    }
+    let Value::Object(v) = v else { return err(format!("vision_config {v}: not an object")) };
+    let k = Keys::new(v, "vision_config");
+    let (blocks, hidden, heads, inter) = (k.usize("depth")?, k.usize("hidden_size")?, k.usize("num_heads")?, k.usize("intermediate_size")?);
+    let act = act(k.str("hidden_act")?.unwrap_or("gelu_pytorch_tanh"))?;
+    let (channels, patch) = (k.opt_usize("in_channels")?.unwrap_or(3), k.usize("patch_size")?);
+    let (frames, merge) = (k.opt_usize("temporal_patch_size")?.unwrap_or(2), k.opt_usize("spatial_merge_size")?.unwrap_or(2));
+    let (out, positions) = (k.usize("out_hidden_size")?, k.usize("num_position_embeddings")?);
+    match k.raw("deepstack_visual_indexes") {
+        None => {}
+        Some(Value::Array(a)) if a.is_empty() => {}
+        Some(x) => return err(format!("vision_config: deepstack_visual_indexes {x}: a tower whose features go into the text's layers too is not supported")),
+    }
+    // (transformers' newer configs say the tower's rotary: the axial one, its theta; the release's says none, the default's 10,000)
+    let theta = match k.raw("rope_parameters") {
+        None => 10_000.0,
+        Some(Value::Object(o)) => {
+            let r = Keys::new(o, "vision_config rope_parameters");
+            if r.str("rope_type")?.unwrap_or("axial") != "axial" {
+                return err(format!("vision_config: rope_parameters {}: only the axial rotary is supported", Value::Object(o.clone())));
+            }
+            let t = r.opt_f64("rope_theta")?.unwrap_or(10_000.0);
+            r.finish()?;
+            t
+        }
+        Some(x) => return err(format!("vision_config: rope_parameters {x}")),
+    };
+    k.finish()?;
+    let table = (positions as f64).sqrt().round() as usize;
+    if [blocks, hidden, heads, inter, channels, patch, frames, merge, out].contains(&0)
+        || hidden % heads != 0
+        || (hidden / heads) % 4 != 0
+        || table * table != positions
+    {
+        return err(format!(
+            "vision_config: a tower of {blocks} blocks of {heads} heads over {hidden}, {inter} neurons, {positions} positions (a square table), patches of {channels} x {frames} x {patch} x {patch}, merged {merge} x {merge}: not a tower of this kind"
+        ));
+    }
+    if out != d.desc.hidden {
+        return err(format!("vision_config: out_hidden_size {out}, where the text model's rows are {}", d.desc.hidden));
+    }
+    let image_token = match c.top.get("image_token_id").and_then(Value::as_u64) {
+        Some(t) if (t as usize) < d.desc.vocab => t as u32,
+        t => return err(format!("image_token_id {t:?}: the image token must be one of the vocabulary's {}", d.desc.vocab)),
+    };
+    // (the image's tokens take M-RoPE positions: the text's rotary has sections, interleaved)
+    let rope = d.desc.blocks.iter().find_map(|b| if let Body::Mixer(Mixer::Attention(a)) = &b.body { a.rope.clone() } else { None }).or(d.desc.rope.clone());
+    let interleaved = ["rope_parameters", "rope_scaling"].iter().find_map(|r| c.text.get(*r)?.get("mrope_interleaved")?.as_bool()) == Some(true);
+    if !rope.as_ref().is_some_and(|r| r.mrope.is_some()) || !interleaved {
+        return err(format!("vision_config: a tower whose tokens' positions the text's rotary ({rope:?}) does not turn as interleaved M-RoPE sections"));
+    }
+    let at = names::part::VISION_AT;
+    let own = names::roles(part::VISION, at, 0, all);
+    let m = hidden * merge * merge;
+    let mut shapes = std::mem::take(&mut d.shapes);
+    shape_roles(
+        &mut shapes,
+        &own,
+        &[
+            ("patch", vec![hidden, channels, frames, patch, patch]),
+            ("patch_bias", vec![hidden]),
+            ("pos", vec![positions, hidden]),
+            ("merge_norm", vec![hidden]),
+            ("merge_norm_bias", vec![hidden]),
+            ("merge_up", vec![m, m]),
+            ("merge_up_bias", vec![m]),
+            ("merge_down", vec![out, m]),
+            ("merge_down_bias", vec![out]),
+        ],
+    );
+    let roles: Vec<Vec<(String, Source)>> = (0..blocks)
+        .map(|l| {
+            let r = names::roles(part::VISION_BLOCK, &format!("{at}.blocks.{l}"), 0, all);
+            shape_roles(
+                &mut shapes,
+                &r,
+                &[
+                    ("norm1", vec![hidden]),
+                    ("norm1_bias", vec![hidden]),
+                    ("qkv", vec![3 * hidden, hidden]),
+                    ("qkv_bias", vec![3 * hidden]),
+                    ("o", vec![hidden, hidden]),
+                    ("o_bias", vec![hidden]),
+                    ("norm2", vec![hidden]),
+                    ("norm2_bias", vec![hidden]),
+                    ("up", vec![inter, hidden]),
+                    ("up_bias", vec![inter]),
+                    ("down", vec![hidden, inter]),
+                    ("down_bias", vec![hidden]),
+                ],
+            );
+            r
+        })
+        .collect();
+    d.shapes = shapes;
+    d.desc.vision = Some(VisionDesc { blocks, hidden, heads, inter, act, channels, patch, frames, merge, out, table, theta, eps: 1e-6, image_token });
+    d.vision = Some(VisionRoles { own, blocks: roles });
+    d.unread.retain(|p| p != &format!("{at}."));
+    Ok(d)
 }
 
 fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {

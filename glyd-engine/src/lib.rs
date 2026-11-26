@@ -167,6 +167,8 @@ pub mod tools;
 pub mod trace;
 pub mod ui;
 pub mod vision;
+#[cfg(feature = "dev")]
+pub mod vision_check;
 pub mod weights;
 pub mod wire;
 pub mod xtml;

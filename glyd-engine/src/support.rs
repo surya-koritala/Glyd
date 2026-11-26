@@ -15,8 +15,9 @@ pub enum Family {
     /// (src/dynamic/dense.rs), lossless or at the lossy levels. The variant keeps the name of the first release that ran on it.
     Qwen3,
     /// The Qwen3.5 layout (3.5, 3.6 and 3.8), dense (Qwen3_5ForCausalLM, Qwen3_5ForConditionalGeneration) or with experts (Qwen3_5MoeForCausalLM,
-    /// Qwen3_5MoeForConditionalGeneration): penguin on the dynamic route (one GPU, or its layers cut over several; every expert on its GPU), the lossy levels
-    /// on one GPU for the dense layout (the layout with experts is refused there: that route packs and sizes the dense layout's tensors alone).
+    /// Qwen3_5MoeForConditionalGeneration): penguin on the dynamic route (one GPU, or its layers cut over several; the experts in the expert cache where the
+    /// GPUs do not hold them), the lossy levels on one GPU, both layouts packed and sized by their description (src/pack.rs `described`), every expert on the
+    /// GPU at the lossy levels.
     Qwen35,
     NemotronH,
     /// Gemma 4 dense (12B, 31B); the 26B-A4B mixture of experts and the E models are refused.
@@ -24,15 +25,17 @@ pub enum Family {
     Kimi,
     Glm,
     /// GLM-5.3 (`glm_moe_dsa`: the latent attention on every layer, its indexer its own or shared, plain residuals; FP8 as released): penguin on the dynamic
-    /// route (src/dynamic/glm.rs `load_plain`), on one GPU or its layers cut over several, every expert of a stage on its GPU.
+    /// route (src/dynamic/glm.rs `load_plain`), on one GPU or its layers cut over several, a stage's experts on its GPU or, where the GPUs do not hold them,
+    /// in the expert cache as released (FP8 experts each packed on its own: src/tiering.rs).
     GlmDsa,
     DeepSeekV4,
     /// DeepSeek-V4.1 (`deepseek_v41`: CSA2's compressed attention sharing its parts across layers, lagged mHC, Engram): penguin on the dynamic route on one
     /// GPU, every expert of it on the GPU; no cut into stages (lagged mHC's weights are not handed over between them).
     DeepSeekV41,
     Muse,
-    /// Qwen3.8-Flash-Next (the Qwen 4 preview, `qwen4_exp`): penguin on the dynamic route on one GPU, every expert on it (src/dynamic/qwen4x.rs `stage`).
-    /// Its packs of codebook experts (Condor's precise, best and fast) are served by `qwenserve CKPT PACK --port` until `glyd run` resolves them (ROADMAP P8).
+    /// Qwen3.8-Flash-Next (the Qwen 4 preview, `qwen4_exp`): penguin on the dynamic route, every expert on the GPUs: one, or its layers cut over several
+    /// (src/dynamic/qwen4x.rs `stage`, src/dynamic/split.rs). Its packs of codebook experts (Condor's precise, best and fast) are served by
+    /// `qwenserve CKPT PACK --port` (one GPU, or `--gpus 0,1`) until `glyd run` resolves them (ROADMAP P8).
     FlashNext,
 }
 
@@ -152,9 +155,10 @@ pub static TABLE: [Support; 11] = [
         default_ctx: None,
         max_ctx: None,
         split_levels: PENGUIN,
-        experts_in_ram_levels: NONE,
+        // (the layout with experts: at penguin, where its GPUs do not hold them)
+        experts_in_ram_levels: PENGUIN,
         drafts: false,
-        route: Route { bf16_twelve: true, ..ONE_GPU },
+        route: Route { bf16_twelve: true, expert_cache: ExpertCache::Release, ..ONE_GPU },
     },
     Support {
         family: Family::NemotronH,
@@ -218,9 +222,9 @@ pub static TABLE: [Support; 11] = [
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
         split_levels: PENGUIN,
-        experts_in_ram_levels: NONE,
+        experts_in_ram_levels: PENGUIN,
         drafts: false,
-        route: Route { sizing: Sizing::Dynamic, ..ONE_GPU },
+        route: Route { sizing: Sizing::Dynamic, expert_cache: ExpertCache::Release, ..ONE_GPU },
     },
     Support {
         family: Family::DeepSeekV4,
@@ -265,7 +269,7 @@ pub static TABLE: [Support; 11] = [
         hummingbird_packed_only: false,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
-        split_levels: NONE,
+        split_levels: PENGUIN,
         experts_in_ram_levels: NONE,
         drafts: true,
         route: Route { sizing: Sizing::Dynamic, ..ONE_GPU },
@@ -483,14 +487,15 @@ mod tests {
         }
         assert!(check(&q38, "Qwen/Qwen3.8-27B", "Qwen3.8-27B", "hummingbird").is_err());
         assert_eq!(row(Family::Qwen35).split_levels, ["penguin"], "its layers cut over the GPUs at penguin, as the dynamic route cuts them");
-        // (Qwen3.8-Flash-Next: penguin on the dynamic route, on one GPU; its packs of codebook experts are not a level of glyd run yet)
+        // (Qwen3.8-Flash-Next: penguin on the dynamic route, its layers cut over the GPUs as the route cuts them; its packs of codebook experts are not a level of
+        // glyd run yet)
         let x = fixture("qwen4x_config.json");
         assert!(check(&x, "Qwen/X", "X", "penguin").is_ok());
         for l in ["kestrel", "hummingbird"] {
             let r = check(&x, "Qwen/X", "X", l).unwrap_err();
             assert_eq!(r.what, format!("X (Qwen3.8-Flash-Next) runs at the penguin level in this engine, not {l}"), "{r:?}");
         }
-        assert!(row(Family::FlashNext).split_levels.is_empty() && row(Family::FlashNext).route.sizing == Sizing::Dynamic);
+        assert!(row(Family::FlashNext).split_levels == ["penguin"] && row(Family::FlashNext).route.sizing == Sizing::Dynamic);
         assert_eq!(crate::dynamic::split::family(&x), Some("Qwen3.8-Flash-Next"), "opened by the dynamic route from its release's directory");
         let g = fixture("gemma4_12b_config.json");
         assert!(check(&g, "google/gemma-4-12B-it", "gemma-4-12B-it", "wren").is_ok(), "a QAT checkpoint's wren runs in every build");
@@ -499,7 +504,7 @@ mod tests {
 
     /// The Qwen3.5 layout with experts (`Qwen3_5MoeForCausalLM`, `Qwen3_5MoeForConditionalGeneration`) is the Qwen3.5 family's, not a row of its own: the
     /// dynamic route opens it (its layers cut over the GPUs at penguin) by the loader of the gated delta rule, which reads its layers by its description; the
-    /// tree's random case and the two releases of the fixtures alike. (Its lossy levels are refused where they are sized: src/plan.rs.)
+    /// tree's random case and the two releases of the fixtures alike, at every level of the row (its lossy levels sized by its description: src/plan.rs).
     #[test]
     fn the_qwen35_layout_with_experts_is_the_familys() {
         let q35: Value = json::parse(&fixture("qwen35_configs.json")).unwrap();
@@ -510,7 +515,9 @@ mod tests {
         ];
         for (what, text) in &cases {
             assert_eq!(family(text, "q").unwrap(), Family::Qwen35, "{what}");
-            assert!(check(text, "Qwen/q", "q", "penguin").is_ok(), "{what}");
+            for level in PENGUIN_LOSSY {
+                assert!(check(text, "Qwen/q", "q", level).is_ok(), "{what} {level}");
+            }
             assert_eq!(crate::dynamic::split::family(text), Some("Qwen3.5"), "{what}: opened by the dynamic route from its release's directory");
             let d = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
             assert!(d.desc.blocks.iter().any(|b| matches!(b.body, crate::runtime::kinds::Body::Ffn(crate::runtime::kinds::Ffn::Moe(_)))), "{what}");

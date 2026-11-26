@@ -59,8 +59,9 @@ impl Dyn {
         let qk = p.slot(Slot::Qr) + self.rows_before((heads + 1) * dim);
         let iq = p.slot(Slot::Iq) + self.rows_before(heads * dim);
         let (ik, pk) = ((self.cache(keys).0, self.table(keys)), (self.cache(pools).0, self.table(pools)));
-        k.ix_prep_at(s, qk, p.small[q_norm].ptr, cs, sn, half, pos, iq, ik, n, heads, p.d.eps, dim)?;
-        k.ix_cmp_at(s, ik, p.small[k_norm].ptr, cs, sn, half, pos, pk, n, p.d.eps, dim, block)?;
+        let r3 = self.rope3(p);
+        k.ix_prep_at(s, qk, p.small[q_norm].ptr, cs, sn, half, pos, r3, iq, ik, n, heads, p.d.eps, dim)?;
+        k.ix_cmp_at(s, ik, p.small[k_norm].ptr, cs, sn, half, pos, r3, pk, n, p.d.eps, dim, block)?;
         self.mark("indexer: queries and pools")
     }
 
@@ -107,6 +108,7 @@ impl Dyn {
         }
         if let Some(rp) = a.rope {
             (x.cs, x.sn) = (self.ropes[rp.table].0.ptr, self.ropes[rp.table].1.ptr);
+            (x.rpos, x.rax) = self.rope3(p);
         }
         self.ka.prep(s, &x, a.nq + a.nk, (crate::kern::NextPf::default(), 0))?;
         let row0 = self.rows_before(1) as usize / 2;

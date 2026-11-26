@@ -271,7 +271,7 @@ fn released_glm53_flash_config() {
 }
 
 /// Qwen3.8-Flash-Next's released config (tests/fixtures/qwen4x_config.json) describes its released checkpoint (tests/fixtures/qwen4x_tensors.json, the
-/// release's safetensors headers) exactly: every tensor, the MTP layer's as the draft head's, less the vision tower; each at the checkpoint's shape where the
+/// release's safetensors headers) exactly: every tensor, the MTP layer's as the draft head's, the vision tower's; each at the checkpoint's shape where the
 /// description gives one.
 #[test]
 fn released_qwen38_flash_next_config() {
@@ -1008,9 +1008,45 @@ fn condors_tiny_config_describes_its_tensors() {
         .all(|b| matches!(b.residual, Residual::GatedStreams(GatedStreamsP { streams: 4, lowrank: 64 })) || matches!(b.body, Body::Ngram(_))));
 }
 
+/// The vision tower kind of a multimodal config (`describe::with_tower`): the language model alone (`language_model_only`) and a config with no tower describe
+/// none; a tower whose features go into the text's layers (deepstack), a text rotary whose M-RoPE sections are not interleaved, an image token outside the
+/// vocabulary, rows of another width than the text's, and a key the builder does not know are refused in words, each naming what it is.
+#[test]
+fn a_vision_tower_is_described_or_refused_in_words() {
+    let rel = fixture("qwen4x_config.json");
+    let edited = |f: &dyn Fn(&mut serde_json::Value)| {
+        let mut c = rel.clone();
+        f(&mut c);
+        describe(&c)
+    };
+    let d = edited(&|c| c["language_model_only"] = true.into()).unwrap();
+    assert!(d.desc.vision.is_none() && d.vision.is_none() && d.unread == ["model.visual."]);
+    let d = edited(&|c| {
+        c.as_object_mut().unwrap().remove("vision_config");
+    })
+    .unwrap();
+    assert!(d.desc.vision.is_none());
+    for (f, words) in [
+        (
+            Box::new(|c: &mut serde_json::Value| c["vision_config"]["deepstack_visual_indexes"] = serde_json::json!([5, 11]))
+                as Box<dyn Fn(&mut serde_json::Value)>,
+            "deepstack",
+        ),
+        (Box::new(|c: &mut serde_json::Value| c["text_config"]["rope_parameters"]["mrope_interleaved"] = false.into()), "interleaved M-RoPE"),
+        (Box::new(|c: &mut serde_json::Value| c["image_token_id"] = 300_000.into()), "image_token_id"),
+        (Box::new(|c: &mut serde_json::Value| c["vision_config"]["out_hidden_size"] = 2048.into()), "out_hidden_size 2048"),
+        (Box::new(|c: &mut serde_json::Value| c["vision_config"]["window_size"] = 112.into()), "window_size"),
+        (Box::new(|c: &mut serde_json::Value| c["vision_config"]["num_position_embeddings"] = 2000.into()), "a square table"),
+    ] {
+        let e = edited(&*f).err().unwrap_or_else(|| panic!("{words}: described")).msg;
+        assert!(e.contains(words), "{words}: {e}");
+    }
+}
+
 /// Condor's released config (tests/fixtures/qwen4x_config.json) describes every tensor Condor's engine loads (src/qwen4x.rs: each layer's matrices, the gated
-/// residuals' and the final mixer's, the n-gram embedding's products; the MTP layer's, its front's and its final mixer's as the draft head), the vision tower
-/// left; and what it does not take is refused in words.
+/// residuals' and the final mixer's, the n-gram embedding's products; the MTP layer's, its front's and its final mixer's as the draft head) and the vision
+/// tower as the release's own engine read it (src/vision.rs: 27 blocks of 16 heads over 1,152, 4,304 neurons, a 48 x 48 position table, patches of 3 x 2 x
+/// 16 x 16 merged 2 x 2 into rows of 2,560, image token 248,056), nothing left; and what it does not take is refused in words.
 #[test]
 fn condors_released_config() {
     use super::kinds::*;
@@ -1049,7 +1085,15 @@ fn condors_released_config() {
     let missing: Vec<&String> = loads.iter().filter(|n| !names.contains(*n)).collect();
     assert!(missing.is_empty(), "{missing:?}");
     assert_eq!((d.desc.blocks.len(), d.mtp_layers, d.desc.hidden, d.desc.vocab), (97, 1, 2560, 248320));
-    assert_eq!(d.unread, ["model.visual."]);
+    assert!(d.unread.is_empty(), "{:?}", d.unread);
+    let v = d.desc.vision.as_ref().expect("the release's vision tower");
+    assert_eq!(
+        (v.blocks, v.hidden, v.heads, v.head_dim(), v.inter, v.act, v.patch_dim(), v.merge, v.out, v.table, v.theta, v.image_token),
+        (27, 1152, 16, 72, 4304, Act::GeluTanh, 1536, 2, 2560, 48, 10_000.0, 248056)
+    );
+    let roles = d.vision.as_ref().unwrap();
+    assert_eq!((roles.own.len(), roles.blocks.len(), roles.tensor(Some(26), "qkv").unwrap()), (9, 27, "model.visual.blocks.26.attn.qkv.weight"));
+    assert_eq!(names.iter().filter(|n| n.starts_with("model.visual.")).count(), 9 + 27 * 12);
     // (the head: one indexed attention and its experts on the model's four streams, its front of two products and its own mixer)
     let h = &d.desc.mtp[0];
     assert_eq!((h.blocks.len(), h.input, d.mtp.len(), d.mtp[0].0.len()), (2, MtpInput::Streams, 1, 2));

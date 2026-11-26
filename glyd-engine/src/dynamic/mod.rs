@@ -10,6 +10,7 @@ pub mod experts;
 pub mod gemma4;
 pub mod glm;
 pub mod head;
+pub mod images;
 pub mod kimi;
 #[cfg(feature = "dev")]
 pub mod kindcheck;
@@ -783,6 +784,19 @@ impl ModelDesc {
         }
         w
     }
+
+    /// The description as stage `st` runs it, from one lowered for the whole model: its experts' blocks numbered as a stage's loader reads them (`Op::Moe`'s block k
+    /// the stage's k-th, the blocks of its layers alone), the operations of the other stages' layers kept as they are (never run here).
+    pub(super) fn staged(mut self, st: &Stage) -> ModelDesc {
+        let mut k = 0;
+        for op in self.layers[st.layers.0..st.layers.1].iter_mut().flatten() {
+            if let Op::Moe(m) = op {
+                m.block = k;
+                k += 1;
+            }
+        }
+        self
+    }
 }
 
 impl Default for Opts {
@@ -883,7 +897,8 @@ impl Part {
 
     /// The part's weights as loaded by the family's own loader, with its activations and outputs.
     fn from_loaded(d: ModelDesc, l: Loaded, rows: usize, out: usize) -> Result<Part> {
-        let slots: Vec<Buf> = d.widths.iter().map(|&w| Buf::new(w.max(1) * rows * 2)).collect::<Result<_>>()?;
+        // (zeroed: a stage after the first warms its graph up, and hands its slots over, before its own layers have written every one of them)
+        let slots: Vec<Buf> = d.widths.iter().map(|&w| Buf::zeroed(w.max(1) * rows * 2)).collect::<Result<_>>()?;
         let logits = Buf::new(d.vocab * out * 2)?;
         let (tok, val) = (Buf::zeroed(4 * out)?, Buf::zeroed(4 * out)?);
         let mut small_sc = l.small_sc;
@@ -1058,6 +1073,12 @@ fn small_width(d: &ModelDesc, i: usize, dtype: &str) -> u64 {
     } else {
         2
     }
+}
+
+/// Whether the loader holds small tensor `i` of `d` in fp32, whatever the checkpoint's type (`small_width`'s four bytes): what a save's sizer counts it at
+/// (src/pack.rs `described`).
+pub(crate) fn small_f32(d: &ModelDesc, i: usize) -> bool {
+    small_width(d, i, "BF16") == 4
 }
 
 /// A saved directory's layout and manifest: a glyd-v7 one's, or a lossless glyd-v4 save's (the tiered layout); None: a Hub-format directory.
@@ -1513,6 +1534,8 @@ pub struct Dyn {
     sums: Option<Buf>,
     /// Launched steps landed with a later one queued, whose expert cache's end of a step is owed (src/dynamic/rows.rs `quiet`).
     owed: usize,
+    /// The images of a description with a vision tower (src/dynamic/images.rs): the tower, each sequence's images and positions, the pass's rows' positions.
+    vis: Option<images::Images>,
 }
 
 /// A sequence's own buffers and place, while another is selected (`Dyn::select`): its keys and values, its states, its position, the verify pass it can go back
@@ -1856,8 +1879,11 @@ impl Dyn {
     /// `new_with`, the stage's packed matrices held as `placing` says.
     #[allow(clippy::too_many_arguments)]
     pub fn new_placed(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts, placing: &Placing) -> Result<Dyn> {
-        if draft.is_some() && !(st.first && st.last) {
-            return err("drafting with a model split across GPUs: not yet");
+        // (across GPUs a draft head of the model drafts on the last stage, which holds the model's last state (`head::state`) and its LM head; a draft
+        // model, or a head elsewhere, is not split)
+        let head_drafts = draft.as_ref().is_some_and(|x| matches!(x.desc.first, Op::MtpIn { .. }));
+        if draft.is_some() && !(st.first && st.last) && !(head_drafts && st.last) {
+            return err("drafting with a model split across GPUs: a draft head of the model's on the last stage alone (not a draft model)");
         }
         if let Some(k) = unnamed(&d) {
             return err(format!(
@@ -1899,7 +1925,11 @@ impl Dyn {
                 Ok((upload_bytes(crate::weights::as_bytes(&c))?, upload_bytes(crate::weights::as_bytes(&s))?))
             })
             .collect::<Result<_>>()?;
-        let want = d.wanted(&st);
+        let mut want = d.wanted(&st);
+        // (a last stage that drafts with the head holds the embedding too: the head reads the row of the token after the model's)
+        if head_drafts {
+            want[d.embed] = true;
+        }
         let big = load_part(dir, d, layout, threads, ch, rows_out, Some(&want), experts, placing, &dev)?;
         // (a draft model is packed lossy here: the big model checks every draft token, so its precision moves only how many are kept; a draft head of the model
         // at the model's layout, a chunk's rows (it reads each prompt row's streams), its rings after the model's, its LM head and embedding the model's)
@@ -1922,7 +1952,50 @@ impl Dyn {
                 head: None,
             }),
         };
-        Dyn::build(dev, big, draft, ropes, layout, st, o)
+        let mut e = Dyn::build(dev, big, draft, ropes, layout, st, o)?;
+        e.see_with(dir)?;
+        Ok(e)
+    }
+
+    /// The images of the model in `dir`, where its description has a vision tower (src/dynamic/images.rs) and the model is on this GPU whole: its tower opened,
+    /// the images' bounds and token set for the requests' threads (`vision::PREP`), the step graph captured again to read the rows' positions. A tower this
+    /// engine cannot run leaves the model served for text, the reason said.
+    fn see_with(&mut self, dir: &Path) -> Result<()> {
+        if !(self.stage.first && self.stage.last) {
+            return Ok(());
+        }
+        match images::Images::open(dir, &self.big.d, self.chunk.max(VERIFY_ROWS), &self.dev) {
+            Ok(Some(v)) => {
+                eprintln!(
+                    "images: up to {} pixels each ({} tokens)",
+                    v.prep.max_pixels,
+                    v.prep.max_pixels / (v.prep.patch * v.prep.patch * v.prep.merge * v.prep.merge)
+                );
+                let _ = crate::vision::PREP.set(v.prep.clone());
+                self.vis = Some(v);
+                if self.graph.is_some() {
+                    self.capture_graph()?;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("images are off: {}", e.msg),
+        }
+        Ok(())
+    }
+
+    /// Whether the model reads images (its description's vision tower is open).
+    pub fn sees(&self) -> bool {
+        self.vis.is_some()
+    }
+
+    /// The images of the next `reply`'s prompt (`prompt`, each image's place in it as many image tokens as its rows): read by the tower as the prompt runs. No
+    /// image: the prompt's rows at their own positions.
+    pub fn set_images(&mut self, prompt: &[u32], images: &[std::sync::Arc<crate::vision::Image>]) -> Result<()> {
+        match self.vis.as_mut() {
+            Some(v) => v.set(self.seq, prompt, images),
+            None if images.is_empty() => Ok(()),
+            None => err("this model reads no images (its description has no vision tower)"),
+        }
     }
 
     /// A model a family's own loader put on the GPU (its matrices, small tensors and rotary tables, in its description's order).
@@ -1985,7 +2058,8 @@ impl Dyn {
         // (a draft head's rings after the model's: its operations name them so, `head::shift_rings`)
         let head_rings: &[Ring] = draft.as_ref().filter(|x| x.head.is_some()).map_or(&[], |x| &x.p.d.rings);
         for (i, r) in d.rings.iter().chain(head_rings).enumerate() {
-            let cap = if !whole && !rings_used.contains(&i) { 0 } else { r.rows(ctx, ch) };
+            // (the stage's rings, and a draft head's on the stage that drafts)
+            let cap = if !whole && !rings_used.contains(&i) && i < d.rings.len() { 0 } else { r.rows(ctx, ch) };
             ring_off.push((at, at_v));
             ring_cap.push(cap);
             at += (cap * r.nk * r.d * 2) as u64;
@@ -2260,6 +2334,7 @@ impl Dyn {
             masker: None,
             sums: None,
             owed: 0,
+            vis: None,
         };
         // (a group of GPUs: every one's engine made before any one's first pass, src/dynamic/tp.rs)
         if let Some(c) = tp::comm() {
@@ -3204,6 +3279,7 @@ impl Dyn {
 
     fn capture_graph(&mut self) -> Result<()> {
         self.st.write(0, &[0i32])?;
+        self.rope_write(&[(self.seq, 0)])?;
         let st = self.st.ptr;
         // SAFETY: live buffers of the engine; the stream is synchronized after.
         unsafe {
@@ -3309,6 +3385,7 @@ impl Dyn {
         } else {
             self.pos.write(0, &(0..n).map(|i| (at + i) as i32).collect::<Vec<i32>>())?;
         }
+        self.rope_write(&(0..n).map(|i| (self.seq, (at + i) as i64)).collect::<Vec<_>>())?;
         let pp = if one { self.st.ptr } else { self.pos.ptr };
         self.start.set(at);
         // SAFETY: live buffers of the engine, sized for a chunk; io holds the slots' rows (checked above); the stream orders the copies and launches, and is synchronized before io is read.
@@ -3316,6 +3393,10 @@ impl Dyn {
             if self.stage.first {
                 self.embed(tokens)?;
             } else {
+                // (the rows' tokens, which an operation of a later stage may read as the embedding hands them to the first: the n-gram embedding's rows, hash routing)
+                if let Some(v) = &self.tok {
+                    v.write(0, &tokens.iter().map(|&t| t as i32).collect::<Vec<i32>>())?;
+                }
                 let mut off = 0usize;
                 for (sl, w) in self.boundary() {
                     copy_h2d_async(self.big.slot(sl), io[off..].as_ptr() as *const _, n * w * 2, self.dev.stream)?;
@@ -3460,8 +3541,9 @@ impl Dyn {
                     }
                 }
                 // (the n-gram embedding: its convolution's last inputs those before the pass and the kept rows' (`qx_ple_conv`: oldest first), its last ids the
-                // `order` - 1 before the pass and the kept rows' (`qx_ngram_hist`: each token's id, its compressed one where the form maps it, + 1, oldest first))
-                for (l, ops) in p.d.layers.iter().enumerate() {
+                // `order` - 1 before the pass and the kept rows' (`qx_ngram_hist`: each token's id, its compressed one where the form maps it, + 1, oldest first);
+                // this stage's layers', another stage holds the others' states)
+                for (l, ops) in p.d.layers.iter().enumerate().take(self.stage.layers.1).skip(self.stage.layers.0) {
                     for op in ops {
                         match *op {
                             Op::NgramAdd(x) => {
@@ -3689,12 +3771,15 @@ impl Dyn {
             let pos: Vec<i32> = (0..n).map(|i| (self.n + i) as i32).collect();
             self.dev.sync()?;
             self.pos.write(0, &pos)?;
+            self.rope_write(&pos.iter().map(|&p| (self.seq, p as i64)).collect::<Vec<_>>())?;
             let last = at + n == tokens.len();
             let pp = self.pos.ptr;
             self.start.set(self.n);
             // SAFETY: live buffers of the engine, sized for a chunk.
+            unsafe { self.embed(&tokens[at..at + n])? };
+            self.stage_images(&[(self.seq, 0, self.n, n)])?;
+            // SAFETY: as above.
             unsafe {
-                self.embed(&tokens[at..at + n])?;
                 self.forward(&self.big, n, (pp, pp), last as usize)?;
                 self.draft_after_chunk(self.n, &tokens[at..at + n], last)?;
             }
@@ -3760,6 +3845,7 @@ impl Dyn {
         }
         self.dev.sync()?;
         self.st.write(0, &[self.n as i32])?;
+        self.rope_write(&[(self.seq, self.n as i64)])?;
         let st = self.st.ptr;
         // SAFETY: live buffers; the graph was captured on them.
         unsafe {
@@ -3817,6 +3903,7 @@ impl Dyn {
         let n = seq.len();
         let pos: Vec<i32> = (0..n).map(|i| (n0 + i) as i32).collect();
         self.pos.write(0, &pos)?;
+        self.rope_write(&pos.iter().map(|&p| (self.seq, p as i64)).collect::<Vec<_>>())?;
         let pp = self.pos.ptr;
         // SAFETY: live buffers sized for k + 1 rows; the tokens are read after the synchronize.
         unsafe {
@@ -3886,6 +3973,17 @@ impl crate::conv::Gen for Dyn {
         self.share = part.clamp(0.0, 1.0);
     }
 
+    fn see(&mut self, images: Vec<std::sync::Arc<crate::vision::Image>>) -> Result<()> {
+        match self.vis.as_mut() {
+            Some(v) => {
+                v.next = images;
+                Ok(())
+            }
+            None if images.is_empty() => Ok(()),
+            None => err("this model reads no images (its description has no vision tower)"),
+        }
+    }
+
     /// The weights (a draft model's too), the rings of keys and values for the whole context (where they are in 12-bit pages, the pages with their pools and buffers: `Lossless::bytes`),
     /// and the states; all made in `build` and kept as they are while it runs. `kv_type` is the format the loader took for the keys and values (`plan::kv_format_of`).
     fn held(&self) -> Option<crate::dev::Held> {
@@ -3911,6 +4009,11 @@ impl crate::conv::Gen for Dyn {
             return err(format!("{} prompt tokens, where the context holds {}", prompt.len(), self.ctx));
         }
         self.reset()?;
+        // (the prompt's images, where `see` gave them for this reply: none for a reply it did not)
+        if let Some(v) = self.vis.as_mut() {
+            let images = std::mem::take(&mut v.next);
+            v.set(self.seq, prompt, &images)?;
+        }
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
         self.top.ask = sampler.top_need();

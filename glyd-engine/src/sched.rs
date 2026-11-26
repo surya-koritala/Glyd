@@ -212,6 +212,16 @@ pub trait ModelStep {
         Ok(())
     }
     fn eos(&self) -> Vec<i64>;
+    /// The sequence that takes `slot` begins with `prompt`, whose images are `images` in order (each one's place in it as many image tokens as its rows; none: a
+    /// text): told before its first chunk runs, each time it takes a slot. A step whose model reads images reads them as the chunks reach their rows and turns
+    /// the rows by their positions (src/dynamic/images.rs); any other refuses a prompt with images.
+    fn images(&mut self, _slot: i32, _prompt: &[u32], images: &[Arc<crate::vision::Image>]) -> Result<()> {
+        if images.is_empty() {
+            Ok(())
+        } else {
+            Err(crate::ffi::Error::of(Kind::Request, "this model reads no images".to_string()))
+        }
+    }
     /// `tokens` at positions `start` on into `pages`; with `last`, the sample after the final token.
     fn prefill(&mut self, pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>>;
     /// The most sequences whose prompt chunks `prefill_many` runs in one pass (1: one at a time, as `prefill`).
@@ -433,6 +443,9 @@ impl ModelStep for &mut dyn ModelStep {
     fn window(&self) -> usize {
         (**self).window()
     }
+    fn images(&mut self, slot: i32, prompt: &[u32], images: &[Arc<crate::vision::Image>]) -> Result<()> {
+        (**self).images(slot, prompt, images)
+    }
     fn chunk(&self) -> usize {
         (**self).chunk()
     }
@@ -599,6 +612,9 @@ struct Seq {
     sampler: Sampler,
     /// The prompt and what has been chosen so far. While decoding, the last token is the one the next step takes (its keys and values are not in the cache yet).
     tokens: Vec<u32>,
+    /// The prompt's tokens (the first of `tokens`), and its images in order (`Submit::images`), told to the step each time the sequence takes a slot.
+    prompt: usize,
+    images: Vec<Arc<crate::vision::Image>>,
     generated: usize,
     pages: Vec<i32>,
     /// Tokens whose keys and values are in the pages.
@@ -636,6 +652,18 @@ struct Kept {
 /// The fewest tokens of a kept sequence a request must begin with to go on in its slot. It must also begin with half of what the slot holds: a kept conversation is not cut down for
 /// the few tokens every prompt of a template begins with, nor for a system prompt that another conversation shares, unless that is most of it.
 const KEEP_LEAST: usize = 32;
+
+/// A request's cache scope (`Submit::salt`) with its images: the same where it has none, else a digest of the scope and the images' keys in order, so that
+/// what one prompt's tokens left in the cache is found again only by a prompt with the same images in the same places (their tokens are all the image token).
+fn image_scope(salt: u64, images: &[Arc<crate::vision::Image>]) -> u64 {
+    if images.is_empty() {
+        return salt;
+    }
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (salt, images.iter().map(|i| i.key).collect::<Vec<u64>>()).hash(&mut h);
+    h.finish() | 1
+}
 
 /// The tokens `a` and `b` both begin with.
 fn common(a: &[u32], b: &[u32]) -> usize {
@@ -1073,6 +1101,8 @@ impl<B: ModelStep> Sched<B> {
             eprintln!("sched {:.4} submit {} ({} tokens)", crate::monitor::clock(), self.next_id, s.prompt.len());
         }
         let prompt_len = s.prompt.len();
+        // (a prompt with images finds in the cache, and leaves there, only what prompts with the same images do: its scope is its images' too)
+        let salt = image_scope(s.salt, &s.images);
         self.waiting.push_back(Seq {
             id: self.next_id,
             out: s.out,
@@ -1080,12 +1110,14 @@ impl<B: ModelStep> Sched<B> {
             resumed: s.resumed,
             cached: s.cached,
             created: s.created,
-            salt: s.salt,
+            salt,
             pin: s.pin,
             reply: s.reply,
             greedy,
             sampler,
             tokens: s.prompt,
+            prompt: prompt_len,
+            images: s.images,
             generated: 0,
             pages: Vec::new(),
             done: 0,
@@ -1347,6 +1379,12 @@ impl<B: ModelStep> Sched<B> {
                 break;
             }
             let mut s = self.waiting.remove(k).expect("a waiting sequence");
+            // (a step on shared pages reads no images: a prompt with them ends in words)
+            if let Err(e) = self.be.images(-1, &s.tokens[..s.prompt], &s.images) {
+                self.rt.figures.finished("error", s.began, &s.trace, s.generated);
+                self.pending.push((s.out.clone(), Ev::End(Err(e))));
+                continue;
+            }
             s.trace.admit();
             // the pages of an earlier sequence with the same first tokens (at least the last token is run, for the logits)
             let root = block_root(s.salt);
@@ -1408,6 +1446,14 @@ impl<B: ModelStep> Sched<B> {
             return Ok(false);
         }
         let mut s = self.waiting.remove(k).expect("a waiting sequence");
+        // (its images told to the step: a step that cannot read them ends the request in words, its slot given back)
+        if let Err(e) = self.be.images(slot, &s.tokens[..s.prompt], &s.images) {
+            self.be.release(&[slot])?;
+            self.free.as_mut().expect("a slot step").push(slot);
+            self.rt.figures.finished("error", s.began, &s.trace, s.generated);
+            self.pending.push((s.out.clone(), Ev::End(Err(e))));
+            return Ok(true);
+        }
         s.trace.admit();
         s.pages = vec![slot];
         // (what it holds in full blocks has its names already: they are the names of these tokens)
@@ -1456,6 +1502,8 @@ impl<B: ModelStep> Sched<B> {
         if held != s.done {
             return Err(Error(format!("a sequence of {} tokens came back from the host with {held}", s.done)));
         }
+        // (its images told to the step again, in this slot: the rows it has not run yet read them, all turn by their positions)
+        self.be.images(slot, &s.tokens[..s.prompt], &s.images)?;
         s.trace.admit();
         s.pages = vec![slot];
         s.swapped = None;

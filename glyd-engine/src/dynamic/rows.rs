@@ -608,7 +608,9 @@ impl Dyn {
         };
         let (free, _) = self.dev.mem_info()?;
         const KEEP: usize = 512 << 20;
-        let budget = (free.saturating_sub(KEEP + tab_bytes + once) as f64 * self.share) as usize;
+        // (and what the vision tower takes for an image of the most pixels, where the model reads images: src/dynamic/images.rs)
+        let tower = self.vis.as_ref().map_or(0, |v| v.reserve);
+        let budget = (free.saturating_sub(KEEP + tab_bytes + once + tower) as f64 * self.share) as usize;
         // as many tokens' blocks in every group (a block of a group is its `covers` tokens of every layer in it), the sliding groups capped and what they leave to the full ones
         let least: Vec<usize> = keep.iter().zip(&covers).map(|(&k, &c)| seq_blocks(k, self.ctx, c)).collect();
         let mut blocks = pool_blocks(budget, &per, &covers, &keep, &most, &least);
@@ -825,11 +827,14 @@ impl Dyn {
         let pos: Vec<i32> = (0..n).map(|i| (self.n + i) as i32).collect();
         self.dev.sync()?;
         self.pos.write(0, &pos)?;
+        self.rope_write(&pos.iter().map(|&p| (slot, p as i64)).collect::<Vec<_>>())?;
         let pp = self.pos.ptr;
         self.start.set(self.n);
         // SAFETY: live buffers of the engine, sized for a chunk.
+        unsafe { self.embed(tokens)? };
+        self.stage_images(&[(slot, 0, self.n, n)])?;
+        // SAFETY: as above.
         unsafe {
-            self.embed(tokens)?;
             self.pieces_pass(n, (pp, pp), last as usize)?;
             // (a draft's part of the chunk, as `prefill` hands it: a draft model's first input, a draft head's rows)
             self.draft_after_chunk(self.n, tokens, last)?;
@@ -851,6 +856,7 @@ impl Dyn {
             return err(format!("a pass of {n} rows and {asked} samples, where a pass holds {} and the head {}", self.chunk, self.head_room()));
         }
         let (mut parts, mut pos, mut tokens, mut head_rows) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut spans, mut ropes) = (Vec::new(), Vec::new());
         for &(slot, t, last) in jobs {
             self.settle_slot(slot)?;
             let start = self.seq_n(slot);
@@ -858,6 +864,8 @@ impl Dyn {
                 return err(format!("{} tokens after {start}, where the cache holds {}", t.len(), self.ctx));
             }
             parts.push(self.part_of(slot, tokens.len(), t.len(), start)?);
+            spans.push((slot, tokens.len(), start, t.len()));
+            ropes.extend((0..t.len()).map(|i| (slot, (start + i) as i64)));
             pos.extend((0..t.len()).map(|i| (start + i) as i32));
             tokens.extend_from_slice(t);
             if last {
@@ -872,10 +880,12 @@ impl Dyn {
         let rows = graph.unwrap_or(n);
         if let Some(k) = graph {
             pos.resize(k, -1);
+            ropes.resize(k, (0, -1));
             tokens.resize(k, tokens[0]);
             head_rows = (0..k).collect();
         }
         self.dev.sync()?;
+        self.rope_write(&ropes)?;
         // (the step's metadata in one copy where the rows' tables are (`RowTabs::meta`): the positions; the slots of the rows that decode, a graph's padding rows -1, the rows
         // past the lead, a prompt's, with no entry; each such row's recurrent states' addresses, a padding row's 0)
         let pp = match self.paged.as_ref().and_then(|pg| pg.rows.as_ref()) {
@@ -900,13 +910,13 @@ impl Dyn {
         let whole = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).is_some_and(|rt| rt.graphs);
         let pieces = !whole || jobs.iter().any(|j| j.1.len() > 1 || !j.2);
         // SAFETY: live buffers of the engine and of each sequence, the pass's rows within a chunk's (a graph's padded rows within the head's).
-        let r = unsafe {
-            self.embed(&tokens).and_then(|_| match graph {
+        let r = unsafe { self.embed(&tokens) }.and_then(|_| self.stage_images(&spans)).and_then(|_| unsafe {
+            match graph {
                 Some(k) => self.rows_replay(k, false),
                 None if pieces => self.pieces_pass(n, (pp, pp), asked),
                 None => self.forward(&self.big, n, (pp, pp), asked),
-            })
-        };
+            }
+        });
         self.parts.clear();
         self.head_rows.clear();
         self.lead.set(0);
@@ -963,6 +973,7 @@ impl Dyn {
             // (positions and slots -1, no row's state: no key read or written, the recurrent layers' kernels skip every row)
             let rt = self.paged.as_ref().and_then(|pg| pg.rows.as_ref()).expect("room for the rows' tables");
             rt.write(&vec![-1i32; k], &vec![-1i32; k], &vec![0u64; k * rt.nst])?;
+            self.rope_write(&vec![(0, -1); k])?;
             // (a part of no row of its own: the pass is one over several sequences, its rows all the lead's)
             (self.parts, self.head_rows) = (vec![self.part_of(self.seq, 0, 1, 0)?], (0..k).collect());
             self.lead.set(k);
@@ -1363,6 +1374,12 @@ impl Dyn {
             return err(format!("a step of {n} rows and {asked} samples, where a pass holds {} and the head {}", self.chunk, self.head_room()));
         }
         let (mut pos, mut src) = (Vec::with_capacity(n), Vec::with_capacity(n));
+        let mut ropes: Vec<(usize, i64)> = rows.iter().map(|r| (r.pages[0] as usize, r.pos as i64)).collect();
+        let mut spans = Vec::with_capacity(jobs.len());
+        for j in jobs {
+            spans.push((j.pages[0] as usize, ropes.len(), j.start, j.tokens.len()));
+            ropes.extend((0..j.tokens.len()).map(|i| (j.pages[0] as usize, (j.start + i) as i64)));
+        }
         for r in rows {
             pos.push(r.pos as i32);
             src.push(match r.after {
@@ -1411,6 +1428,8 @@ impl Dyn {
             self.kern.step_ids(s, src_dev, self.big.tok.ptr, ids, self.tok.as_ref().map_or(0, |b| b.ptr), n)?;
             self.lib.rows(&e, ids, n as i64, self.big.slot(super::Slot::X), s)?;
         }
+        self.rope_write(&ropes)?;
+        self.stage_images(&spans)?;
         let mut lasts = Vec::with_capacity(jobs.len());
         if graph {
             // SAFETY: the graph was captured on these buffers (the selected sequence's).
@@ -1832,6 +1851,13 @@ impl ModelStep for Dyn {
     fn eos(&self) -> Vec<i64> {
         self.big.d.eos.clone()
     }
+    fn images(&mut self, slot: i32, prompt: &[u32], images: &[std::sync::Arc<crate::vision::Image>]) -> Result<()> {
+        match self.vis.as_mut() {
+            Some(v) => v.set(slot as usize, prompt, images),
+            None if images.is_empty() => Ok(()),
+            None => err("this model reads no images (its description has no vision tower)"),
+        }
+    }
     fn prefill(&mut self, pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>> {
         let slot = pages[0] as usize;
         if self.seq_n(slot) != start {
@@ -2027,8 +2053,11 @@ impl ModelStep for Dyn {
             // (a slot being copied back from the host: the copy done first)
             self.swap_settle(p as usize)?;
             self.empty(p as usize)?;
-            // (a check's trace of rows' choices: the sequence's rows forgotten with it)
+            // (a check's trace of rows' choices: the sequence's rows forgotten with it; its images)
             self.trace_forget(p as usize);
+            if let Some(v) = self.vis.as_mut() {
+                v.forget(p as usize);
+            }
             // (what this step's growths promised it of the 12-bit pools goes with it)
             self.kv12_unpromise(p as usize);
             if let Some(pg) = &mut self.paged {

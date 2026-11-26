@@ -236,6 +236,37 @@ pub mod part {
     ];
     pub const QX_NGRAM_SHARD: &str = "ple.ple_embedding.ngram_embedding.shard_{S}.weight";
 
+    // ---- the Qwen-VL vision tower (`kinds::VisionDesc`), under `model.visual`
+    /// The tower's own roles: the patch product, the position table, the merger.
+    pub const VISION: Roles = &[
+        ("patch", "patch_embed.proj.weight"),
+        ("patch_bias", "patch_embed.proj.bias"),
+        ("pos", "pos_embed.weight"),
+        ("merge_norm", "merger.norm.weight"),
+        ("merge_norm_bias", "merger.norm.bias"),
+        ("merge_up", "merger.linear_fc1.weight"),
+        ("merge_up_bias", "merger.linear_fc1.bias"),
+        ("merge_down", "merger.linear_fc2.weight"),
+        ("merge_down_bias", "merger.linear_fc2.bias"),
+    ];
+    /// A block of the tower, under `model.visual.blocks.{l}`.
+    pub const VISION_BLOCK: Roles = &[
+        ("norm1", "norm1.weight"),
+        ("norm1_bias", "norm1.bias"),
+        ("qkv", "attn.qkv.weight"),
+        ("qkv_bias", "attn.qkv.bias"),
+        ("o", "attn.proj.weight"),
+        ("o_bias", "attn.proj.bias"),
+        ("norm2", "norm2.weight"),
+        ("norm2_bias", "norm2.bias"),
+        ("up", "mlp.linear_fc1.weight"),
+        ("up_bias", "mlp.linear_fc1.bias"),
+        ("down", "mlp.linear_fc2.weight"),
+        ("down_bias", "mlp.linear_fc2.bias"),
+    ];
+    /// Where the tower's tensors are.
+    pub const VISION_AT: &str = "model.visual";
+
     // ---- Gemma 4: sandwich norms and the layer's scalar
     pub const GEMMA_ATTN_OUT: Roles = &[("norm_out", "post_attention_layernorm.weight")];
     /// A layer's per-layer input branch (Gemma 4's E2B, E4B), and the model's tables of the inputs.

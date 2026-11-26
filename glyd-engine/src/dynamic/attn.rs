@@ -347,8 +347,12 @@ pub(crate) struct AttnArgs {
     pub out: u64,
     pub gate: u64,
     pub part: u64,
+    /// Each row's M-RoPE position (t, h, w) at 6 r i32s (src/dynamic/images.rs `Dyn::rope3`); 0: the row's position alone.
+    pub rpos: u64,
     /// Row t's table at tab + t tstride entries (a step's rows that decode, each its sequence's: `rows::RowTabs`); 0: one table for every row.
     pub tstride: i64,
+    /// Two bits an angle: the position of `rpos` its M-RoPE section turns by.
+    pub rax: u64,
     pub d: i32,
     pub stride: i32,
     pub q_step: i32,
@@ -609,6 +613,7 @@ impl Dyn {
             }
             if let Some(r) = a.rope {
                 (x.cs, x.sn) = (self.ropes[r.table].0.ptr, self.ropes[r.table].1.ptr);
+                (x.rpos, x.rax) = self.rope3(p);
             }
             let (nx, m) = Self::next_linear(p, l, i, rows.1, head);
             let pf = self.pf(nx, m, self.pf_kib[0], (a.d / 2) as u32);
@@ -660,6 +665,7 @@ impl Dyn {
         }
         if let Some(r) = a.rope {
             (x.cs, x.sn) = (self.ropes[r.table].0.ptr, self.ropes[r.table].1.ptr);
+            (x.rpos, x.rax) = self.rope3(p);
         }
         let (nx, rows) = Self::next_linear(p, l, i, n, head);
         let pf = self.pf(nx, rows, self.pf_kib[0], (a.d / 2) as u32);
@@ -1192,10 +1198,13 @@ mod tests {
         assert!(AttnOp::of(&wide, Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
     }
 
-    /// kernels/attn.cu's AttnArgs: 14 pointers and a long long, 21 ints, 5 floats, no padding.
+    /// kernels/attn.cu's AttnArgs: 15 pointers, a long long and an unsigned long long, 21 ints, 5 floats, no padding.
     #[test]
     fn the_arguments_are_the_kernels_struct() {
-        assert_eq!(std::mem::size_of::<AttnArgs>(), 15 * 8 + 26 * 4);
-        assert_eq!(std::mem::offset_of!(AttnArgs, tstride), 14 * 8);
+        assert_eq!(std::mem::size_of::<AttnArgs>(), 17 * 8 + 26 * 4);
+        assert_eq!(
+            (std::mem::offset_of!(AttnArgs, rpos), std::mem::offset_of!(AttnArgs, tstride), std::mem::offset_of!(AttnArgs, rax)),
+            (14 * 8, 15 * 8, 16 * 8)
+        );
     }
 }
