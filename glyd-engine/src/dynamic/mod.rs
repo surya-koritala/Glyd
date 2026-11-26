@@ -1853,22 +1853,31 @@ impl Dyn {
         }
         let r = self.picks.as_ref().ok_or_else(|| Error("an indexer's pick in a model loaded without its room".into()))?;
         self.dev.sync()?;
-        let (mut sel, mut cnt, mut sc) = (vec![0i32; n * r.sk], vec![0i32; n], vec![0f32; n * r.emax]);
-        r.sel.read(row0 * r.sk * 4, &mut sel)?;
+        let mut cnt = vec![0i32; n];
         r.cnt.read(row0 * 4, &mut cnt)?;
-        r.scores.read(0, &mut sc)?;
         let tags = self.row_tags(n);
+        // (a row's picks and scores read as far as its pick wrote them: its `cnt` picks and the scores of its whole pools. The rooms past them hold nothing a
+        // pick wrote, and are not read)
+        let mut rows = Vec::with_capacity(n);
+        for (i, &(_, pos)) in tags.iter().enumerate() {
+            let whole = ((pos + 1) / ratio.max(1)).min(r.emax);
+            let taken = (cnt[i].max(0) as usize).min(r.sk);
+            let (mut sel, mut sc) = (vec![0i32; taken], vec![0f32; whole]);
+            if taken > 0 {
+                r.sel.read((row0 + i) * r.sk * 4, &mut sel)?;
+            }
+            if whole > 0 {
+                r.scores.read(i * r.emax * 4, &mut sc)?;
+            }
+            rows.push((whole, sel, sc));
+        }
         if let Some(m) = self.row_routes.borrow_mut().as_mut() {
-            for (i, (slot, pos)) in tags.into_iter().enumerate() {
-                let whole = ((pos + 1) / ratio.max(1)).min(r.emax);
-                let taken = (cnt[i].max(0) as usize).min(r.sk);
-                let mut pools: Vec<i64> =
-                    sel[i * r.sk..][..taken].iter().map(|&t| t as i64 / ratio.max(1) as i64).filter(|&q| q >= 0 && (q as usize) < whole).collect();
+            for ((slot, pos), (whole, sel, sc)) in tags.into_iter().zip(rows) {
+                let mut pools: Vec<i64> = sel.iter().map(|&t| t as i64 / ratio.max(1) as i64).filter(|&q| q >= 0 && (q as usize) < whole).collect();
                 (pools.sort_unstable(), pools.dedup());
                 let v = m.entry((slot, pos)).or_default();
                 v.retain(|c| !(c.layer == l && c.kind == ChoiceKind::Pick));
-                let from = ChoiceFrom::Scores(sc[i * r.emax..][..whole].to_vec());
-                v.push(std::rc::Rc::new(Choice { layer: l, kind: ChoiceKind::Pick, chosen: pools, from }));
+                v.push(std::rc::Rc::new(Choice { layer: l, kind: ChoiceKind::Pick, chosen: pools, from: ChoiceFrom::Scores(sc) }));
             }
         }
         Ok(())
