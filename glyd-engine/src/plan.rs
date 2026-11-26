@@ -1320,9 +1320,17 @@ pub const LOSSY_CHUNK: usize = 2048;
 /// as the path's total before the reserve was one model, less that reserve; a prompt chunk's activations are on top (`sizing::work`).
 pub const QWEN3_WORK: u64 = (1400 << 20) - CONTEXT_FLOOR;
 /// The dynamic route's work on each GPU: the activations, the scratch, the graphs and the KV cache of its context together, which this route has not
-/// split apart yet (3 GiB and 5% of the GPU's free memory in all with the reserve, as it kept before the planner drove it).
+/// split apart yet (3 GiB and 5% of the GPU's free memory in all with the reserve, as it kept before the planner drove it). The rows a step's draws see
+/// are a named part of it (`draw_rows_bytes`), which the engine makes with its head's rows.
 pub fn dynamic_work_of(free: u64) -> u64 {
     (3 << 30) - CONTEXT_FLOOR + free / 20
+}
+
+/// The rows a step's draws see, made on the GPU where a request changes its row (src/kern/mod.rs `ProcGpu`: penalties, a bias, a grammar's mask put on the model's row), in
+/// floats: 4 bytes a token of the vocabulary for each of the step's `rows` head rows (64 MiB at 64 rows of 262,144). Taken from the dynamic route's work (`dynamic_work_of`) when
+/// the engine's head is made for its users (src/dynamic/mod.rs `set_head_rows`), not when a request first asks.
+pub fn draw_rows_bytes(vocab: usize, rows: usize) -> u64 {
+    4 * vocab as u64 * rows as u64
 }
 
 /// What a GPU has for the dynamic route's weights: its free memory less the reserve and the route's work.
@@ -5350,6 +5358,15 @@ pub mod sizing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rows a step's draws see fit the dynamic route's work many times over at the most users a step takes and the largest vocabulary of the dynamic route's families
+    /// (Gemma 4's 262,144): 64 MiB of the 3 GiB the work holds before the GPU's share.
+    #[test]
+    fn the_draws_rows_are_a_part_of_the_work() {
+        let most = draw_rows_bytes(262_144, crate::sched::MAX_USERS);
+        assert_eq!(most, 64 << 20);
+        assert!(most * 16 <= dynamic_work_of(0), "{most} of {}", dynamic_work_of(0));
+    }
 
     /// The planner's keys and values a token (`Shape::kv_full`, `kv_sliding`) against what the executor's pools take a token (each ring's `token_bytes`, bf16), for a random case of each
     /// attention kind: plain and sliding attention (Gemma 4's), the gated attention beside recurrent layers (Qwen3.5's layout), latent attention with its indexer's sparse keys

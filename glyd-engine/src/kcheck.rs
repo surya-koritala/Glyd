@@ -245,8 +245,8 @@ fn changes(kind: usize, v: usize, rnd: &mut dyn FnMut() -> u64) -> crate::sample
 
 /// The rows the draws see (`ProcGpu`: a row's mask, penalties and bias put on it, src/sampler.rs `Resolved`) of the rows `rows` (bf16 bits, at `logits` on the device), a round of
 /// changes for each kind (`changes`) so that every row has each: the GPU's row against the host's (`Resolved::apply`, which src/sampler.rs holds to `Sampler::processed`) bit for bit,
-/// its 64 largest against the host's order of it, its sum of exponentials at two temperatures (within 2e-6), its buckets (the counts exact, the sums within 1e-9) and the tokens of two of
-/// them. Returns the rows checked, those that differ, the sums checked, those beyond, and the worst sum.
+/// its 64 largest against the host's order of it, and a draw's questions of it at two temperatures (`draw_queries`: its total, bins and tokens, each the host's bit for bit).
+/// Returns the rows checked, those that differ, the questions checked, those that differ, and 0.
 fn proc_check(
     k: &Kern,
     dev: &Dev,
@@ -256,14 +256,11 @@ fn proc_check(
     name: &str,
     rnd: &mut dyn FnMut() -> u64,
 ) -> Result<(usize, usize, usize, usize, f64)> {
-    use crate::sampler::{HIST_BUCKETS, HIST_PER};
     let n = rows.len();
-    let (mut checked, mut bad, mut sums, mut off, mut worst) = (0, 0, 0, 0, 0f64);
+    let (mut checked, mut bad, mut sums, mut off, worst) = (0, 0, 0, 0, 0f64);
     let raw: Vec<Vec<f32>> = rows.iter().map(|r| r.1.iter().map(|&b| f32::from_bits((b as u32) << 16)).collect()).collect();
     let mut g = crate::kern::ProcGpu::new(v);
     let (tok, val) = (Buf::zeroed(4 * n * crate::kern::TOPK)?, Buf::zeroed(4 * n * crate::kern::TOPK)?);
-    let (out, hs, hc, want, bn, bt, bv) =
-        (Buf::zeroed(8)?, Buf::new(8 * HIST_BUCKETS)?, Buf::new(4 * HIST_BUCKETS)?, Buf::new(4)?, Buf::new(4)?, Buf::new(4 * v)?, Buf::new(4 * v)?);
     for round in 0..CHANGES {
         let res: Vec<crate::sampler::Resolved> = (0..n).map(|i| changes(i + round, v, rnd)).collect();
         let list: Vec<(usize, &crate::sampler::Resolved)> = res.iter().enumerate().collect();
@@ -294,92 +291,142 @@ fn proc_check(
                 println!("DIFFERENT: {what}: candidate {j}: host {:?}, kernel {:?}", wanted[j], got[j]);
                 continue;
             }
-            // (the sums and buckets of a row whose largest is a number and that holds no other infinity or NaN)
+            // (a draw's questions of a row whose largest is a number and that holds no other infinity or NaN)
             let max = wanted[0].1;
             if !max.is_finite() || host.iter().any(|x| x.is_nan() || *x == f32::INFINITY) {
                 continue;
             }
             let maxv = val.ptr + (4 * crate::kern::TOPK * i) as u64;
             for t in [0.7f32, 1.0] {
-                // SAFETY: W's row, its largest (the first candidate) and one f64 out; synchronized before it is read
-                unsafe { k.exp_sum_f32(dev.stream, at, v, 1, maxv, t, out.ptr)? };
-                dev.sync()?;
-                let mut m = [0f64; 1];
-                out.read(0, &mut m)?;
-                let h: f64 = host.iter().map(|&x| (((x - max) / t) as f64).exp()).sum();
-                let rel = (m[0] / h - 1.0).abs();
-                sums += 1;
-                worst = worst.max(rel);
-                if rel.is_nan() || rel >= 2e-6 {
-                    off += 1;
-                    println!("DIFFERENT: {what}, temperature {t}: the sum of the exponentials is {h} on the host, {} on the GPU ({rel:.2e} apart)", m[0]);
-                }
-            }
-            // the buckets at temperature 1: each finite token's bucket as the host's draw finds it, the sums of the weights within 1e-9, the counts exact; the first and the last
-            // bucket that holds any, their tokens
-            let (mut want_s, mut want_c) = (vec![0f64; HIST_BUCKETS], vec![0u32; HIST_BUCKETS]);
-            let mut members: Vec<Vec<u32>> = vec![Vec::new(); HIST_BUCKETS];
-            for (t, &x) in host.iter().enumerate().filter(|(_, &x)| x > f32::NEG_INFINITY) {
-                let q = x - max;
-                let b = (-q * HIST_PER).floor().min((HIST_BUCKETS - 1) as f32).max(0.0) as usize;
-                want_s[b] += (q as f64).exp();
-                want_c[b] += 1;
-                members[b].push(t as u32);
-            }
-            // SAFETY: W's row, its largest, HIST_BUCKETS sums and counts; synchronized before they are read
-            unsafe { k.exp_hist_f32(dev.stream, at, v, maxv, 1.0, HIST_BUCKETS as i32, HIST_PER, hs.ptr, hc.ptr)? };
-            dev.sync()?;
-            let (mut got_s, mut got_c) = (vec![0f64; HIST_BUCKETS], vec![0u32; HIST_BUCKETS]);
-            hs.read(0, &mut got_s)?;
-            hc.read(0, &mut got_c)?;
-            let far = (0..HIST_BUCKETS).find(|&b| got_c[b] != want_c[b] || (got_s[b] - want_s[b]).abs() > 1e-9 * want_s[b].max(1e-300));
-            if let Some(b) = far {
-                bad += 1;
-                println!(
-                    "DIFFERENT: {what}: bucket {b} holds {} of weight {} on the GPU, {} of weight {} on the host",
-                    got_c[b], got_s[b], want_c[b], want_s[b]
-                );
-                continue;
-            }
-            let filled: Vec<usize> = (0..HIST_BUCKETS).filter(|&b| want_c[b] > 0).collect();
-            for &b in filled.first().into_iter().chain(filled.last()) {
-                want.write(0, &[b as i32])?;
-                // SAFETY: as above, with room for v tokens and their logits
-                unsafe { k.hist_bucket_f32(dev.stream, at, v, maxv, 1.0, HIST_BUCKETS as i32, HIST_PER, want.ptr, v as i32, bn.ptr, bt.ptr, bv.ptr)? };
-                dev.sync()?;
-                let mut c = [0u32; 1];
-                bn.read(0, &mut c)?;
-                let mut t = vec![0i32; c[0] as usize];
-                bt.read(0, &mut t)?;
-                let mut t: Vec<u32> = t.into_iter().map(|x| x as u32).collect();
-                t.sort_unstable();
-                if t != members[b] {
-                    bad += 1;
-                    println!("DIFFERENT: {what}: bucket {b}'s tokens: {} on the GPU, {} on the host", t.len(), members[b].len());
-                }
+                let (c, o) = draw_queries(k, dev, at, true, maxv, &host, t, &what)?;
+                (sums, off) = (sums + c, off + o);
             }
         }
     }
     Ok((checked, bad, sums, off, worst))
 }
 
-/// A step's candidates (what the sampler is given, `crate::kern::TopGpu`) against the row of bf16 bits they were made from: the 64 largest as the host orders them, token and logit bit for bit, and where the answer has a sum of the row's
-/// exponentials at temperature `t`, that within 2e-6 of the host's in fp64 (the sampler allows 1e-5). The first difference, in words.
-pub fn top_vs_row(top: &crate::sampler::Top, row: &[u16], t: f32) -> std::result::Result<(), String> {
-    let want = host_top(row);
-    if top.cands.len() != want.len() {
-        return Err(format!("{} candidates, not {}", top.cands.len(), want.len()));
+/// A draw's questions of the row of `v` at `row` on the GPU (bf16 logits, or floats where `f32`; its largest at `maxv`, f32) at temperature `t` against the host's of `host` (the
+/// same row widened: `sampler::emu`): the total of its weights; its bins for every token, for a min-p's floor past the 100th token's key, and for the largest bin's range by its
+/// keys' differing bits; and that range's tokens where they are SELECT_CAP or fewer. Each the host's bit for bit (whole numbers: no order of sums is the host's or the GPU's). The
+/// questions asked and those that differ (each said).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_queries(k: &Kern, dev: &Dev, row: u64, f32: bool, maxv: u64, host: &[f32], t: f32, what: &str) -> Result<(usize, usize)> {
+    use crate::sampler::{emu, Query, SELECT_CAP};
+    let v = host.len();
+    let (mut asked, mut bad) = (0, 0);
+    let max = emu::top(host)[0].1;
+    let out = Buf::zeroed(crate::kern::DRAW_BINS_BYTES.max(8 + 8 * (SELECT_CAP + 1)))?;
+    // SAFETY: the row of v (bf16 or f32) and its largest; one u64 at `out`, read after the synchronize
+    unsafe { k.draw_total(dev.stream, row, f32, v, 1, maxv, t, out.ptr)? };
+    dev.sync()?;
+    let mut got = [0u64; 1];
+    out.read(0, &mut got)?;
+    asked += 1;
+    if got[0] != emu::total(host, max, t) {
+        bad += 1;
+        println!("DIFFERENT: {what}, temperature {t}: the total of the weights is {} on the GPU, {} on the host", got[0], emu::total(host, max, t));
     }
-    for (j, (w, g)) in want.iter().zip(&top.cands).enumerate() {
+    let all = Query::all(max, t);
+    let order = emu::tokens(host, &all);
+    let mut keyed: Vec<u64> = order.iter().map(|&(tk, x)| crate::sampler::key(x, tk)).collect();
+    keyed.sort_unstable_by(|a, b| b.cmp(a));
+    let lo = keyed.get(100).copied().unwrap_or(0);
+    let hb = emu::bins(host, &all);
+    let big = (0..256).max_by_key(|&b| hb.count[b]).unwrap_or(0);
+    let (least, most) = (hb.least[big], hb.most[big]);
+    let narrow = Query { lo: least.min(most), hi: most, shift: (63 - (least ^ most).leading_zeros().min(63)).saturating_sub(7), ..all };
+    for q in [all, Query { lo, floor: crate::sampler::min_floor(0.05), ..all }, narrow] {
+        // SAFETY: as above; DRAW_BINS_BYTES at `out`
+        unsafe { k.draw_bins(dev.stream, row, f32, v, &q, out.ptr)? };
+        dev.sync()?;
+        let mut w = vec![0u32; crate::kern::DRAW_BINS_BYTES / 4];
+        out.read(0, &mut w)?;
+        asked += 1;
+        let (g, h) = (crate::kern::bins_of_words(&w), emu::bins(host, &q));
+        if g != h {
+            bad += 1;
+            let b = (0..256).find(|&b| (g.count[b], g.weight[b], g.least[b], g.most[b]) != (h.count[b], h.weight[b], h.least[b], h.most[b])).unwrap_or(0);
+            println!(
+                "DIFFERENT: {what}, temperature {t}, {q:?}: bin {b} is {:?} on the GPU, {:?} on the host",
+                (g.count[b], g.weight[b], g.least[b], g.most[b]),
+                (h.count[b], h.weight[b], h.least[b], h.most[b])
+            );
+        }
+    }
+    let mut want = emu::tokens(host, &narrow);
+    if want.len() <= SELECT_CAP {
+        let cap = SELECT_CAP + 1;
+        // SAFETY: as above; a count, then `cap` tokens and logits at `out`
+        unsafe { k.draw_tokens(dev.stream, row, f32, v, &narrow, cap, out.ptr, out.ptr + 8, out.ptr + 8 + 4 * cap as u64)? };
+        dev.sync()?;
+        let mut n = [0u32; 1];
+        out.read(0, &mut n)?;
+        let n = n[0] as usize;
+        let (mut tk, mut x) = (vec![0i32; n.min(cap)], vec![0f32; n.min(cap)]);
+        out.read(8, &mut tk)?;
+        out.read(8 + 4 * cap, &mut x)?;
+        let mut got: Vec<(u32, f32)> = tk.into_iter().map(|a| a as u32).zip(x).collect();
+        got.sort_by_key(|a| a.0);
+        want.sort_by_key(|a| a.0);
+        asked += 1;
+        if n != want.len() || got.iter().zip(&want).any(|(a, b)| a.0 != b.0 || a.1.to_bits() != b.1.to_bits()) {
+            bad += 1;
+            println!("DIFFERENT: {what}, temperature {t}: the largest bin's range holds {n} tokens on the GPU, {} on the host (or others)", want.len());
+        }
+    }
+    Ok((asked, bad))
+}
+
+/// Every float from -0 down to -32 weighed on the GPU (`Kern::draw_weight_sums`) against the host's `sampler::weight`: the sums of the weights, and of each times its float's bits,
+/// the same (mod 2^64; 1.1 billion floats). False where they differ.
+pub fn weights_check(dev: &Dev) -> Result<bool> {
+    let k = Kern::load(dev)?;
+    let out = Buf::zeroed(16)?;
+    let t = std::time::Instant::now();
+    // SAFETY: two u64 at `out`, read after the synchronize
+    unsafe { k.draw_weight_sums(dev.stream, out.ptr)? };
+    dev.sync()?;
+    let gpu_ms = t.elapsed().as_secs_f64() * 1e3;
+    let mut g = [0u64; 2];
+    out.read(0, &mut g)?;
+    let t = std::time::Instant::now();
+    let (mut sw, mut sh) = (0u64, 0u64);
+    for b in 0x8000_0001u32..=0xC200_0000 {
+        let w = crate::sampler::weight(f32::from_bits(b));
+        sw = sw.wrapping_add(w);
+        sh = sh.wrapping_add(w.wrapping_mul(b as u64));
+    }
+    let same = g == [sw, sh];
+    println!(
+        "{} the draw's weights of every float from -0 to -32: GPU sums {:#x} {:#x}, host {:#x} {:#x} ({gpu_ms:.0} ms and {:.0} ms)",
+        if same { "PASS" } else { "FAIL" },
+        g[0],
+        g[1],
+        sw,
+        sh,
+        t.elapsed().as_secs_f64() * 1e3
+    );
+    Ok(same)
+}
+
+/// A step's candidates (what the sampler is given, `ModelStep::top`) against the row of bf16 bits they were made from: the 64 largest as the host orders them, token and logit bit
+/// for bit, and where `total` is given (a draw's total of the row's weights at its temperature, `ModelStep::total`), that the host's to the unit. The first difference, in words.
+pub fn top_vs_row(cands: &[(u32, f32)], total: Option<(u64, f32)>, row: &[u16]) -> std::result::Result<(), String> {
+    let want = host_top(row);
+    if cands.len() != want.len() {
+        return Err(format!("{} candidates, not {}", cands.len(), want.len()));
+    }
+    for (j, (w, g)) in want.iter().zip(cands).enumerate() {
         if w.0 as u32 != g.0 || !(w.1.to_bits() == g.1.to_bits() || (w.1 == 0.0 && g.1 == 0.0)) {
             return Err(format!("candidate {j}: the row's {w:?}, the GPU's {g:?}"));
         }
     }
-    if let Some(m) = top.mass {
-        let h = host_mass(row, t);
-        let rel = (m / h - 1.0).abs();
-        if rel.is_nan() || rel >= 2e-6 {
-            return Err(format!("the sum of the exponentials at temperature {t}: the row's {h}, the GPU's {m} ({rel:.2e} apart)"));
+    if let Some((got, t)) = total {
+        let host: Vec<f32> = row.iter().map(|&b| f32::from_bits((b as u32) << 16)).collect();
+        let h = crate::sampler::emu::total(&host, want[0].1, t);
+        if got != h {
+            return Err(format!("the total of the weights at temperature {t}: the row's {h}, the GPU's {got}"));
         }
     }
     Ok(())
@@ -482,6 +529,19 @@ pub fn topk_check(dev: &Dev) -> Result<bool> {
             let (c, b, s, o, w) = proc_check(&k, dev, &logits, v, &rows, name, &mut rnd)?;
             (pchecked, pbad, psums, poff, pworst) = (pchecked + c, pbad + b, psums + s, poff + o, pworst.max(w));
         }
+        // a draw's questions of the model's rows (bf16), each of whose largest is a number, about the largest the argmax leaves
+        for (i, (label, row)) in rows.iter().enumerate() {
+            let host: Vec<f32> = row.iter().map(|&b| f32::from_bits((b as u32) << 16)).collect();
+            if host.iter().any(|x| x.is_nan() || x.is_infinite()) {
+                continue;
+            }
+            let maxv = Buf::new(4)?;
+            maxv.write(0, &[crate::sampler::emu::top(&host)[0].1])?;
+            for t in [0.6f32, 1.0] {
+                let (c, o) = draw_queries(&k, dev, logits.ptr + (2 * v * i) as u64, false, maxv.ptr, &host, t, &format!("{name}, {label}"))?;
+                (psums, poff) = (psums + c, poff + o);
+            }
+        }
         // the sum of the exponentials, on the rows with no infinity, at three temperatures (each row's largest, as the argmax leaves it, given)
         let at = |b: u16| f32::from_bits((b as u32) << 16);
         let maxes: Vec<f32> = rows.iter().map(|r| r.1.iter().map(|&b| at(b)).fold(f32::NEG_INFINITY, f32::max)).collect();
@@ -571,8 +631,8 @@ pub fn topk_check(dev: &Dev) -> Result<bool> {
         total / 20.0
     };
     println!(
-        "the rows the draws see: {pchecked} rows with changes of {CHANGES} kinds (masks, penalties, biases, ends put back, each change alone) checked against the host's, {pbad} differ (the row bit for bit, its 64 largest, buckets and their tokens); \
-         {psums} sums of its exponentials, the worst {pworst:.2e} apart (the bound is 2e-6), {poff} beyond; {ms:.3} ms to make a step's {rows} rows of {v} and their candidates"
+        "the rows the draws see: {pchecked} rows with changes of {CHANGES} kinds (masks, penalties, biases, ends put back, each change alone) checked against the host's, {pbad} differ (the row bit for bit, its 64 largest); \
+         {psums} draw's questions of those rows and the model's (totals, bins, tokens) checked, {poff} not the host's bit for bit; {ms:.3} ms to make a step's {rows} rows of {v} and their candidates"
     );
     Ok(bad == 0 && off == 0 && pbad == 0 && poff == 0)
 }
@@ -580,10 +640,9 @@ pub fn topk_check(dev: &Dev) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sampler::Top;
 
-    /// `top_vs_row` holds the candidates a GPU gives to the row they come from, where the check of `nhtoy` and `topkcheck` can only be run on one: the row's own answer is accepted (a sum 1e-6 off too), and a candidate out of
-    /// order, a logit a place off, a missing candidate and a sum 1e-5 off are each found, with the first difference said.
+    /// `top_vs_row` holds the candidates a GPU gives to the row they come from, where the check of `nhtoy` and `topkcheck` can only be run on one: the row's own answer is accepted, and a
+    /// candidate out of order, a logit a place off, a missing candidate and a total a unit off are each found, with the first difference said.
     #[test]
     fn the_candidates_are_held_to_the_row() {
         let mut x = 0x2545_F491_4F6C_DD1Du64;
@@ -596,20 +655,20 @@ mod tests {
         // 5,000 bf16 values with many equal ones
         let row: Vec<u16> = (0..5000).map(|_| (((next() % 4000) as f32 / 400.0 - 5.0).to_bits() >> 16) as u16).collect();
         let t = 0.8f32;
-        let top = Top { cands: host_top(&row).iter().map(|&(i, v)| (i as u32, v)).collect(), mass: Some(host_mass(&row, t)), processed: false };
-        assert_eq!(top_vs_row(&top, &row, t), Ok(()));
-        let sum = top.mass.unwrap();
-        assert_eq!(top_vs_row(&Top { mass: Some(sum * (1.0 + 1e-6)), ..top.clone() }, &row, t), Ok(()));
-        assert!(top_vs_row(&Top { mass: Some(sum * (1.0 + 1e-5)), ..top.clone() }, &row, t).unwrap_err().contains("sum of the exponentials"));
-        assert_eq!(top_vs_row(&Top { mass: None, ..top.clone() }, &row, t), Ok(()), "no sum asked for");
-        let mut swapped = top.clone();
-        swapped.cands.swap(3, 4);
-        assert!(top_vs_row(&swapped, &row, t).unwrap_err().starts_with("candidate 3"));
-        let mut off = top.clone();
-        off.cands[7].1 = f32::from_bits(off.cands[7].1.to_bits() + 0x1_0000);
-        assert!(top_vs_row(&off, &row, t).unwrap_err().starts_with("candidate 7"));
-        let mut short = top.clone();
-        short.cands.pop();
-        assert!(top_vs_row(&short, &row, t).unwrap_err().contains("63 candidates"));
+        let cands: Vec<(u32, f32)> = host_top(&row).iter().map(|&(i, v)| (i as u32, v)).collect();
+        let host: Vec<f32> = row.iter().map(|&b| f32::from_bits((b as u32) << 16)).collect();
+        let total = crate::sampler::emu::total(&host, cands[0].1, t);
+        assert_eq!(top_vs_row(&cands, Some((total, t)), &row), Ok(()));
+        assert!(top_vs_row(&cands, Some((total + 1, t)), &row).unwrap_err().contains("total of the weights"));
+        assert_eq!(top_vs_row(&cands, None, &row), Ok(()), "no total asked for");
+        let mut swapped = cands.clone();
+        swapped.swap(3, 4);
+        assert!(top_vs_row(&swapped, None, &row).unwrap_err().starts_with("candidate 3"));
+        let mut off = cands.clone();
+        off[7].1 = f32::from_bits(off[7].1.to_bits() + 0x1_0000);
+        assert!(top_vs_row(&off, None, &row).unwrap_err().starts_with("candidate 7"));
+        let mut short = cands.clone();
+        short.pop();
+        assert!(top_vs_row(&short, None, &row).unwrap_err().contains("63 candidates"));
     }
 }

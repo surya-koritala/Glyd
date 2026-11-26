@@ -48,9 +48,8 @@ enum Cmd {
     Sample,
     Logits,
     Logprob(f32),
-    /// The last pass's head row's largest logits and its sum of exponentials at a temperature, made on the last stage's GPU as one GPU's step makes them.
-    Top,
-    Mass(f32),
+    /// A question of the last pass's head rows, answered on the last stage's GPU as one GPU's step answers it (`RowAsk`).
+    Row(RowAsk),
     Describe,
     /// The sequence's prompt and its images (`Dyn::set_images`): the first stage runs the tower over them, each stage turns its rows by their positions.
     Images(Vec<u32>, Vec<std::sync::Arc<crate::vision::Image>>),
@@ -65,8 +64,7 @@ enum Out {
     Sample(Result<Sample>),
     Logits(Result<Vec<f32>>),
     Logprob(Result<f32>),
-    Top(Option<Vec<(u32, f32)>>),
-    Mass(Option<f64>),
+    Row(RowGot),
     Text(String),
 }
 
@@ -145,8 +143,7 @@ impl Split {
                             Cmd::Sample => Out::Sample(e.sample()),
                             Cmd::Logits => Out::Logits(e.logits()),
                             Cmd::Logprob(l) => Out::Logprob(e.logprob(l)),
-                            Cmd::Top => Out::Top(crate::sched::ModelStep::top(&mut e, 0)),
-                            Cmd::Mass(t) => Out::Mass(crate::sched::ModelStep::mass(&mut e, 0, t)),
+                            Cmd::Row(a) => Out::Row(row_ask(&mut e, a)),
                             Cmd::Describe => Out::Text(e.describe()),
                             Cmd::Images(prompt, images) => Out::Done(e.set_images(&prompt, &images)),
                         };
@@ -234,9 +231,10 @@ impl Split {
                 _ => return Err(gone()),
             }
         }
-        let (rows, words) = self.head_out(seq.len(), sampler.is_some())?;
+        let (rows, _) = self.head_out(seq.len(), false)?;
         let big: Vec<u32> = rows.iter().map(|r| r.0).collect();
-        let (out, kept) = super::accept(&seq, &big, &words, words.len() / seq.len(), sampler);
+        // (each draft's check made of its row on the last stage's GPU, as one GPU's)
+        let (out, kept) = super::accept(&seq, &big, &mut Last(&*self), sampler)?;
         self.each(&|| Cmd::Rewind(kept + 1))?;
         let next: Vec<u32> = seq[1..=kept].iter().copied().chain(out.last().copied()).collect();
         match self.ask(end, Cmd::HeadAgain { at: n0, kept, next })? {
@@ -303,18 +301,10 @@ impl Split {
         }
     }
 
-    /// The last pass's head row's largest logits, largest first (the last stage's `ModelStep::top`); None where that stage makes none (the row is read).
-    pub fn top(&self) -> Option<Vec<(u32, f32)>> {
-        match self.ask(self.w.len() - 1, Cmd::Top) {
-            Ok(Out::Top(t)) => t,
-            _ => None,
-        }
-    }
-
-    /// The last pass's head row's sum of exp((logit - largest) / `temperature`) (the last stage's `ModelStep::mass`); None where that stage makes none.
-    pub fn mass(&self, temperature: f32) -> Option<f64> {
-        match self.ask(self.w.len() - 1, Cmd::Mass(temperature)) {
-            Ok(Out::Mass(m)) => m,
+    /// A question of the last pass's head rows, put to the last stage (`row_ask`); None where its thread is gone.
+    fn ask_row(&self, a: RowAsk) -> Option<RowGot> {
+        match self.ask(self.w.len() - 1, Cmd::Row(a)) {
+            Ok(Out::Row(g)) => Some(g),
             _ => None,
         }
     }
@@ -447,7 +437,7 @@ pub fn split_args(a: &crate::args::Args) -> Result<(Vec<usize>, Vec<i32>)> {
 
 impl Split {
     /// A reply as `Dyn::reply` gives one (drafted a round at a time where the last stage drafts); a sampled token from the last stage's logits row on the host.
-    fn reply(&mut self, prompt: &[u32], o: &crate::sched::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::sched::Finish)> {
+    pub(super) fn reply(&mut self, prompt: &[u32], o: &crate::sched::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::sched::Finish)> {
         use crate::sched::Finish;
         if prompt.is_empty() || prompt.len() + 1 > self.ctx {
             return err(format!("{} prompt tokens, where the context holds {}", prompt.len(), self.ctx));
@@ -458,11 +448,14 @@ impl Split {
         self.set_images(prompt, &images)?;
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
+        // (a drawn token: from what the last stage's GPU makes of the pass's head row, the request's changes put on it first, as one GPU's: `sched::draw_row`)
+        let draw = |e: &Split, sampler: &mut crate::sampler::Sampler| crate::sched::draw_row(&mut Last(e), 0, sampler).map(|x| x.0);
+        self.ask_row(RowAsk::Procs(vec![sampler.proc()]));
         let mut s = self.prefill(prompt)?;
         let mut out = Vec::new();
         if self.drafting {
             // drafted: the model's tokens a round at a time (the last of a round is not in the cache yet: the next round starts from it)
-            let first = if greedy { s.token } else { sampler.sample_with(None, || self.logits())? };
+            let first = if greedy { s.token } else { draw(self, &mut sampler)? };
             let mut pending = std::collections::VecDeque::from([first]);
             while let Some(tok) = pending.pop_front() {
                 if !o.ignore_eos && (self.eos.contains(&(tok as i64)) || o.stop_ids.contains(&tok)) {
@@ -481,7 +474,7 @@ impl Split {
             }
         }
         loop {
-            let tok = if greedy { s.token } else { sampler.sample_with(None, || self.logits())? };
+            let tok = if greedy { s.token } else { draw(self, &mut sampler)? };
             if !o.ignore_eos && (self.eos.contains(&(tok as i64)) || o.stop_ids.contains(&tok)) {
                 return Ok((out, Finish::Stop));
             }
@@ -492,7 +485,143 @@ impl Split {
             if out.len() >= o.max_new || self.n + 1 > self.ctx {
                 return Ok((out, Finish::Length));
             }
+            self.ask_row(RowAsk::Procs(vec![sampler.proc()]));
             s = self.step(tok)?;
+        }
+    }
+}
+
+/// A question of a pass's head rows that a stage's engine answers on its GPU (a split's last stage, a group's first GPU: `row_ask`), each as one GPU's scheduler step asks it
+/// (`ModelStep`'s methods of these names): its candidates (the row the draw sees, the model's), the model's sum of exponentials, whether the candidates are of the row the draw
+/// sees, the request's changes for the next pass's rows (`Procs`) or made again on a row (`Remake`), a draw's total, bins and tokens of a query, a token's logit, the row, the
+/// logits of some tokens.
+pub(super) enum RowAsk {
+    Top(usize),
+    TopRaw(usize),
+    Mass(usize, f32),
+    Processed(usize),
+    Procs(Vec<Option<crate::sampler::Proc>>),
+    Remake(usize, Option<crate::sampler::Proc>),
+    Total(usize, f32, f32),
+    Bins(usize, crate::sampler::Query),
+    Tokens(usize, crate::sampler::Query, usize),
+    Logit(usize, u32),
+    Logits(usize),
+    Gather(usize, Vec<u32>),
+}
+
+pub(super) enum RowGot {
+    Cands(Option<Vec<(u32, f32)>>),
+    Sum(Option<f64>),
+    Flag(bool),
+    Total(Option<u64>),
+    Bins(Option<crate::sampler::Bins>),
+    Logit(Option<f32>),
+    Row(Result<Vec<f32>>),
+    Gathered(Result<Vec<(u32, f32)>>),
+}
+
+/// `a` answered by a stage's engine (its thread's), as its scheduler's step answers it.
+pub(super) fn row_ask(e: &mut Dyn, a: RowAsk) -> RowGot {
+    use crate::sched::ModelStep as M;
+    match a {
+        RowAsk::Top(r) => RowGot::Cands(M::top(e, r)),
+        RowAsk::TopRaw(r) => RowGot::Cands(M::top_raw(e, r)),
+        RowAsk::Mass(r, t) => RowGot::Sum(M::mass(e, r, t)),
+        RowAsk::Processed(r) => RowGot::Flag(M::processed(e, r)),
+        RowAsk::Procs(p) => {
+            M::procs(e, p);
+            RowGot::Flag(true)
+        }
+        RowAsk::Remake(r, p) => RowGot::Flag(M::remake(e, r, p)),
+        RowAsk::Total(r, m, t) => RowGot::Total(M::total(e, r, m, t)),
+        RowAsk::Bins(r, q) => RowGot::Bins(M::bins(e, r, &q)),
+        RowAsk::Tokens(r, q, cap) => RowGot::Cands(M::tokens(e, r, &q, cap)),
+        RowAsk::Logit(r, t) => RowGot::Logit(M::logit(e, r, t)),
+        RowAsk::Logits(r) => RowGot::Row(M::logits(e, r)),
+        RowAsk::Gather(r, t) => RowGot::Gathered(M::gather(e, r, &t)),
+    }
+}
+
+/// What answers a question of a pass's head rows on another thread's engine (a split's last stage, a group's first GPU).
+pub(super) trait AsksRows {
+    fn ask_rows(&self, a: RowAsk) -> Option<RowGot>;
+}
+
+impl AsksRows for Split {
+    fn ask_rows(&self, a: RowAsk) -> Option<RowGot> {
+        self.ask_row(a)
+    }
+}
+
+/// The head rows of a split's last stage or a group's first GPU as the rows a draw reads (`sched::Rows`), each question answered on that engine's GPU.
+pub(super) struct Last<'a, T: AsksRows>(pub(super) &'a T);
+
+impl<T: AsksRows> Last<'_, T> {
+    fn cands(&self, a: RowAsk) -> Option<Vec<(u32, f32)>> {
+        match self.0.ask_rows(a) {
+            Some(RowGot::Cands(c)) => c,
+            _ => None,
+        }
+    }
+    fn flag(&self, a: RowAsk) -> bool {
+        matches!(self.0.ask_rows(a), Some(RowGot::Flag(true)))
+    }
+    pub(super) fn top_raw(&self, row: usize) -> Option<Vec<(u32, f32)>> {
+        self.cands(RowAsk::TopRaw(row))
+    }
+    pub(super) fn mass(&self, row: usize, temperature: f32) -> Option<f64> {
+        match self.0.ask_rows(RowAsk::Mass(row, temperature)) {
+            Some(RowGot::Sum(m)) => m,
+            _ => None,
+        }
+    }
+    pub(super) fn procs(&self, procs: Vec<Option<crate::sampler::Proc>>) {
+        self.0.ask_rows(RowAsk::Procs(procs));
+    }
+    pub(super) fn gather(&self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
+        match self.0.ask_rows(RowAsk::Gather(row, tokens.to_vec())) {
+            Some(RowGot::Gathered(r)) => r,
+            _ => Err(gone()),
+        }
+    }
+}
+
+impl<T: AsksRows> crate::sched::Rows for Last<'_, T> {
+    fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+        self.cands(RowAsk::Top(row))
+    }
+    fn processed(&mut self, row: usize) -> bool {
+        self.flag(RowAsk::Processed(row))
+    }
+    fn remake(&mut self, row: usize, proc: Option<crate::sampler::Proc>) -> bool {
+        self.flag(RowAsk::Remake(row, proc))
+    }
+    fn total(&mut self, row: usize, max: f32, temperature: f32) -> Option<u64> {
+        match self.0.ask_rows(RowAsk::Total(row, max, temperature)) {
+            Some(RowGot::Total(t)) => t,
+            _ => None,
+        }
+    }
+    fn bins(&mut self, row: usize, q: &crate::sampler::Query) -> Option<crate::sampler::Bins> {
+        match self.0.ask_rows(RowAsk::Bins(row, *q)) {
+            Some(RowGot::Bins(b)) => b,
+            _ => None,
+        }
+    }
+    fn tokens(&mut self, row: usize, q: &crate::sampler::Query, cap: usize) -> Option<Vec<(u32, f32)>> {
+        self.cands(RowAsk::Tokens(row, *q, cap))
+    }
+    fn logit(&mut self, row: usize, t: u32) -> Option<f32> {
+        match self.0.ask_rows(RowAsk::Logit(row, t)) {
+            Some(RowGot::Logit(x)) => x,
+            _ => None,
+        }
+    }
+    fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
+        match self.0.ask_rows(RowAsk::Logits(row)) {
+            Some(RowGot::Row(r)) => r,
+            _ => Err(gone()),
         }
     }
 }
@@ -551,6 +680,15 @@ impl crate::conv::Gen for Run {
 }
 
 impl Run {
+    /// `f` of the rows a draw reads (a split's last stage, a group's first GPU); None on one GPU (its own step is the scheduler's).
+    fn rows_of<R>(&mut self, f: impl FnOnce(&mut dyn crate::sched::Rows) -> R) -> Option<R> {
+        match self {
+            Run::Split(e) => Some(f(&mut Last(&*e))),
+            Run::Tp(e) => Some(f(&mut Last(&*e))),
+            Run::One(_) => None,
+        }
+    }
+
     /// Tokens in the cache.
     fn held(&self) -> usize {
         match self {
@@ -607,21 +745,61 @@ impl crate::sched::ModelStep for Run {
             _ => err(format!("a step of {} rows on a model that runs one sequence at a time", rows.len())),
         }
     }
-    fn logits(&mut self, _row: usize) -> Result<Vec<f32>> {
-        Run::logits(self)
+    fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
+        match self.rows_of(|r| crate::sched::Rows::logits(r, row)) {
+            Some(r) => r,
+            None => Run::logits(self),
+        }
     }
-    /// Stages: the last one's candidates and sums of its head row, made on its GPU by the kernels and launches of one GPU's step, so a draw and the
-    /// log-probabilities are one GPU's bits (the row read here would be summed on the host, in another order and precision).
+    /// Stages, and every layer across GPUs: the last stage's (the group's first GPU's) candidates, sums, totals, bins and tokens of its head row, made on its GPU by the
+    /// kernels and launches of one GPU's step, so a draw and the log-probabilities are one GPU's bits (the row read here would be drawn and summed on the host).
     fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+        self.rows_of(|r| crate::sched::Rows::top(r, row)).flatten()
+    }
+    fn top_raw(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
         match self {
-            Run::Split(e) if row == 0 => e.top(),
-            _ => None,
+            Run::Split(e) => Last(&*e).top_raw(row),
+            Run::Tp(e) => Last(&*e).top_raw(row),
+            Run::One(_) => None,
         }
     }
     fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
         match self {
-            Run::Split(e) if row == 0 => e.mass(temperature),
-            _ => None,
+            Run::Split(e) => Last(&*e).mass(row, temperature),
+            Run::Tp(e) => Last(&*e).mass(row, temperature),
+            Run::One(_) => None,
+        }
+    }
+    fn procs(&mut self, procs: Vec<Option<crate::sampler::Proc>>) {
+        match self {
+            Run::Split(e) => Last(&*e).procs(procs),
+            Run::Tp(e) => Last(&*e).procs(procs),
+            Run::One(_) => {}
+        }
+    }
+    fn processed(&mut self, row: usize) -> bool {
+        self.rows_of(|r| crate::sched::Rows::processed(r, row)).unwrap_or(false)
+    }
+    fn remake(&mut self, row: usize, proc: Option<crate::sampler::Proc>) -> bool {
+        self.rows_of(|r| crate::sched::Rows::remake(r, row, proc)).unwrap_or(false)
+    }
+    fn total(&mut self, row: usize, max: f32, temperature: f32) -> Option<u64> {
+        self.rows_of(|r| crate::sched::Rows::total(r, row, max, temperature)).flatten()
+    }
+    fn bins(&mut self, row: usize, q: &crate::sampler::Query) -> Option<crate::sampler::Bins> {
+        self.rows_of(|r| crate::sched::Rows::bins(r, row, q)).flatten()
+    }
+    fn tokens(&mut self, row: usize, q: &crate::sampler::Query, cap: usize) -> Option<Vec<(u32, f32)>> {
+        self.rows_of(|r| crate::sched::Rows::tokens(r, row, q, cap)).flatten()
+    }
+    fn logit(&mut self, row: usize, t: u32) -> Option<f32> {
+        self.rows_of(|r| crate::sched::Rows::logit(r, row, t)).flatten()
+    }
+    fn gather(&mut self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
+        match self {
+            Run::Split(e) => Last(&*e).gather(row, tokens),
+            Run::Tp(e) => Last(&*e).gather(row, tokens),
+            Run::One(_) => err("a gather of a model on one GPU through stages' steps"),
         }
     }
     fn release(&mut self, _pages: &[i32]) -> Result<()> {
