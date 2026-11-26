@@ -670,7 +670,9 @@ fn rows_run(e: &mut crate::dynamic::Dyn, n: usize, most: usize, (plen, steps, vo
 ///     and the line says why.
 /// `--floor`: before the modes, the draw's own floor, PASS or FAIL for each count of rows: the reference again with every experts' product's sums split over K on the
 /// GPU (GLYD_GPU_MOE_SLOTS: the library's step products add a sum's parts in order; the same arithmetic, its fp32 sums in another order, as the host's are), judged
-/// against the reference as a host mode's rows are. A draw past the kind's bound against itself so reordered judges no path that is not the GPU's bit for bit.
+/// against the reference on its own choices as a host mode's rows are, the rows with no choice apart at a tenth of the kind's bound, as every draw's noise floor is
+/// held; and at least half of the rows judged so (a reordering of sums moves a choice only where the draw amplifies it: a draw whose rows mostly part at near ties
+/// judges nothing). A draw past it judges no path that is not the GPU's bit for bit. `--modes none`: the floor alone.
 /// `--pairs`: in each mode with a host half, a further run of the same calls with each pair the host computes against the GPU's from the same inputs (the same rows
 /// of z, expert and weight: `moe::PAIRS`, the calls the host plans), each layer's and the worst pair's difference printed.
 /// At the end, the process's statistics as the server's /stats reports them (`offload::stats_field`).
@@ -692,6 +694,7 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
         .flag("modes")
         .unwrap_or("copy")
         .split(',')
+        .filter(|m| m.trim() != "none")
         .map(|m| {
             let (name, device) = match m.trim().split_once(':') {
                 None => (m.trim(), false),
@@ -764,13 +767,16 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
                 println!("PASS {tag}: no bit moved (no sum this model's products make is split: its K is under 512), not measured");
                 continue;
             }
-            let (jd, parted) = judge_rows(r, f, steps, routers.as_ref())?;
-            jd.print(&format!("{tag}: the rows against the reference's on the run's own choices ({} rows)", jd.held + jd.reported + jd.failed), jd.ok());
+            let floor_bound = (crate::logits::BESIDE_KL.0 / 10.0, crate::logits::BESIDE_KL.1 / 10.0);
+            let (jd, parted) = judge_rows(r, f, steps, routers.as_ref(), floor_bound)?;
+            let judged = jd.held + jd.reported + jd.failed;
+            let ok = jd.ok() && 2 * jd.held >= judged;
+            jd.print(&format!("{tag}: the rows against the reference's on the run's own choices ({judged} rows; {} judged with no choice apart)", jd.held), ok);
             for (q, j) in parted {
                 println!("  sequence {q} parts from the reference at its row {j} (the rows after it run on other tokens: not compared)");
             }
-            if !jd.ok() {
-                println!("  (a draw past the kind's bound against its own sums in another order judges no path that is not the GPU's bit for bit)");
+            if !ok {
+                println!("  (a draw past a tenth of the kind's bound against its own sums in another order, or whose rows mostly part at near ties, judges no path that is not the GPU's bit for bit)");
                 fails.push(format!("{n} rows: the draw's floor"));
             }
         }
@@ -841,7 +847,7 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
                     println!("FAIL {tag}: the run with its choices traced (eager) gave other rows than the run of the same calls");
                     fails.push(format!("{tag}: traced run"));
                 }
-                let (jd, parted) = judge_rows(r, &tr, steps, routers.as_ref())?;
+                let (jd, parted) = judge_rows(r, &tr, steps, routers.as_ref(), crate::logits::BESIDE_KL)?;
                 let ok = jd.ok();
                 jd.print(
                     &format!(
@@ -934,10 +940,17 @@ pub fn rows_check(a: &crate::args::Args) -> Result<()> {
     }
 }
 
-/// `rows_check`'s judgment of a run's rows (`got`, its choices traced) against the reference's (`r`) on the run's own choices (`logits::Judge`): each sequence's rows
+/// `rows_check`'s judgment of a run's rows (`got`, its choices traced) against the reference's (`r`) on the run's own choices (`logits::Judge`, the rows with no choice
+/// apart at `bound`): each sequence's rows
 /// while its tokens are the reference's, and the row where they first differ; with each sequence that parts and the row where.
 #[cfg(feature = "dev")]
-fn judge_rows(r: &RowsRun, got: &RowsRun, steps: usize, routers: Option<&crate::logits::Routers>) -> Result<(crate::logits::Judge, Vec<(usize, usize)>)> {
+fn judge_rows(
+    r: &RowsRun,
+    got: &RowsRun,
+    steps: usize,
+    routers: Option<&crate::logits::Routers>,
+    bound: (f64, f64),
+) -> Result<(crate::logits::Judge, Vec<(usize, usize)>)> {
     use crate::logits::{Judge, Judged};
     let (mut judged, mut parted) = (Vec::new(), Vec::new());
     for s in 0..r.logits.len() {
@@ -949,7 +962,7 @@ fn judge_rows(r: &RowsRun, got: &RowsRun, steps: usize, routers: Option<&crate::
             }
         }
     }
-    Ok((Judge::of(&judged, routers)?, parted))
+    Ok((Judge::of_at(&judged, routers, bound)?, parted))
 }
 
 /// `rows_check --pairs`: the calls of `n` rows again on `e` (`rows_run`) with each pair the host computes compared with the GPU's from the same inputs (`moe::PAIRS`:
@@ -967,7 +980,12 @@ fn pair_lines(e: &mut crate::dynamic::Dyn, n: usize, most: usize, shape: (usize,
         return Ok(());
     }
     let (mut pairs, mut values, mut most_u, mut over, mut far, mut worst) = (0usize, 0usize, 0u32, [0usize; 3], 0usize, (0f64, 0usize));
+    let mut sm86: Option<(usize, usize, u32)> = None;
     for (&l, d) in &all {
+        if let Some((p, a, m)) = d.sm86 {
+            let t = sm86.get_or_insert((0, 0, 0));
+            *t = (t.0 + p, t.1 + a, t.2.max(m));
+        }
         pairs += d.pairs;
         values += d.values;
         most_u = most_u.max(d.most);
@@ -994,6 +1012,24 @@ fn pair_lines(e: &mut crate::dynamic::Dyn, n: usize, most: usize, shape: (usize,
         "  {tag}: pairs, every layer: {pairs} pairs the host computed against the GPU's from the same inputs, {values} values; the most {most_u} last places apart; {} more than 1, {} more than 4, {} more than 16; the worst pair's largest difference {:.2e} of its largest value (layer {}); {far} pairs more than 16 apart somewhere",
         over[0], over[1], over[2], worst.0, worst.1
     );
+    // (the host's arithmetic replayed in the order of the GPU's step products on an A10's tensor cores: where the GPU is one, its pairs to the bit, which says the host's
+    // decoding of the experts (codes, scales, places) and its activation are the GPU's, and what is left apart is the order of the sums alone)
+    if let Some((p, apart, m)) = sm86 {
+        use crate::device::{Attr, CudaDevice, Device};
+        let dev = CudaDevice::device(0)?;
+        let cc = (CudaDevice::attribute(dev, Attr::CcMajor)?, CudaDevice::attribute(dev, Attr::CcMinor)?);
+        let ok = apart == 0;
+        println!(
+            "{} {tag}: the host's pairs in the order of the GPU's step products on an A10's tensor cores (sm86's mma.sync, measured: blocks of 8 products fused with the accumulator, 24 bits below the largest exponent, toward zero) against the GPU's (sm{}{}): {p} pairs, {apart} values apart, the most {m} last places{}",
+            if ok || cc != (8, 6) { if ok { "PASS" } else { "NOTE" } } else { "FAIL" },
+            cc.0,
+            cc.1,
+            if cc == (8, 6) { "" } else { " (another GPU class: its tensor cores' order is not this one's measured, so its bits are not asked for)" }
+        );
+        if !ok && cc == (8, 6) {
+            return err(format!("{tag}: the host's pairs in the A10's order are not the A10's: {apart} values apart"));
+        }
+    }
     Ok(())
 }
 
