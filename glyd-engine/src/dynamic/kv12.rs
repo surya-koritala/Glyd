@@ -472,7 +472,7 @@ pub fn calibrate(e: &mut Dyn, prompts: &[Vec<u32>], model: &str) -> Result<Table
 
 /// A model's tables, from the cache (made for its directory, version and shapes), else made now from the calibration corpus's first `PROMPTS`
 /// sequences of `POSITIONS` tokens (the context allowing) and kept there: true where they were made.
-pub fn tables_for(e: &mut Dyn, dir: &Path, model: &str) -> Result<(Tables, bool)> {
+pub fn tables_for(e: &mut Dyn, dir: &Path, m: &crate::runtime::config::ModelConfig, model: &str) -> Result<(Tables, bool)> {
     const POSITIONS: usize = 4096;
     const PROMPTS: usize = 8;
     let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()).display().to_string();
@@ -492,7 +492,7 @@ pub fn tables_for(e: &mut Dyn, dir: &Path, model: &str) -> Result<(Tables, bool)
             return Ok((t, false));
         }
     }
-    let docs = crate::calib::corpus_docs(&crate::tok::Tok::load(dir)?, None)?;
+    let docs = crate::calib::corpus_docs(&crate::tok::Tok::load_with(dir, m)?, None)?;
     let positions = POSITIONS.min(e.ctx.saturating_sub(64));
     let seqs: Vec<Vec<u32>> = crate::kvcal::sequences(&docs, positions).into_iter().map(|(s, _)| s).filter(|s| s.len() == positions).take(PROMPTS).collect();
     if seqs.is_empty() {

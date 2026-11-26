@@ -179,9 +179,10 @@ pub fn cached_tiered(
     Ok((u, d, ExpertCache { store: store.clone(), layer, ordinal }))
 }
 
-/// `glyd-engine tiercheck MODEL [--places N] [--tokens N] [--mode copy|cpu|auto] [--device-plan] [--against copy] [--layout i6|i5|i4] [--dense N] [--report] [--pairs | --join]`: the model of the dynamic route (a release whose experts the cache takes, or a hummingbird
+/// `glyd-engine tiercheck MODEL [--places N] [--tokens N] [--mode copy|cpu|auto] [--device-plan] [--against copy] [--layout i6|i5|i4] [--dense N] [--report] [--pairs | --join] [--split CUTS --devices GPUS]`: the model of the dynamic route (a release whose experts the cache takes, or a hummingbird
 /// directory) on GPU 0 with every expert there, then with its experts in the expert cache (`--places` a layer, every expert in the computer's memory; `--mode` the misses', copy by default): the same prompt and decode
-/// steps, and every position's logits compared; the positions that differ are named.
+/// steps, and every position's logits compared; the positions that differ are named. `--split`: the cached run's layers in stages (`split::open_cached`, each stage its own
+/// cache of `--places` a layer, on the GPUs `--devices` names, GPU 0 for each where none are), the residual handed over between them, against the one GPU's resident run.
 ///
 /// In copy mode the layers' products run over the places with the kernels of the resident layer, and the logits are the same bits where the cache's calls are the resident pass's: a call computed in waves (DeepSeek-V4's
 /// release experts, GLM-5.3-Flash's at a block level, Kimi-K3's), or a prompt of a few tokens (`--tokens 6`) for the caches that run a call of as many tokens as their places hold (GLM-5.3-Flash's FP8 experts, Muse
@@ -212,6 +213,8 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     // (`--layout`: the level a family's loader packs at, GLM's experts at a block level among them)
     let o = crate::dynamic::Opts { ctx: n + 64, chunk: 256, graph: device, device: 0, layout: a.layout()? };
     let (graphed, planned) = (std::cell::Cell::new(false), std::cell::Cell::new(0usize));
+    // (`--split CUTS --devices GPUS`: the cached run in stages, each its own cache)
+    let (cuts, devices) = crate::dynamic::split::split_args(a)?;
     // (`--against copy`: the reference the same cache in copy mode with the host's plan, the resident layer's bits (above), for a model larger than the GPU)
     let against_copy = match a.flag("against") {
         None => false,
@@ -236,7 +239,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         let caching =
             |mode, device| crate::hbg_store::HbCaching { places, ram: None, offload: crate::offload::Offload { mode, device, ..Default::default() }, dense };
         let mut e = if cached {
-            crate::dynamic::split::open_cached(dir, &o, &[], &[0], vec![caching(mode, device)])?
+            crate::dynamic::split::open_cached(dir, &o, &cuts, &devices, vec![caching(mode, device); devices.len()])?
         } else if against_copy {
             crate::dynamic::split::open_cached(dir, &o, &[], &[0], vec![caching(crate::offload::Mode::Copy, false)])?
         } else {
@@ -377,12 +380,13 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         None => println!("  the routing not compared: the decode step is one graph, whose selections are not read back"),
     }
     println!(
-        "{}: {} logits of {} positions, {} against the expert cache ({places} places a layer, {mode:?}{}): {differ} differ, the largest by {worst:e}, the least cosine {least_cos:.6}",
+        "{}: {} logits of {} positions, {} against the expert cache ({places} places a layer, {mode:?}{}{}): {differ} differ, the largest by {worst:e}, the least cosine {least_cos:.6}",
         dir.display(),
         total,
         resident.len(),
         if against_copy { "the cache in copy mode" } else { "resident" },
-        if device { ", the decode calls planned on the GPU" } else { "" }
+        if device { ", the decode calls planned on the GPU" } else { "" },
+        if cuts.is_empty() { String::new() } else { format!(", in stages cut before {cuts:?} on GPUs {devices:?}") }
     );
     if pairs {
         let all = crate::moe::PAIRS.lock().map_err(|_| Error("the pairs' lock".into()))?.take().unwrap_or_default();
