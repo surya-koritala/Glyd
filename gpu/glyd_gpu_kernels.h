@@ -8069,6 +8069,18 @@ __device__ __forceinline__ void mma12_mid_body(Nib f, int64_t O, int64_t K, int6
     int64_t u0 = blockIdx.x * U / nb;
     int n = (int)((blockIdx.x + 1) * U / nb - u0);
     int p0 = (int)(u0 / S), s0 = (int)(u0 - (int64_t)p0 * S);
+    // compute-sanitizer's racecheck (CUDA 12.8's) reports hazards on the slots; none is a race. Three kinds:
+    //   WAR: consumer lanes 1 to 31 read a slot, then the producer copies into it again. Their reads come before
+    //   lane 0's arrive on "empty" by __syncwarp, which orders the warp's memory operations. The tool does not
+    //   carry that order into another lane's arrive (with every lane arriving, "empty" counting 128 WG, it is gone).
+    //   RAW and WAW, "invalid memcpy_async synchronization": a consumer reads a copy after its wait on "full", or a
+    //   producer lane copies into the padding of a stage's exceptions NS stages on. "full"'s phase cannot complete
+    //   before each lane's cp.async.mbarrier.arrive.noinc fires, which is once all of that lane's copies have
+    //   landed, and every consumer waits on it before it arrives on "empty" (with cp.async.wait_all and a plain
+    //   arrive in its place, the tool says nothing).
+    // With both changes the tool reports no hazard, and the bits are the same. An observer that compared every slot
+    // with global memory the moment each wait returned found none apart (A10, 2026-11-26). They are not made here
+    // (a consumer lane each to arrive, the producer to wait for its copies): that changes the kernel's speed, not its result.
     if (tid == 0)
         for (int i = 0; i < C::NS; i++) {
             mbar_init(full + 8 * i, 33);  // the 32 lanes' copies, lane 0's bounds

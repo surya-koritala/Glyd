@@ -509,6 +509,9 @@ pub(crate) struct PairDiff {
     pub far: usize,
     pub first: Option<(usize, usize, usize, i64, u32)>,
     pub calls: usize,
+    /// The host's pairs in the GPU's order on an A10's tensor cores (`cpu_fp4::experts_sm86`: the host's FP4 experts alone) against the GPU's: the pairs, the values
+    /// apart and the most last places; None where the layer's host half is not FP4 experts.
+    pub sm86: Option<(usize, usize, u32)>,
 }
 
 /// (development) Each layer's calls through the expert cache in a mode that gives the host pairs, each as the store runs it against the same call in copy mode from
@@ -561,11 +564,12 @@ pub struct MoeKern {
     // the normed experts' router of fp32 weights and their normed weighted sum (kernels/muse.cu: transformers', Muse Spark's)
     router_f32: crate::kt::muse_router,
     norm_sum: crate::kt::muse_moe_sum,
-    // the expert cache planned on the GPU (src/devplan.rs): the plan, the copies into places, the wait for the host's pairs, their sums brought to the GPU
+    // the expert cache planned on the GPU (src/devplan.rs): the plan, the copies into places, the wait for the host's pairs, their sums brought to the GPU (or each pair's row beside the GPU's)
     xp_plan: crate::kt::xp_plan,
     xp_fill: crate::kt::xp_fill,
     xp_wait: crate::kt::xp_wait,
     xp_take: crate::kt::xp_take,
+    xp_rows: crate::kt::xp_rows,
 }
 
 /// The select kernel for `experts` (8, 16 or 32 registers a lane: 256, 512 or 1,024 experts).
@@ -605,6 +609,7 @@ impl MoeKern {
             xp_fill: dev.typed()?,
             xp_wait: dev.typed()?,
             xp_take: dev.typed()?,
+            xp_rows: dev.typed()?,
         })
     }
 
@@ -1071,13 +1076,19 @@ impl MoeLayer {
                 return err(format!("{t} tokens of {width} values: the scratch has no room for the host's sums and the pairs' places"));
             }
             let kk = &sc.k;
-            launch!(kk.xp_plan, [1, 1, 1], [256, 1, 1], s; call.ids, call.wts, z, t as i32, k as i32, width as i32, d.place_of, d.expert_of, d.last, d.hostlast, d.refb, d.meta, d.params, d.experts as i32, d.slots as i32, sc.way.ptr, d.fills, d.promos, d.mail, d.seq, d.layer as i32, d.max_pairs as i32)?;
+            launch!(kk.xp_plan, [1, 1, 1], [256, 1, 1], s; call.ids, call.wts, z, t as i32, k as i32, width as i32, d.place_of, d.expert_of, d.last, d.hostlast, d.refb, d.meta, d.params, d.experts as i32, d.slots as i32, sc.way.ptr, d.fills, d.promos, d.mail, d.seq, d.layer as i32, d.max_pairs as i32, (rows != 0) as i32)?;
             launch!(kk.xp_fill, [16, d.slots as u32, 1], [256, 1, 1], s; d.fills, d.meta, 8i32, d.reg, d.nreg as i32)?;
             early()?;
             crate::dev::memset_async(y, 0, t * width * 2, s)?;
             products(1)?;
             launch!(kk.xp_fill, [16, d.slots as u32, 1], [256, 1, 1], s; d.promos, d.meta, 9i32, d.reg, d.nreg as i32)?;
             launch!(kk.xp_wait, [1, 1, 1], [32, 1, 1], s; d.meta, d.ans, crate::devplan::XP_LIMIT)?;
+            if rows != 0 {
+                // (a block layout's sum of each pair's own row: the host's pairs' rows beside the GPU's in the workspace, each named by its expert in the way, then every pair's row added in the
+                // order of its choices, rounded once, as the store's host path joins them (src/offload.rs `send_host`))
+                launch!(kk.xp_rows, [(width as u32).div_ceil(256).min(16), call.pairs as u32, 1], [256, 1, 1], s; d.meta, d.mail, d.sums, rows, sc.way.ptr, call.ids, width as i32)?;
+                return self.rows_sum(sc, s, t, y, sc.way.ptr);
+            }
             let n = t * width;
             launch!(kk.xp_take, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; d.meta, d.sums, sc.cpu.ptr, n as i64)?;
             return self.experts_sum(sc, s, t, y, sc.way.ptr, sc.cpu.ptr);
@@ -1119,6 +1130,15 @@ impl MoeLayer {
         crate::dev::sync_stream(s)?;
         let mut ids = vec![0i64; t * k];
         crate::dev::read_dev(sc.ids.ptr, &mut ids)?;
+        // (the GPU's slots as glyd-gpu's moe_splits counts them: its multiprocessors, twice on an HBM part (compute capability 8.0 to 10.0), or GLYD_GPU_MOE_SLOTS)
+        let slots = {
+            use crate::device::{Attr, CudaDevice, Device};
+            let dev = CudaDevice::device(at.ordinal)?;
+            let a = |x| CudaDevice::attribute(dev, x);
+            let (major, minor, sms) = (a(Attr::CcMajor)?, a(Attr::CcMinor)?, a(Attr::Sms)? as usize);
+            crate::tune!("GLYD_GPU_MOE_SLOTS").and_then(|v| v.parse().ok()).unwrap_or(sms * if minor == 0 && (8..=10).contains(&major) { 2 } else { 1 })
+        };
+        let fp4 = store.host_fp4(layer);
         let mut run = |mode: Mode| -> Result<Vec<u16>> {
             store.set_offload(Offload { mode, ..was });
             if mode == Mode::Cpu {
@@ -1141,6 +1161,15 @@ impl MoeLayer {
             let one: Vec<i64> = ids.iter().enumerate().map(|(i, &e)| if i % k == j { e } else { -1 }).collect();
             sc.ids.write(0, &one)?;
             let (g, h) = (run(Mode::Copy)?, run(Mode::Cpu)?);
+            let replay = if fp4 {
+                *crate::cpu_fp4::SM86.lock().map_err(|_| crate::ffi::Error("the replay's lock".into()))? =
+                    Some(crate::cpu_fp4::Sm86 { experts: self.cfg.experts, slots });
+                let r = run(Mode::Cpu);
+                *crate::cpu_fp4::SM86.lock().map_err(|_| crate::ffi::Error("the replay's lock".into()))? = None;
+                Some(r?)
+            } else {
+                None
+            };
             let mut st = PAIRS.lock().map_err(|_| crate::ffi::Error("the pairs' lock".into()))?;
             let Some(all) = st.as_mut() else { break };
             let row = all.entry(layer).or_default();
@@ -1150,6 +1179,13 @@ impl MoeLayer {
                     continue;
                 }
                 row.pairs += 1;
+                if let Some(rp) = &replay {
+                    let rr = &rp[tk * w..(tk + 1) * w];
+                    let apart = gr.iter().zip(rr).filter(|(a, b)| a != b).count();
+                    let most = gr.iter().zip(rr).map(|(&a, &b)| (ord(a) - ord(b)).unsigned_abs()).max().unwrap_or(0);
+                    let m = row.sm86.get_or_insert((0, 0, 0));
+                    *m = (m.0 + 1, m.1 + apart, m.2.max(most));
+                }
                 let big = gr.iter().map(|&b| f32::from_bits((b as u32) << 16).abs()).fold(0f32, f32::max).max(1e-30);
                 let most = gr.iter().zip(hr).map(|(&a, &b)| (ord(a) - ord(b)).unsigned_abs()).max().unwrap_or(0);
                 if most > 16 {

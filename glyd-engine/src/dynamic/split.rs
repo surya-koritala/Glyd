@@ -48,6 +48,9 @@ enum Cmd {
     Sample,
     Logits,
     Logprob(f32),
+    /// The last pass's head row's largest logits and its sum of exponentials at a temperature, made on the last stage's GPU as one GPU's step makes them.
+    Top,
+    Mass(f32),
     Describe,
     /// The sequence's prompt and its images (`Dyn::set_images`): the first stage runs the tower over them, each stage turns its rows by their positions.
     Images(Vec<u32>, Vec<std::sync::Arc<crate::vision::Image>>),
@@ -62,6 +65,8 @@ enum Out {
     Sample(Result<Sample>),
     Logits(Result<Vec<f32>>),
     Logprob(Result<f32>),
+    Top(Option<Vec<(u32, f32)>>),
+    Mass(Option<f64>),
     Text(String),
 }
 
@@ -140,6 +145,8 @@ impl Split {
                             Cmd::Sample => Out::Sample(e.sample()),
                             Cmd::Logits => Out::Logits(e.logits()),
                             Cmd::Logprob(l) => Out::Logprob(e.logprob(l)),
+                            Cmd::Top => Out::Top(crate::sched::ModelStep::top(&mut e, 0)),
+                            Cmd::Mass(t) => Out::Mass(crate::sched::ModelStep::mass(&mut e, 0, t)),
                             Cmd::Describe => Out::Text(e.describe()),
                             Cmd::Images(prompt, images) => Out::Done(e.set_images(&prompt, &images)),
                         };
@@ -293,6 +300,22 @@ impl Split {
         match self.ask(self.w.len() - 1, Cmd::Logits)? {
             Out::Logits(r) => r,
             _ => Err(gone()),
+        }
+    }
+
+    /// The last pass's head row's largest logits, largest first (the last stage's `ModelStep::top`); None where that stage makes none (the row is read).
+    pub fn top(&self) -> Option<Vec<(u32, f32)>> {
+        match self.ask(self.w.len() - 1, Cmd::Top) {
+            Ok(Out::Top(t)) => t,
+            _ => None,
+        }
+    }
+
+    /// The last pass's head row's sum of exp((logit - largest) / `temperature`) (the last stage's `ModelStep::mass`); None where that stage makes none.
+    pub fn mass(&self, temperature: f32) -> Option<f64> {
+        match self.ask(self.w.len() - 1, Cmd::Mass(temperature)) {
+            Ok(Out::Mass(m)) => m,
+            _ => None,
         }
     }
 
@@ -587,6 +610,20 @@ impl crate::sched::ModelStep for Run {
     fn logits(&mut self, _row: usize) -> Result<Vec<f32>> {
         Run::logits(self)
     }
+    /// Stages: the last one's candidates and sums of its head row, made on its GPU by the kernels and launches of one GPU's step, so a draw and the
+    /// log-probabilities are one GPU's bits (the row read here would be summed on the host, in another order and precision).
+    fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+        match self {
+            Run::Split(e) if row == 0 => e.top(),
+            _ => None,
+        }
+    }
+    fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
+        match self {
+            Run::Split(e) if row == 0 => e.mass(temperature),
+            _ => None,
+        }
+    }
     fn release(&mut self, _pages: &[i32]) -> Result<()> {
         self.reset()
     }
@@ -609,8 +646,7 @@ impl crate::sched::ModelStep for Run {
 #[cfg(feature = "dev")]
 pub fn sched_reply(e: &mut Run, prompt: &[u32], tokens: usize) -> Result<(Vec<u32>, Vec<u32>)> {
     use crate::conv::Gen;
-    use crate::sched::{Ev, Reply, Sched, Submit};
-    let reply = Reply {
+    let reply = crate::sched::Reply {
         params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
         max_new: tokens,
         ignore_eos: true,
@@ -618,8 +654,24 @@ pub fn sched_reply(e: &mut Run, prompt: &[u32], tokens: usize) -> Result<(Vec<u3
         stop_ids: Vec::new(),
     };
     let (alone, _) = e.reply(prompt, &reply, &mut |_| true)?;
-    let Some((k, step)) = e.as_step(1)? else { return err("no scheduler's step") };
-    let mut s = Sched::new(step, k);
+    Ok((alone, served(e, prompt, tokens, None)?.0))
+}
+
+/// A greedy reply of `tokens` tokens to `prompt` through the scheduler with the model as its step (`as_step`: across GPUs, a step of one slot), and where `k` is
+/// given each token's log-probability and its `k` likeliest tokens' as a server sends them (`splitcheck`: a split's are one GPU's bits).
+#[cfg(feature = "dev")]
+pub fn served(e: &mut Run, prompt: &[u32], tokens: usize, k: Option<usize>) -> Result<(Vec<u32>, Vec<crate::sampler::Lp>)> {
+    use crate::conv::Gen;
+    use crate::sched::{Ev, Reply, Sched, Submit};
+    let reply = Reply {
+        params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
+        max_new: tokens,
+        ignore_eos: true,
+        logprobs: k,
+        stop_ids: Vec::new(),
+    };
+    let Some((n, step)) = e.as_step(1)? else { return err("no scheduler's step") };
+    let mut s = Sched::new(step, n);
     let (tx, rx) = channel();
     s.submit(Submit {
         prompt: prompt.to_vec(),
@@ -636,14 +688,14 @@ pub fn sched_reply(e: &mut Run, prompt: &[u32], tokens: usize) -> Result<(Vec<u3
     while !s.idle() {
         s.tick()?;
     }
-    let mut via = Vec::new();
+    let (mut via, mut lps) = (Vec::new(), Vec::new());
     loop {
         match rx.recv().map_err(|_| Error("the scheduler dropped the sequence".into()))? {
             Ev::Token(t) => via.push(t),
-            Ev::Lp(_) => {}
+            Ev::Lp(l) => lps.push(l),
             Ev::End(r) => {
                 r?;
-                return Ok((alone, via));
+                return Ok((via, lps));
             }
         }
     }

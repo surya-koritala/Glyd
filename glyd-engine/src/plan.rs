@@ -1314,6 +1314,8 @@ pub fn room_of(free: u64) -> u64 {
 /// The activations and workspaces of the lossy paths' engines (Qwen3.5, Qwen3.6, Qwen3.8, Nemotron-H, Gemma 4): 1.26 GiB measured for
 /// Qwen3.8-27B with prompts in chunks of 2,048, about 1 GiB for Nemotron 3 Super by the sizes of its buffers (not yet measured).
 pub const LOSSY_WORK: u64 = 1280 << 20;
+/// The prompt chunk the lossy path of the Qwen3.5 and Nemotron-H layouts takes (`LoadPlan::chunk`).
+pub const LOSSY_CHUNK: usize = 2048;
 /// The Qwen3 path's fixed workspaces: the CUDA context and the library's own buffers, cuBLAS's and the pool's, 1,400 MiB (600 + 400 + 400) measured
 /// as the path's total before the reserve was one model, less that reserve; a prompt chunk's activations are on top (`sizing::work`).
 pub const QWEN3_WORK: u64 = (1400 << 20) - CONTEXT_FLOOR;
@@ -2662,16 +2664,11 @@ pub fn kv_format_of(twelve: bool) -> &'static str {
     }
 }
 
-/// Whether the run of `a` holds its keys and values in the executor's 12-bit lossless pages (GLYD_KV=lossless), as the family's load plan sizes them: Gemma 4 with no draft model,
-/// a plain dense decoder served (`sizing::twelve_pages`); the loaders that take them (src/cli.rs `twelve_bit_pages`).
-fn takes_twelve(a: &crate::args::Args, f: crate::support::Family) -> bool {
-    use crate::support::Family;
-    let lossless = sizing::lossless_asked();
-    match f {
-        Family::Gemma4 => lossless && a.has("no-draft"),
-        Family::Qwen3 => sizing::twelve_pages(a),
-        _ => false,
-    }
+/// Whether the plan of `a` for a model of shape `sh` may hold its keys and values in the executor's 12-bit lossless pages: a server's where GLYD_KV=lossless asks for
+/// them (`sizing::twelve_pages`), and its attention kinds have rings the pages take (`Shape::kv12_rings`: heads of 128, 256 or 512 channels, latents; heads of 64
+/// and the compressed attention's entries stay bf16), whatever its family; the loaders that take them make the model's tables (src/cli.rs `twelve_bit_pages`).
+fn takes_twelve(a: &crate::args::Args, sh: &Shape) -> bool {
+    sizing::twelve_pages(a) && !sh.kv12_rings.is_empty()
 }
 
 pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
@@ -2701,7 +2698,7 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
         crate::support::check(&config, model, &name, "penguin")?;
     }
     let sh = shape_of(model, &config).map_err(|e| Refusal::unsupported(format!("{name}: {e}"), ""))?;
-    let sh = if takes_twelve(a, fam.family) { sh.in_twelve() } else { sh };
+    let sh = if takes_twelve(a, &sh) { sh.in_twelve() } else { sh };
     let context: Option<usize> = a.flag("context").map(|c| c.parse()).transpose().map_err(|_| Refusal::new("--context takes a number", "--context 8192"))?;
     crate::support::context_check(&name, fam, sh.max_ctx, context)?;
     let users: usize = a.num("users", 1usize)?;
@@ -2825,7 +2822,9 @@ fn index_total(model: &str) -> Option<f64> {
 
 /// The loaders' sizing (P2f): the plan `run`, `serve`, `preflight` and `fit` load and print.
 pub mod sizing {
-    use super::{reserve_of, Kind, LoadPlan, Target, GEMMA_CHUNK, GEMMA_DRAFT_BYTES, HOST_MARGIN, LOSSY_CTX, LOSSY_MIN_CTX, LOSSY_WORK, QWEN3_WORK};
+    use super::{
+        reserve_of, Kind, LoadPlan, Target, GEMMA_CHUNK, GEMMA_DRAFT_BYTES, HOST_MARGIN, LOSSY_CHUNK, LOSSY_CTX, LOSSY_MIN_CTX, LOSSY_WORK, QWEN3_WORK,
+    };
     use crate::args::Args;
     use crate::cli::{cannot, gemma_draft, gemma_wren, level, level_name, shape_checks, short_name, supported_in, unrun_fix, users_of};
     use crate::dev::Gpu;
@@ -3767,10 +3766,12 @@ pub mod sizing {
         dense_fit(cfg, dense_row(), name, gpu, free, layout, asked, users, cublas, false, false)
     }
 
-    /// Whether a run of `a` puts its keys and values in the executor's 12-bit lossless pages: a server's (whose scheduler pages the cache) where GLYD_KV=lossless asks for
-    /// them, as Gemma 4's (src/dynamic/kvpages.rs).
+    /// Whether the plan of `a` may put its keys and values in the executor's 12-bit lossless pages (src/dynamic/kvpages.rs): GLYD_KV=lossless asks for them, and the
+    /// plan is a server's (`served`: `serve`, or `fit --users`), whose scheduler holds its sequences in pools of blocks, which the pages are (`Dyn::page`); `run`
+    /// answers one prompt by itself, in rings of its own. Each path's plan takes them where its description's rings take them and they reserve no more than bf16
+    /// (`one_gpu_pages`, `size_dynamic_at`).
     pub(crate) fn twelve_pages(a: &Args) -> bool {
-        lossless_asked() && a.pos.first().is_some_and(|c| c == "serve")
+        lossless_asked() && served(a)
     }
 
     /// Whether GLYD_KV=lossless asks for the executor's 12-bit lossless pages (a test's thread says so for itself alone: `asking_lossless`).
@@ -4104,7 +4105,7 @@ pub mod sizing {
         // the matrices and the tensors kept as they are, what a sequence holds (its states, a token's KV) and the longest context (config.json parsed once)
         let m = ModelConfig::parse(text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
         let nemotron = m.family() == Some(crate::support::Family::NemotronH);
-        let (packs, kept, state, per, max_pos) = if nemotron {
+        let (packs, kept, state, per, max_pos, low) = if nemotron {
             if !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Hummingbird) {
                 return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for the Nemotron-H layout, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
             }
@@ -4121,7 +4122,9 @@ pub mod sizing {
                     format!("Run it at the swift or kestrel level: glyd run {model}:swift"),
                 ));
             }
-            (cfg.packs(), cfg.kept(), cfg.state_bytes(), cfg.kv_bytes_per_token(), cfg.max_pos)
+            // (its description, for the rings the 12-bit pages take where a server asks for them)
+            let low = twelve_pages(a).then(|| crate::dynamic::split::lowered_of(&m, cfg.max_pos).ok()).flatten();
+            (cfg.packs(), cfg.kept(), cfg.state_bytes(), cfg.kv_bytes_per_token(), cfg.max_pos, low)
         } else {
             if layout == Layout::Hummingbird {
                 return Err(Refusal::unsupported(
@@ -4152,7 +4155,7 @@ pub mod sizing {
                 ));
             }
             let (state, per) = (low.states.iter().sum::<usize>() as u64, low.rings.iter().map(|r| r.token_bytes()).sum::<usize>() as u64);
-            (packs, kept, state, per, low.max_pos)
+            (packs, kept, state, per, low.max_pos, Some(low))
         };
         let ck = packed.map(|d| glyd_gpu::safetensors::Checkpoint::open(d).map_err(cannot)).transpose()?;
         let (mut weights, mut bf16) = (0u64, 0u64);
@@ -4183,26 +4186,35 @@ pub mod sizing {
         let users = users_asked(a)?;
         // (a server's: each sequence's states and their copies at its mark, the pool of copies at block boundaries and the pool's block 0: `rows::SeqRoom`)
         let (seq_state, once) = pools_of(state, &[per], served(a));
-        let n = Needs {
+        // (a server's keys and values in the executor's 12-bit pages where GLYD_KV=lossless asks for them and its description has rings they take, by its attention
+        // kinds (`twelve_bit_rings`): those rings at the pages' bytes a token, the others bf16, and what their pools spend once; taken by `one_gpu_pages`' rule)
+        let taken: Vec<crate::dynamic::kv12::KvShape> =
+            low.as_ref().filter(|_| twelve_pages(a)).map_or(Vec::new(), |l| crate::dynamic::twelve_bit_rings(l).into_iter().flatten().collect());
+        let per12 = |l: &crate::dynamic::ModelDesc| -> u64 {
+            let rings = crate::dynamic::twelve_bit_rings(l);
+            l.rings.iter().zip(&rings).map(|(r, t)| t.map_or(r.token_bytes() as u64, |k| kv12_token_bytes(k.heads, k.channels, k.one))).sum()
+        };
+        let needs = |twelve: bool| Needs {
             kind: if nemotron { Kind::NemotronH } else { Kind::Qwen35 },
             family: crate::support::row(fam).name,
             layout,
             weights,
             bf16,
             per_seq: seq_state,
-            per_token: per.max(1),
-            once: Once { fixed: once, ..Once::default() },
+            per_token: if twelve { low.as_ref().map_or(per, per12) } else { per }.max(1),
+            once: Once { rings: if twelve { taken.clone() } else { Vec::new() }, chunk: LOSSY_CHUNK, fixed: once },
             users,
             fewer: true,
             draft: 0,
-            chunks: vec![(2048, LOSSY_WORK)],
+            chunks: vec![(LOSSY_CHUNK, LOSSY_WORK)],
             want: LOSSY_CTX,
             least: LOSSY_MIN_CTX,
             cap: max_pos.max(LOSSY_MIN_CTX),
             grain: 1,
             page: 1,
         };
-        let fitted = one_gpu(&n, free, asked, gpu);
+        let (n, pages) = (needs(false), (!taken.is_empty()).then(|| needs(true)));
+        let fitted = one_gpu_pages(&n, pages.as_ref(), free, asked, gpu);
         // (the flags of the experts in the computer's memory: Nemotron-H's at these levels; the Qwen3.5 layout with experts keeps every expert on the GPU here,
         // and in the computer's memory at penguin, where its GPUs do not hold them)
         let not_here = |flag: &str| {
@@ -4316,9 +4328,9 @@ pub mod sizing {
         let draft = if users == 1 && (gemma_draft(a, packed).is_some() || draft_to_come) { GEMMA_DRAFT_BYTES } else { 0 };
         let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
         crate::support::context_check(name, crate::support::row(crate::support::Family::Gemma4), cfg.max_pos, asked)?;
-        // (12-bit lossless pages where the run asks for them and has no draft model, whose executor then pages its cache (src/dynamic/kvpages.rs), and they reserve
-        // no more than bf16 for the plan: `one_gpu_pages`)
-        let twelve = lossless_asked() && a.has("no-draft");
+        // (12-bit lossless pages where a server asks for them (`twelve_pages`) and has no draft model, whose executor then pages its cache (src/dynamic/kvpages.rs),
+        // and they reserve no more than bf16 for the plan: `one_gpu_pages`)
+        let twelve = twelve_pages(a) && draft == 0;
         // (with no draft model, the scheduler gives each of the users a room of its own, its sliding layers' rings and its context (src/dynamic/rows.rs): the context not asked for is what the room gives
         // each of them, at least LOSSY_MIN_CTX (where that leaves room for fewer, the server takes fewer))
         let needs = |twelve: bool| gemma_needs(&cfg, layout, (weights, bf16, draft), users, asked.unwrap_or(LOSSY_CTX).max(LOSSY_MIN_CTX), twelve, served(a));
@@ -4340,62 +4352,106 @@ pub mod sizing {
         })
     }
 
-    /// Kimi-K3's expert cache over these GPUs (`split::places_plan`), each layer holding its sequences' bytes `kv` beside its weights: the cuts, their GPUs, each stage's places a
-    /// layer, the bytes on the GPUs (the sequences' with them), the experts' bytes in the computer's memory, the experts a layer has; refused with the numbers where the
-    /// computer's memory does not hold every expert or a GPU has room for fewer than a token's experts.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn kimi_cache(
-        table: &crate::sizes::Table,
-        text: &str,
-        nl: usize,
-        room: &[(i32, u64)],
-        name: &str,
-        kv: &[u64],
-        twelve: bool,
-        host: Option<u64>,
-    ) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize, (usize, u64))> {
-        let c = crate::kimi::ConfigKimi::parse(text, "config.json", None).map_err(cannot)?;
-        // (its bf16 matrices in the 12-bit layout where `twelve`: an HBM GPU's faster product, a few hundred places fewer)
-        let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
-        let (mut dense, base) =
-            crate::dynamic::split::layer_bytes_table(table, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !n.contains(".block_sparse_moe.experts."));
-        // (each layer's sequences too: its latent attention's latents or its delta attention's state, as the executor holds them, `rows::layer_rooms`)
-        dense.iter_mut().zip(kv).for_each(|(d, k)| *d += k);
-        let expert = crate::dynamic::kimi::expert_bytes(&c).map_err(cannot)?;
-        let e = &c.experts;
-        let layers = c.moe.iter().filter(|&&m| m).count();
-        let all = (layers * e.experts) as u64 * expert;
+    /// What an expert cache on the dynamic route is planned from, read by one rule whatever the source of its experts (`release_experts`, `kimi_experts`,
+    /// `hb_dir_experts`): each layer's weights besides its experts (`dense`, the rest `base`) and the bytes of them its loader can keep in the computer's memory
+    /// (`ram`, src/dense_ram.rs), which layers have experts, a place's bytes (an expert's, their mean where they differ), a layer's experts and a token's, every
+    /// expert's bytes, and whether those the computer's memory does not hold are read from the disk (`disk`: a hummingbird directory's) or all must be in it.
+    #[derive(Clone, Debug)]
+    pub(crate) struct CacheOf {
+        pub dense: Vec<u64>,
+        pub base: u64,
+        pub ram: Vec<u64>,
+        pub moe: Vec<bool>,
+        pub place: u64,
+        pub experts: usize,
+        pub top_k: usize,
+        pub all: u64,
+        pub disk: bool,
+    }
+
+    impl CacheOf {
+        /// A token's experts in every layer of experts: the least the places of a layer hold.
+        pub(crate) fn token_bytes(&self) -> u64 {
+            self.moe.iter().filter(|&&m| m).count() as u64 * self.top_k.max(1) as u64 * self.place
+        }
+    }
+
+    /// An expert cache's plan on the dynamic route (`expert_cache`): the cuts, their GPUs, each stage's places a layer, the GPUs' bytes (the weights besides the
+    /// experts, the places and the sequences' bytes the layers were given), every expert's bytes, a layer's experts, the experts' bytes the computer's memory
+    /// holds (the rest read from the disk), and the last layers whose dense matrices are in the computer's memory, with their bytes.
+    #[derive(Clone, Debug)]
+    pub(crate) struct Cached {
+        pub cuts: Vec<usize>,
+        pub devices: Vec<i32>,
+        pub places: Vec<usize>,
+        pub on_gpus: u64,
+        pub all: u64,
+        pub experts: usize,
+        pub ram: u64,
+        pub dense: (usize, u64),
+    }
+
+    /// The expert cache of `c` over the GPUs of `room`, one rule for every source: each layer's weights and its sequences' bytes `kv` first (`size_dynamic_at`
+    /// gives them: each layer's share of one sequence's, and a server's users' beside on the first layer where one GPU holds them), the places what the room left
+    /// gives, at least a token's a layer (`split::places_plan_dense`: the last layers' dense matrices in the computer's memory where a token's experts do not fit
+    /// beside them on one GPU; a stage begins only where one may, `stage_starts`). Every expert in the computer's memory (`host` free, less `HOST_MARGIN`), or of a
+    /// hummingbird directory's (`disk`) what that memory holds and the rest on the disk. Refused in words where the computer's memory or the GPUs hold too little.
+    pub(crate) fn expert_cache(c: &CacheOf, text: &str, room: &[(i32, u64)], name: &str, kv: &[u64], host: Option<u64>) -> Done<Cached> {
         let host = host.unwrap_or(0);
-        if all + HOST_MARGIN > host {
+        if !c.disk && c.all + HOST_MARGIN > host {
             return Err(Refusal::unsupported(
-                format!(
-                    "{name} keeps the {} experts the GPUs do not hold in the computer's memory: they take {}, and {} is free",
-                    layers * e.experts,
-                    gib(all),
-                    gib(host)
-                ),
-                "A machine with that much memory runs it",
+                format!("{name} keeps the experts its GPUs do not hold in the computer's memory: they take {}, and {} is free", gib(c.all), gib(host)),
+                "A machine with that much memory runs it, or its hummingbird level, whose experts the disk holds too",
             ));
         }
-        // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
-        let family = crate::dynamic::split::family(text).unwrap_or("");
-        let ram = crate::dynamic::split::ram_bytes_table(table, nl, family, crate::dynamic::split::CODED_PCT, bf16);
+        // (the computer's memory for the experts: all of them, else (the disk holding the rest) what it has less the margin, at least a token's experts in every layer)
+        let ram = if c.disk { c.all.min(host.saturating_sub(HOST_MARGIN)) } else { c.all };
+        if ram < c.token_bytes() {
+            return Err(Refusal::unsupported(
+                format!(
+                    "{name} at the hummingbird level keeps its experts in the computer's memory and on the disk: they take {}, and {} of memory is free",
+                    gib(c.all),
+                    gib(host)
+                ),
+                "A machine with more memory runs it",
+            ));
+        }
+        let mut dense = c.dense.clone();
+        dense.iter_mut().zip(kv).for_each(|(d, k)| *d += k);
+        let nl = dense.len();
         let Some((cuts, devices, places, held, freed)) =
-            crate::dynamic::split::places_plan_dense(&dense, base, &c.moe, room, expert, e.experts, e.top_k, &ram, &stage_starts(text, nl))
+            crate::dynamic::split::places_plan_dense(&dense, c.base, &c.moe, room, c.place, c.experts, c.top_k.max(1), &c.ram, &stage_starts(text, nl))
         else {
             return Err(Refusal::unsupported(
                 format!(
-                    "{name}: its weights besides the experts take {}, and the GPUs here leave too little room for its experts",
-                    gib(dense.iter().sum::<u64>() + base)
+                    "{name}: its weights besides the experts take {}, its sequences' keys, values and states {}, and the GPUs here leave too little room for its experts ({} for a token's in every layer)",
+                    gib(c.dense.iter().sum::<u64>() + c.base),
+                    gib(kv.iter().sum()),
+                    gib(c.token_bytes())
                 ),
                 "A machine whose GPUs have more memory free runs it",
             ));
         };
         let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
         let on_gpus = dense.iter().sum::<u64>() - freed
-            + base
-            + bounds.windows(2).zip(&places).map(|(w, &p)| c.moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * expert).sum::<u64>();
-        Ok((cuts, devices, places, on_gpus, all, e.experts, (held, ram_held(&ram, &dense, held))))
+            + c.base
+            + bounds.windows(2).zip(&places).map(|(w, &p)| c.moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * c.place).sum::<u64>();
+        Ok(Cached { cuts, devices, places, on_gpus, all: c.all, experts: c.experts, ram, dense: (held, ram_held(&c.ram, &dense, held)) })
+    }
+
+    /// Kimi-K3's experts as its loader packs them (`ExpertCache::Packed`): each expert `kimi::expert_bytes`, every one in the computer's memory. `twelve`: its bf16
+    /// matrices in the 12-bit layout (an HBM GPU's faster product, a few hundred places fewer).
+    pub(crate) fn kimi_experts(table: &crate::sizes::Table, text: &str, nl: usize, twelve: bool) -> Done<CacheOf> {
+        let c = crate::kimi::ConfigKimi::parse(text, "config.json", None).map_err(cannot)?;
+        let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
+        let (dense, base) =
+            crate::dynamic::split::layer_bytes_table(table, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !n.contains(".block_sparse_moe.experts."));
+        let place = crate::dynamic::kimi::expert_bytes(&c).map_err(cannot)?;
+        let e = &c.experts;
+        let all = (c.moe.iter().filter(|&&m| m).count() * e.experts) as u64 * place;
+        let family = crate::dynamic::split::family(text).unwrap_or("");
+        let ram = crate::dynamic::split::ram_bytes_table(table, nl, family, crate::dynamic::split::CODED_PCT, bf16);
+        Ok(CacheOf { dense, base, ram, moe: c.moe.clone(), place, experts: e.experts, top_k: e.top_k, all, disk: false })
     }
 
     /// The bytes the last `held` layers' dense matrices take in the computer's memory (`split::places_plan_dense`'s layers).
@@ -4404,28 +4460,13 @@ pub mod sizing {
         (n - held.min(n)..n).map(|l| ram[l].min(dense[l])).sum()
     }
 
-    /// A hummingbird directory's expert cache on the dynamic route (src/hbg_store.rs) where its GPUs do not hold all its experts, for any family: each layer's weights besides its experts and its sequences' bytes `kv` (`rows::layer_rooms`)
-    /// on the GPUs, places for the busiest experts with the room left (`split::places_plan`, at the mean of the experts' bytes), and every expert in the computer's memory (`host` bytes free, less `HOST_MARGIN`) or, where it holds
-    /// less, its share there and the rest read from the expert files as the router asks for them (the disk). The cuts, their GPUs, each stage's places a layer, the GPUs' bytes, all the experts' bytes, the experts a layer, and
-    /// the bytes of experts the computer's memory holds; or the refusal.
-    #[allow(clippy::type_complexity)]
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn hb_cache(
-        dir: &Path,
-        text: &str,
-        nl: usize,
-        room: &[(i32, u64)],
-        name: &str,
-        kv: &[u64],
-        twelve: bool,
-        host: Option<u64>,
-    ) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize, u64, (usize, u64))> {
+    /// A hummingbird directory's experts (src/hbg_store.rs), for any family: places at the mean of the experts' bytes, those the computer's memory does not hold
+    /// read from the expert files as the router asks for them (the disk).
+    pub(crate) fn hb_dir_experts(dir: &Path, text: &str, nl: usize, twelve: bool) -> Done<CacheOf> {
         let hb = crate::hb_pack::HbDir::open(dir).map_err(cannot)?.ok_or_else(|| cannot(format!("{}: not a hummingbird directory", dir.display())))?;
         let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
-        let (mut dense, base) = crate::dynamic::split::layer_bytes_with(dir, nl, crate::dynamic::split::CODED_PCT, bf16, &|_| true, false).map_err(cannot)?;
-        // (each layer's sequences too: `kv`, as the executor holds them, `rows::layer_rooms`)
+        let (dense, base) = crate::dynamic::split::layer_bytes_with(dir, nl, crate::dynamic::split::CODED_PCT, bf16, &|_| true, false).map_err(cannot)?;
         let sh = crate::plan::Shape::from_config(text).map_err(cannot)?;
-        dense.iter_mut().zip(kv).for_each(|(d, k)| *d += k);
         let mut moe = vec![false; nl];
         let (mut all, mut experts, mut count) = (0u64, 0usize, 0usize);
         for r in &hb.layers {
@@ -4436,102 +4477,33 @@ pub mod sizing {
             experts = experts.max(r.bits.len());
             count += r.bits.len();
         }
-        let mean = all / count.max(1) as u64;
-        let host = host.unwrap_or(0);
-        // (the computer's memory for the experts: all of them, else what it has less the margin; at least a token's experts in every layer)
-        let ram = all.min(host.saturating_sub(HOST_MARGIN));
-        let token = hb.layers.len() as u64 * sh.topk.max(1) as u64 * mean;
-        if ram < token {
-            return Err(Refusal::unsupported(
-                format!(
-                    "{name} at the hummingbird level keeps its experts in the computer's memory and on the disk: they take {}, and {} of memory is free",
-                    gib(all),
-                    gib(host)
-                ),
-                "A machine with more memory runs it",
-            ));
-        }
-        // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
         let family = crate::dynamic::split::family(text).unwrap_or("");
-        let rb = crate::dynamic::split::ram_bytes(dir, nl, family, crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
-        let Some((cuts, devices, places, held, freed)) =
-            crate::dynamic::split::places_plan_dense(&dense, base, &moe, room, mean, experts, sh.topk.max(1), &rb, &stage_starts(text, nl))
-        else {
-            return Err(Refusal::unsupported(
-                format!(
-                    "{name}: its weights besides the experts take {}, and the GPUs here leave too little room for its experts",
-                    gib(dense.iter().sum::<u64>() + base)
-                ),
-                "A machine whose GPUs have more memory free runs it",
-            ));
-        };
-        let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
-        let on_gpus = dense.iter().sum::<u64>() - freed
-            + base
-            + bounds.windows(2).zip(&places).map(|(w, &p)| moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * mean).sum::<u64>();
-        Ok((cuts, devices, places, on_gpus, all, experts, ram, (held, ram_held(&rb, &dense, held))))
+        let ram = crate::dynamic::split::ram_bytes(dir, nl, family, crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
+        Ok(CacheOf { dense, base, ram, moe, place: all / count.max(1) as u64, experts, top_k: sh.topk, all, disk: true })
     }
 
-    /// A release's expert cache on the dynamic route where its experts are each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4 experts; GLM-5.3-Flash's FP8 ones, each packed on its own in places of
-    /// the largest's bytes: about 7 bits a value where the release's bytes, which size the places here, are 8; Muse Spark's bf16 ones in the lossless tiered layout, about 11 bits of 16) and its GPUs do not hold them all: each layer's weights besides its experts and
-    /// its sequences' bytes `kv` (`rows::layer_rooms`) on the GPUs, places for the busiest experts with the room left, and every expert in the computer's memory (`host` bytes free, less `HOST_MARGIN`: the disk holds hummingbird
-    /// directories' experts alone). The cuts, their GPUs, each stage's places a layer, the GPUs' bytes, all the experts' bytes and the experts a layer; or the refusal.
-    #[allow(clippy::type_complexity)]
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn release_cache(
-        table: &crate::sizes::Table,
-        text: &str,
-        nl: usize,
-        room: &[(i32, u64)],
-        name: &str,
-        kv: &[u64],
-        twelve: bool,
-        host: Option<u64>,
-    ) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize, (usize, u64))> {
+    /// A release's experts as the cache takes them, each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4 experts; GLM-5.3-Flash's FP8 ones, each packed on
+    /// its own in places of the largest's bytes: about 7 bits a value where the release's bytes, which size the places here, are 8; Muse Spark's bf16 ones in the
+    /// lossless tiered layout, about 11 bits of 16): a place the mean of the release's experts' bytes, every one in the computer's memory (the disk holds
+    /// hummingbird directories' experts alone).
+    pub(crate) fn release_experts(table: &crate::sizes::Table, text: &str, nl: usize, twelve: bool) -> Done<CacheOf> {
         let expert = |n: &str| n.contains(".experts.");
         let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
-        let (mut dense, base) = crate::dynamic::split::layer_bytes_table(table, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !expert(n));
+        let (dense, base) = crate::dynamic::split::layer_bytes_table(table, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !expert(n));
         let (per, _) = crate::dynamic::split::layer_bytes_table(table, nl, 100, 100, &expert);
         let sh = crate::plan::Shape::from_config(text).map_err(cannot)?;
-        // (each layer's sequences too: `kv`, as the executor holds them, `rows::layer_rooms`)
-        dense.iter_mut().zip(kv).for_each(|(d, k)| *d += k);
         let moe: Vec<bool> = per.iter().map(|&b| b > 0).collect();
         let (all, layers, experts) = (per.iter().sum::<u64>(), moe.iter().filter(|&&m| m).count(), sh.experts.max(1));
-        let mean = all / (layers * experts).max(1) as u64;
-        let host = host.unwrap_or(0);
-        if all + HOST_MARGIN > host {
-            return Err(Refusal::unsupported(
-                format!("{name} keeps the experts its GPUs do not hold in the computer's memory: they take {}, and {} is free", gib(all), gib(host)),
-                "A machine with that much memory runs it, or its hummingbird level, whose experts the disk holds too",
-            ));
-        }
-        // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
         let family = crate::dynamic::split::family(text).unwrap_or("");
-        let rb = crate::dynamic::split::ram_bytes_table(table, nl, family, crate::dynamic::split::CODED_PCT, bf16);
-        // (a stage begins only where one may: `stage_starts`, a layer whose indexer is its own)
-        let Some((cuts, devices, places, held, freed)) =
-            crate::dynamic::split::places_plan_dense(&dense, base, &moe, room, mean, experts, sh.topk.max(1), &rb, &stage_starts(text, nl))
-        else {
-            return Err(Refusal::unsupported(
-                format!(
-                    "{name}: its weights besides the experts take {}, and the GPUs here leave too little room for its experts",
-                    gib(dense.iter().sum::<u64>() + base)
-                ),
-                "A machine whose GPUs have more memory free runs it",
-            ));
-        };
-        let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
-        let on_gpus = dense.iter().sum::<u64>() - freed
-            + base
-            + bounds.windows(2).zip(&places).map(|(w, &p)| moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * mean).sum::<u64>();
-        Ok((cuts, devices, places, on_gpus, all, experts, (held, ram_held(&rb, &dense, held))))
+        let ram = crate::dynamic::split::ram_bytes_table(table, nl, family, crate::dynamic::split::CODED_PCT, bf16);
+        Ok(CacheOf { dense, base, ram, moe, place: all / (layers * experts).max(1) as u64, experts, top_k: sh.topk, all, disk: false })
     }
 
     /// The plan `run` loads a model of a row whose experts come from a codes pack at the hummingbird level (`ExpertCache::Codes`: src/moe_cb.rs; the pack in
     /// `pack`, its `meta.json` and nothing else read), as `split::open_plan` loads it (src/dynamic/qwen4x.rs `stage`): on the GPU with the most free memory,
     /// the always-on matrices (the checkpoint's tensors but its routed experts and the tables its description reads on the host (`tables::off_gpu`), at the
-    /// lossless tiered layout's share of their bf16 bytes; the vision tower as released), `users` sequences' keys, values and states at the context and the
-    /// executor's scratch (`cache_reserve`), and in what the GPU has left beside its floor places a layer for the pack's largest expert of a layer
+    /// lossless tiered layout's share of their bf16 bytes; the vision tower as released), the users' keys, values and states at the context (`rows::SeqRoom`) and the
+    /// executor's scratch (`CACHE_SCRATCH`), and in what the GPU has left beside its floor places a layer for the pack's largest expert of a layer
     /// (`CbPack::place_bytes`), every layer's places alike, as many as fit (all a layer keeps at most). Every expert of the layers is in the computer's memory
     /// as the pack's files mapped: `host` free less `HOST_MARGIN` holds what it holds (`--host-memory` asks less), the files the rest, read as the router asks.
     /// The tables read by rows are the checkpoint's files'. Refused in words where the GPU leaves no place a layer, or the pack lacks a layer of the model.
@@ -4568,10 +4540,15 @@ pub mod sizing {
         let (per, base) = crate::dynamic::split::layer_bytes_table(&on_gpu, nl, 100, crate::dynamic::split::TIERED_PCT, &|n| !n.contains(".experts."));
         let vision: u64 = on_gpu.rows.iter().filter(|r| matches!(crate::sizes::classify(&r.name, nl), crate::sizes::Part::Vision)).map(|r| r.bytes).sum();
         let always = per.iter().sum::<u64>() + base + vision;
-        // (the sequences' keys, values and states, the description's as the loader lowers it, and the executor's scratch: `cache_reserve`)
+        // (the sequences' keys, values and states first, the description's as the loader lowers it, by the executor's rule (`rows::SeqRoom`): a server's users each
+        // their whole context as its pools hold them, a run's one sequence its rings and states (`rows::layer_rooms`); then the executor's scratch; the places last)
         let low = crate::dynamic::split::lowered_of(&c, ctx + DYN_CHUNK + 16).map_err(cannot)?;
         let work = CACHE_SCRATCH;
-        let kv = cache_reserve(&low, users, &crate::dynamic::Stage::whole(nl)) - work;
+        let (users, kv) = if served(a) {
+            crate::dynamic::SeqRoom::of(&low, ctx, DYN_CHUNK).plan(users, u64::MAX).unwrap_or((users, 0))
+        } else {
+            (1, crate::dynamic::layer_rooms(&low, ctx, DYN_CHUNK).iter().sum())
+        };
         let t = devs.iter().max_by_key(|t| t.free).ok_or_else(|| Refusal::unsupported(format!("{name}: no GPU to plan it on"), ""))?;
         let floor = crate::plan::CONTEXT_FLOOR;
         let room = t.free.saturating_sub(floor + always + kv + work);
@@ -4710,7 +4687,7 @@ pub mod sizing {
         PACK.get().and_then(|p| codes_at(p)).or_else(|| codes_beside(dir))
     }
 
-    /// `kimi_cache` with every layer across all the GPUs of `room` (src/dynamic/tp.rs): each GPU holds its slice of the rows of each big matrix (the embedding
+    /// Kimi-K3's expert cache (`kimi_experts`) with every layer across all the GPUs of `room` (src/dynamic/tp.rs): each GPU holds its slice of the rows of each big matrix (the embedding
     /// whole, and every matrix too small or of rows that do not divide), its sequence's bytes `kv` whole, and the same places a layer, each a slice of an
     /// expert's; the least room of the GPUs sets the places.
     pub(crate) fn kimi_cache_tp(
@@ -4721,7 +4698,7 @@ pub mod sizing {
         kv: u64,
         twelve: bool,
         host: Option<u64>,
-    ) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize)> {
+    ) -> Done<Cached> {
         let c = crate::kimi::ConfigKimi::parse(text, "config.json", None).map_err(cannot)?;
         let n = room.len().max(1) as u64;
         let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
@@ -4764,7 +4741,16 @@ pub mod sizing {
             ));
         }
         let on_gpus = n * (held + layers * places as u64 * (expert / n));
-        Ok((Vec::new(), room.iter().map(|r| r.0).collect(), vec![places; room.len()], on_gpus, all, e.experts))
+        Ok(Cached {
+            cuts: Vec::new(),
+            devices: room.iter().map(|r| r.0).collect(),
+            places: vec![places; room.len()],
+            on_gpus,
+            all,
+            experts: e.experts,
+            ram: all,
+            dense: (0, 0),
+        })
     }
 
     /// Each GPU's room for weights on the dynamic route: its free memory less the reserve and the route's work (the KV, the scratch and the graphs together;
@@ -4852,8 +4838,15 @@ pub mod sizing {
     /// `size_dynamic_row` at `ctx` tokens of context for `users` sequences (`c`: the config parsed once). The sequences' keys, values and states are its description's,
     /// lowered as its loader lowers it (`split::lowered_of`), by the executor's own rule (`rows::SeqRoom`, `rows::layer_rooms`): each layer's share of one
     /// sequence's, and a server's least for its users beside, are held with its weights where the layers are cut; on one GPU the whole model is one engine, whose
-    /// server's users share pools of what the GPU leaves them (as many as their states leave one sequence's context room); a run's one sequence, and stages and
-    /// layers across GPUs, hold one sequence, each part its own of it.
+    /// server's users share pools of what the GPU leaves them (as many as their states leave one sequence's context room); with its experts in the expert cache,
+    /// every user's whole context first, the engine's work next and the cache's places what is left (`expert_cache`), the users held or refused in words; a run's
+    /// one sequence, and stages and layers across GPUs, hold one sequence, each part its own of it.
+    ///
+    /// The keys and values bf16, or in the executor's 12-bit lossless pages where GLYD_KV=lossless asks for them for a server (`twelve_pages`) and its description
+    /// has rings the pages take in pools (`SeqRoom::pages`, by its attention kinds: heads of 128, 256 or 512, latents; never by its family): both are lossless, so
+    /// the pages are taken by `one_gpu_pages`' rule, only where they reserve no more than bf16 for the plan's users (`SeqRoom::most_bytes`: every one holding the
+    /// context, with what the pages spend once), or where bf16 does not fit and they do; a check of the pages against their own plan takes them wherever they fit
+    /// (`twelve_always`).
     #[allow(clippy::too_many_arguments)]
     fn size_dynamic_at(
         a: &Args,
@@ -4868,6 +4861,44 @@ pub mod sizing {
         reach: &dyn Fn(&[i32]) -> bool,
         ctx: usize,
         users: usize,
+    ) -> Done<LoadPlan> {
+        // (the sequences' keys, values and states: the description's lowered as the loader lowers it, at the context, for the users. A description the executor does
+        // not lower (a shape its kernels do not take, which its loader refuses) is sized by the config's estimate of one sequence, `Shape`, a layer its share)
+        let low = crate::dynamic::split::lowered_of(c, ctx + DYN_CHUNK + 16).ok();
+        let bf16 = low.as_ref().map(|l| crate::dynamic::SeqRoom::of(l, ctx, DYN_CHUNK));
+        let held = |seq: Option<crate::dynamic::SeqRoom>, pages: bool| {
+            size_dynamic_held(a, name, table, dir, text, c, row, devs, host, reach, ctx, users, low.as_ref(), seq, pages)
+        };
+        let Some(t) = low.as_ref().filter(|_| twelve_pages(a)).and_then(|l| crate::dynamic::SeqRoom::pages(l, ctx, DYN_CHUNK)) else {
+            return held(bf16, false);
+        };
+        let fewer = bf16.as_ref().is_some_and(|b| t.most_bytes(users) <= b.most_bytes(users));
+        match (held(bf16, false), held(Some(t), true)) {
+            (Ok(b), Ok(p)) => Ok(if twelve_always() || fewer { p } else { b }),
+            (Err(_), Ok(p)) => Ok(p),
+            (b, _) => b,
+        }
+    }
+
+    /// `size_dynamic_at` with the sequences' rule `seq` of the lowered description `low` (None: the config's estimate), its keys and values in 12-bit pages where
+    /// `pages` (a server's pools with the whole model on one GPU, else refused: elsewhere each part holds one sequence in rings of its own, in bf16).
+    #[allow(clippy::too_many_arguments)]
+    fn size_dynamic_held(
+        a: &Args,
+        name: &str,
+        table: &crate::sizes::Table,
+        dir: Option<&Path>,
+        text: &str,
+        c: &ModelConfig,
+        row: &'static Support,
+        devs: &[Target],
+        host: Option<u64>,
+        reach: &dyn Fn(&[i32]) -> bool,
+        ctx: usize,
+        users: usize,
+        low: Option<&crate::dynamic::ModelDesc>,
+        seq: Option<crate::dynamic::SeqRoom>,
+        pages: bool,
     ) -> Done<LoadPlan> {
         let (family, route) = (row.name, row.route);
         // (the tables its description reads on the host take none of the GPUs' memory: their bytes are the computer's, the checkpoint's files mapped)
@@ -4887,18 +4918,15 @@ pub mod sizing {
             Some(d) => crate::dynamic::split::hb_layer_bytes(d, nl).map_err(cannot)?,
             None => Vec::new(),
         };
-        // (the sequences' keys, values and states: the description's lowered as the loader lowers it, at the context, for the users. A description the executor does
-        // not lower (a shape its kernels do not take, which its loader refuses) is sized by the config's estimate of one sequence, `Shape`, a layer its share)
-        let seq = crate::dynamic::split::lowered_of(c, ctx + DYN_CHUNK + 16).ok().map(|low| (crate::dynamic::SeqRoom::of(&low, ctx, DYN_CHUNK), low));
-        let rooms = match &seq {
-            Some((_, low)) => crate::dynamic::layer_rooms(low, ctx, DYN_CHUNK),
+        // (one sequence's keys, values and states, each layer its share: the description's (`layer_rooms`), else the config's estimate)
+        let rooms = match low {
+            Some(low) => crate::dynamic::layer_rooms(low, ctx, DYN_CHUNK),
             None => {
                 let sh = crate::plan::Shape::from_model(c).map_err(cannot)?;
                 vec![((sh.kv_full * ctx as f64 + sh.kv_sliding * ctx.min(sh.window.max(1)) as f64 + sh.state) / nl.max(1) as f64) as u64; nl]
             }
         };
         let one_seq = rooms.iter().sum::<u64>();
-        let seq = seq.map(|s| s.0);
         // (the loaders that take penguin's 12-bit layout for their bf16 matrices, which an HBM GPU reads faster where it fits: the row says (`Route::bf16_twelve`);
         // a release with no FP8 matrices takes it on every GPU but Ada's where it fits, as the one-GPU paths choose it (`best_layout`) and as their checks
         // of several sequences at once ran)
@@ -4907,31 +4935,34 @@ pub mod sizing {
         let twelve_faster = hbm || (no_f8 && !devs.is_empty() && devs.iter().all(|t| !crate::weights::smallest_is_fastest(t.cc)));
         // (a stage begins at a layer that takes nothing from the one before it: `stage_starts`)
         let starts = stage_starts(text, nl);
-        // (each layer's bytes with its share of the sequences': one sequence's, each layer its own (`layer_rooms`); a server's, one GPU holding the whole model and
-        // its users' least (`SeqRoom::least_bytes`: one sequence's context and every user's states beside), the rest with the first layer)
-        let place = |served: bool| {
+        // (each layer's bytes with its share of the sequences': one sequence's, each layer its own (`layer_rooms`), and `more` beside them with the first layer)
+        let with = |more: u64| -> Vec<u64> {
             let mut kv: Vec<u64> = if rooms.len() == nl {
                 rooms.clone()
             } else {
                 (0..nl).map(|l| one_seq / nl.max(1) as u64 + (l == 0) as u64 * (one_seq % nl.max(1) as u64)).collect()
             };
-            if let (Some(k), Some(seq)) = (kv.first_mut().filter(|_| served), &seq) {
-                *k += seq.least_bytes(users).saturating_sub(one_seq);
+            if let Some(k) = kv.first_mut() {
+                *k += more;
             }
-            let extra: Vec<u64> = (0..nl).map(|l| kv[l] + hb_experts.get(l).copied().unwrap_or(0)).collect();
-            (crate::dynamic::split::fit_table_with(table, nl, &room, twelve_faster, takes_twelve, &extra, &starts), kv)
+            kv
         };
-        // (a server's users are held where one GPU holds the whole model beside them; where it does not, the layers cut over GPUs hold one sequence, as a run's)
-        let mut served = served(a) && seq.is_some();
-        let (mut fitted, mut kv_layers) = place(served);
+        let place = |kv: &[u64]| {
+            let extra: Vec<u64> = (0..nl).map(|l| kv[l] + hb_experts.get(l).copied().unwrap_or(0)).collect();
+            crate::dynamic::split::fit_table_with(table, nl, &room, twelve_faster, takes_twelve, &extra, &starts)
+        };
+        // (a server's users are held where one GPU holds the whole model beside their least (`SeqRoom::least_bytes`: one sequence's context and every user's states
+        // beside); where it does not, the layers cut over GPUs hold one sequence, as a run's)
+        let serving = served(a) && seq.is_some();
+        let mut served = serving;
+        let mut kv_layers = with(seq.as_ref().filter(|_| serving).map_or(0, |s| s.least_bytes(users).saturating_sub(one_seq)));
+        let mut fitted = place(&kv_layers);
         if served && !matches!(&fitted.1, Some((c, d)) if c.is_empty() && d.len() == 1) {
             served = false;
-            (fitted, kv_layers) = place(false);
+            kv_layers = with(0);
+            fitted = place(&kv_layers);
         }
         let ((per, base), cut, coded, mut twelve) = fitted;
-        let held = kv_layers.iter().sum::<u64>();
-        // (the weights alone: the sequences' bytes held with them where the layers were cut are counted apart)
-        let mut total = (per.iter().sum::<u64>() + base).saturating_sub(held);
         let chosen = a.flag("split").is_some() || a.flag("devices").is_some();
         // (every layer across the GPUs, src/dynamic/tp.rs: by default on datacenter GPUs that reach each other directly, where no split is asked for; a
         // development build's GLYD_TP=1 or 0 says so itself, GLYD_TP_GPUS which GPUs)
@@ -4948,46 +4979,78 @@ pub mod sizing {
                 Some(_) => false,
                 None => route.across == Across::Default && hbm && reach(&tp_devs),
             };
-        // a family whose loader packs its experts itself, where the GPUs do not hold them (`ExpertCache::Packed`): the expert cache (each GPU's room after the other
-        // weights as places for its layers' experts, every expert in the computer's memory)
-        // (a hummingbird directory's own expert cache for any family, its layers cut over the GPUs, never every layer across them)
-        // (a release whose experts the cache takes as released, src/tiering.rs (`ExpertCache::Release`: FP4 experts, FP8 ones, lossless bf16 ones); its cache where its GPUs do not hold it)
-        // (a release of such a row with no experts, the Qwen3.5 layout's dense one, has none to keep there)
+        // the expert cache where the GPUs do not hold the model whole, its experts read by one rule whatever their source (`expert_cache`): a hummingbird directory's
+        // for any family, its layers cut over the GPUs, never every layer across them; a release's as released (src/tiering.rs, `ExpertCache::Release`: FP4 experts,
+        // FP8 ones, lossless bf16 ones; a release of such a row with no experts, the Qwen3.5 layout's dense one, has none to keep there); a family's whose loader packs
+        // its experts itself (`ExpertCache::Packed`), every layer across the GPUs where they take it so (`kimi_cache_tp`)
         let has_experts = table.rows.iter().any(|r| r.name.contains(".experts."));
         let release_cached = route.expert_cache == ExpertCache::Release && has_experts && !hb && cut.is_none() && !chosen;
+        let packed = route.expert_cache == ExpertCache::Packed && !hb && cut.is_none() && !chosen;
         let across = across && !hb && !release_cached;
-        let mut ram = None;
-        // (the last layers' dense matrices in the computer's memory where a token's experts do not fit beside them on one GPU: how many, their bytes)
-        let mut dense_ram = (0usize, 0u64);
-        let cache = if let Some(dir) = hb_dir.filter(|_| cut.is_none() && !chosen) {
-            let k = hb_cache(dir, text, nl, &room, name, &kv_layers, hbm, host)?;
-            (ram, dense_ram) = (Some(k.6), k.7);
-            Some((k.0, k.1, k.2, k.3, k.4, k.5))
+        let source = if let Some(dir) = hb_dir.filter(|_| cut.is_none() && !chosen) {
+            Some(hb_dir_experts(dir, text, nl, hbm)?)
         } else if release_cached {
-            // (R12: its experts in the cache, every one in the computer's memory)
-            let k = release_cache(table, text, nl, &room, name, &kv_layers, hbm, host)?;
-            (ram, dense_ram) = (Some(k.4), k.6);
-            Some((k.0, k.1, k.2, k.3, k.4, k.5))
-        } else if route.expert_cache == ExpertCache::Packed && !hb && cut.is_none() && !chosen {
-            Some(if across {
-                kimi_cache_tp(table, text, &tp_room, name, one_seq, hbm, host)?
-            } else {
-                let k = kimi_cache(table, text, nl, &room, name, &kv_layers, hbm, host)?;
-                dense_ram = k.6;
-                (k.0, k.1, k.2, k.3, k.4, k.5)
-            })
+            Some(release_experts(table, text, nl, hbm)?)
+        } else if packed && !across {
+            Some(kimi_experts(table, text, nl, hbm)?)
         } else {
             None
         };
+        // (a server's users on one GPU beside the expert cache: every user's whole context first (`SeqRoom::plan` of them all, as the pools take them), the engine's
+        // work next (`room` keeps it apart), the places what the GPU has left: --users is held, or refused in words with the numbers. Where the places fill more than
+        // one GPU, the stages hold one sequence, as a run's)
+        let mut cache = None;
+        if let (Some(src), Some(s)) = (&source, seq.as_ref().filter(|_| serving)) {
+            let users_kv = |k: usize| with(s.plan(k, u64::MAX).map_or(0, |p| p.1).saturating_sub(one_seq));
+            match expert_cache(src, text, &room, name, &users_kv(users), host) {
+                Ok(c) if c.cuts.is_empty() && c.devices.len() == 1 => (served, kv_layers, cache) = (true, users_kv(users), Some(c)),
+                Err(_) if room.len() == 1 => {
+                    // (one sequence's refusal first, where even one does not fit: the computer's memory, or the GPU's room beside the weights)
+                    expert_cache(src, text, &room, name, &kv_layers, host)?;
+                    let most = (1..users).rev().find(|&k| expert_cache(src, text, &room, name, &users_kv(k), host).is_ok());
+                    let gpu = devs.iter().find(|t| t.ordinal == room[0].0);
+                    let free = gpu.map_or(0, |t| t.free);
+                    let (weights, all) = (src.dense.iter().sum::<u64>() + src.base, s.plan(users, u64::MAX).map_or(0, |p| p.1));
+                    return Err(Refusal::unsupported(
+                        format!(
+                            "{name} at {level}, its experts in the computer's memory, takes about {} of GPU memory for {users} users at {ctx} tokens of context: {} of weights besides the experts, {} of keys, values and states for the users, {} for a token's experts in every layer and {} for the engine's work, and the {} has {} free",
+                            gib(weights + all + src.token_bytes() + free.saturating_sub(room[0].1)),
+                            gib(weights),
+                            gib(all),
+                            gib(src.token_bytes()),
+                            gib(free.saturating_sub(room[0].1)),
+                            gpu.map_or("GPU", |t| t.name.as_str()),
+                            gib(free)
+                        ),
+                        match most {
+                            Some(k) => format!("Ask for fewer users (--users {k}) or less context (--context {}), or use a GPU with more memory free", (ctx / 2).max(LOSSY_MIN_CTX)),
+                            None => "Ask for less context (--context 4096), or use a GPU with more memory free".to_string(),
+                        },
+                    ));
+                }
+                _ => {}
+            }
+        }
+        let cache = match (cache, &source) {
+            (Some(c), _) => Some(c),
+            (None, Some(src)) => Some(expert_cache(src, text, &room, name, &kv_layers, host)?),
+            (None, None) if packed && across => Some(kimi_cache_tp(table, text, &tp_room, name, one_seq, hbm, host)?),
+            (None, None) => None,
+        };
+        let held = kv_layers.iter().sum::<u64>();
+        // (the weights alone: the sequences' bytes held with them where the layers were cut are counted apart)
+        let mut total = (per.iter().sum::<u64>() + base).saturating_sub(held);
+        // (the last layers' dense matrices in the computer's memory where a token's experts do not fit beside them on one GPU: how many, their bytes)
+        let dense_ram = cache.as_ref().map_or((0, 0), |k| k.dense);
         if let Some(k) = &cache {
             // (the places' plans hold the sequences' bytes with the layers' weights too: every GPU its own across them)
-            total = k.3.saturating_sub(if across { tp_room.len() as u64 * one_seq } else { held });
+            total = k.on_gpus.saturating_sub(if across { tp_room.len() as u64 * one_seq } else { held });
             twelve = hbm;
         }
         // (what the GPUs would take of the model and of its sequences at the least, for the refusals)
         let need = total + held;
         let (cuts, devices) = if let Some(k) = &cache {
-            (k.0.clone(), k.1.clone())
+            (k.cuts.clone(), k.devices.clone())
         } else if across {
             // (each GPU its slice of the big matrices and the rest whole: about its share of the bytes and the embedding's and head's)
             // ponytail: the share is an estimate; a GPU that runs out of memory says so at the load
@@ -5040,6 +5103,12 @@ pub mod sizing {
         // the sequences: on one GPU the whole model is one engine (`split::Run::One`), a server's users in pools of what the GPU leaves them (`SeqRoom::plan`); a
         // run's one sequence, and stages and layers across GPUs, one sequence at a time, its rings and states as each part loads them (across: every GPU the whole)
         let whole = cuts.is_empty() && devices.len() == 1 && !across;
+        if pages && !(whole && served) {
+            return Err(Refusal::unsupported(
+                format!("{name}: 12-bit KV pages are a server's pools with the whole model on one GPU; this plan holds one sequence in each part"),
+                "Its plan in bf16",
+            ));
+        }
         let (users, kv) = if let Some(seq) = seq.as_ref().filter(|_| whole && served) {
             let gpu = devs.iter().find(|t| t.ordinal == devices[0]);
             let left = gpu.map_or(0, |t| crate::plan::dynamic_room_of(t.free)).saturating_sub(total);
@@ -5060,9 +5129,9 @@ pub mod sizing {
         };
         let used: Vec<&Target> = devs.iter().filter(|t| devices.contains(&t.ordinal)).collect();
         let (free, work) = (used.iter().map(|t| t.free).sum::<u64>(), used.iter().map(|t| crate::plan::dynamic_work_of(t.free)).sum::<u64>());
-        let host_bytes = cache.as_ref().map_or(0, |k| k.4);
-        // (a hummingbird directory's cache: its places, the experts' bytes at their mean, the memory and the disk they take)
-        let experts = cache.as_ref().zip(ram).map(|(k, ram)| {
+        let host_bytes = cache.as_ref().map_or(0, |k| k.all);
+        // (the expert cache: its places, the experts' bytes at their mean, the memory and the disk they take)
+        let experts = cache.as_ref().map(|k| {
             // (its layers of experts: a hummingbird directory's own; a release's, the layers the table lists experts of)
             let layers = match hb_dir.and_then(|d| crate::hb_pack::HbDir::open(d).ok().flatten()) {
                 Some(d) => d.layers.len(),
@@ -5070,11 +5139,11 @@ pub mod sizing {
             };
             crate::offload::CachePlan {
                 layers,
-                experts: k.5,
-                slots: k.2.iter().min().copied().unwrap_or(0),
-                expert_bytes: k.4 / (layers * k.5).max(1) as u64,
+                experts: k.experts,
+                slots: k.places.iter().min().copied().unwrap_or(0),
+                expert_bytes: k.all / (layers * k.experts).max(1) as u64,
                 in_place: true,
-                ram,
+                ram: k.ram,
             }
         });
         // (each stage's layers' experts: a hummingbird directory's files, else the table's expert tensors)
@@ -5098,7 +5167,7 @@ pub mod sizing {
             weights: total + host_bytes + dense_ram.1 + tables,
             bf16: 0,
             kv,
-            kv12: false,
+            kv12: pages,
             work,
             draft: 0,
             reserve: used.len() as u64 * crate::plan::CONTEXT_FLOOR,
@@ -5111,8 +5180,8 @@ pub mod sizing {
                 across,
                 coded,
                 twelve,
-                places: cache.as_ref().map_or(Vec::new(), |k| k.2.clone()),
-                experts_per_layer: cache.as_ref().map_or(0, |k| k.5),
+                places: cache.as_ref().map_or(Vec::new(), |k| k.places.clone()),
+                experts_per_layer: cache.as_ref().map_or(0, |k| k.experts),
                 host_bytes,
                 host_per_stage,
                 gpu_bytes: total,
@@ -7126,7 +7195,7 @@ mod tests {
         let (kinds, _) = crate::runtime::describe::describe_dir(dir).unwrap();
         let d = match case {
             // (the dense layout by its reader's config, the layout with experts by its kinds alone: `qwen35::load_stage`)
-            "qwen35" | "qwen35moe" => match crate::qwen35::Config35::load(dir) {
+            "qwen35" | "qwen35-wide" | "qwen35moe" => match crate::qwen35::Config35::load(dir) {
                 Ok(c) => crate::dynamic::qwen35::lowered(dir, &c, &Stage::whole(c.layers)),
                 Err(_) => crate::dynamic::lower::qwen35(&kinds, Vec::new(), max_pos, &Stage::whole(kinds.desc.blocks.len() / 2)),
             },
@@ -7204,6 +7273,109 @@ mod tests {
                 assert_eq!((lp.users, lp.kv), (1, seq.rings + seq.state), "{case} {machine}: run's one sequence");
             }
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The 12-bit pages by kind on the dynamic route, at the releases' shapes (#332: Qwen3.8-27B's heads of 256, Kimi-K3's latents of 512 + 64, GLM-5.3-Flash's
+    /// latents): every ring the pages take is fewer bytes a token in them than in bf16 (`SeqRoom::pages`; the latent's 576 values as 5 heads of 128, one stream),
+    /// so 32 users at 8,192 tokens each reserve less in them than in bf16 (`SeqRoom::most_bytes`, the rule's figure), and one user at the context more (what the
+    /// pages spend once: a raw slab for every page of the sequence and the rows a pass unpacks).
+    #[test]
+    fn the_releases_attention_kinds_reserve_less_in_twelve_bit_pages_for_many_users() {
+        let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
+        let kimi: serde_json::Value = serde_json::from_str(&fixture("headers/Kimi-K3.json")).unwrap();
+        let cases = [
+            ("Qwen3.8-27B", json::to_compact(q35.get("Qwen/Qwen3.8-27B").unwrap())),
+            ("Kimi-K3", kimi["config"].as_str().unwrap().to_string()),
+            ("GLM-5.3-Flash", fixture("glm5_next_config.json")),
+        ];
+        let ctx = 8192;
+        for (name, text) in cases {
+            let c = crate::runtime::config::ModelConfig::parse(&text).unwrap();
+            let low = crate::dynamic::split::lowered_of(&c, ctx + sizing::DYN_CHUNK + 16).unwrap_or_else(|e| panic!("{name}: {}", e.msg));
+            let b = crate::dynamic::SeqRoom::of(&low, ctx, sizing::DYN_CHUNK);
+            let t = crate::dynamic::SeqRoom::pages(&low, ctx, sizing::DYN_CHUNK).unwrap_or_else(|| panic!("{name}: no ring in 12-bit pages"));
+            let taken = crate::dynamic::twelve_bit_rings(&low).into_iter().flatten().count();
+            eprintln!(
+                "{name}: {taken} rings in 12-bit pages, {:?} bytes a token against bf16's {:?}; once {} bytes; 32 users {} against {}, one {} against {}",
+                t.per,
+                b.per,
+                t.once,
+                t.most_bytes(32),
+                b.most_bytes(32),
+                t.most_bytes(1),
+                b.most_bytes(1)
+            );
+            assert!(taken > 0 && t.once > 0 && t.per.iter().zip(&b.per).all(|(x, y)| x <= y) && t.per != b.per, "{name}");
+            assert!(t.most_bytes(32) < b.most_bytes(32), "{name}: 32 users reserve less in 12-bit pages");
+            assert!(t.most_bytes(1) > b.most_bytes(1), "{name}: one user reserves more in 12-bit pages");
+        }
+    }
+
+    /// The 12-bit KV pages are planned by kind on every route of the executor (#332), never by family: a server's plan with GLYD_KV=lossless takes them where its
+    /// description has rings in pools the pages take (`rows::twelve_bit_rings`: heads of 128, 256 or 512 channels, latents) and they reserve no more than bf16 for its
+    /// users (`one_gpu_pages`' rule; a check's `twelve_always` takes them wherever they fit), and says so (`kv_format`). On the random cases of the dynamic route:
+    /// 32 users on an L4 and an RTX 4080 SUPER are planned in them where a token is fewer bytes in them than in bf16 (the Qwen3.5 layout's heads of 256, GLM-5.3's
+    /// latent of 128), in bf16 where it is more (Kimi-K3's random latent of 192 as 2 heads of 128 and GLM-5.3-Flash's of 64 as one: padded, more than bf16), and
+    /// for a check in them, every plan's bytes holding one sequence's context in each group's pool by the executor's rule (`Dyn::page`: the plan's bytes less the
+    /// states, block 0 and what the pages spend once, over each group's 12-bit bytes a token); one user at the context in bf16, a check's in 12-bit pages of more
+    /// bytes; `run`'s one sequence and plans with nothing asked in bf16; heads of 64 (muse) and the compressed attention (deepseek-v4) never in them. The Qwen3.5
+    /// layout's lossy route the same (kestrel). Before, the planner planned 12-bit pages for Gemma 4 and the plain dense kind alone.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_twelve_bit_pages_are_planned_by_kind_on_every_route() {
+        let dir = std::env::temp_dir().join(format!("glyd-plan-kv12-kinds-{}", std::process::id()));
+        let plan = |machine: &str, more: &[&str], lossless: bool, always: bool| -> LoadPlan {
+            let f = sizing::always_twelve(always, || sizing::asking_lossless(lossless, || planned_fit(&dir, machine, more)));
+            f.plan.chosen.as_ref().and_then(|c| c.load.clone()).unwrap_or_else(|| panic!("{machine} {more:?}: {:?}", f.refusal))
+        };
+        let mut twelve = Vec::new();
+        for case in ["qwen35", "qwen35-wide", "kimi", "kimi-dsa", "glm", "glm-dsa", "muse", "deepseek-v4"] {
+            let _ = std::fs::remove_dir_all(&dir);
+            crate::logits::random_model(case, &dir).unwrap();
+            for machine in ["l4", "rtx4080s"] {
+                let users = ["--users", "32"];
+                let (b, t, check) = (plan(machine, &users, false, false), plan(machine, &users, true, false), plan(machine, &users, true, true));
+                assert!(!b.kv12 && b.kind == Kind::Dynamic, "{case} {machine}: nothing asked, bf16: {}", b.text());
+                let d = loader_desc(case, &dir, check.context + check.chunk + 16);
+                let Some(pages) = crate::dynamic::SeqRoom::pages(&d, check.context, check.chunk) else {
+                    assert!(!t.kv12 && !check.kv12, "{case} {machine}: no ring the pages take, bf16: {}", check.text());
+                    assert!(matches!(case, "muse" | "deepseek-v4"), "{case}: no ring in 12-bit pages");
+                    continue;
+                };
+                let bf16 = crate::dynamic::SeqRoom::of(&d, check.context, check.chunk);
+                let smaller = pages.per.iter().zip(&bf16.per).all(|(x, y)| x <= y);
+                assert_eq!(t.kv12, smaller, "{case} {machine}: 12-bit pages where they reserve less ({:?} against {:?}): {}", pages.per, bf16.per, t.text());
+                assert!(check.kv12 && check.kv_format() == "12-bit" && check.text().contains("keys and values in 12-bit pages"), "{case} {machine}");
+                assert!(check.json("m").contains(r#""kv_format":"12-bit""#) && check.gpu_total() <= check.free, "{case} {machine}: {}", check.text());
+                // (the executor's pools of the plan's bytes: its budget less the pages' once-only bytes, over each group's 12-bit bytes a token)
+                let budget = bf16.pool_budget(check.users, check.kv, pages.once);
+                let most: Vec<usize> = pages.least.iter().map(|&b| b * check.users).collect();
+                let keep: Vec<Option<usize>> = pages.least.iter().map(|_| None).collect();
+                let blocks = crate::dynamic::pool_blocks(budget, &pages.per, &pages.covers, &keep, &most, &pages.least);
+                assert!(blocks.iter().zip(&pages.least).all(|(b, l)| b >= l), "{case} {machine}: {blocks:?} of {:?}", pages.least);
+                // (one user at the context: bf16 for a server, the pages of more bytes for a check; run's one sequence bf16 whatever is asked)
+                let (one, one_check) = (plan(machine, &["--users", "1"], true, false), plan(machine, &["--users", "1"], true, true));
+                assert!(!one.kv12 && one_check.kv12 && one_check.kv > one.kv, "{case} {machine}: {} / {}", one.text(), one_check.text());
+                assert!(!plan(machine, &[], true, true).kv12, "{case} {machine}: run's one sequence");
+                if t.kv12 {
+                    twelve.push(case);
+                }
+            }
+            // (the Qwen3.5 layout's lossy route, by the same rule)
+            if case == "qwen35" {
+                let lossy = |lossless: bool| -> LoadPlan {
+                    let f = sizing::asking_lossless(lossless, || {
+                        planned(&args(&["fit", &format!("{}:kestrel", dir.display()), "--machine", "l4", "--users", "32"]))
+                    });
+                    f.unwrap().plan.chosen.and_then(|c| c.load).expect("a plan")
+                };
+                let (b, t) = (lossy(false), lossy(true));
+                assert!(b.kind == Kind::Qwen35 && !b.kv12 && t.kv12 && t.level == "kestrel", "{} / {}", b.text(), t.text());
+            }
+        }
+        twelve.dedup();
+        assert_eq!(twelve, ["qwen35", "qwen35-wide", "glm-dsa"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -7615,6 +7787,65 @@ mod tests {
         assert_eq!(base.clone().with_table(&crate::sizes::Table::default()).params(), base.params());
     }
 
+    /// A server of a model whose experts are in the expert cache, on one GPU (#239, the planner's rule for every route): every user's keys, values and states at the
+    /// context first, as the pools take them (`rows::SeqRoom`, each user's whole context), the engine's work kept apart, the cache's places what is left; `--users`
+    /// held (eight here, where the plan held one and its pools then had no block), or refused in words with the numbers where the GPU leaves no place for a token's
+    /// experts beside them. GLM-5.3 as released (its headers), on a GPU of the room asked for.
+    #[test]
+    fn a_cached_models_users_come_before_its_places() {
+        let (config, table) = (fixture("glm_moe_dsa_config.json"), glm53_table());
+        let nl = crate::dynamic::split::config_num(&config, "num_hidden_layers").unwrap();
+        let src = sizing::release_experts(&crate::dynamic::tables::off_gpu(&table, &config).0, &config, nl, false).unwrap();
+        let (layers, ctx) = (src.moe.iter().filter(|&&m| m).count() as u64, 4096usize);
+        // (eight users' whole contexts as the pools hold them: the executor's rule)
+        let c = crate::runtime::config::ModelConfig::parse(&config).unwrap();
+        let low = crate::dynamic::split::lowered_of(&c, ctx + sizing::DYN_CHUNK + 16).unwrap();
+        let seq = crate::dynamic::SeqRoom::of(&low, ctx, sizing::DYN_CHUNK);
+        let eight = seq.plan(8, u64::MAX).unwrap();
+        assert!(eight.0 == 8 && eight.1 > seq.least_bytes(1), "{eight:?}");
+        let weights = src.dense.iter().sum::<u64>() + src.base;
+        // (the least free memory whose room holds `want`)
+        let gpu_for = |want: u64| {
+            let (_, free) = (0..48).fold((0u64, 1u64 << 40), |(lo, hi), _| {
+                let mid = lo + (hi - lo) / 2;
+                if crate::plan::dynamic_room_of(mid) >= want {
+                    (lo, mid)
+                } else {
+                    (mid + 1, hi)
+                }
+            });
+            Target { ordinal: 0, name: "NVIDIA A10".into(), cc: (8, 6), total: free, free, host: None, cublas: Some(false) }
+        };
+        let host = Some(src.all + HOST_MARGIN + (1 << 30));
+        let at = ctx.to_string();
+        let plan_on =
+            |gpu: &Target, w: &[&str]| sizing::size_dynamic(&args(w), "GLM-5.3", &table, None, &config, "GLM-5.3", std::slice::from_ref(gpu), host, &|_| false);
+        // a GPU whose room holds the weights besides the experts, the eight users and a third of the experts
+        let gpu = gpu_for(weights + eight.1 + src.all / 3);
+        let room = crate::plan::dynamic_room_of(gpu.free);
+        let served = plan_on(&gpu, &["serve", "GLM-5.3", "--context", &at, "--users", "8"]).unwrap();
+        // the eight users held, their bytes the pools' for each one's whole context
+        assert_eq!((served.users, served.kv, served.context), (8, eight.1, ctx), "{}", served.text());
+        // the places what is left of the room after the weights besides the experts and the users' bytes, every layer's alike on one GPU
+        let places = ((room - weights - eight.1) / (layers * src.place)) as usize;
+        assert!(places > src.top_k && places < src.experts, "{places} of {}", src.experts);
+        let sp = served.spread.as_ref().unwrap();
+        assert_eq!((sp.cuts.len(), sp.places.clone()), (0, vec![places]), "{}", served.text());
+        assert!(served.weights_on_gpu() + served.kv <= room, "{}", served.text());
+        // one sequence (a run) takes the places that are left beside it; `fit --users 8` plans what `serve` loads
+        let run = plan_on(&gpu, &["run", "GLM-5.3", "--context", &at]).unwrap();
+        assert!(run.users == 1 && run.kv < served.kv && run.spread.as_ref().unwrap().places[0] >= places, "{}", run.text());
+        let fit = plan_on(&gpu, &["fit", "GLM-5.3", "--context", &at, "--users", "8"]).unwrap();
+        assert_eq!(fit, served);
+        // a GPU whose room holds the eight users and a token's experts a layer: eight served with the least places, sixty-four refused with the numbers
+        let small = gpu_for(weights + eight.1 + src.token_bytes());
+        let p = plan_on(&small, &["serve", "GLM-5.3", "--context", &at, "--users", "8"]).unwrap();
+        assert_eq!((p.users, p.spread.as_ref().unwrap().places.clone()), (8, vec![src.top_k]), "{}", p.text());
+        let e = plan_on(&small, &["serve", "GLM-5.3", "--context", &at, "--users", "64"]).unwrap_err();
+        assert!(e.what.contains(&format!("for 64 users at {ctx} tokens of context")) && e.what.contains("keys, values and states for the users"), "{}", e.what);
+        assert!(e.fix.contains("Ask for fewer users (--users 8)"), "{}", e.fix);
+    }
+
     /// P2b: a model of the dynamic route is planned before its files are here, from its shards' headers by ranges, and the plan is the one its files give once they
     /// are: GLM-5.3-Flash's tensors (names, types and shapes of the real header, every large dimension cut by 64 so that the shards are megabytes) on a Hub in
     /// miniature, against the same shards in a directory, on each machine that holds them.
@@ -7762,12 +7993,8 @@ mod tests {
         assert!(l.plan.is_none() && l.steps.is_empty() && l.refusal.is_none());
     }
 
-    /// GLM-5.3's release (tests/fixtures/glm_moe_dsa_tensors.json, its headers): each layer's bytes count its latent attention's kv_b_proj and its indexer's
-    /// products, released in FP8, at the bf16 the loader holds them as (two bytes a value: 23.9 MB more on a layer with its own indexer, 14.7 MB on one
-    /// lent its picks); a stage begins only at a layer whose indexer is its own (layers 0, 1, 2, then every fourth: `stage_starts`), and the cuts over
-    /// eight GPUs of 136 GB are at such layers.
-    #[test]
-    fn glm53_stages_begin_where_an_indexer_picks() {
+    /// GLM-5.3's release as its headers list it (tests/fixtures/glm_moe_dsa_tensors.json: its tensors, and its experts' as runs of the same names).
+    fn glm53_table() -> crate::sizes::Table {
         let t = json::parse(&fixture("glm_moe_dsa_tensors.json")).unwrap();
         let row = |name: String, v: &Value| {
             let (dtype, shape) = (v.as_array().unwrap()[0].as_str().unwrap().to_string(), v.as_array().unwrap()[1].as_u64s().unwrap());
@@ -7785,7 +8012,16 @@ mod tests {
                 rows.extend(run.get("tensors").and_then(Value::as_object).unwrap().iter().map(|(n, v)| row(format!("{p}{e}.{n}"), v)));
             }
         }
-        let table = crate::sizes::Table { rows };
+        crate::sizes::Table { rows }
+    }
+
+    /// GLM-5.3's release (tests/fixtures/glm_moe_dsa_tensors.json, its headers): each layer's bytes count its latent attention's kv_b_proj and its indexer's
+    /// products, released in FP8, at the bf16 the loader holds them as (two bytes a value: 23.9 MB more on a layer with its own indexer, 14.7 MB on one
+    /// lent its picks); a stage begins only at a layer whose indexer is its own (layers 0, 1, 2, then every fourth: `stage_starts`), and the cuts over
+    /// eight GPUs of 136 GB are at such layers.
+    #[test]
+    fn glm53_stages_begin_where_an_indexer_picks() {
+        let table = glm53_table();
         let (per, _) = crate::dynamic::split::layer_bytes_table(&table, 78, 100, 100, &|_| true);
         let raw = |l: usize| table.rows.iter().filter(|r| crate::sizes::layer_of(&r.name) == Some(l)).map(|r| r.bytes).sum::<u64>();
         assert_eq!((per[2] - raw(2), per[3] - raw(3)), (28672 * 512 + 4096 * 2048 + 128 * 6144, 28672 * 512));

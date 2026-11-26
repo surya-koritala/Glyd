@@ -101,11 +101,6 @@ impl<'e> LayerImpl<Cuda<'e>> for Piece {
         0
     }
 
-    /// The executor captures its own graphs (a decode step's, a pass's pieces: src/dynamic/pieces.rs); a piece run through the seam is eager.
-    fn capturable(&self) -> bool {
-        false
-    }
-
     fn run(&mut self, cx: &mut StepCx<Cuda<'e>>, x: &mut Rows) -> Result<()> {
         let e = cx.queue.e;
         if cx.positions.len() != x.n || cx.tokens.len() != x.n {
