@@ -1164,9 +1164,15 @@ fn load_part(
         }
     };
     let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
+    let lossless = matches!(layout, Layout::Tiered | Layout::Twelve);
+    // (a layer in the computer's memory keeps its packed matrices, from the bf16 an FP8 one dequantises to: not as released, so not where one is)
+    if lossless && v7.is_none() {
+        let ram: Vec<&[String]> =
+            (0..d.mats.len()).filter(|&k| k != d.embed && want.is_none_or(|w| w[k]) && in_ram(k).is_some()).map(|k| &d.mats[k].members[..]).collect();
+        crate::dense_ram::refuse_released_f8(&ck, d.family, placing.ram.count(), &ram)?;
+    }
     // (a matrix released in FP8 with its block scales, at a lossless level, on the GPU: held as released, the E4M3 bytes bit for bit; this GPU's whole
     // blocks of its rows where every layer is across a group of GPUs)
-    let lossless = matches!(layout, Layout::Tiered | Layout::Twelve);
     let as_f8 = |k: usize| -> Option<(usize, usize)> {
         let it = &d.mats[k];
         (lossless && v7.is_none() && in_ram(k).is_none() && k != d.embed).then(|| crate::f8::released_shape(&ck, &it.members)).flatten()
