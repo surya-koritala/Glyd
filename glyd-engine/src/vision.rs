@@ -871,13 +871,7 @@ mod tests {
         use ureq::unversioned::resolver::Resolver;
         let uri: ureq::http::Uri = "http://rebind.example/x.png".parse().unwrap();
         let cfg = ureq::config::Config::default();
-        let ask = |ips: Vec<&'static str>| {
-            PublicOnly(Fixed(ips)).resolve(
-                &uri,
-                &cfg,
-                ureq::unversioned::transport::NextTimeout { after: ureq::unversioned::transport::time::Duration::NotHappening, reason: ureq::Timeout::Global },
-            )
-        };
+        let ask = |ips: Vec<&'static str>| PublicOnly(Fixed(ips)).resolve(&uri, &cfg, ureq::unversioned::transport::NextTimeout::default());
         for ips in [vec!["127.0.0.1"], vec!["169.254.169.254"], vec!["10.0.0.5"], vec!["93.184.216.34", "192.168.1.1"], vec!["192.168.1.1", "93.184.216.34"]] {
             let e = ask(ips.clone()).map(|_| ()).unwrap_err().to_string();
             assert!(e.contains("only public addresses"), "{ips:?}: {e}");

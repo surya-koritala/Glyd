@@ -1,5 +1,5 @@
 //! The codes pack (glyd-hbr-codes/2: a model's routed experts as rows of codebook codes in a rotated basis, as research/qwen-data/qwen_pack.py writes it; kernels/glm_cb.cu has the arithmetic)
-//! as the expert cache's codebook block reads it (src/moe_qwen4x.rs): its `meta.json`, each layer's file mapped into memory as it is (the pack's tensors are two runs of bytes there,
+//! as the Moe kind's codes block reads it (src/moe_cb.rs): its `meta.json`, each layer's file mapped into memory as it is (the pack's tensors are two runs of bytes there,
 //! the codebooks of the kept experts and then their codes, an expert's downT before its up; unpinned page cache, which the system takes back when it needs the memory), and where each
 //! kept expert's bytes are (`LayerMap`) for the expert cache's places and the streaming prefill. GLM-5.3-Flash's own block over these packs went with its development engine's serving
 //! (R13, #234): the executor tiers GLM's experts by hummingbird and the block levels (R12).
@@ -430,18 +430,20 @@ impl CbPack {
 
     /// The bytes the experts of every layer take as `pin_layer` copies them (each expert's codes and codebooks, 64-byte aligned), without mapping a file.
     pub fn expert_bytes(&self) -> usize {
+        self.layers.iter().map(|(l, _)| self.layer_bytes(*l)).sum()
+    }
+
+    /// The bytes layer `l`'s kept experts take as `pin_layer` copies them (`expert_bytes`'s share of the layer; 0 for a layer the pack does not hold).
+    pub fn layer_bytes(&self, l: usize) -> usize {
         let (hid, inter) = (self.hidden, self.inter);
-        self.layers
-            .iter()
-            .map(|(_, m)| {
-                m.fmts
-                    .iter()
-                    .map(|&(u, d)| {
-                        (inter * d.row_bytes(hid) + 2 * inter * u.row_bytes(hid)).next_multiple_of(64)
-                            + ((inter * d.entries() + 2 * inter * u.entries()) * 2).next_multiple_of(64)
-                    })
-                    .sum::<usize>()
-            })
-            .sum()
+        self.layer(l).map_or(0, |m| {
+            m.fmts
+                .iter()
+                .map(|&(u, d)| {
+                    (inter * d.row_bytes(hid) + 2 * inter * u.row_bytes(hid)).next_multiple_of(64)
+                        + ((inter * d.entries() + 2 * inter * u.entries()) * 2).next_multiple_of(64)
+                })
+                .sum()
+        })
     }
 }

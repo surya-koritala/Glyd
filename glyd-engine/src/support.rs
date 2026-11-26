@@ -34,8 +34,9 @@ pub enum Family {
     DeepSeekV41,
     Muse,
     /// Qwen3.8-Flash-Next (the Qwen 4 preview, `qwen4_exp`): penguin on the dynamic route, every expert on the GPUs: one, or its layers cut over several
-    /// (src/dynamic/qwen4x.rs `stage`, src/dynamic/split.rs). Its packs of codebook experts (Condor's precise, best and fast) are served by
-    /// `qwenserve CKPT PACK --port` (one GPU, or `--gpus 0,1`) until `glyd run` resolves them (ROADMAP P8).
+    /// (src/dynamic/qwen4x.rs `stage`, src/dynamic/split.rs); hummingbird on one GPU from a codes pack of its experts beside its weights (`DIR/pack`, the release's
+    /// precise, best and fast packs' format: src/moe_cb.rs), every expert in the computer's memory and places of them on the GPU (`ExpertCache::Codes`).
+    /// `qwenserve CKPT PACK --port` serves a pack from anywhere, on one GPU or `--gpus 0,1`.
     FlashNext,
 }
 
@@ -107,6 +108,9 @@ pub enum ExpertCache {
     Packed,
     /// An expert's bytes as released, each the same (`release_cache`).
     Release,
+    /// A codes pack of the experts beside the release's weights at the hummingbird level (src/cb_pack.rs, src/moe_cb.rs): places of the pack's largest expert
+    /// a layer, every expert the pack's bytes in the computer's memory, its files mapped (`codes_plan`).
+    Codes,
 }
 
 /// The linears of a layer a loader can keep in the computer's memory (src/dense_ram.rs), copied to the GPU before the layer runs.
@@ -133,6 +137,7 @@ const NONE: &[&str] = &[];
 const PENGUIN: &[&str] = &["penguin"];
 /// Lossless, or the routed experts at hummingbird's bits (a directory `glyd-engine pack --layout hummingbird --usage` makes: src/hb_pack.rs).
 const PENGUIN_HB: &[&str] = &["penguin", "hummingbird"];
+const HB: &[&str] = &["hummingbird"];
 
 pub static TABLE: [Support; 11] = [
     Support {
@@ -265,14 +270,14 @@ pub static TABLE: [Support; 11] = [
     Support {
         family: Family::FlashNext,
         name: "Qwen3.8-Flash-Next",
-        levels: PENGUIN,
-        hummingbird_packed_only: false,
+        levels: PENGUIN_HB,
+        hummingbird_packed_only: true,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
         split_levels: PENGUIN,
-        experts_in_ram_levels: NONE,
+        experts_in_ram_levels: HB,
         drafts: true,
-        route: Route { sizing: Sizing::Dynamic, ..ONE_GPU },
+        route: Route { sizing: Sizing::Dynamic, expert_cache: ExpertCache::Codes, ..ONE_GPU },
     },
 ];
 
@@ -487,15 +492,17 @@ mod tests {
         }
         assert!(check(&q38, "Qwen/Qwen3.8-27B", "Qwen3.8-27B", "hummingbird").is_err());
         assert_eq!(row(Family::Qwen35).split_levels, ["penguin"], "its layers cut over the GPUs at penguin, as the dynamic route cuts them");
-        // (Qwen3.8-Flash-Next: penguin on the dynamic route, its layers cut over the GPUs as the route cuts them; its packs of codebook experts are not a level of
-        // glyd run yet)
+        // (Qwen3.8-Flash-Next: penguin on the dynamic route, its layers cut over the GPUs as the route cuts them; hummingbird from the codes pack beside its weights,
+        // on one GPU)
         let x = fixture("qwen4x_config.json");
-        assert!(check(&x, "Qwen/X", "X", "penguin").is_ok());
-        for l in ["kestrel", "hummingbird"] {
-            let r = check(&x, "Qwen/X", "X", l).unwrap_err();
-            assert_eq!(r.what, format!("X (Qwen3.8-Flash-Next) runs at the penguin level in this engine, not {l}"), "{r:?}");
+        for l in ["penguin", "hummingbird"] {
+            assert!(check(&x, "Qwen/X", "X", l).is_ok(), "{l}");
         }
-        assert!(row(Family::FlashNext).split_levels == ["penguin"] && row(Family::FlashNext).route.sizing == Sizing::Dynamic);
+        let r = check(&x, "Qwen/X", "X", "kestrel").unwrap_err();
+        assert_eq!(r.what, "X (Qwen3.8-Flash-Next) runs at the penguin and hummingbird levels in this engine, not kestrel", "{r:?}");
+        let fx = row(Family::FlashNext);
+        assert!(fx.split_levels == ["penguin"] && fx.route.sizing == Sizing::Dynamic && fx.route.expert_cache == ExpertCache::Codes);
+        assert!(fx.experts_in_ram_levels == ["hummingbird"] && fx.hummingbird_packed_only);
         assert_eq!(crate::dynamic::split::family(&x), Some("Qwen3.8-Flash-Next"), "opened by the dynamic route from its release's directory");
         let g = fixture("gemma4_12b_config.json");
         assert!(check(&g, "google/gemma-4-12B-it", "gemma-4-12B-it", "wren").is_ok(), "a QAT checkpoint's wren runs in every build");
