@@ -928,7 +928,7 @@ Recent families first; the legacy pipelines move last, at parity, so they can be
 | 7 | **DeepSeek-V4, Kimi-K3, GLM-5.3-Flash, Muse Spark**: batched rows, paged MLA latent and compressed-entry groups, KDA state slots, expert tiering on the MoE kind | R12 #232, #327, R13 #234 | the large recent families; single-user parity on their reference boxes first, then rows | `tp_cache.rs` special cases, the GLM development engine |
 | 8 | content-addressed blocks and the radix index; state snapshots for GDN/KDA | R4c #142 | needs paged KV on the recent families first | `Pager`'s 64-bit chain |
 | 9 | **Qwen3.8-Flash-Next (Condor)** | R3d #140 | the shipping consumer path; within 3% of v0.33.0 | `model_qwen4x.rs`, `Qx`, `qwen4x_serve.rs` sizing (deleted) |
-| 10 | recent releases not loaded yet: GLM-5.3, Qwen3.8-2.4T-A95B, Kimi-K3.1-Pro, DeepSeek-V4.1, DSpark drafters | #333 | descriptions on the kinds steps 5-9 built | - |
+| 10 | recent releases not loaded on 2026-11-20 (GLM-5.3 and DeepSeek-V4.1 are loaded since, at penguin: `support.rs`): GLM-5.3, Qwen3.8-2.4T-A95B, Kimi-K3.1-Pro, DeepSeek-V4.1, DSpark drafters | #333 | descriptions on the kinds steps 5-9 built | - |
 | 11 | the standard families: Llama 3, Mistral, Qwen 2/2.5, Phi-4, Granite, OLMo, SmolLM (the M2 gate's list) | F1a #166, F1b #167, F1d #169, F1e #170, F1h #173 | one GQA + SwiGLU kind with parameters; proves "config only" | the vLLM plugin path for them (F7, later) |
 | 12 | legacy at parity: Qwen3.5/3.6 and gemma-4-31B (same code as step 5), Nemotron-3-Super/Nemotron-H, Qwen3 dense with its lossless paged KV | R3b #137, R3c #139 | pipelines deleted; no optimisation beyond parity | `model35.rs`, `model_gemma4.rs`, `model_nh.rs`, `model.rs` |
 
