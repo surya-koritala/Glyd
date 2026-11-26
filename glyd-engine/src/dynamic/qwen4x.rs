@@ -381,12 +381,13 @@ pub fn load_pack(dir: &Path, pack: &Path, precise: bool, users: usize, o: &Opts)
     load_cached(dir, o, &Caching::new(pack, PackMode::of(pack, precise), users))
 }
 
-/// The GPUs `--gpus` names (`GLYD_GPUS` of tools/serve.sh), GPU 0 where it names none: one, or several to cut the layers over (a GPU named twice: two parts on
-/// it, the split's check on one GPU). Anything else is refused in words.
-pub fn gpus(a: &crate::args::Args) -> Result<Vec<i32>> {
-    let Some(asked) = a.flag("gpus") else { return Ok(vec![0]) };
+/// The GPUs `--gpus` names (`GLYD_GPUS` of tools/serve.sh): one, or several to cut the layers over (a GPU named twice: two parts on it, the split's check on
+/// one GPU); None where it names none (`http` then plans on every GPU and the plan takes the one with the most room, as `fit` and `serve` plan the pack).
+/// Anything else is refused in words.
+pub fn gpus(a: &crate::args::Args) -> Result<Option<Vec<i32>>> {
+    let Some(asked) = a.flag("gpus") else { return Ok(None) };
     let named: Option<Vec<i32>> = asked.split(',').map(|x| x.trim().parse::<i32>().ok().filter(|&n| n >= 0)).collect();
-    named.ok_or_else(|| {
+    named.map(Some).ok_or_else(|| {
         crate::ffi::Error(format!("--gpus {asked}: GPU numbers, comma-separated (--gpus 1 for the second card, --gpus 0,1 to cut the layers over two)"))
     })
 }
@@ -472,7 +473,8 @@ pub(crate) fn serve_plan(
         layout: form.layout,
         hi: form.hi,
         sides: form.sides.clone(),
-        cut: devs.len() > 1,
+        // (the layers cut over the GPUs where they are named or a cut is asked; else the plan takes one of them, the one with the most room)
+        cut: devs.len() > 1 && (a.flag("gpus").is_some() || a.flag("split").is_some()),
         split,
         places,
         host_memory,
@@ -500,7 +502,13 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     let name = a.flag("name").unwrap_or("qwen3.8-flash-next").to_string();
     let ctx = a.either("context", "ctx", 33536usize)?;
     let users = users_of(a)?;
-    let gpus = gpus(a)?;
+    // (the GPUs named; none named: every GPU of the Ampere generation or newer, whose plan takes the one with the most room for the model whole, the GPU `fit`
+    // and `serve` plan it on (GPU 0 alone where a cut is asked with none named, refused for want of a GPU for each part))
+    let gpus = match gpus(a)? {
+        Some(g) => g,
+        None if a.flag("split").is_some() => vec![0],
+        None => Dev::probe_all()?.into_iter().filter(|g| g.cc.0 >= 8).map(|g| g.ordinal).collect(),
+    };
     // (the plan, before anything listens or loads: the GPUs named, the pack's sidecars and the matrices' layouts as the flags select them (`Form`: four bits
     // with the attention and the LM head at five by default, as the release has been served))
     let form = form_of(a, pack)?;
@@ -782,6 +790,8 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
         .map(String::from)
         .chain(["--ctx", &ctx.to_string(), "--chunk", &chunk.to_string(), "--places", &places.to_string(), "--users", &users.to_string()].map(String::from))
         .chain(["gpus", "split"].into_iter().filter_map(|f| a.flag(f).map(|v| [format!("--{f}"), v.to_string()])).flatten())
+        // (GPU 0 where the check names none: the server's GPU is the one the scheduler beside it runs on, `o` below)
+        .chain(a.flag("gpus").is_none().then(|| ["--gpus".to_string(), "0".to_string()]).into_iter().flatten())
         .chain(mode_words.iter().map(|w| w.to_string()))
         .collect();
     let served = crate::args::Args::from(words);
@@ -1016,14 +1026,14 @@ mod tests {
         serde_json::from_str(m["config"].as_str().unwrap()).unwrap()
     }
 
-    /// `--gpus` (`GLYD_GPUS` of tools/serve.sh) names the GPUs the family runs on: GPU 0 where none is named, one, or a list to cut the layers over (a GPU named
-    /// twice: two parts on it); what is not a list of GPU numbers is refused in words.
+    /// `--gpus` (`GLYD_GPUS` of tools/serve.sh) names the GPUs the family runs on: one, or a list to cut the layers over (a GPU named twice: two parts on it);
+    /// none named is None (every GPU, the plan's choice: `http`); what is not a list of GPU numbers is refused in words.
     #[test]
     fn gpus_names_the_gpus_or_is_refused_in_words() {
         let gpus = |g: &[&str]| super::gpus(&crate::args::Args::from(["qwenserve", "ckpt", "pack"].iter().chain(g).map(|w| w.to_string())));
-        assert_eq!(gpus(&[]).unwrap(), [0]);
-        assert_eq!((gpus(&["--gpus", "1"]).unwrap(), gpus(&["--gpus", " 2 "]).unwrap()), (vec![1], vec![2]));
-        assert_eq!((gpus(&["--gpus", "0,1"]).unwrap(), gpus(&["--gpus", "0, 0"]).unwrap()), (vec![0, 1], vec![0, 0]));
+        assert_eq!(gpus(&[]).unwrap(), None);
+        assert_eq!((gpus(&["--gpus", "1"]).unwrap(), gpus(&["--gpus", " 2 "]).unwrap()), (Some(vec![1]), Some(vec![2])));
+        assert_eq!((gpus(&["--gpus", "0,1"]).unwrap(), gpus(&["--gpus", "0, 0"]).unwrap()), (Some(vec![0, 1]), Some(vec![0, 0])));
         for bad in ["", "x", "0,", "1.5", "-1"] {
             let e = gpus(&["--gpus", bad]).unwrap_err().to_string();
             assert!(e.contains(&format!("--gpus {bad}: GPU numbers")) && e.contains("--gpus 0,1 to cut the layers over two"), "{bad:?}: {e}");

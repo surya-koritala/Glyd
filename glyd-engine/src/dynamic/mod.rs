@@ -2651,7 +2651,10 @@ impl Dyn {
         self.v4.as_ref().map_or(crate::cpu_fp4::Sim::Off, |v| v.dims.sim)
     }
 
+    /// A new sequence: the cache emptied, the states zeroed. Its GPU is made current on this thread first, as every pass outside the scheduler begins here or at
+    /// `prefill` / `step` (the scheduler's rounds: `ModelStep::make_current`): a look at another GPU on this thread since the last pass leaves this one's work its own.
     pub fn reset(&mut self) -> Result<()> {
+        self.dev.make_current()?;
         self.n = 0;
         self.pending = None;
         self.head_reset();
@@ -2676,6 +2679,7 @@ impl Dyn {
 
     /// The last pass's logits as the bf16 words the head wrote (the last row's).
     pub fn logit_words(&self) -> Result<Vec<u16>> {
+        self.dev.make_current()?;
         self.dev.sync()?;
         let mut words = vec![0u16; self.big.d.vocab];
         self.big.logits.read(0, &mut words)?;
@@ -4101,6 +4105,7 @@ impl Dyn {
 
     /// The prompt after the tokens already in the cache, in chunks; the token that follows it.
     pub fn prefill(&mut self, tokens: &[u32]) -> Result<Sample> {
+        self.dev.make_current()?;
         if tokens.is_empty() {
             return err("an empty prompt");
         }
@@ -4174,6 +4179,7 @@ impl Dyn {
 
     /// One token through the model (the graph where there is one); the token after it.
     pub fn step(&mut self, token: u32) -> Result<Sample> {
+        self.dev.make_current()?;
         self.step_with(token, true)
     }
 

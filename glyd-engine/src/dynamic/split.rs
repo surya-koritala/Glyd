@@ -716,6 +716,13 @@ impl crate::sched::ModelStep for Run {
     fn slots(&self) -> Option<usize> {
         Some(1)
     }
+    /// One GPU: its engine's context (it runs on this thread); stages and every layer across GPUs run on threads of their own, each its GPU's.
+    fn make_current(&mut self) -> Result<()> {
+        match self {
+            Run::One(e) => e.dev.make_current(),
+            _ => Ok(()),
+        }
+    }
     fn eos(&self) -> Vec<i64> {
         match self {
             Run::One(e) => e.desc().eos.clone(),
@@ -904,7 +911,7 @@ fn dynamic_row(f: crate::support::Family) -> Option<&'static str> {
 /// (`Dyn::take_plan`). Nothing is sized here. `m`: the directory's config.json, parsed once (the plan's): every stage's loader reads the model from it.
 pub fn open_plan(dir: &Path, m: &ModelConfig, plan: &crate::plan::LoadPlan, offload: crate::offload::Offload) -> Result<Run> {
     let sp = plan.spread.as_ref().ok_or_else(|| Error("a plan of the dynamic route spreads the model (Spread)".into()))?;
-    let o = Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device: sp.devices[0], layout: Some(plan.layout) };
+    let o = plan_opts(plan)?;
     let ram = plan.experts.filter(|c| c.ram < c.host_bytes()).map(|c| crate::offload::HostMemory { bytes: c.ram, total: c.host_bytes() });
     let (cuts, devices) = (&sp.cuts, &sp.devices);
     let mut run = if sp.host_bytes == 0 {
@@ -928,6 +935,14 @@ pub fn open_plan(dir: &Path, m: &ModelConfig, plan: &crate::plan::LoadPlan, offl
     // (its sequences' keys, values and states the plan's: on one GPU their pools take its bytes, no more)
     crate::conv::Gen::take_plan(&mut run, plan.users, plan.kv);
     Ok(run)
+}
+
+/// The options a plan that spreads the model (`Spread`) loads it with: its context, prompt chunk and layout, on the GPU of its first stage (the plan's GPU where
+/// it is whole; each stage on its own, `Run::new`). The GPU is the plan's whichever it is: nothing here or after takes GPU 0 for it.
+pub fn plan_opts(plan: &crate::plan::LoadPlan) -> Result<Opts> {
+    let device =
+        plan.spread.as_ref().and_then(|sp| sp.devices.first().copied()).ok_or_else(|| Error("a plan of the dynamic route names its GPUs (Spread)".into()))?;
+    Ok(Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device, layout: Some(plan.layout) })
 }
 
 /// Whether the model of `dir` has experts of the Moe kind's latent block (`experts::latent_block`: a latent of their own projections whose sum is normed),

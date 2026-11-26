@@ -77,6 +77,8 @@ pub struct Dev {
     module: CuModule,
     /// The context the Dev's memory, stream and kernels are in (the GPU's primary one, or its own: `new_own`).
     ctx: *mut c_void,
+    /// Its context is its own (`new_own`): `let_go` destroys it.
+    own: bool,
 }
 
 impl Dev {
@@ -100,8 +102,13 @@ impl Dev {
         self.cc
     }
 
-    /// The GPU `ordinal`: its name, compute capability, memory (total and free now) and the driver's CUDA version.
+    /// The GPU `ordinal`: its name, compute capability, memory (total and free now) and the driver's CUDA version. A look: the context current on this thread
+    /// is the same after it (`keeping_context`), so a look at any GPU leaves an engine on another one its own context on the thread it runs on.
     pub fn probe(ordinal: i32) -> Result<Gpu> {
+        keeping_context(|| Dev::probe_now(ordinal))
+    }
+
+    fn probe_now(ordinal: i32) -> Result<Gpu> {
         let (count, version) = (D::count()?, D::version()?);
         if count == 0 || ordinal >= count {
             return err(format!("no GPU {ordinal}: the driver sees {count}"));
@@ -155,7 +162,8 @@ impl Dev {
         Dev::open(ordinal, false)
     }
 
-    /// The GPU in a context of its own, not its primary one (what a second GPU is to the engine, where there is one GPU: the check of a model split over GPUs, `--gpus 0,0`). Current on this thread after it.
+    /// The GPU in a context of its own, not its primary one (what a second GPU is to the engine, where there is one GPU: the check of a model split over GPUs, `--gpus 0,0`; a
+    /// rate measured, destroyed after by `let_go`). Current on this thread after it.
     pub fn new_own(ordinal: i32) -> Result<Dev> {
         Dev::open(ordinal, true)
     }
@@ -210,7 +218,7 @@ impl Dev {
             module = unsafe { D::module_load(fatbin.as_ptr() as *const c_void)? };
             MODULES.lock().unwrap_or_else(|e| e.into_inner()).push((ctx as usize, module as usize));
         }
-        Ok(Dev { ordinal, name, cc: (major, minor), sms, total_mem: total, stream: s, module, ctx })
+        Ok(Dev { ordinal, name, cc: (major, minor), sms, total_mem: total, stream: s, module, ctx, own })
     }
 
     /// A kernel of kernels/engine.cu by name.
@@ -236,9 +244,41 @@ impl Dev {
         D::stream_sync(self.stream)
     }
 
-    /// (free, total) device memory in bytes.
+    /// (free, total) device memory of this Dev's GPU in bytes, whichever context is current on the thread (it is the same after).
     pub fn mem_info(&self) -> Result<(usize, usize)> {
-        D::mem_info()
+        in_ctx(self.ctx as usize, D::mem_info)
+    }
+
+    /// This Dev let go of what it made: its stream and the engine's module it loaded (the kernels `here` looked up in its context are looked up again, from a
+    /// module still loaded there), and a context of its own (`new_own`) destroyed with all it held. A Dev in a context of its own let go leaves the GPU's memory
+    /// as it was before it; one in the primary context leaves what that context keeps once a kernel has run in it. What a short look at a GPU opens and leaves
+    /// behind it (a rate measured, `costs::probe_rates`), so a command that measures one before its plan reads the GPU's free memory as one that does not
+    /// (`fit` reads it before it measures, `run` and `serve` after: 39.1 and 39.0 GiB free of an A100 in their plans; 28 MiB apart on an RTX A6000 with the
+    /// module unloaded, none with the context destroyed). Every buffer, event and kernel of it are gone before.
+    pub fn let_go(self) -> Result<()> {
+        self.sync()?;
+        let (ctx, module) = (self.ctx as usize, self.module as usize);
+        MODULES.lock().unwrap_or_else(|e| e.into_inner()).retain(|&m| m != (ctx, module));
+        if let Some(f) = FOUND.get() {
+            f.lock().unwrap_or_else(|e| e.into_inner()).retain(|k, _| k.0 != ctx);
+        }
+        in_ctx(ctx, || {
+            // SAFETY: the Dev's own stream, synchronized, and its own module, of whose kernels nothing is held past this (the caller's buffers, kernels and
+            // events of it dropped; `here`'s looked up ones forgotten above); each let go once, as the Dev is consumed.
+            unsafe {
+                D::stream_destroy(self.stream)?;
+                if !self.module.is_null() {
+                    D::module_unload(self.module)?;
+                }
+            }
+            Ok(())
+        })?;
+        if self.own {
+            // SAFETY: the context `new_own` made for this Dev alone, of which nothing is used after (its buffers dropped, its module and stream let go above);
+            // the thread's current context is set again by the caller where it was this one (`keeping_context`).
+            unsafe { D::ctx_destroy(self.ctx)? };
+        }
+        Ok(())
     }
 
     /// The work queued on the stream captured into a graph: `body` runs with the stream capturing, nothing in it executes.
@@ -287,10 +327,13 @@ unsafe fn function_in(module: CuModule, name: &str) -> Result<Kernel> {
     Ok(Kernel(f))
 }
 
-/// The engine's modules by context, as the Devs loaded them (a module is kept for the process).
+/// The engine's modules by context, as the Devs loaded them (a module is kept for the process, but a Dev let go: `Dev::let_go`).
 static MODULES: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
 
 type Found = std::sync::Mutex<std::collections::HashMap<(usize, &'static str), usize>>;
+
+/// The kernels `here` looked up, by context and name.
+static FOUND: std::sync::OnceLock<Found> = std::sync::OnceLock::new();
 
 /// A kernel of the engine's by its type, in a module of the context current on this thread: what code with no `Dev` at hand launches (the library's
 /// operations the engine runs from its own fatbin, `fold.rs`). Looked up once a context and kept.
@@ -300,7 +343,6 @@ pub fn here<T: Typed>() -> Result<T> {
 
 /// `here` by the kernel's name alone (an untyped kernel: for its occupancy, not a launch).
 pub fn here_named(name: &'static str) -> Result<Kernel> {
-    static FOUND: std::sync::OnceLock<Found> = std::sync::OnceLock::new();
     let ctx = current_ctx()?;
     let found = FOUND.get_or_init(Default::default);
     if let Some(&f) = found.lock().unwrap_or_else(|e| e.into_inner()).get(&(ctx, name)) {
@@ -610,8 +652,8 @@ fn current_ctx() -> Result<usize> {
     Ok(D::current()? as usize)
 }
 
-/// `f` run, the context current on this thread as it was again after: a look at the GPUs (`Dev::probe`, a rate measured) makes each one's current in turn, and
-/// an engine on one GPU runs its work on the thread that loaded it, whose current context is its GPU's.
+/// `f` run, the context current on this thread as it was again after: a look at a GPU (`Dev::probe`) or a rate measured on one (`Dev::new` of each GPU) makes
+/// its context current, and an engine on one GPU runs its work on the thread that loaded it, whose current context is its GPU's.
 pub fn keeping_context<R>(f: impl FnOnce() -> R) -> R {
     let now = D::current().ok();
     let r = f();
@@ -1162,7 +1204,8 @@ impl Drop for Side {
 
 /// `bufcheck` (R1a: a buffer belongs to its context): two contexts on GPU 0, its primary one and one of its own (as the split's check on one GPU makes). A buffer of the
 /// second is written, read, zeroed and freed while the first is current, and the other way round: each does it in its own context, the thread's context is the same
-/// after, and the GPU's free memory comes back when the buffer goes (it was freed, not lost).
+/// after, and the GPU's free memory comes back when the buffer goes (it was freed, not lost). A look at the GPU (`Dev::probe`, as a report or the planner makes
+/// one after a load) and a Dev's free memory leave the thread's context the one current before, as an engine on another GPU needs of the thread it runs on.
 #[cfg(feature = "dev")]
 pub fn buf_check() -> Result<()> {
     let a = Dev::new(0)?;
@@ -1210,6 +1253,24 @@ pub fn buf_check() -> Result<()> {
     }
     drop(Buf::none());
     say(true, "a buffer of no bytes dropped".to_string());
+    // (a look made the GPU's primary context current, and an engine in another context then launched that one's kernels: a model on GPU 1 of two, 2026-11-26)
+    b.make_current()?;
+    let seen = Dev::probe(0)?;
+    say(current_ctx()? == ctx(&b), format!("a look at GPU 0 ({}) while another context is current: the thread's context the same after", seen.name));
+    let mine = a.mem_info()?;
+    say(
+        current_ctx()? == ctx(&b) && mine.1 == seen.total as usize,
+        "a Dev's free memory read while another context is current: its GPU's, the thread's context the same".to_string(),
+    );
+    // (a rate measured left its module and stream in the GPU's context: `fit` read the free memory before it measured, `run` and `serve` after, 39.1 and
+    // 39.0 GiB of an A100's in their plans)
+    let before = Dev::probe(0)?.free;
+    crate::costs::probe_rates(0)?;
+    let after = Dev::probe(0)?.free;
+    say(
+        after == before && current_ctx()? == ctx(&b),
+        format!("a rate measured on the GPU leaves its free memory as it was: {before} bytes free before, {after} after; the thread's context the same"),
+    );
     a.make_current()?;
     // a side's stream, copied, outlives the side as a stream: an event records on it, and the next side of the context takes it; a hundred sides one after
     // another make no stream past the first

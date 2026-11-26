@@ -290,6 +290,12 @@ pub trait ModelStep {
     fn cold(&mut self) -> Result<()> {
         Ok(())
     }
+    /// The step's GPU made current on this thread before the scheduler's work: a model on one GPU launches and allocates on the thread that runs it, and a look
+    /// at another GPU there (its free memory, a rate measured, another engine opened) would leave that one's context current. A step whose GPUs each run on a
+    /// thread of their own (stages, every layer across GPUs) has none to make.
+    fn make_current(&mut self) -> Result<()> {
+        Ok(())
+    }
     /// A check's: the routers' choices of the rows run from now on kept by sequence and place (`on`, what was kept before forgotten), or no longer (`row_choices`). A
     /// step with no view of them keeps none.
     fn trace_choices(&mut self, _on: bool) {}
@@ -570,6 +576,9 @@ impl ModelStep for &mut dyn ModelStep {
     }
     fn cold(&mut self) -> Result<()> {
         (**self).cold()
+    }
+    fn make_current(&mut self) -> Result<()> {
+        (**self).make_current()
     }
     fn trace_choices(&mut self, on: bool) {
         (**self).trace_choices(on)
@@ -1053,6 +1062,7 @@ impl<B: ModelStep> Sched<B> {
 
     /// A check's: the step in flight landed, then the step's expert cache back to its start (`ModelStep::cold`).
     pub fn cold(&mut self) -> Result<()> {
+        self.be.make_current()?;
         if let Some(f) = self.flight.take() {
             self.land(f)?;
         }
@@ -1249,6 +1259,7 @@ impl<B: ModelStep> Sched<B> {
 
     /// Every cached page that no sequence holds given up and cleared (the extra memory they hold goes back): of a scheduler that is idle, nothing is held.
     pub fn clear_cache(&mut self) -> Result<()> {
+        self.be.make_current()?;
         while self.drop_kept()? {}
         let clear = self.pager.drop_cache();
         if clear.is_empty() {
@@ -1351,6 +1362,8 @@ impl<B: ModelStep> Sched<B> {
     pub fn tick(&mut self) -> Result<()> {
         let t = std::time::Instant::now();
         let ta = std::time::Instant::now();
+        // (the step's GPU current on this thread, whatever looked at another GPU since the last round)
+        self.be.make_current()?;
         self.reap()?;
         self.join_loaded(false)?;
         let came = self.stats.prompt;
@@ -1408,6 +1421,8 @@ impl<B: ModelStep> Sched<B> {
 
     /// Every sequence ended with `msg`, the pages all free again.
     pub fn fail(&mut self, err: &crate::ffi::Error) {
+        // (its GPU current for what it lets go: where that fails, the error the sequences end with says what went wrong)
+        let _ = self.be.make_current();
         // (a step in flight: its samples are not taken)
         if self.flight.take().is_some() {
             self.be.abandon();
