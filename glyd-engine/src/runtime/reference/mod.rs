@@ -173,10 +173,14 @@ pub fn softmax(s: &mut [f32]) {
     }
 }
 
-/// A layer's weights by role (`kinds`), as f32.
+/// A layer's weights by role (`kinds`), as f32; and, where the reference simulates a release's quantizations of its activations (`RefModel::simulate`), the
+/// block of their E4M3 (`sim`, 32: the form of src/cpu_fp4.rs `Sim::B32`; 0: none) and the roles whose matrices are stored quantized, whose products take
+/// their input so rounded (`quantized`).
 #[derive(Clone, Debug, Default)]
 pub struct Params {
     pub t: HashMap<String, HostTensor>,
+    pub sim: usize,
+    pub quantized: std::collections::HashSet<String>,
 }
 
 impl Params {
@@ -201,6 +205,22 @@ impl Params {
         self.opt(role).ok_or_else(|| Error(format!("no weight for role {role}")))
     }
 
+    /// `x` as the release's simulation rounds a quantized product's input (the bf16 it holds, to E4M3 in blocks of `sim`: `cpu_fp4::fp8_sim`), or as it is where
+    /// the reference simulates none.
+    pub fn fp8(&self, x: &[f32]) -> Vec<f32> {
+        let mut q = x.to_vec();
+        self.quantize(&mut q, crate::cpu_fp4::fp8_sim, self.sim);
+        q
+    }
+
+    /// `x` in place as the release's simulation rounds it where the reference simulates one: the bf16 it holds, then `quant` in blocks of `block`.
+    pub fn quantize(&self, x: &mut [f32], quant: fn(&mut [f32], usize), block: usize) {
+        if self.sim > 0 {
+            x.iter_mut().for_each(|v| *v = bf16(*v));
+            quant(x, block);
+        }
+    }
+
     /// Whether `role` is a product here, dense or low-rank.
     pub fn has_prod(&self, role: &str) -> bool {
         self.has(role) || (self.has(&format!("{role}_a")) && self.has(&format!("{role}_b")))
@@ -208,6 +228,13 @@ impl Params {
 
     /// The product `role` on x (dense [out, in], or `role_b (role_a x)`), plus `role_bias` where there is one.
     pub fn prod(&self, role: &str, x: &[f32]) -> Result<Vec<f32>> {
+        let q;
+        let x = if self.sim > 0 && self.quantized.contains(role) {
+            q = self.fp8(x);
+            &q[..]
+        } else {
+            x
+        };
         let mut y = if let Some(w) = self.t.get(role) {
             if w.shape.len() != 2 || w.shape[1] != x.len() {
                 return err(format!("{role}: shape {:?} on an input of {}", w.shape, x.len()));

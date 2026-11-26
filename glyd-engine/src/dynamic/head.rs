@@ -486,8 +486,8 @@ impl Dyn {
 /// streams), `glm-dsa` and `glm-dsa-f8` (`logits::glm_dsa_mtp_random`: those cases' models to the bit, bf16 and as released in FP8, and their joined head: a
 /// latent attention with an indexer of its own and the experts), `deepseek-v4` and `deepseek-v41` (`logits::deepseek_v4_dspark_random`, `deepseek_v41_random`:
 /// those cases' models to the bit and their DSpark drafters, a block head over the compressed attention: its verify pass and rewind, the windows' and the
-/// compressors' across their blocks' boundaries; `--sim`: deepseek-v4 with the release's simulated quantizations, its head's figures said, not judged, as
-/// logitscheck's third part). For a short prompt and one past two chunks: (1) the drafted greedy generation against the model alone, N tokens:
+/// compressors' across their blocks' boundaries; `--sim`: deepseek-v4 and deepseek-v41 with their releases' simulated quantizations, the head's figures said, not judged,
+/// as logitscheck's third part). For a short prompt and one past two chunks: (1) the drafted greedy generation against the model alone, N tokens:
 /// every token and every one of its rows of logits the same bits (the round's verify rows are the steps'), the drafts and how many were kept said (the
 /// acceptance of a random head's own drafts: no quality); (2) the head held to the CPU reference of the kinds (`RefMtp::step_streams`, `RefMtp::step`,
 /// `RefDSpark::draft_taking`) on the states and tokens it read: each of its passes' last row (a block's every draft) against the reference's on the head's
@@ -516,8 +516,8 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let (k, tokens): (usize, usize) = (a.num("k", 3usize)?, a.num("tokens", 24usize)?);
     let split = super::split::split_args(a)?;
     let sim = a.has("sim");
-    if sim && case != "deepseek-v4" {
-        return err(format!("draftcheck {case} --sim: the release's simulated quantizations are deepseek-v4's (V4.1's blocks of 32 are not simulated)"));
+    if sim && !["deepseek-v4", "deepseek-v41"].contains(&case) {
+        return err(format!("draftcheck {case} --sim: the release's simulated quantizations are the compressed attention's (deepseek-v4, deepseek-v41)"));
     }
     let dir = std::env::temp_dir().join(format!("glyd-draftcheck-{}", std::process::id()));
     make(&dir)?;

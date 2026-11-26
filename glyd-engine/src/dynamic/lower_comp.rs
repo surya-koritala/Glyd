@@ -8,6 +8,7 @@
 use super::deepseek_v4::V4Opts;
 use super::ngram::{NgramAdd, NgramConv, NgramRows};
 use super::{Cand, HeadMix, IdxKeys, IdxPick, IdxScore, ModelDesc, MoeOp, NormW, Op, Ring, Slot, Stage, StreamsMix, V4Dims, SLOTS};
+use crate::cpu_fp4::Sim;
 use crate::ffi::{err, Error, Result};
 use crate::runtime::describe::{Described, Source};
 use crate::runtime::kinds::{Body, Collapse, Ffn, Mixer, Moe, Ngram, NgramForm, NormWeight, Residual, Rope, StreamsP};
@@ -131,13 +132,13 @@ struct Made {
 pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Opts) -> Result<(ModelDesc, Plan)> {
     let m = &d.desc;
     let what = "a compressed attention model";
-    // (the release's quantizations the kernels simulate are those of FP8 in blocks of 128: activations in 128s before each quantized product, the window's and
-    // the compressed entries' non-rotary channels FP8 in 64s, the indexer's FP4 after its Hadamard rotation. A release quantizing otherwise (DeepSeek-V4.1's
-    // blocks of 32: activations in 32s, its window FP8 whole, its entries FP4 in 16s, its indexer FP4 unrotated) runs without them: its weights' arithmetic)
-    let sim = vo.sim && d.fp8_block.is_none_or(|b| b == 128);
+    // (the release's quantizations the kernels simulate, by the form its FP8 blocks name (`Sim`: of 128, or of 32); a release of other blocks runs without them,
+    // its weights' arithmetic. Each quantized product's input to E4M3 in the release's blocks (`fb`; where not simulated, a copy))
+    let sim = Sim::of(d.fp8_block, vo.sim);
+    let fb = d.fp8_block.unwrap_or(128);
     // (and the library's FP8 products take blocks of 128 alone: a release of other blocks has its FP8 matrices held as the bf16 they decode to)
     let exact8 = vo.exact8 && d.fp8_block.is_none_or(|b| b == 128);
-    let vo = &V4Opts { sim, exact8, ..*vo };
+    let vo = &V4Opts { sim: sim != Sim::Off, exact8, ..*vo };
     // the layers' blocks: (an n-gram block, the attention, the experts)
     let mut at = Vec::new();
     let mut i = 0;
@@ -231,7 +232,7 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
         // an n-gram block before the layer, on the streams
         if let Some(b) = ng {
             let Body::Ngram(g) = &m.blocks[b].body else { unreachable!("checked above") };
-            ops.extend(ngram(&mut plan, &mut n, &mut states, vo, g, &d.blocks[b], b, d_)?);
+            ops.extend(ngram(&mut plan, &mut n, &mut states, vo, sim.block(), g, &d.blocks[b], b, d_)?);
             if let Some(Op::NgramRows(x)) = ops.iter().rev().find(|op| matches!(op, Op::NgramRows(_))) {
                 tables.push((x.table, g.table));
             }
@@ -281,10 +282,10 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
         rings.push(Ring::keys(hd, 1, c.window));
         ops.extend([
             Op::StreamsPre { mix: mix(h, &sa), norm: attn_norm, round: sa.rounding },
-            Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
+            Op::Fp8 { x: Slot::H, y: Slot::Hq, block: fb },
             wq_a.op(Slot::Hq, Slot::Proj, "attention: q down"),
             Op::RmsNorm { x: Slot::Proj, w: q_norm, y: Slot::Qr, weight: NormW::Plain, eps: c.norm_eps },
-            Op::Fp8 { x: Slot::Qr, y: Slot::Proj, block: 128 },
+            Op::Fp8 { x: Slot::Qr, y: Slot::Proj, block: fb },
             wq_b.op(Slot::Proj, Slot::Qo, "attention: q up"),
             Op::CompQ { rope, heads: nh, norm: c.q_head_norm },
             wkv.op(Slot::Hq, Slot::Kv, "attention: kv"),
@@ -396,12 +397,16 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
                 Some(src) => return err(format!("{what}: layer {l} reads block {src}'s picks, and the latest pick before it is block {picked_by:?}'s")),
             }
         }
+        ops.push(Op::CompAttn { ring, cache, ratio, picked: c.indexer.is_some(), sink, rope, heads: nh, hpg });
+        // (the form of blocks of 32 quantizes the attention's output before its grouped low rank, whose matrix it holds in bf16)
+        if sim == Sim::B32 {
+            ops.push(Op::Fp8 { x: Slot::Att, y: Slot::Att, block: fb });
+        }
         ops.extend([
-            Op::CompAttn { ring, cache, ratio, picked: c.indexer.is_some(), sink, rope, heads: nh, hpg },
             if stack {
-                Op::OGroupLoraStack { w: wo_a0, groups: og, ol, y: Slot::M, fp8: true }
+                Op::OGroupLoraStack { w: wo_a0, groups: og, ol, y: Slot::M, fp8: fb }
             } else {
-                Op::OGroupLora { w: wo_a0, in_f8: wo_a_f8, groups: og, hpg, ol, y: Slot::M, fp8: true }
+                Op::OGroupLora { w: wo_a0, in_f8: wo_a_f8, groups: og, hpg, ol, y: Slot::M, fp8: fb }
             },
             wo_b.op(Slot::M, Slot::O, "attention: o"),
             Op::StreamsPost { round: sa.rounding, gated: false },
@@ -417,8 +422,8 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
         let hash = if e.router.hash { Some(plan.small(vec![Piece::Tensor(one(er, "hash", eb)?)])) } else { None };
         ops.extend([
             Op::StreamsPre { mix: mix(f, &sf), norm: ffn_norm, round: sf.rounding },
-            Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
-            Op::Moe(MoeOp { x: Slot::Hq, hash, weigh_act: true, fp8: vo.sim, logit_scale: e.router.logit_scale, ..MoeOp::of(block) }),
+            Op::Fp8 { x: Slot::H, y: Slot::Hq, block: fb },
+            Op::Moe(MoeOp { x: Slot::Hq, hash, weigh_act: true, fp8: sim.block(), logit_scale: e.router.logit_scale, ..MoeOp::of(block) }),
             Op::StreamsPost { round: sf.rounding, gated: false },
         ]);
         layers.push(ops);
@@ -513,7 +518,7 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
         logit_mult: 0.0,
         host,
         context: Vec::new(),
-        v4: Some(V4Dims { heads: nh, idx_heads: ih, topk: itop, window: c0.window, all_ratio, sim: vo.sim, o_groups: og, idx_ratio }),
+        v4: Some(V4Dims { heads: nh, idx_heads: ih, topk: itop, window: c0.window, all_ratio, sim, o_groups: og, idx_ratio }),
     };
     Ok((desc, plan))
 }
@@ -599,13 +604,15 @@ fn pick(heads: usize, ratio: usize, top_k: usize, wscale: f32, keys: usize, cand
     IdxPick { heads, ratio, top_k, expand: false, tail: false, wscale, score: IdxScore::Release, keys: IdxKeys::Entries(keys), weighted: true, cand }
 }
 
-/// An n-gram block on the streams (`Body::Ngram`) of block `b`: its rows of the tables into In, their key and value product into Gu, the gated add into the streams.
+/// An n-gram block on the streams (`Body::Ngram`) of block `b`: its rows of the tables into In (E4M3 in blocks of `fp8`, the input of its quantized product as the
+/// release's simulation rounds it; 0: not), their key and value product into Gu, the gated add into the streams.
 #[allow(clippy::too_many_arguments)]
 fn ngram(
     plan: &mut Plan,
     n: &mut (usize, usize),
     states: &mut Vec<usize>,
     vo: &V4Opts,
+    fp8: usize,
     g: &Ngram,
     roles: &[(String, Source)],
     b: usize,
@@ -637,21 +644,28 @@ fn ngram(
     } else {
         None
     };
-    Ok(vec![
-        Op::NgramRows(NgramRows {
-            table,
-            hash,
-            hist,
-            per: g.heads,
-            row: g.dim / ((g.order - 1) * g.heads),
-            eos: g.eos,
-            order: g.order,
-            map,
-            segments: g.form == NgramForm::Segmented,
-        }),
+    let mut ops = vec![Op::NgramRows(NgramRows {
+        table,
+        hash,
+        hist,
+        per: g.heads,
+        row: g.dim / ((g.order - 1) * g.heads),
+        eos: g.eos,
+        order: g.order,
+        map,
+        segments: g.form == NgramForm::Segmented,
+    })];
+    if fp8 > 0 {
+        if g.dim % fp8 != 0 {
+            return err(format!("block {b}: an n-gram block's rows of {}, where its product's input is rounded in blocks of {fp8}", g.dim));
+        }
+        ops.push(Op::Fp8 { x: Slot::In, y: Slot::In, block: fp8 });
+    }
+    ops.extend([
         kv.op(Slot::In, Slot::Gu, "n-gram block: key and value product"),
         Op::NgramAdd(NgramAdd { q, k, conv, plus_one: g.norm.weight == NormWeight::PlusOne, eps: g.norm.eps }),
-    ])
+    ]);
+    Ok(ops)
 }
 
 #[cfg(test)]
@@ -672,8 +686,9 @@ mod tests {
     /// The tiny DeepSeek-V4.1 (ratios 0, 2, 2, 1, 1, 1; kv sources 1, 3, 5; index sources 1-4; candidate source 3; Engram of orders 2 to 4 before layers 1 and 4) lowers
     /// to V4.1's forms of the operations: lagged streams (one-hot before the first block alone) and the last weights' collapse; compressors on the kv sources alone,
     /// the indexer's keys on those that are index sources too; picks on the index sources, published by layer 3, read inside its blocks by layer 4; every
-    /// compressing layer's attention over the picks, no head norm; Engram's rows through the token map; the router's logits divided by the gate temperature; and
-    /// no simulated quantization (its release's FP8 blocks of 32 are not those the kernels simulate) where the options ask for it.
+    /// compressing layer's attention over the picks, no head norm; Engram's rows through the token map; the router's logits divided by the gate temperature; and,
+    /// where the options ask for it, its release's simulated quantizations in the form of its FP8 blocks of 32: every quantized product's input to E4M3 in 32s
+    /// (the attention's and the experts', Engram's rows, the attention's output before its grouped low rank, the experts' activations), none where they do not.
     #[test]
     fn v41s_forms_lower_to_their_operations() {
         let d = described("tests/fixtures/deepseek_v41_tiny_config.json");
@@ -704,8 +719,25 @@ mod tests {
         // (every index the operations read is the plan's)
         assert_eq!(plan.lins.len(), m.lm + 1 + plan.lins.iter().filter(|x| x.f8).count());
         assert_eq!(plan.moe.len(), 6);
-        assert_eq!(m.v4.as_ref().map(|v| (v.all_ratio, v.idx_ratio, v.sim)), Some((0, 1, false)));
-        assert!(VO.sim && m.layers.iter().flatten().all(|op| !matches!(op, Op::Moe(MoeOp { fp8: true, .. }))));
+        assert_eq!(m.v4.as_ref().map(|v| (v.all_ratio, v.idx_ratio, v.sim)), Some((0, 1, Sim::B32)));
+        for (l, ops) in m.layers.iter().enumerate() {
+            let fp8: Vec<(Slot, Slot, usize)> =
+                ops.iter().filter_map(|op| if let Op::Fp8 { x, y, block } = op { Some((*x, *y, *block)) } else { None }).collect();
+            let mut want = vec![(Slot::H, Slot::Hq, 32), (Slot::Qr, Slot::Proj, 32), (Slot::Att, Slot::Att, 32), (Slot::H, Slot::Hq, 32)];
+            if [1, 4].contains(&l) {
+                want.insert(0, (Slot::In, Slot::In, 32));
+            }
+            assert_eq!(fp8, want, "layer {l}");
+            let at = |f: &dyn Fn(&Op) -> bool| ops.iter().position(f).unwrap();
+            assert_eq!(
+                at(&|op| matches!(op, Op::Fp8 { x: Slot::Att, .. })) + 1,
+                at(&|op| matches!(op, Op::OGroupLora { fp8: 32, .. } | Op::OGroupLoraStack { fp8: 32, .. }))
+            );
+            assert!(ops.iter().any(|op| matches!(op, Op::Moe(MoeOp { fp8: 32, x: Slot::Hq, .. }))));
+        }
+        let (off, _) = lower(&d, vec![1], 4096, &Stage::whole(6), &V4Opts { sim: false, ..VO }).unwrap();
+        assert_eq!(off.v4.as_ref().map(|v| v.sim), Some(Sim::Off));
+        assert!(off.layers.iter().flatten().all(|op| !matches!(op, Op::Fp8 { x: Slot::Att | Slot::In, .. } | Op::Moe(MoeOp { fp8: 1.., .. }))));
     }
 
     /// The tiny DeepSeek-V4.1 cut into stages: a stage begins only where no layer at or after it reads a compressed part of a layer before it (its kv sources 1,
@@ -861,7 +893,12 @@ mod drafters {
             let at = m.layers[l].iter().position(|op| matches!(op, Op::Tap { .. })).unwrap();
             assert!(matches!(m.layers[l][at], Op::Tap { at: a, of } if a == k && of == targets.len()));
             assert!(matches!(m.layers[l][at + 1], Op::StreamsPre { .. }), "layer {l}");
-            assert!(m.layers[l][..at].iter().all(|op| matches!(op, Op::NgramRows(_) | Op::NgramAdd(_) | Op::Linear { .. } | Op::F8Lin { .. })), "layer {l}");
+            assert!(
+                m.layers[l][..at]
+                    .iter()
+                    .all(|op| matches!(op, Op::NgramRows(_) | Op::NgramAdd(_) | Op::Fp8 { x: Slot::In, .. } | Op::Linear { .. } | Op::F8Lin { .. })),
+                "layer {l}"
+            );
         }
         assert_eq!(m.layers.iter().flatten().filter(|op| matches!(op, Op::Tap { .. })).count(), targets.len());
     }
@@ -899,8 +936,15 @@ mod v4_today {
     use super::*;
 
     /// FNV-1a of a description's text.
+    /// The description's FNV-1a, written as it was when these were recorded: the simulation's form a bool then (`V4Dims::sim`: on, off) and the experts' and the output
+    /// groups' E4M3 a bool (`fp8`: their blocks of 128 now, 0 off), the same operations.
     fn digest(m: &ModelDesc) -> u64 {
-        format!("{m:?}").bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+        let text = format!("{m:?}")
+            .replace("sim: B128", "sim: true")
+            .replace("sim: Off", "sim: false")
+            .replace("fp8: 128", "fp8: true")
+            .replace("fp8: 0", "fp8: false");
+        text.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
     }
 
     /// DeepSeek-V4-Flash-0731 lowered at each level's options, whole and as the two halves of a split, is the executor's description it was before V4.1's forms

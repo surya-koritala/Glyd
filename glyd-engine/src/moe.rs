@@ -814,7 +814,7 @@ pub struct ExpertCache {
 #[derive(Clone, Copy, Debug)]
 pub enum HbSum {
     Linear,
-    Weighed { ones: u64, lim: f32, fp8: bool },
+    Weighed { ones: u64, lim: f32, fp8: usize },
     Normed { post_w: u64, eps: f32, inv: u64 },
 }
 
@@ -1914,7 +1914,7 @@ impl MoeLayer {
 
     /// Experts whose pairs' weights are applied to their activations before the second product, as a release computes them (DeepSeek-V4's), for `t` tokens: the router reads h [t, hidden] (the layer's
     /// scores and the bias; or, where `hash` is given (the kind's `Router::hash`: the table int64 [vocab, k] and the tokens int32 [t] on the device), the token's own experts); the experts and the shared expert
-    /// read hq (h as the release's products quantize it). Each pair's activation is weighed and rounded to FP8 where `fp8` (kernels/dsv4.cu's v4_moe_act), the second product then summing a token's pairs
+    /// read hq (h as the release's products quantize it). Each pair's activation is weighed and rounded to FP8 in blocks of `fp8` (kernels/dsv4.cu's v4_moe_act; 0: not), the second product then summing a token's pairs
     /// with weights of one (`ones`, fp32 [t k]); y [t, hidden] = that sum + the shared expert's output.
     ///
     /// # Safety
@@ -1931,7 +1931,7 @@ impl MoeLayer {
         y: u64,
         hash: Option<(u64, u64)>,
         ones: u64,
-        fp8: bool,
+        fp8: usize,
     ) -> Result<()> {
         self.check_tokens(sc, t)?;
         if t == 0 {

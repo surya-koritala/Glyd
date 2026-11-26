@@ -327,9 +327,9 @@ pub enum Act {
     /// Kimi-K3's situ (moe.cu's MOE_SITU): the first product rounded to bf16, situ(gate, up) rounded to bf16, the second product's fp32 sum times the weight, as the
     /// GPU's weighted second product writes a pair's row (unrounded: the layer's sum rounds a token's pairs once).
     Situ { beta: f32, linear: f32 },
-    /// DeepSeek-V4's release (kernels/dsv4.cu's v4_moe_act): bf16(weight silu(min(gate, lim)) clamp(up, -lim, lim)) of the first product as bf16, each block of 128 rounded to E4M3 at its power-of-two scale where
-    /// `fp8`; the second product (fp32) is the pair's output, its weight already in it.
-    Release { lim: f32, fp8: bool },
+    /// DeepSeek-V4's release (kernels/dsv4.cu's v4_moe_act): bf16(weight silu(min(gate, lim)) clamp(up, -lim, lim)) of the first product as bf16, each block of `fp8`
+    /// (the release's activations' block, `Sim::block`; 0: none) rounded to E4M3 at its power-of-two scale; the second product (fp32) is the pair's output, its weight already in it.
+    Release { lim: f32, fp8: usize },
 }
 
 pub(crate) fn bf16(v: f32) -> f32 {
@@ -395,7 +395,7 @@ fn situ(a: f32, b: f32, (beta, linear): (f32, f32)) -> f32 {
 
 /// The release's weighted activation of a pair's gate and up (bf16 values; kernels/dsv4.cu's v4_moe_act, to the bit): bf16(w silu(min(g, lim)) clamp(u, -lim, lim)), its exp the
 /// GPU's own (`exp_one`).
-fn release(g: f32, u: f32, w: f32, lim: f32) -> f32 {
+pub(crate) fn release(g: f32, u: f32, w: f32, lim: f32) -> f32 {
     let (g, u) = (g.min(lim), u.clamp(-lim, lim));
     bf16(w * (g / (1.0 + exp_one(-g)) * u))
 }
@@ -422,6 +422,78 @@ pub fn fp8_sim(x: &mut [f32], block: usize) {
         let s = pow2_scale(amax, 1.0 / 448.0);
         for v in b {
             *v = bf16(e4m3_round((*v / s).clamp(-448.0, 448.0)) * s);
+        }
+    }
+}
+
+/// v (at most 6 in size) rounded to E2M1, to nearest and ties to even.
+pub fn e2m1_round(v: f32) -> f32 {
+    let a = v.abs();
+    let q = if a < 2.0 {
+        0.5
+    } else if a < 4.0 {
+        1.0
+    } else {
+        2.0
+    };
+    ((a / q).round_ties_even() * q).copysign(v)
+}
+
+/// kernel.py's fp4_act_quant in place with power-of-two scales (E8M0): E2M1 in blocks of `block`, each at 2^ceil(log2(amax / 6)) (amax at least 6 2^-126, so
+/// that the scale is a normal number's), back as bf16 values.
+pub fn fp4_sim(x: &mut [f32], block: usize) {
+    for b in x.chunks_mut(block) {
+        let amax = b.iter().fold(0f32, |m, v| m.max(v.abs())).max(6.0 * f32::MIN_POSITIVE);
+        let s = pow2_scale(amax, 1.0 / 6.0);
+        for v in b {
+            *v = bf16(e2m1_round((*v / s).clamp(-6.0, 6.0)) * s);
+        }
+    }
+}
+
+/// kernel.py's fp4_act_quant in place with E4M3 scales: E2M1 in blocks of `block`, each over the E4M3 nearest amax / 6 (amax at least 6 2^-9, so that the scale is
+/// at least E4M3's least, 2^-9; at most 448, E4M3's largest, which a larger one saturates to), each value over it clamped to 6, back as bf16 values.
+pub fn fp4_e4m3_sim(x: &mut [f32], block: usize) {
+    for b in x.chunks_mut(block) {
+        let amax = b.iter().fold(0f32, |m, v| m.max(v.abs())).max(6.0 / 512.0);
+        let s = e4m3_round((amax / 6.0).min(448.0));
+        for v in b {
+            *v = bf16(e2m1_round((*v / s).clamp(-6.0, 6.0)) * s);
+        }
+    }
+}
+
+/// The release's simulated quantizations of its activations (kernels/dsv4.cu's `sim`, the compressed attention executor's `V4Dims::sim`), by the form of a release
+/// whose quantization_config's FP8 blocks are of 128 or 32 (`Described::fp8_block`: its inference quantizes its activations in the same blocks). Every quantized
+/// product's input to E4M3 in blocks of `block()` at power-of-two scales (act_quant), and the compressed attention's caches and indexer as that release keeps them:
+/// `B128` (DeepSeek-V4's inference/model.py): the window's key and the compressed entries E4M3 in 64s on their channels before the rotary's, the indexer's queries and
+/// keys E2M1 in 32s (`fp4_sim`) after a Hadamard rotation; `B32` (V4.1's): the window's key E4M3 in 32s and the entries E2M1 in 16s at E4M3 scales (`fp4_e4m3_sim`),
+/// each over the whole row after its rotary, the indexer's queries and keys E2M1 in 32s unrotated, and the attention's output E4M3 in 32s before its grouped low
+/// rank. `Off`: none (a check's arithmetic without them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub enum Sim {
+    Off = 0,
+    B128 = 1,
+    B32 = 2,
+}
+
+impl Sim {
+    /// The form of a release whose FP8 blocks are `block` (none: of 128, the form's), simulated where `on`; a release of other blocks has none to simulate.
+    pub fn of(block: Option<usize>, on: bool) -> Sim {
+        match (on, block) {
+            (true, None | Some(128)) => Sim::B128,
+            (true, Some(32)) => Sim::B32,
+            _ => Sim::Off,
+        }
+    }
+
+    /// The block of the products' inputs' E4M3 (0: none).
+    pub fn block(self) -> usize {
+        match self {
+            Sim::Off => 0,
+            Sim::B128 => 128,
+            Sim::B32 => 32,
         }
     }
 }
@@ -486,8 +558,10 @@ pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], ac
     if out.len() != pairs.len() * latent {
         return err(format!("{} values for the host's sums, where {} pairs of {latent} are wanted", out.len(), pairs.len()));
     }
-    if matches!(act, Act::Release { fp8: true, .. }) && inter % 128 != 0 {
-        return err(format!("experts of {inter} neurons, where the activation's blocks of 128 are rounded to E4M3"));
+    if let Act::Release { fp8: b @ 1.., .. } = act {
+        if inter % b != 0 {
+            return err(format!("experts of {inter} neurons, where the activation's blocks of {b} are rounded to E4M3"));
+        }
     }
     let zf: Vec<Vec<f32>> =
         pairs.iter().map(|p| z[p.token * latent..(p.token + 1) * latent].iter().map(|&h| f32::from_bits((h as u32) << 16)).collect()).collect();
@@ -513,8 +587,8 @@ pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], ac
                 for (i, v) in h.iter_mut().enumerate() {
                     *v = release(bf16(g[i]), bf16(u[i]), w, lim);
                 }
-                if fp8 {
-                    fp8_sim(h, 128);
+                if fp8 > 0 {
+                    fp8_sim(h, fp8);
                 }
             }
         }
@@ -655,8 +729,8 @@ fn experts_sm86(z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], act: Act, gpu: Sm
             Act::Situ { beta, linear } => (0..inter).map(|i| situ(bf16(gu[i]), bf16(gu[inter + i]), (beta, linear))).collect(),
             Act::Release { lim, .. } => (0..inter).map(|i| release(bf16(gu[i]), bf16(gu[inter + i]), pair.weight, lim)).collect(),
         };
-        if let Act::Release { fp8: true, .. } = act {
-            fp8_sim(&mut h, 128);
+        if let Act::Release { fp8: b @ 1.., .. } = act {
+            fp8_sim(&mut h, b);
         }
         let y = rows_sm86(&pair.expert.down, &h, gpu);
         match act {
@@ -1107,7 +1181,12 @@ mod tests {
         assert_eq!(groups[0], (0..rows_n).map(|t| 2 * t).collect::<Vec<_>>());
         assert_eq!(groups.iter().map(Vec::len).sum::<usize>(), pairs.len());
         assert_eq!(ex(0).bytes(), ups[0].data.len() + ups[0].blocks.len() + downs[0].data.len() + downs[0].blocks.len());
-        for act in [Act::Situ { beta: 4.0, linear: 25.0 }, Act::Release { lim: 10.0, fp8: true }, Act::Release { lim: 10.0, fp8: false }] {
+        for act in [
+            Act::Situ { beta: 4.0, linear: 25.0 },
+            Act::Release { lim: 10.0, fp8: 128 },
+            Act::Release { lim: 10.0, fp8: 32 },
+            Act::Release { lim: 10.0, fp8: 0 },
+        ] {
             for k in Kernel::ALL.into_iter().filter(|k| k.runs_here()) {
                 let mut together = vec![0f32; pairs.len() * latent];
                 experts(k, &z, &pairs, &mut together, act, 3, false).unwrap();
@@ -1118,6 +1197,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The quantizers of a release of blocks of 32 (inference/kernel.py's act_quant and fp4_act_quant) on blocks worked by hand from its formulas: the scale's floor,
+    /// the power of two rounded up, the E4M3 scale rounded to nearest (ties to even) and saturated at 448, the values over it clamped to 6.
+    #[test]
+    fn the_quantizers_of_blocks_of_32_by_hand() {
+        assert_eq!(
+            [Sim::of(None, true), Sim::of(Some(128), true), Sim::of(Some(32), true), Sim::of(Some(32), false), Sim::of(Some(64), true)],
+            [Sim::B128, Sim::B128, Sim::B32, Sim::Off, Sim::Off]
+        );
+        assert_eq!([Sim::Off.block(), Sim::B128.block(), Sim::B32.block()], [0, 128, 32]);
+        let block = |head: &[f32], n: usize| -> Vec<f32> { head.iter().copied().chain(std::iter::repeat(0.0)).take(n).collect() };
+        // E4M3 at 2^ceil(log2(amax / 448)): amax 3 takes 2^-7 (rounded up from 2^-7.2: 2^-8 would put 3 at 768, past 448), so 1.296875 is 166 = 10.375 x 16
+        // there, 10 x 16 back: 1.25; the next block's amax 3.5 is 448 2^-7 exactly and keeps 2^-7
+        let mut x = [block(&[3.0, 1.296875, -0.0078125], 32), block(&[3.5, 1.296875], 32)].concat();
+        fp8_sim(&mut x, Sim::B32.block());
+        assert_eq!((&x[..3], &x[32..34]), (&[3.0, 1.25, -0.0078125][..], &[3.5, 1.25][..]));
+        // the floor: a block whose largest is 3 2^-32 takes 1e-4's scale, 2^-22 (1e-4 / 448 is 2^-22.1), where 3 2^-32 is 1.5 2^-9, E4M3's least step
+        // twice: 2 (ties to even), 2^-30 back; without the floor it would be exact
+        let mut x = block(&[3.0 * 2f32.powi(-32)], 32);
+        fp8_sim(&mut x, 32);
+        assert_eq!(x[0], 2f32.powi(-30));
+        // E2M1 at 2^ceil(log2(amax / 6)) (the indexer's): amax 5 takes 1, where 5 -> 4, 2.5 -> 2, 0.25 -> 0 (ties to even), 1.75 -> 2, -0.75 -> -1; amax 7
+        // takes 2 (rounded up from 2^0.2), where 7 is 3.5 -> 4: 8, 3 is 1.5: 3; amax 6 is 6 x 1 exactly; a block under the floor (6 2^-126) takes its scale, 2^-126
+        let mut x = [block(&[5.0, 2.5, 0.25, 1.75, -0.75], 32), block(&[7.0, 3.0], 32), block(&[6.0, 5.0], 32), block(&[2f32.powi(-130)], 32)].concat();
+        fp4_sim(&mut x, 32);
+        assert_eq!((&x[..5], &x[32..34], &x[64..66], x[96]), (&[4.0, 2.0, 0.0, 2.0, -1.0][..], &[8.0, 3.0][..], &[6.0, 4.0][..], 0.0));
+        // E2M1 over the E4M3 nearest amax / 6 (the compressed entries', blocks of 16): amax 6.375 is 1.0625 x 6, a tie of E4M3's 1 and 1.125: 1, where 6.375
+        // clamps to 6 and 3.296875 is 3; amax 4.5 is 0.75 x 6, where 1 / 0.75 = 1.33 -> 1.5: 1.125, -2 -> -3: -2.25, 0.25 -> 0.5: 0.375; amax 0.03 (as bf16,
+        // 0.030029296875) over 6 is 2.5625 2^-9, E4M3's subnormal steps of 2^-9: 3 2^-9, where 0.030029296875 is 5.125 -> 6 and 0.0029296875 is 0.5
+        let mut x = [block(&[6.375, 3.296875], 16), block(&[4.5, 1.0, -2.0, 0.25], 16), block(&[0.030029296875, 0.0029296875], 16)].concat();
+        fp4_e4m3_sim(&mut x, 16);
+        let s = 3.0 * 2f32.powi(-9);
+        assert_eq!((&x[..2], &x[16..20], &x[32..34]), (&[6.0, 3.0][..], &[4.5, 1.125, -2.25, 0.375][..], &[6.0 * s, 0.5 * s][..]));
+        // the floor: a block whose largest is 0.00099945 takes 6 2^-9's scale, 2^-9, where 0.00099945 is 0.5117 -> 0.5: 2^-10; a scale past 448 saturates:
+        // amax 3008 over 448 is 6.7, clamped to 6: 2688, and 1000 / 448 = 2.23 -> 2: 896
+        let mut x = [block(&[0.00099945068359375], 16), block(&[3008.0, 1000.0], 16)].concat();
+        fp4_e4m3_sim(&mut x, 16);
+        assert_eq!((x[0], x[16], x[17]), (2f32.powi(-10), 2688.0, 896.0));
     }
 
     /// The release's activation: the weight inside bf16(w silu(min(g, lim)) clamp(u, +-lim)), each block of 128 rounded to E4M3 at its power-of-two scale, and the second product's fp32 the output.
@@ -1132,7 +1250,7 @@ mod tests {
         let z: Vec<u16> = (0..latent).map(|i| (bf16(((i * 7 % 23) as f32 - 11.0) / 8.0).to_bits() >> 16) as u16).collect();
         let (lim, w) = (10.0f32, 0.375f32);
         let mut got = vec![0f32; latent];
-        experts(Kernel::Scalar, &z, &[Fp4Pair { expert: ex, token: 0, weight: w }], &mut got, Act::Release { lim, fp8: true }, 1, false).unwrap();
+        experts(Kernel::Scalar, &z, &[Fp4Pair { expert: ex, token: 0, weight: w }], &mut got, Act::Release { lim, fp8: 128 }, 1, false).unwrap();
         let zf: Vec<f32> = z.iter().map(|&h| f32::from_bits((h as u32) << 16)).collect();
         let mut gu = vec![0f32; 2 * inter];
         rows(Kernel::Scalar, &ex.up, &zf, 0, 2 * inter, &mut gu);

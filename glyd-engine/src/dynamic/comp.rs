@@ -139,7 +139,7 @@ impl Dyn {
                         self.lin(&p.mats[w + g], xg, n, yg)?;
                     }
                 }
-                launch!(k.ogather, [nu, ((groups * ol / 128) as u32).div_ceil(4), 1], [128, 1, 1], s; p.slot(Slot::Mid), p.slot(y), n as i32, groups as i32, ol as i32, (fp8 && v.dims.sim) as i32)?;
+                launch!(k.ogather, [nu, ((groups * ol / 128) as u32).div_ceil(4), 1], [128, 1, 1], s; p.slot(Slot::Mid), p.slot(y), n as i32, groups as i32, ol as i32, (if v.dims.sim == crate::cpu_fp4::Sim::Off { 0 } else { fp8 as i32 }))?;
                 self.mark("attention: o low rank")
             }
             Op::OGroupLoraStack { w, groups, ol, y, fp8 } => {
@@ -163,7 +163,7 @@ impl Dyn {
                         }
                     }
                 }
-                launch!(k.ogather, [nu, ((groups * ol / 128) as u32).div_ceil(4), 1], [128, 1, 1], s; p.slot(Slot::Mid), p.slot(y), n as i32, groups as i32, ol as i32, (fp8 && v.dims.sim) as i32)?;
+                launch!(k.ogather, [nu, ((groups * ol / 128) as u32).div_ceil(4), 1], [128, 1, 1], s; p.slot(Slot::Mid), p.slot(y), n as i32, groups as i32, ol as i32, (if v.dims.sim == crate::cpu_fp4::Sim::Off { 0 } else { fp8 as i32 }))?;
                 self.mark("attention: o low rank")
             }
             _ => unreachable!(),

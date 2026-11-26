@@ -365,7 +365,8 @@ pub enum Op {
         heads: usize,
         hpg: usize,
     },
-    /// The output's grouped low rank: group g's rows of Att (hpg 512 wide) by matrix `w` + g (an FP8 matrix where `in_f8`) into Mid (`ol` wide), then back in rows into `y` (E4M3 where `fp8`).
+    /// The output's grouped low rank: group g's rows of Att (hpg 512 wide) by matrix `w` + g (an FP8 matrix where `in_f8`) into Mid (`ol` wide), then back in rows into `y`, E4M3 in blocks of
+    /// `fp8` where the model simulates its release's quantizations (`V4Dims::sim`; 0: none).
     OGroupLora {
         w: usize,
         in_f8: bool,
@@ -373,7 +374,7 @@ pub enum Op {
         hpg: usize,
         ol: usize,
         y: Slot,
-        fp8: bool,
+        fp8: usize,
     },
     /// The same with the groups' matrices one FP8 stack (`f8[w]`, [groups ol, hpg 512]): every group's product in one launch, the groups as the experts' product's experts.
     OGroupLoraStack {
@@ -381,7 +382,7 @@ pub enum Op {
         groups: usize,
         ol: usize,
         y: Slot,
-        fp8: bool,
+        fp8: usize,
     },
     /// Kimi delta attention: the causal convolution of Mix's first `c` channels (q, k and v; Mix's rows `row` apart) with weights `w` and its state into Xc; the delta rule over Xc, the forget gate's product
     /// Qo and the input gate's `ba` (`heads` heads, A_log, dt_bias, the forget gate's lower `bound`) with its state into Core; the gated norm of Core by the output gate's product `iq` into Att.
@@ -510,7 +511,7 @@ pub enum MtpFront {
 /// int64 [vocab, k]); the router's logits times `logit_scale` (`Router::logit_scale`; its weights fp32 then); each expert's output normed before it is
 /// weighed (`Latent::expert_norm`: the small input-scaling weight and its eps); each pair's weight applied to its activation before the second product,
 /// which then sums with weights of one, the activation rounded as that product's input (`weigh_act`: the release's arithmetic; `fp8`: rounded to E4M3 in
-/// blocks of 128, as the release's products quantize their inputs).
+/// blocks of that many, as the release's products quantize their inputs; 0: not).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MoeOp {
     pub block: usize,
@@ -520,13 +521,13 @@ pub struct MoeOp {
     pub logit_scale: f32,
     pub expert_norm: Option<(usize, f32)>,
     pub weigh_act: bool,
-    pub fp8: bool,
+    pub fp8: usize,
 }
 
 impl MoeOp {
     /// The block's experts of H into O, routed by their scores alone.
     pub const fn of(block: usize) -> MoeOp {
-        MoeOp { block, x: Slot::H, y: Slot::O, hash: None, logit_scale: 1.0, expert_norm: None, weigh_act: false, fp8: false }
+        MoeOp { block, x: Slot::H, y: Slot::O, hash: None, logit_scale: 1.0, expert_norm: None, weigh_act: false, fp8: 0 }
     }
 }
 
@@ -571,8 +572,9 @@ pub struct V4Dims {
     pub window: usize,
     /// the smallest compression whose entries a query reads all of (0: none)
     pub all_ratio: usize,
-    /// the release's quantizations (the products' inputs to FP8, the caches' and the indexer's simulated FP8 and FP4); off: a development check's arithmetic without them
-    pub sim: bool,
+    /// the release's simulated quantizations (the products' inputs to FP8, the caches' and the indexer's FP8 and FP4) in its form (src/cpu_fp4.rs `Sim`); off: a development check's
+    /// arithmetic without them
+    pub sim: crate::cpu_fp4::Sim,
     /// the attention output's low-rank groups
     pub o_groups: usize,
     /// the smallest ratio of a layer with an indexer (its entries a chunk makes and a query scores at most; 0: none)
@@ -1681,7 +1683,7 @@ fn unverifiable_op(d: &ModelDesc) -> Option<&Op> {
         // (the plain experts (the router's input, its own scale, no norm of the experts' outputs, no hash) and the weighed ones (each pair's weight in its
         // activation, FP8 where the release's quantizations are simulated, hash routing by the token: the compressed attention's model's): each row as a step
         // where every expert of the block is on the GPU, which `verify_rows` asks of the blocks themselves; the normed experts run other kernels, not checked so)
-        Op::Moe(m) => m.expert_norm.is_some() || (!m.weigh_act && (m.hash.is_some() || m.fp8 || m.x != Slot::H || m.logit_scale != 1.0)),
+        Op::Moe(m) => m.expert_norm.is_some() || (!m.weigh_act && (m.hash.is_some() || m.fp8 > 0 || m.x != Slot::H || m.logit_scale != 1.0)),
         Op::MoeEarly { .. } => true,
         _ => !rows::row_wise(op) || !op.rings().is_empty() || !op.states().is_empty(),
     })
@@ -2597,7 +2599,7 @@ impl Dyn {
 
     /// Whether the model's arithmetic simulates its release's quantizations (DeepSeek-V4's, `V4Dims::sim`); None for a model that has none to simulate.
     pub fn simulates(&self) -> Option<bool> {
-        self.v4.as_ref().map(|v| v.dims.sim)
+        self.v4.as_ref().map(|v| v.dims.sim != crate::cpu_fp4::Sim::Off)
     }
 
     pub fn reset(&mut self) -> Result<()> {
@@ -3280,8 +3282,10 @@ impl Dyn {
         let (s, nu) = (self.dev.stream, n as u32);
         let k = &v.k;
         match *op {
-            Op::Fp8 { x, y, .. } if !v.dims.sim => {
-                crate::dev::copy_d2d_async(p.slot(y), p.slot(x), n * p.d.width(x) * 2, s)?;
+            Op::Fp8 { x, y, .. } if v.dims.sim == crate::cpu_fp4::Sim::Off => {
+                if x != y {
+                    crate::dev::copy_d2d_async(p.slot(y), p.slot(x), n * p.d.width(x) * 2, s)?;
+                }
                 self.mark("activations to FP8")
             }
             Op::Fp8 { x, y, block } => {

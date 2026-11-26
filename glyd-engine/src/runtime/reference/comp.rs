@@ -1,8 +1,11 @@
 //! DeepSeek-V4's attention (`kinds::Comp`), as transformers' `DeepseekV4Attention` computes it: one K = V head over a sliding window and
 //! the compressed entries of closed windows (HCA, or CSA with overlapping windows and an indexer's choice), learned sinks, the output
-//! rotated back at the query's position and projected through grouped low-rank products.
+//! rotated back at the query's position and projected through grouped low-rank products. Where the reference simulates a release's quantizations
+//! (`Params::sim`: the form of FP8 blocks of 32, src/cpu_fp4.rs `Sim::B32`), each after its rotary: the window's key E4M3 in 32s, the entries E2M1 in
+//! 16s at E4M3 scales, the indexer's queries and keys E2M1 in 32s; and the output E4M3 in 32s before its grouped low rank.
 
 use super::{dot, norm::norm, rope, softmax, Params};
+use crate::cpu_fp4::{fp4_e4m3_sim, fp4_sim, fp8_sim};
 use crate::ffi::{err, Result};
 use crate::runtime::kinds::{Comp, CompShare, IndexForm, Indexer, Norm, Rope};
 use std::collections::BTreeMap;
@@ -110,6 +113,11 @@ impl Pool {
         let mut entry = norm(&n, &entry, Some(p.vec(&format!("{pre}_norm"))?), None);
         self.raw.push(entry.clone());
         turn(&c.rope, &mut entry, (i * r) as u32, false);
+        if pre == "idx" {
+            p.quantize(&mut entry, fp4_sim, 32);
+        } else {
+            p.quantize(&mut entry, fp4_e4m3_sim, 16);
+        }
         self.entries.push(entry);
         Ok(())
     }
@@ -132,6 +140,7 @@ fn shared_picks(c: &Comp, ix: &Indexer, sh: &CompShare, p: &Params, st: &mut Com
     let mut qi = p.prod("idx_q_b", qr)?;
     for h in qi.chunks_mut(ix.head_dim) {
         turn(&c.rope, h, pos, false);
+        p.quantize(h, fp4_sim, 32);
     }
     let wts: Vec<f32> = p.prod("idx_weights", x)?.iter().map(|w| w * (ix.heads as f32).powf(-0.5)).collect();
     let sc = (ix.head_dim as f32).powf(-0.5);
@@ -190,6 +199,7 @@ pub fn queries(c: &Comp, p: &Params, x: &[f32], pos: u32) -> Result<(Vec<f32>, V
 pub fn key(c: &Comp, p: &Params, x: &[f32], pos: u32) -> Result<Vec<f32>> {
     let mut kv = norm(&Norm::rms(c.norm_eps), &p.prod("kv", x)?, Some(p.vec("kv_norm")?), None);
     turn(&c.rope, &mut kv, pos, false);
+    p.quantize(&mut kv, fp8_sim, 32);
     Ok(kv)
 }
 
@@ -211,7 +221,8 @@ pub fn attend(c: &Comp, p: &Params, q: &[f32], keys: &[&[f32]], pos: u32) -> Res
         turn(&c.rope, &mut o, pos, true);
         out.extend(o);
     }
-    // the grouped low-rank output: group g's heads through its rows of o_a
+    // the grouped low-rank output: group g's heads through its rows of o_a (its input E4M3 in 32s where simulated: the groups' widths are of 32s)
+    p.quantize(&mut out, fp8_sim, 32);
     let (oa, gs) = (p.vec("o_a")?, nh * hd / c.o_groups);
     if oa.len() != c.o_groups * c.o_lora * gs {
         return err(format!("DeepSeek-V4 attention: o_a of {} values for {} groups of {} to {}", oa.len(), c.o_groups, gs, c.o_lora));
@@ -241,6 +252,7 @@ pub fn step(c: &Comp, p: &Params, st: &mut CompState, x: &[f32], pos: u32) -> Re
             for j in st.ikeys.len()..st.comp.raw.len() {
                 let mut k = norm(&key, &p.prod("idx_k", &st.comp.raw[j])?, Some(p.vec("idx_k_norm")?), None);
                 turn(&c.rope, &mut k, (j * c.ratio) as u32, false);
+                p.quantize(&mut k, fp4_sim, 32);
                 st.ikeys.push(k);
             }
         }
@@ -257,6 +269,7 @@ pub fn step(c: &Comp, p: &Params, st: &mut CompState, x: &[f32], pos: u32) -> Re
                 let mut qi = p.prod("idx_q_b", &qr)?;
                 for h in qi.chunks_mut(ix.head_dim) {
                     turn(&c.rope, h, pos, false);
+                    p.quantize(h, fp4_sim, 32);
                 }
                 let wts: Vec<f32> = p.prod("idx_weights", x)?.iter().map(|w| w * (ix.heads as f32).powf(-0.5)).collect();
                 let sc = (ix.head_dim as f32).powf(-0.5);
