@@ -49,7 +49,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
     let hb = crate::hb_pack::HbDir::open(dir)?;
     let store = caching.map(crate::hbg_store::store_for);
     let f8 = (crate::tune!("GLYD_GLM_F8").as_deref() != Some("0")).then_some(super::experts::F8 { scales: &kinds.scales, dev: &dev, lib: &lib });
-    let held = super::experts::Held { hb: hb.as_ref(), cache: caching.zip(store.as_ref()), ordinal: o.device, f8, dense: None, codebooks: None };
+    let held = super::experts::Held { hb: hb.as_ref(), cache: caching.zip(store.as_ref()), ordinal: o.device, f8, dense: None, codebooks: None, codes: None };
     let hidden = kinds.desc.hidden;
     let experts = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         super::experts::of_layers(&kinds, st.layers, 2)
@@ -133,7 +133,7 @@ fn plain(dir: &Path, o: &Opts, st: Option<Stage>, draft: Option<usize>, caching:
         lib: &lib,
     });
     let store = caching.map(crate::hbg_store::store_for);
-    let held = super::experts::Held { hb: None, cache: caching.zip(store.as_ref()), ordinal: o.device, f8, dense: None, codebooks: None };
+    let held = super::experts::Held { hb: None, cache: caching.zip(store.as_ref()), ordinal: o.device, f8, dense: None, codebooks: None, codes: None };
     let experts = |ck: &Checkpoint, level: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         super::experts::of_layers(&kinds, st.layers, 2)
             .map(|(ix, m, roles)| {

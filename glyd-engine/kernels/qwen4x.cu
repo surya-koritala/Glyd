@@ -1424,7 +1424,7 @@ extern "C" __global__ void __launch_bounds__(1024) qx_select(const float* scores
     if (tid == 0) cnt[i] = ksel * kp + tl;
 }
 
-// ---- the routed experts as codebook rows (glyd-hbr-codes/2 at 2560 x 640: the expert cache's places; src/moe_qwen4x.rs `QxMoeCb`) -----------------------------------------------------------------------------
+// ---- the routed experts as codebook rows (glyd-hbr-codes/2 at 2560 x 640: the expert cache's places; src/moe_cb.rs `CbMoe`) -----------------------------------------------------------------------------
 // A layer's experts are held in the basis of one rotation of the hidden axis, R x = 512^-0.5 (I_5 (x) H_512) (s x): five natural-order Walsh-Hadamard transforms of 512 values each, s the layer's 2,560 signs. An expert
 // is two matrices of rows of 2,560 codes in that basis, each row its codes and its own codebook (bf16 entries, absolute): `downT` (640 rows: down transposed, row n the weights of neuron n over the outputs) then `up`
 // (1,280 rows: gate's 640 and up's 640). A row's codes by format f (0 cb2: 4 entries, 2 bits, byte b codes 4b..4b+3 low bits first; 1 cb3: 8 entries, codes 8g..8g+7 the 24-bit little-endian integer of bytes
@@ -1844,7 +1844,7 @@ __device__ __forceinline__ void qx_cb_down_b(const unsigned char* codes, unsigne
 // A call's pairs of one place are the rows that chose its expert, one a row at most: at most 8. The block of a place's first pair (qc_group) takes them all and the other pairs' blocks leave; the place's downT
 // codes are made fp16 tiles in shared memory once for all of them (format q: the integers, exact, the row's scale on the activations; two-bit: the row's four entries) and multiplied on the tensor cores (mma
 // m16n8k16, fp16 in, fp32 sums; the place's pairs its 8 columns, those past R zero) by the pairs' activations made from qx_cb_up's sums as qx_cb_down makes them, rounded to fp16 with the scales: not
-// qx_cb_down's sums bit for bit. All 640 neurons a block: one sum a pair. A format's tiles: qt_store_q / c2_store. Two-bit and format q places (QxMoeCb's tc_ok). (The first product's place-major form on the
+// qx_cb_down's sums bit for bit. All 640 neurons a block: one sum a pair. A format's tiles: qt_store_q / c2_store. Two-bit and format q places (CbMoe's tc_ok). (The first product's place-major form on the
 // tensor cores was measured no faster than qx_cb_up's at a verification's sharing of places: qx_cb_up serves it.)
 #define QX_GR 8
 

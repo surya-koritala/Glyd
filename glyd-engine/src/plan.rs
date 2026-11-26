@@ -2790,6 +2790,11 @@ fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
         if f.family.hummingbird_packed_only && p.chosen.as_ref().is_some_and(|c| c.level == "hummingbird") {
             if f.family.family == crate::support::Family::NemotronH {
                 println!("note: the hummingbird level comes as a pre-packed download: glyd/{}-hummingbird", f.name);
+            } else if f.family.route.expert_cache == crate::support::ExpertCache::Codes {
+                println!(
+                    "note: the hummingbird level is a codes pack of the experts beside the weights (DIR/pack): the pre-packed glyd/{}-hummingbird's (condor/tools/download.sh); --pack precise, best or fast plans each",
+                    f.name
+                );
             } else {
                 println!(
                     "note: the hummingbird level is packed ahead: the pre-packed glyd/{}-hummingbird, or glyd-engine calibrate-experts MODEL usage.json, then glyd-engine pack MODEL DIR --layout hummingbird --usage usage.json",
@@ -3884,6 +3889,16 @@ pub mod sizing {
                 }
                 lossy_plan_with(a, model, layout_for(model, layout), text, None, t.free, &t.name, None, t.host).map(Some)
             }
+            // (the hummingbird level of a row whose experts come from a codes pack: the pack's plan, where its headers and a pack can be had)
+            // (a model here with no codes pack beside its weights is refused as `run` refuses it)
+            Sizing::Dynamic if level == "hummingbird" && row.route.expert_cache == ExpertCache::Codes => match codes_pack(a, model) {
+                Some(pack) => {
+                    let Some(table) = crate::sizes::Table::find(model) else { return Ok(None) };
+                    codes_plan(a, &name, &table, text, row, &pack, devs, devs.first().and_then(|t| t.host)).map(Some)
+                }
+                None if local_dir(model).is_some() => Err(no_codes_pack(&name, row.name, model)),
+                None => Ok(None),
+            },
             Sizing::Dynamic => size_local_dynamic(a, model, text, row.name, devs, reach),
             Sizing::Estimate => Ok(None),
         }
@@ -4489,6 +4504,168 @@ pub mod sizing {
             + base
             + bounds.windows(2).zip(&places).map(|(w, &p)| moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * mean).sum::<u64>();
         Ok((cuts, devices, places, on_gpus, all, experts, (held, ram_held(&rb, &dense, held))))
+    }
+
+    /// The plan `run` loads a model of a row whose experts come from a codes pack at the hummingbird level (`ExpertCache::Codes`: src/moe_cb.rs; the pack in
+    /// `pack`, its `meta.json` and nothing else read), as `split::open_plan` loads it (src/dynamic/qwen4x.rs `stage`): on the GPU with the most free memory,
+    /// the always-on matrices (the checkpoint's tensors but its routed experts and the tables its description reads on the host (`tables::off_gpu`), at the
+    /// lossless tiered layout's share of their bf16 bytes; the vision tower as released), `users` sequences' keys, values and states at the context and the
+    /// executor's scratch (`cache_reserve`), and in what the GPU has left beside its floor places a layer for the pack's largest expert of a layer
+    /// (`CbPack::place_bytes`), every layer's places alike, as many as fit (all a layer keeps at most). Every expert of the layers is in the computer's memory
+    /// as the pack's files mapped: `host` free less `HOST_MARGIN` holds what it holds (`--host-memory` asks less), the files the rest, read as the router asks.
+    /// The tables read by rows are the checkpoint's files'. Refused in words where the GPU leaves no place a layer, or the pack lacks a layer of the model.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn codes_plan(
+        a: &Args,
+        name: &str,
+        table: &crate::sizes::Table,
+        text: &str,
+        row: &'static Support,
+        pack: &Path,
+        devs: &[Target],
+        host: Option<u64>,
+    ) -> Done<LoadPlan> {
+        let c = ModelConfig::parse(text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
+        let model_max = c.num("max_position_embeddings").unwrap_or(usize::MAX);
+        let asked = a.has("context") || a.has("ctx");
+        let ctx = a.either("context", "ctx", crate::support::default_context(row, model_max)).map_err(|e| Refusal::new(e.msg, "--context 8192"))?;
+        crate::support::context_check(name, row, model_max, asked.then_some(ctx))?;
+        let users = users_asked(a)?;
+        let (nl, hidden, inter) = (c.num("num_hidden_layers").unwrap_or(0), c.num("hidden_size").unwrap_or(0), c.num("moe_intermediate_size").unwrap_or(0));
+        let cb = crate::cb_pack::CbPack::open_dims(pack, hidden, inter).map_err(cannot)?;
+        if let Some(l) = (0..nl).find(|&l| !cb.has(l)) {
+            return Err(Refusal::unsupported(
+                format!("{name}: its codes pack {} has no experts of layer {l} of the model's {nl}", pack.display()),
+                "Give the pack of this model's experts: the release's (condor/tools/download.sh), or one made for it",
+            ));
+        }
+        let place = (0..nl).map(|l| cb.place_bytes(l)).max().unwrap_or(1) as u64;
+        let kept = (0..nl).filter_map(|l| cb.kept(l).map(<[usize]>::len)).min().unwrap_or(1);
+        let held = (0..nl).map(|l| cb.layer_bytes(l) as u64).sum::<u64>();
+        // (the always-on matrices as the loader holds them, lossless; the tables its description reads on the host and the routed experts none of the GPU's)
+        let (on_gpu, tables) = crate::dynamic::tables::off_gpu(table, text);
+        let (per, base) = crate::dynamic::split::layer_bytes_table(&on_gpu, nl, 100, crate::dynamic::split::TIERED_PCT, &|n| !n.contains(".experts."));
+        let vision: u64 = on_gpu.rows.iter().filter(|r| matches!(crate::sizes::classify(&r.name, nl), crate::sizes::Part::Vision)).map(|r| r.bytes).sum();
+        let always = per.iter().sum::<u64>() + base + vision;
+        // (the sequences' keys, values and states, the description's as the loader lowers it, and the executor's scratch: `cache_reserve`)
+        let low = crate::dynamic::split::lowered_of(&c, ctx + DYN_CHUNK + 16).map_err(cannot)?;
+        let work = CACHE_SCRATCH;
+        let kv = cache_reserve(&low, users, &crate::dynamic::Stage::whole(nl)) - work;
+        let t = devs.iter().max_by_key(|t| t.free).ok_or_else(|| Refusal::unsupported(format!("{name}: no GPU to plan it on"), ""))?;
+        let floor = crate::plan::CONTEXT_FLOOR;
+        let room = t.free.saturating_sub(floor + always + kv + work);
+        let fit = room / (nl.max(1) as u64 * place);
+        if fit == 0 {
+            return Err(Refusal::unsupported(
+                format!(
+                    "{name} at the hummingbird level: its weights besides the experts take {}, its sequences {} at {ctx} tokens, the engine's work {}, and the {} has {} free: no room for a place a layer for its experts ({} each)",
+                    gib(always),
+                    gib(kv),
+                    gib(work),
+                    t.name,
+                    gib(t.free),
+                    gib(place)
+                ),
+                "Ask for less context (--context 4096), or use a GPU with more memory free",
+            ));
+        }
+        let places = (fit as usize).min(kept);
+        let ram = held_in_memory(held, host_flag(a)?, host);
+        let gpu_bytes = always + (nl * places) as u64 * place;
+        Ok(LoadPlan {
+            kind: Kind::Dynamic,
+            family: row.name,
+            level: "hummingbird",
+            layout: Layout::Tiered,
+            context: ctx,
+            users,
+            chunk: DYN_CHUNK,
+            weights: always + held + tables,
+            bf16: 0,
+            kv,
+            kv12: false,
+            work,
+            draft: 0,
+            reserve: floor,
+            free: t.free,
+            gpu: t.name.clone(),
+            experts: Some(CachePlan { layers: nl, experts: kept, slots: places, expert_bytes: held / (nl * kept).max(1) as u64, in_place: true, ram }),
+            spread: Some(crate::plan::Spread {
+                cuts: Vec::new(),
+                devices: vec![t.ordinal],
+                across: false,
+                coded: false,
+                twelve: false,
+                places: vec![places],
+                experts_per_layer: kept,
+                host_bytes: held,
+                host_per_stage: vec![held],
+                gpu_bytes,
+                dense: 0,
+                dense_bytes: 0,
+                tables,
+            }),
+        })
+    }
+
+    /// The codes pack of the model `model` at the hummingbird level (`ExpertCache::Codes`): `--pack DIR` where given, else the one beside its weights (`codes_beside`),
+    /// else, for a model of the Hub, the `meta.json` of the pre-packed download's pack (glyd/NAME-hummingbird: `--pack precise`, the default, `best` or `fast`,
+    /// each its newest folder of the download, `precise-v2` before `precise`) kept in the engine's cache, nothing else of it read; None where none can be had
+    /// (offline, or the Hub has no such pack).
+    pub(crate) fn codes_pack(a: &Args, model: &str) -> Option<PathBuf> {
+        let given = a.flag("pack").filter(|p| !p.is_empty());
+        if let Some(p) = given.filter(|p| Path::new(p).join("meta.json").exists()) {
+            return Some(PathBuf::from(p));
+        }
+        // (a model here: the pack beside its weights alone, as `run` loads it)
+        if let Some(d) = local_dir(model) {
+            return codes_beside(&d);
+        }
+        if crate::hub::offline() || model.matches('/').count() != 1 {
+            return None;
+        }
+        let repo = format!("glyd/{}-hummingbird", short_name(model));
+        let mode = given.unwrap_or("precise");
+        let hub = crate::hub::Hub::from_env();
+        for folder in [format!("{mode}-v2"), mode.to_string()] {
+            let at = store::cache_root().join("codes").join(&repo).join(&folder);
+            if at.join("meta.json").exists() {
+                return Some(at);
+            }
+            if let Ok(text) = hub.text(&repo, "main", &format!("{folder}/meta.json")) {
+                std::fs::create_dir_all(&at).ok()?;
+                std::fs::write(at.join("meta.json"), text).ok()?;
+                return Some(at);
+            }
+        }
+        None
+    }
+
+    /// The directory of MODEL where it is here: itself where it holds a config.json, else the Hub cache's copy.
+    fn local_dir(model: &str) -> Option<PathBuf> {
+        if Path::new(model).join("config.json").exists() {
+            Some(PathBuf::from(model))
+        } else {
+            Source::find(model).ok().map(|s| s.dir)
+        }
+    }
+
+    /// The refusal of the model `model` (short name `name`) of the row `family` whose experts come from a codes pack at the hummingbird level
+    /// (`ExpertCache::Codes`) where none is beside its weights (`codes_beside`): `run`'s, and `fit`'s of a model here.
+    pub fn no_codes_pack(name: &str, family: &str, model: &str) -> Refusal {
+        Refusal::unsupported(
+            format!(
+                "{name} ({family}) at the hummingbird level runs from a codes pack of its experts beside its weights (DIR/pack), and {model} has none here"
+            ),
+            "Put its pack in DIR/pack (the release's packs: condor/tools/download.sh) and run DIR:hummingbird, or serve it with qwenserve CKPT PACK",
+        )
+    }
+
+    /// The codes pack beside the weights in `dir` (`dir/pack`, its `meta.json` the format's, glyd-x/1), where it has one.
+    pub fn codes_beside(dir: &Path) -> Option<PathBuf> {
+        let p = dir.join("pack");
+        let text = std::fs::read_to_string(p.join("meta.json")).ok()?;
+        glyd_gpu::json::parse(&text).ok()?.get("format").and_then(glyd_gpu::json::Value::as_str).filter(|f| *f == "glyd-x/1").map(|_| p)
     }
 
     /// `kimi_cache` with every layer across all the GPUs of `room` (src/dynamic/tp.rs): each GPU holds its slice of the rows of each big matrix (the embedding
@@ -6545,6 +6722,76 @@ mod tests {
         let _ = (std::fs::remove_dir_all(dir.parent().unwrap()), std::fs::remove_dir_all(rel.parent().unwrap()));
     }
 
+    /// The release's codes pack `name` (tests/fixtures/qwen4x_packs.json: glyd/Qwen3.8-Flash-Next-hummingbird's, each layer's count of each format) written as a
+    /// pack's meta.json in `dir`, its signs all +1: the planner reads a pack's formats alone.
+    fn release_pack(dir: &std::path::Path, name: &str) {
+        let v: Value = json::parse(&fixture("qwen4x_packs.json")).unwrap();
+        let p = v.get("packs").and_then(|x| x.get(name)).unwrap_or_else(|| panic!("no pack {name}"));
+        let hidden = p.get("hidden").and_then(Value::as_u64).unwrap() as usize;
+        let mut layers = serde_json::Map::new();
+        for (l, counts) in p.get("layers").and_then(Value::as_array).unwrap().iter().enumerate() {
+            let Value::Object(c) = counts else { panic!("layer {l}") };
+            let f: Vec<&str> = c.iter().flat_map(|(fmt, n)| std::iter::repeat_n(fmt.as_str(), n.as_u64().unwrap() as usize)).collect();
+            layers.insert(l.to_string(), serde_json::json!({"file": format!("layer-{l:03}.safetensors"), "s": vec![1; hidden], "f": f}));
+        }
+        let mut meta =
+            serde_json::json!({"format": "glyd-x/1", "hidden": hidden, "intermediate": p.get("intermediate").and_then(Value::as_u64), "layers": layers});
+        if let Some(q) = p.get("q").and_then(Value::as_u64) {
+            meta["q"] = q.into();
+        }
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("meta.json"), meta.to_string()).unwrap();
+    }
+
+    /// The release's codes packs beside its shapes (its config and its files' headers) at the hummingbird level (`ExpertCache::Codes`): `fit` plans the RTX 4080
+    /// SUPER (16 GB) and the L4 (24 GB) with each pack (precise-v2, best-v2, fast) on one GPU, the always-on matrices and places a layer of the pack's largest
+    /// expert on it, every expert of the model's layers in the computer's memory as the pack's files mapped (the L4's 14 GiB free holds part of them, the files the
+    /// rest), within the GPU's free memory; the plan `run` loads (one GPU, its places, the pack's bytes beside: `split::open_plan`). Penguin, every expert on the
+    /// GPU, stays refused there, and with no level asked `fit` takes the hummingbird level.
+    #[test]
+    fn the_newest_qwen_familys_packs_are_planned_on_16_and_24_gb_cards() {
+        let text = fixture("qwen4x_config.json");
+        let nl = crate::dynamic::split::config_num(&text, "num_hidden_layers").unwrap();
+        let dir = model_dir("qx-packs", "Qwen3.8-Flash-Next", &text);
+        header_only_checkpoint(&dir, &fixture("qwen4x_tensors.json"));
+        let hb = format!("{}:hummingbird", dir.to_str().unwrap());
+        for pack in ["precise-v2", "best-v2", "fast"] {
+            release_pack(&dir.join("pack"), pack);
+            let cb = crate::cb_pack::CbPack::open_dims(&dir.join("pack"), 2560, 640).unwrap();
+            let (place, held) = ((0..nl).map(|l| cb.place_bytes(l)).max().unwrap() as u64, (0..nl).map(|l| cb.layer_bytes(l) as u64).sum::<u64>());
+            for machine in ["rtx4080s", "l4"] {
+                let f = planned(&args(&["fit", &hb, "--machine", machine])).unwrap();
+                let p = f.plan.chosen.as_ref().and_then(|c| c.load.clone()).unwrap_or_else(|| panic!("{pack} on {machine}: {:?}", f.refusal));
+                let (sp, c) = (p.spread.as_ref().unwrap(), p.experts.unwrap());
+                let m = Machine::preset(machine).unwrap();
+                assert_eq!(
+                    (p.family, p.level, sp.devices.as_slice(), sp.cuts.len(), sp.experts_per_layer),
+                    ("Qwen3.8-Flash-Next", "hummingbird", &[0][..], 0, 512)
+                );
+                assert!(c.slots >= 1 && c.slots < 512 && sp.places == [c.slots], "{pack} on {machine}: {} places a layer", c.slots);
+                assert_eq!((sp.host_bytes, sp.gpu_bytes - (nl * c.slots) as u64 * place), (held, p.weights - held - sp.tables), "{pack} on {machine}");
+                assert!(p.gpu_total() <= p.free && p.free == m.devices[0].free, "{pack} on {machine}: {p:?}");
+                // (one more place a layer does not fit)
+                assert!(p.gpu_total() + nl as u64 * place > p.free, "{pack} on {machine}: room for more places");
+                assert_eq!(c.ram, held.min(m.ram_free - HOST_MARGIN), "{pack} on {machine}: the computer's memory holds what it can");
+                eprintln!(
+                    "{pack} on {machine}: {} places a layer of {:.2} MB, {:.2} GiB on the GPU of {:.2} free, {:.2} GiB of experts ({:.2} in memory)",
+                    c.slots,
+                    place as f64 / 1e6,
+                    (p.gpu_total() - p.reserve) as f64 / (1u64 << 30) as f64,
+                    p.free as f64 / (1u64 << 30) as f64,
+                    held as f64 / (1u64 << 30) as f64,
+                    c.ram as f64 / (1u64 << 30) as f64
+                );
+                let penguin = planned(&args(&["fit", &format!("{}:penguin", dir.to_str().unwrap()), "--machine", machine])).unwrap();
+                assert!(penguin.refusal.is_some_and(|r| r.what.contains("needs about")), "{pack} on {machine}: penguin planned");
+                let any = planned(&args(&["fit", dir.to_str().unwrap(), "--machine", machine])).unwrap();
+                assert_eq!(any.plan.chosen.map(|c| c.level), Some("hummingbird"), "{pack} on {machine}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
     /// The dynamic route reads a family's row, never its name: a row of another name with GLM-5.3-Flash's fields plans GLM-5.3-Flash's checkpoint as its own
     /// row does, on every machine; a row that says no expert cache is refused where the cache was the plan; and a name the table has no row for is refused.
     #[test]
@@ -7605,6 +7852,10 @@ mod tests {
             let dir = model_dir("p2a", name, text);
             if let Some(t) = released_tensors(name) {
                 header_only_checkpoint(&dir, &t);
+            }
+            // (Qwen3.8-Flash-Next's hummingbird level is its codes pack's beside its weights: the release's precise-v2)
+            if *name == "Qwen3.8-Flash-Next" {
+                release_pack(&dir.join("pack"), "precise-v2");
             }
             // (the Qwen3.5 layout's penguin is the dynamic route's, planned from the files' headers: the released tensors of each)
             if let Some(t) = qwen35_tensors(name) {

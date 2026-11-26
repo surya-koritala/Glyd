@@ -63,6 +63,7 @@ pub fn load_cached(dir: &Path, o: &Opts, level: Layout, cache: Option<(usize, &R
         f8: None,
         dense: Some(crate::nemotron::dense_layout(level)),
         codebooks: Some(&codebooks),
+        codes: None,
     };
     let hidden = kinds.desc.hidden;
     let experts = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
