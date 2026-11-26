@@ -143,10 +143,54 @@ pub fn erf(x: f64) -> f64 {
     }
 }
 
-/// W [rows, cols] times x, each row's sum in f64, rounded to f32.
+/// W [rows, cols] times x, each row's sum in f64, rounded to f32. A product of 2^19 weights or more has its rows split over threads, one for each 2^18
+/// weights up to the computer's cores (`matvec_on`), each thread's rows four at a time (`rows_into`): a row's sum is the same terms in the same order
+/// whichever thread takes it and whatever rows beside it, so the result is the same bits (`tests::a_product_over_threads_is_the_same_bits`).
 pub fn matvec(w: &[f32], cols: usize, x: &[f32]) -> Vec<f32> {
+    static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let cores = *CORES.get_or_init(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
+    matvec_on(w, cols, x, cores.min(w.len() >> 18))
+}
+
+/// `matvec` with its rows in `threads` runs of consecutive rows, each on a thread of its own (one or none: on this thread).
+pub fn matvec_on(w: &[f32], cols: usize, x: &[f32], threads: usize) -> Vec<f32> {
     debug_assert_eq!(x.len(), cols);
-    w.chunks(cols).map(|r| r.iter().zip(x).map(|(&a, &b)| a as f64 * b as f64).sum::<f64>() as f32).collect()
+    let rows = w.chunks(cols).len();
+    let mut out = vec![0f32; rows];
+    if threads <= 1 || rows < 2 {
+        rows_into(w, cols, x, &mut out);
+        return out;
+    }
+    let per = rows.div_ceil(threads);
+    std::thread::scope(|s| {
+        for (o, part) in out.chunks_mut(per).zip(w.chunks(per * cols)) {
+            s.spawn(move || rows_into(part, cols, x, o));
+        }
+    });
+    out
+}
+
+/// The rows of `w` (each `cols` long, the last perhaps shorter) times x into `out`, four at a time: each row's sum the terms of a row alone in the same
+/// order, from the same start (an empty sum's), the four sums kept in flight together.
+fn rows_into(w: &[f32], cols: usize, x: &[f32], out: &mut [f32]) {
+    let zero: f64 = std::iter::empty::<f64>().sum();
+    let one = |r: &[f32]| r.iter().zip(x).fold(zero, |s, (&a, &b)| s + a as f64 * b as f64) as f32;
+    for (o, part) in out.chunks_mut(4).zip(w.chunks(4 * cols)) {
+        if o.len() < 4 || part.len() < 4 * cols {
+            o.iter_mut().zip(part.chunks(cols)).for_each(|(y, r)| *y = one(r));
+            continue;
+        }
+        let (a, b, c, d) = (&part[..cols], &part[cols..2 * cols], &part[2 * cols..3 * cols], &part[3 * cols..]);
+        let mut s = [zero; 4];
+        for ((((&a, &b), &c), &d), &x) in a.iter().zip(b).zip(c).zip(d).zip(x) {
+            let x = x as f64;
+            s[0] += a as f64 * x;
+            s[1] += b as f64 * x;
+            s[2] += c as f64 * x;
+            s[3] += d as f64 * x;
+        }
+        o.iter_mut().zip(s).for_each(|(y, s)| *y = s as f32);
+    }
 }
 
 /// x / sqrt(sum(x^2) + eps), in place.
@@ -821,6 +865,29 @@ mod tests {
         assert_close(&y, &want, 1e-6, "the streams after the block");
         // the final mixer: the mix alone
         assert_eq!(gated_mix(n, &nm, w, p.vec("mix_down").unwrap(), p.vec("mix_up").unwrap(), None, &x).unwrap(), (gi, Vec::new()));
+    }
+
+    /// The product's rows split over threads, evenly or not, a last row short or not: every value the bits of the plain row-by-row sums.
+    #[test]
+    fn a_product_over_threads_is_the_same_bits() {
+        use super::testing::fill;
+        let plain = |w: &[f32], cols: usize, x: &[f32]| -> Vec<u32> {
+            w.chunks(cols).map(|r| (r.iter().zip(x).map(|(&a, &b)| a as f64 * b as f64).sum::<f64>() as f32).to_bits()).collect()
+        };
+        let bits = |v: Vec<f32>| v.into_iter().map(f32::to_bits).collect::<Vec<u32>>();
+        for (rows, cols, extra) in [(1, 64, 0), (5, 37, 0), (1000, 37, 0), (999, 129, 17), (4096, 256, 0)] {
+            let (mut w, mut x) = (fill("mv.w", rows * cols + extra, -1.0, 1.0), fill("mv.x", cols, -2.0, 2.0));
+            // (a row of negative weights on a zero input is a sum of negative zeros, whose sign an empty sum's start decides)
+            if rows == 5 {
+                w[..cols].iter_mut().for_each(|v| *v = -v.abs());
+                x.iter_mut().for_each(|v| *v = 0.0);
+            }
+            let want = plain(&w, cols, &x);
+            for t in [0, 1, 2, 3, 7, 16, 64] {
+                assert_eq!(bits(matvec_on(&w, cols, &x, t)), want, "{rows} x {cols} (+{extra}) on {t} threads");
+            }
+            assert_eq!(bits(matvec(&w, cols, &x)), want, "{rows} x {cols} (+{extra}) as matvec splits it");
+        }
     }
 
     /// A block built through the backend seam: two sequences interleaved in one flat batch give what each gives alone, and the backend

@@ -79,6 +79,7 @@ const SWITCHES: &[&str] = &[
     "tables",
     "decoded",
     "stacked",
+    "ref",
 ];
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] = &[

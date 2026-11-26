@@ -21,9 +21,11 @@
 # ending with its tokens: /v1/glyd/info says 64 at once, /stats' running peaks at 64 with no sequence sent back for room); plan-is-load (the level and the memory the server says against the
 # printed plan: /v1/glyd/info); and, for each level, logits-vs-ref. NONE rows: plan:MODEL (refused, exit 3) and refusal:MODEL (the real command: a non-zero exit, a few lines).
 #
-# logits-vs-ref is a SKIP, which keeps the gate red: no engine command holds a real model's logits at 64 users to the CPU Ref backend. logitscheck and kindcheck hold random models to
-# fixtures and to Ref; usercheck --dir and roundcheck --dir hold the engine at 64 users to its own single-user replies, not to Ref;
-# g4check, kimicheck, musecheck and dsv4check are each one family's, on one sequence. The check is missing, and this script does not stand a weaker one in.
+# logits-vs-ref runs the development command of --engine's build, `glyd-engine usercheck --ref --dir MODEL --level LEVEL --users 64` on the model the cache holds (serve fetched it):
+# 64 prompts asked at once through the one scheduler, 5 tokens each, and every row of logits a token was chosen from (the prompt's last position and 4 decode steps) held to the CPU
+# Ref backend running the model's description on the same weights, row by row: at penguin within the kind's bound on the run's own choices of experts, at a lossy level within the
+# level's threshold. Its line says how many rows were held and the worst row's KL. Without --engine it is a SKIP, which keeps the gate red: an installed glyd has no development
+# commands. The reference holds the weights in f32 (a model's parameters times 4 bytes, in the computer's memory); it is given four times --limit.
 #
 # --ext DIR: files NAME.result, each a line "PASS|FAIL|SKIP<TAB>NAME<TAB>detail": parity-kimi-k3, parity-deepseek-v4, parity-glm-5.3 (single-user parity on their reference hardware),
 # bench-no-regression (`glyd bench --compare BASE.json CAND.json` against the previous record on the gate's GPU: exit 0) and packs-since-v0.29 (every published pack loads). Where --engine is
@@ -33,7 +35,7 @@ set -u
 GPU=""; MODELS="$(dirname "$0")/m2-models.txt"; GLYD="${GLYD:-glyd}"; ENGINE=""; OUT=""; EXT=""; LIMIT=1800; ROWS=""; MACHINE=""; PLAN_ONLY=0
 PORT="${GLYD_GATE_PORT:-18735}"; USERS=64; REPLY=128
 REQUIRED_EXT="parity-kimi-k3 parity-deepseek-v4 parity-glm-5.3 bench-no-regression packs-since-v0.29"
-NO_REF="BLOCKED: no engine command holds a real model's logits at $USERS users to the CPU Ref backend (usercheck --dir holds the engine to its own replies; logitscheck and kindcheck use random models); needed: usercheck --dir DIR --ctx plan --users $USERS against Ref"
+NO_REF="not run: the check is a development command (glyd-engine usercheck --ref), and no --engine names a development build that has it"
 
 need() { [ "$1" -ge 2 ] || { echo "m2-gate.sh: $2 needs a value (--help)"; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -263,8 +265,23 @@ run_row() { # MODEL LEVELS CONTEXTS
       else step PASS "plan:$name" "$words"; fi
       if [ "$PLAN_ONLY" = 0 ]; then PLAN_J="$PJ"; serve_64 "$m:$l" "$c" "$name"; fi
     done
-    if [ "$PLAN_ONLY" = 0 ]; then step SKIP "logits-vs-ref:$m:$l" "$NO_REF"; fi
+    if [ "$PLAN_ONLY" = 0 ]; then logits_vs_ref "$m" "$l"; fi
   done
+}
+
+# logits_vs_ref MODEL LEVEL: `glyd-engine usercheck --ref` of --engine on the model at the level, 64 users: PASS or FAIL as its last verdict line says, and its exit status agrees
+logits_vs_ref() {
+  local m="$1" l="$2" log line code
+  if [ -z "$ENGINE" ]; then step SKIP "logits-vs-ref:$m:$l" "$NO_REF"; return; fi
+  log="$OUT/ref-$(printf '%s' "$m:$l" | tr '/:@' '___').log"
+  tmo $((LIMIT * 4)) "$ENGINE" usercheck --ref --dir "$m" --level "$l" --users "$USERS" --tokens 5 --prompt-tokens 32 > "$log" 2>&1; code=$?
+  line="$(grep -E '^(PASS|FAIL) usercheck --ref' "$log" | tail -1)"
+  case "$code:$line" in
+    0:PASS*) step PASS "logits-vs-ref:$m:$l" "${line#PASS usercheck --ref }" ;;
+    *:FAIL*) step FAIL "logits-vs-ref:$m:$l" "${line#FAIL usercheck --ref } (log: $log)" ;;
+    124:*) step FAIL "logits-vs-ref:$m:$l" "no verdict within $((LIMIT * 4)) s (log: $log): $(tail -1 "$log" | cut -c1-160)" ;;
+    *) step FAIL "logits-vs-ref:$m:$l" "exit $code with no verdict that agrees (log: $log): $(tail -1 "$log" | cut -c1-160)" ;;
+  esac
 }
 
 # a NONE row: the planner refuses (exit 3, its first line), and the command's refusal is a few lines and a non-zero exit
