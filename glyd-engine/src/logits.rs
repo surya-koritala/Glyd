@@ -6715,11 +6715,12 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `samplecheck CASE [--users N] [--tokens T] [--level L] [--vocab V]` (development, R4a #138: sampling on the GPU): the case's random model served by the scheduler to N requests at
+/// `samplecheck CASE [--users N] [--tokens T] [--level L] [--vocab V] [--split CUT --devices A,B | --tp A,B]` (development, R4a #138: sampling on the GPU; `sample_routes` for --split and --tp): the case's random model served by the scheduler to N requests at
 /// once whose draws differ (greedy and drawn with nothing on the row; a JSON schema's grammar greedy and drawn; the repetition, presence and frequency penalties; a bias; an allowed list;
-/// a least length), the rows their draws see made on the GPU (`sampler::Proc`): every request's tokens and log-probabilities against the host's draws from the whole rows of the same
-/// steps (GLYD_ENGINE_HOST_SAMPLING's), a grammar's document against its schema, the rows each request's draws read alone (none, but where a top-p or a min-p over the whole row cuts
-/// past the 64 largest), and each request at once against its run alone: token for token where a step's rows are each their own pass's bits (prompts one a pass,
+/// a least length; a flat top-p, a min-p alone, a top-k of 200, with log-probabilities), the rows their draws see made on the GPU (`sampler::Proc`) and drawn from the GPU's view of
+/// them (`sampler::View`): every request's tokens and log-probabilities against the host's draws from the whole rows of the same steps (GLYD_ENGINE_HOST_SAMPLING's), a grammar's
+/// document against its schema, no row read on the host at once or alone, and each request at once against its run alone: token for token, and its log-probabilities to the bit,
+/// where a step's rows are each their own pass's bits (prompts one a pass,
 /// GLYD_ENGINE_BATCH_PREFILL=0, as `usercheck` holds them, and 16 users or fewer: the rows a pass keeps the bits of; more are counted here), else counted (a prompt run beside others
 /// rounds its rows' values otherwise, #528, and a drawn token may then differ). Then the host's time a step both ways, on this model and for 8 and 64 rows of a vocabulary of V (262,144 by default: the rows of
 /// requests with the penalties, a bias and a top-k, half of them an allowed list of half the tokens) read and drawn on the host, or made on the GPU and drawn from their candidates.
