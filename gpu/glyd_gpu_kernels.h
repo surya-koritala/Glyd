@@ -5025,14 +5025,15 @@ __device__ __forceinline__ void f8_granule_dense(const F8Lin& P, int64_t p, int 
 // as 8 groups of 24 bits (group 2 ks + h: values 8 h to 8 h + 7 of unit ks, code i at bit 3 i). A patch's head: x its literals' first word of var (a plain
 // patch: its part's), y the table (rank r's exponent at bit 4 r), w bit 31 plain; then x row blocks 1 and 2's first literal (16 bits each, counted in the
 // patch), y row block 3's and the patch's count. A plain patch (more than HMAXE escapes, or more than 16 in a lane's 64 values) as above: its stream's bytes, row blocks
-// 0-2 in core, 3 in var.
+// 0-2 in core, 3 in var, and zeros in the core's last HCORE - CORE bytes (the product copies a row block's HGB bytes whole, of any patch: a pack writes every byte).
 constexpr int F8_H = 16;           // KIND | F8_H: a product of a matrix in layout H (block scales, the default plan)
 constexpr int HLW = 14;            // a lane's words of a row block
 constexpr int HGB = 32 * HLW * 4;  // a row block's core bytes
 constexpr int HCORE = 4 * HGB;     // a patch's
 constexpr int HCSL = 32 * HLW;     // the words of a row block's core: a slot of the product's
 constexpr int HMAXE = 1024;        // a patch with more escapes is plain
-static_assert(HCORE == 7168 && 3 * 2048 <= HCORE && TAIL * 4 == 2048, "a plain patch: row blocks 0-2 in core, 3 in var");
+static_assert(HCORE == 7168 && 3 * 2048 <= HCORE && TAIL * 4 == 2048 && (NT - CORE / 32) * 16 == HCORE - CORE,
+              "a plain patch: row blocks 0-2 in core, 3 in var, the core's rest zeros (16 bytes a thread of var's)");
 
 // H's pass 1: a patch's head (its words of var first, for f8_scan_kernel) from the counts of its exponents (warps 2 mb and 2 mb + 1: row block mb's rows).
 __device__ __forceinline__ void f8h_head_body(const F8Pk P, uint32_t* heads) {
@@ -5147,6 +5148,7 @@ __device__ __forceinline__ void f8h_pack_body(const F8Pk P, const uint32_t* head
             for (int h = 0; h < 2; h++)
 #pragma unroll
                 for (int q = 0; q < 4; q++) v[4 * h + q] = y[h][q];
+            *(uint4*)(core + CORE + (tid - CORE / 32) * 16) = make_uint4(0, 0, 0, 0);
         }
         return;
     }
