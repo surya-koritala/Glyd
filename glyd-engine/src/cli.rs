@@ -1437,7 +1437,8 @@ fn load_lossy(
 }
 
 /// The engine of a level's plan (Gemma 4's, Qwen3's, Nemotron-H's or Qwen3.5's description on the executor) from the directory `dir`, on `gpu`: everything it holds is the
-/// plan's (its context, its prompt chunk, its layout, its draft model and its expert cache); nothing is sized here. The engine, its weights' bytes and its vocabulary.
+/// plan's (its context, its prompt chunk, its layout, its draft model, its expert cache, its sequences and their keys, values and states); nothing is sized here. The
+/// engine, its weights' bytes and its vocabulary.
 fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: &RefCell<Ui>) -> Done<(Box<dyn Gen>, usize, usize)> {
     let o = crate::dynamic::Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device: gpu.ordinal, layout: Some(plan.layout) };
     let oom = |e: crate::ffi::Error| {
@@ -1450,7 +1451,7 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
             cannot(e.msg)
         }
     };
-    Ok(if plan.kind == Kind::Gemma4 {
+    let (mut e, bytes, vocab): (Box<dyn Gen>, usize, usize) = if plan.kind == Kind::Gemma4 {
         // (drafted where a draft model is found: the big model checks every draft token, so the tokens are its own; greedy replies draft, sampled ones step)
         let draft = gemma_draft(a, Some(dir)).filter(|_| plan.draft > 0).map(|d| (d, a.num("draft-tokens", 8usize).unwrap_or(8).clamp(1, plan.chunk - 1)));
         if let Some((d, k)) = &draft {
@@ -1517,7 +1518,10 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
         let e = crate::dynamic::qwen35::load(dir, &o).map_err(oom)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
-    })
+    };
+    // (its sequences, their keys, values and states the plan's: the pools take its bytes, no more)
+    e.take_plan(plan.users, plan.kv);
+    Ok((e, bytes, vocab))
 }
 
 /// The 12-bit lossless KV pages for `e` where its plan has them (`LoadPlan::kv12`: GLYD_KV=lossless asked for them, and they reserve no more than bf16 for the
@@ -2330,13 +2334,13 @@ mod tests {
         let room = vec![(0, dense.iter().sum::<u64>() + base + kv + all / 3)];
         let table = crate::sizes::Table::from_dir(&dir).unwrap();
         let (cuts, devices, places, on_gpus, got_all, experts, dense) =
-            release_cache(&table, &text, nl, &room, "tiny", 16, false, Some(all + HOST_MARGIN + (1 << 30))).unwrap();
+            release_cache(&table, &text, nl, &room, "tiny", &[], false, Some(all + HOST_MARGIN + (1 << 30))).unwrap();
         // (room for a token's experts beside the layers' weights: no dense layer in the computer's memory; DeepSeek-V4's loader keeps none there)
         assert_eq!(dense, (0, 0));
         assert!(cuts.is_empty() && devices == vec![0] && places[0] > 0 && places[0] < experts, "{places:?} of {experts}");
         assert_eq!(got_all, all);
         assert!(on_gpus <= room[0].1);
-        let e = release_cache(&table, &text, nl, &room, "tiny", 16, false, Some(all / 2 + HOST_MARGIN)).unwrap_err();
+        let e = release_cache(&table, &text, nl, &room, "tiny", &[], false, Some(all / 2 + HOST_MARGIN)).unwrap_err();
         assert!(e.what.contains("keeps the experts its GPUs do not hold in the computer's memory"), "{}", e.what);
         // (the plan `run` loads and `fit` prints, on a GPU of that room: the cache's layers are the model's layers of experts, and its bytes all the experts')
         let free = (0..40).fold((0u64, 64u64 << 30), |(lo, hi), _| {
@@ -2384,18 +2388,20 @@ mod tests {
         let sh = crate::plan::Shape::from_config(&text).unwrap();
         let kv = ((sh.kv_full * 16.0 + sh.kv_sliding * 16f64.min(sh.window.max(1) as f64) + sh.state) / nl as f64) as u64 * nl as u64;
         let room = vec![(0, dense.iter().sum::<u64>() + base + kv + all / 3)];
+        // (each layer's sequences beside its weights: here the room's share of them)
+        let kv_layers = vec![kv / nl as u64; nl];
         let (cuts, devices, places, on_gpus, got_all, experts, ram, dense) =
-            hb_cache(&out, &text, nl, &room, "tiny", 16, false, Some(all + HOST_MARGIN + (1 << 30))).unwrap();
+            hb_cache(&out, &text, nl, &room, "tiny", &kv_layers, false, Some(all + HOST_MARGIN + (1 << 30))).unwrap();
         assert_eq!(dense, (0, 0));
         assert!(cuts.is_empty() && devices == vec![0] && places.len() == 1, "{cuts:?} {devices:?} {places:?}");
         assert!(places[0] > 0 && places[0] < experts, "{places:?} of {experts}");
         assert_eq!((got_all, ram), (all, all));
         assert!(on_gpus <= room[0].1);
         // memory for half of them: the rest on the disk
-        let (.., ram, _) = hb_cache(&out, &text, nl, &room, "tiny", 16, false, Some(all / 2 + HOST_MARGIN)).unwrap();
+        let (.., ram, _) = hb_cache(&out, &text, nl, &room, "tiny", &kv_layers, false, Some(all / 2 + HOST_MARGIN)).unwrap();
         assert_eq!(ram, all / 2);
         // none to give: refused
-        let e = hb_cache(&out, &text, nl, &room, "tiny", 16, false, Some(HOST_MARGIN)).unwrap_err();
+        let e = hb_cache(&out, &text, nl, &room, "tiny", &kv_layers, false, Some(HOST_MARGIN)).unwrap_err();
         assert!(e.what.contains("in the computer's memory and on the disk"), "{}", e.what);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -2924,13 +2930,20 @@ mod tests {
         let (one, eight) = (at(&["run", model, "--no-draft"]), at(&["serve", model, "--users", "8", "--no-draft"]));
         assert_eq!((one.context, one.users), (LOSSY_CTX, 1));
         assert!(eight.context >= LOSSY_MIN_CTX && eight.context < one.context && eight.users == 8, "{}", eight.context);
+        // (each user's rings and context, and the pools' block 0 of the sliding and the global layers, `rows::SeqRoom`)
         let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, eight.context, false);
-        assert_eq!(eight.kv, 8 * (rings + eight.context as u64 * per));
+        assert_eq!(eight.kv, 8 * (rings + eight.context as u64 * per) + crate::plan::sizing::block_zero(&cfg.group_token_bytes()));
         assert!(eight.weights + LOSSY_WORK + eight.reserve + eight.kv <= free, "8 users at {} tokens", eight.context);
         assert_eq!(at(&["serve", model, "--users", "1", "--no-draft"]).context, LOSSY_CTX);
         assert_eq!(at(&["serve", model, "--users", "8", "--no-draft", "--ctx", "8192"]).context, 8192);
-        // (a draft model to come with the download: drafted, one user at a time, the context of one)
-        assert_eq!(at(&["serve", model, "--users", "8"]).users, 1);
+        // (a draft model to come with the download: one user drafted, the context of one; eight held as asked, with no draft model (a drafted engine runs one
+        // sequence at a time), the same plan as --no-draft's)
+        let (one, eight_drafted) = (at(&["serve", model, "--users", "1"]), at(&["serve", model, "--users", "8"]));
+        assert!(one.users == 1 && one.draft > 0, "{one:?}");
+        assert_eq!(eight_drafted, eight);
+        // (fit --users N plans that server: N users, no draft model where N > 1; fit alone run's one user, drafted)
+        assert_eq!(at(&["fit", model, "--users", "8"]), eight);
+        assert!(at(&["fit", model]).users == 1 && at(&["fit", model]).draft > 0);
         // (run, serve and preflight alike: Gemma 4 without a tag is penguin, with one the level asked; so is a plain dense decoder, on the executor too)
         assert_eq!(run_level(model, None).unwrap(), Some(Layout::Tiered));
         assert_eq!(run_level(model, Some(Layout::Int4)).unwrap(), Some(Layout::Int4));
@@ -3097,6 +3110,16 @@ mod tests {
         assert!(plan(Layout::Int5, 23.0, 78).is_err() && plan(Layout::Int5, 23.0, 79).is_ok());
         // a computer that does not say how much it has is taken to have enough (the allocation says if it has not)
         assert!(lossy_plan_with(&a, model, Layout::Int5, text, None, 23 << 30, "NVIDIA RTX 4090", None, None).unwrap().experts.is_some());
+        // (a server's plan, `fit --users N`, at the gate's 4,096 tokens: every user's states, their copies at its mark and its context beside the cache, which holds
+        // fewer places for more users, all within what is free; its Mamba-2 states are large, so 64 users do not fit here and 8 do)
+        let served = |users: &str| {
+            let w = ["fit", model, "--users", users, "--context", "4096"];
+            lossy_plan_with(&args(&w), model, Layout::Int5, text, None, 23 << 30, "NVIDIA RTX 4090", None, Some(128 << 30)).unwrap()
+        };
+        let (one, two, many) = (served("1"), served("2"), served("8"));
+        let (c1, c8) = (one.experts.expect("a cache"), many.experts.expect("a cache"));
+        assert!((one.users, many.users) == (1, 8) && many.kv == one.kv + 7 * (two.kv - one.kv) && c8.slots < c1.slots, "{one:?} {many:?}");
+        assert!(many.gpu_total() <= 23 << 30, "{}", many.text());
     }
 
     /// `expert_cache_for` is what `run` would give the directory: the plan of its own config on the memory the GPU has free (a directory of a config alone is sized by the plan's bits a weight), the places of 23 GiB
