@@ -1007,9 +1007,19 @@ impl Dyn {
     }
 
     /// The rows of the CUDA graph a step of `n` rows that decode (and nothing else) replays (vLLM's full graphs of uniform decode batches at a ladder of
-    /// padded sizes): `bucket`'s ladder up to `rows_top`; None: the step runs eager.
+    /// padded sizes): `bucket`'s ladder up to `rows_top`, or n itself where a block of experts is in the expert cache (`rows_exact_sizes`); None: the step runs eager.
     fn rows_bucket(&self, n: usize) -> Option<usize> {
-        bucket(n, self.rows_top()?)
+        let top = self.rows_top()?;
+        if self.rows_exact_sizes() {
+            return (2..=top).contains(&n).then_some(n);
+        }
+        bucket(n, top)
+    }
+
+    /// Whether the graphs of steps of rows that decode are of every row count, not padded: where a block of experts is in the expert cache, whose plan a padding row's
+    /// choices would join (taking places, sending the host pairs), so that the cache's calls, and the host's sums, would not be the eager step's.
+    fn rows_exact_sizes(&self) -> bool {
+        self.big.moe.iter().any(|b| b.store().is_some())
     }
 
     /// The most rows a step of rows that decode replays a graph of (`rows_bucket`'s ladder's top), where the description takes such a graph (`RowTabs::graphs`) and the engine
@@ -1029,8 +1039,7 @@ impl Dyn {
             return None;
         }
         let most = self.head_room().min(rt.rows).min(self.chunk);
-        let cached = self.big.moe.iter().any(|b| b.store().is_some());
-        Some(if cached { most.min(crate::devplan::DEV_ROWS) } else { most })
+        Some(if self.rows_exact_sizes() { most.min(crate::devplan::DEV_ROWS) } else { most })
     }
 
     /// Whether steps of several rows that decode replay CUDA graphs (`rows_bucket`).
@@ -1049,7 +1058,7 @@ impl Dyn {
     /// step waits on a capture: each after a warm-up pass of padding rows alone (position -1: no key read or written, no sequence's state touched).
     fn capture_rows(&mut self) -> Result<()> {
         let Some(most) = self.rows_top() else { return Ok(()) };
-        let mut sizes: Vec<usize> = (2..=most).filter_map(|n| bucket(n, most)).collect();
+        let mut sizes: Vec<usize> = (2..=most).filter_map(|n| self.rows_bucket(n)).collect();
         sizes.dedup();
         for k in sizes {
             if self.rgraphs.iter().any(|g| g.rows == k) {

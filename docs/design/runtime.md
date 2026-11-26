@@ -269,7 +269,8 @@ its attention over the latents cut into runs as a decode row's is), the compress
 the mean-pooled indexer, the recurrent layers' convolutions and recurrences (Gated DeltaNet, Kimi delta attention, Mamba-2) and the n-gram
 embedding's state. Each row's kernels and sums are its own sequence's pass's on its one token. The ladder's top is the head's rows; where a
 block of experts is in the expert cache planned on the GPU it is that plan's 8 rows (`devplan::DEV_ROWS`): a call of more rows is planned on
-the host, which reads the router's choices, so such a step runs eager. A latent attention whose ring is in 12-bit pages takes no whole graph:
+the host, which reads the router's choices, so such a step runs eager; and there every row count has its own graph, unpadded (a padding row's
+choices would join the cache's plan, taking places and sending the host pairs). A latent attention whose ring is in 12-bit pages takes no whole graph:
 each sequence's pages are unpacked into the one staging ring by itself. Every other pass (a prompt's chunk, prompts together, decode rows
 with prompt chunks, decode rows of a description with no whole graph) runs in pieces (`dynamic/pieces.rs`): the runs of row-wise operations
 between the attention and recurrent operations are graphs, the rest eager between them. Pieces are captured for a pass's exact row count,
