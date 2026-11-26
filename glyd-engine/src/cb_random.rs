@@ -188,9 +188,13 @@ impl CodesExpert {
         CodesExpert { up: fmts.0, down: fmts.1, up_codes, up_books, down_codes, down_books }
     }
 
-    /// Row `r` of a matrix of `fmt` (its codes and entries), in the rotated basis.
+    /// Row `r` of a matrix of `fmt` (its codes and entries), in the rotated basis: `value` of each (a format q row's words read once).
     pub fn row(fmt: Fmt, codes: &[u8], books: &[u16], cols: usize, r: usize) -> Vec<f32> {
-        (0..cols).map(|t| value(fmt, codes, books, cols, r, t)).collect()
+        let Some(k) = fmt.tq_bits() else { return (0..cols).map(|t| value(fmt, codes, books, cols, r, t)).collect() };
+        let rb = fmt.row_bytes(cols);
+        let words: Vec<u32> = codes[r * rb..][..rb].chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        let scale = f32::from_bits((books[r] as u32) << 16) as f64;
+        (0..cols).map(|t| (crate::cpu_simd::tq_value(crate::cpu_simd::tq_state_k(&words, k, t)) as f64 * crate::cpu_simd::TQ_K as f64 * scale) as f32).collect()
     }
 
     /// The expert's weights in the model's basis for a layer of signs `s`, fp32: gate and up [2 inter, hidden], down [hidden, inter].
@@ -349,6 +353,19 @@ mod tests {
             assert!(scale > 0.0 && off < 1e-3, "expert {e} ({}): {off:.2e} of the output's largest magnitude", x_.name());
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A row of any format is `value` of each of its values (a format q row's words read once for the row).
+    #[test]
+    fn a_row_is_each_of_its_values() {
+        let mut rng = Rng(9);
+        for f in [Fmt::Cb2, Fmt::Cb3, Fmt::Cb4, Fmt::Tern, Fmt::Tq, Fmt::Tq3, Fmt::Tq4] {
+            let x = CodesExpert::random(320, 64, (f, f), &mut rng);
+            for r in [0, 17, 127] {
+                let row = CodesExpert::row(f, &x.up_codes, &x.up_books, 320, r);
+                assert!((0..320).all(|t| row[t].to_bits() == value(f, &x.up_codes, &x.up_books, 320, r, t).to_bits()), "{f:?} row {r}");
+            }
+        }
     }
 
     /// Two-bit experts are the draws they were before the other formats were made, and their pack the same bytes: the expert cache's random case

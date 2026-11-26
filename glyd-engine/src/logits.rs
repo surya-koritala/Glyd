@@ -1533,9 +1533,10 @@ fn qwen4x_cb_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 /// every expert on the GPU) against the expert cache (`--places` a layer, 3 by default: fewer than a token's 4, so every call misses) with each miss copied into a
 /// place, for a prompt of `--tokens` (40 by default: one pass of the per-pair products; the streaming prefill of a longer chunk sums its pairs with atomics) and 6
 /// decode steps: every logit the same bits, as everywhere the GPU computes every pair (`BESIDE_KL`'s ruling). Then the cache with the host computing its misses
-/// (src/cpu_cb.rs: the pack's arithmetic in another implementation, its own sums' order) against the resident run at the kind's lossless bound (`BESIDE_KL`: KL
-/// mean and max over the rows) and the best token the same wherever the resident row's lead clears `CLEAR_LEAD`: the GPU's decode of every format is the host's
-/// to that bound. An error where a form fails.
+/// (src/cpu_cb.rs: the pack's arithmetic in another implementation, its own sums' order) against the resident run by the causal rule: each run's routers' choices
+/// traced, the rows before the first pass whose choices are apart held to the kind's lossless bound (`BESIDE_KL`: KL mean and max) with the best token the same
+/// wherever the resident row's lead clears `CLEAR_LEAD`, that row and the later ones reported, every choice apart a near tie on each run's own scores (below
+/// `kindcheck::NEAR` of the largest; wider fails): the GPU's decode of every format is the host's to that bound. An error where a form fails.
 pub fn codes_check(a: &crate::args::Args) -> Result<()> {
     let named: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
     let forms: Vec<&str> = if named.is_empty() { CODES_FORMS.iter().map(|f| f.0).collect() } else { named };
@@ -1561,7 +1562,9 @@ pub const RELEASED_CODES: [&str; 6] = ["precise-v2", "best-v2", "fast", "precise
 
 /// `codes_check`'s comparisons of the form `name` (`places` a layer in the cache, a prompt of `n` tokens): whether it passes, and its line.
 pub fn codes_form_check(name: &str, places: usize, n: usize) -> Result<(bool, String)> {
+    use crate::dynamic::kindcheck::NEAR;
     use crate::dynamic::qwen4x::{load_cached, Caching, PackMode};
+    use crate::moe::{Seen, ROUTES};
     use crate::offload::Mode;
     if n == 0 || n >= crate::moe_cb::STREAM_MIN {
         return err(format!("--tokens {n}: 1 to {} (one pass of the per-pair products)", crate::moe_cb::STREAM_MIN - 1));
@@ -1571,41 +1574,92 @@ pub fn codes_form_check(name: &str, places: usize, n: usize) -> Result<(bool, St
     let dir = std::env::temp_dir().join(format!("glyd-codescheck-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     qwen4x_codes_random(&dir, form)?;
-    // (the pack as best serves it: none of a call's pairs skipped)
-    let run = |places: usize, mode: Mode| -> Result<Vec<Vec<f32>>> {
+    let tap = |on: Option<Vec<Seen>>| ROUTES.lock().map(|mut r| std::mem::replace(&mut *r, on)).map_err(|_| Error("the routes' lock".into()));
+    // (the pack as best serves it: none of a call's pairs skipped; each run's routers' choices traced, every selection in order: a pass's layers', a pass a row)
+    let run = |places: usize, mode: Mode| -> Result<(Vec<Vec<f32>>, Vec<Seen>)> {
         let mut k = Caching { places: Some(places), ..Caching::new(&dir.join("pack"), PackMode::Best, 1) };
         k.offload.mode = mode;
         let mut e = load_cached(&dir, &dyn_opts(None), &k)?;
-        e.prefill(&prompt)?;
-        let mut rows = vec![e.logits()?];
-        for &t in &decode {
-            e.step(t)?;
-            rows.push(e.logits()?);
-        }
-        Ok(rows)
+        tap(Some(Vec::new()))?;
+        let rows = (|| -> Result<Vec<Vec<f32>>> {
+            e.prefill(&prompt)?;
+            let mut rows = vec![e.logits()?];
+            for &t in &decode {
+                e.step(t)?;
+                rows.push(e.logits()?);
+            }
+            Ok(rows)
+        })();
+        let seen = tap(None)?.unwrap_or_default();
+        Ok((rows?, seen))
     };
     // (resident: as many places as a layer keeps, the form's random model's 8)
     let runs = (|| Ok::<_, Error>((run(8, Mode::Copy)?, run(places, Mode::Copy)?, run(places, Mode::Cpu)?)))();
     let _ = std::fs::remove_dir_all(&dir);
-    let (resident, copied, host) = runs?;
+    let ((resident, routes_r), (copied, _), (host, routes_h)) = runs?;
     let differ: usize = resident.iter().zip(&copied).map(|(r, c)| row_diff(r, c).0).sum();
     let total: usize = resident.iter().map(Vec::len).sum();
+    // (the host's run: its rows judged at the kind's lossless bound up to the first row whose pass took a router's choice apart from the resident run's;
+    // that row and the rows after it reported, where every choice apart is a near tie on each run's own scores (`NEAR` of the largest), else it fails)
+    let per = routes_r.len() / resident.len().max(1);
+    let traced = per > 0 && routes_r.len() == routes_h.len() && routes_r.len() == per * resident.len();
+    let (mut first, mut far, mut apart) = (resident.len(), 0usize, 0usize);
+    if traced {
+        for (s, (x, y)) in routes_r.iter().zip(&routes_h).enumerate() {
+            let (k, e) = (x.k.max(1), x.keys.len() / (x.ids.len() / x.k.max(1)).max(1));
+            for t in 0..x.ids.len() / k {
+                let (mut u, mut v) = (x.ids[t * k..(t + 1) * k].to_vec(), y.ids[t * k..(t + 1) * k].to_vec());
+                (u.sort_unstable(), v.sort_unstable());
+                if u == v {
+                    continue;
+                }
+                apart += 1;
+                first = first.min(s / per);
+                let (kr, kh) = (&x.keys[t * e..(t + 1) * e], &y.keys[t * e..(t + 1) * e]);
+                let top = |w: &[f32]| w.iter().fold(f32::MIN_POSITIVE, |m, &z| m.max(z.abs()));
+                // (each expert one run took and the other did not: its nearest swap's gap, on each run's own scores over their largest)
+                let gap = u
+                    .iter()
+                    .filter(|p| !v.contains(p))
+                    .map(|&p| {
+                        v.iter()
+                            .filter(|q| !u.contains(q))
+                            .map(|&q| {
+                                let (p, q) = (p as usize, q as usize);
+                                ((kr[p] - kr[q]).abs() / top(kr)).max((kh[q] - kh[p]).abs() / top(kh))
+                            })
+                            .fold(f32::INFINITY, f32::min)
+                    })
+                    .fold(0f32, f32::max);
+                far += (gap.is_nan() || gap >= NEAR) as usize;
+            }
+        }
+    }
+    let judged = if traced { first } else { resident.len() };
     let (mut mean, mut max, mut tops, mut clear) = (0f64, 0f64, 0usize, 0usize);
-    for (r, h) in resident.iter().zip(&host) {
+    for (r, h) in resident.iter().zip(&host).take(judged) {
         let (_, _, kl, same) = row_diff(r, h);
-        (mean, max) = (mean + kl / resident.len() as f64, max.max(kl));
+        (mean, max) = (mean + kl / judged.max(1) as f64, max.max(kl));
         if lead_of(r) > CLEAR_LEAD {
             clear += 1;
             tops += same as usize;
         }
     }
-    let ok = differ == 0 && resident.len() == copied.len() && mean <= BESIDE_KL.0 && max <= BESIDE_KL.1 && tops == clear;
+    let after: Vec<String> = resident.iter().zip(&host).skip(judged).map(|(r, h)| format!("{:.1e}", row_diff(r, h).2)).collect();
+    let ok = differ == 0 && resident.len() == copied.len() && traced && far == 0 && mean <= BESIDE_KL.0 && max <= BESIDE_KL.1 && tops == clear;
     let fmts: Vec<String> = form.iter().map(|&(u, d)| if u == d { u.name().to_string() } else { format!("{}+{}", u.name(), d.name()) }).collect();
+    let choices = if !traced {
+        format!("the routers' choices not compared ({} and {} selections)", routes_r.len(), routes_h.len())
+    } else if apart == 0 {
+        "every router's choice the same".to_string()
+    } else {
+        format!("{apart} choices apart from row {first} on ({far} past a near tie of {NEAR:e}); the rows from there reported, KL {}", after.join(" "))
+    };
     Ok((
         ok,
         format!(
             "{} codes {name} ({}): {} rows; resident against the cache's {places} places, misses copied: {differ} of {total} logits differ; the host's misses against \
-             resident: KL mean {mean:.3e} max {max:.3e} (bound {:.0e} / {:.1e}), the best token the same in {tops} of {clear} clear rows",
+             resident: {choices}; {judged} rows before KL mean {mean:.3e} max {max:.3e} (bound {:.0e} / {:.1e}), the best token the same in {tops} of {clear} clear rows",
             if ok { "PASS" } else { "FAIL" },
             fmts.join(" "),
             resident.len(),
