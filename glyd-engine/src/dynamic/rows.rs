@@ -2081,6 +2081,20 @@ impl Dyn {
         let decoded: Vec<Sample> = out.by_ref().take(rows.len()).map(|s| s.expect("every row samples")).collect();
         Ok((decoded, out.collect()))
     }
+    /// The head's first `n` rows (each one's logits, token and largest logit: `logits_pass`'s) moved to rows `at` .. `at` + n, `at` at least n (a pass of fewer rows run before
+    /// the rows below it: `decode_rows`). Every sum, candidate and log-probability of a row is then of its own (a row's largest left behind gave rows past the first another
+    /// row's largest: their served log-probabilities were not their own).
+    fn move_head_rows(&self, at: usize, n: usize) -> Result<()> {
+        let w = self.big.d.vocab * 2;
+        // SAFETY: the head's logits, tokens and largest hold head_room rows, at + n of them at most (the step's rows); the rows moved do not reach their place.
+        unsafe {
+            copy_d2d_async(self.big.logits.ptr + (at * w) as u64, self.big.logits.ptr, n * w, self.dev.stream)?;
+            copy_d2d_async(self.big.tok.ptr + (4 * at) as u64, self.big.tok.ptr, 4 * n, self.dev.stream)?;
+            copy_d2d_async(self.big.val.ptr + (4 * at) as u64, self.big.val.ptr, 4 * n, self.dev.stream)?;
+        }
+        Ok(())
+    }
+
     /// `ModelStep::decode`.
     fn decode_rows(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
         for r in rows {
@@ -2094,15 +2108,13 @@ impl Dyn {
         }
         if rows.len() == 1 || !self.batchable() || (!Self::batch_prefill() && !self.rows_exact()) {
             // (one sequence's step as a reply alone takes it, its graph where it has one, on the blocks the scheduler's growth took; several one after another, the last
-            // first, each one's logits row moved to its place in the head's rows before the next step writes its own over the first)
+            // first, each one's head row (logits, token, largest) moved to its place in the head's rows before the next step writes its own over the first)
             let mut out = vec![None; rows.len()];
-            let w = self.big.d.vocab * 2;
             for (j, r) in rows.iter().enumerate().rev() {
                 self.select(r.pages[0] as usize)?;
                 out[j] = Some(self.step_with(r.token, false)?);
                 if j > 0 {
-                    // SAFETY: the head's logits hold head_room rows; the step's are row 0.
-                    unsafe { copy_d2d_async(self.big.logits.ptr + (j * w) as u64, self.big.logits.ptr, w, self.dev.stream)? };
+                    self.move_head_rows(j, 1)?;
                 }
             }
             return Ok(out.into_iter().map(|s| s.expect("every row stepped")).collect());
@@ -2113,15 +2125,13 @@ impl Dyn {
             // (GLYD_ENGINE_BATCH_PREFILL=0, where every reply is to be the reply alone bit for bit: passes of at most EXACT_ROWS rows, the last first, each one's logits rows moved to
             // their place in the head's rows before the next writes its own over the first)
             let mut out = vec![None; rows.len()];
-            let w = self.big.d.vocab * 2;
             for (g, part) in jobs.chunks(EXACT_ROWS).enumerate().collect::<Vec<_>>().into_iter().rev() {
                 let at = g * EXACT_ROWS;
                 for (j, s) in self.pass(part)?.into_iter().enumerate() {
                     out[at + j] = s;
                 }
                 if at > 0 {
-                    // SAFETY: the head's logits hold head_room rows; the pass's are its first rows, and they do not reach their place (a pass is at most EXACT_ROWS rows, `at` at least that).
-                    unsafe { copy_d2d_async(self.big.logits.ptr + (at * w) as u64, self.big.logits.ptr, part.len() * w, self.dev.stream)? };
+                    self.move_head_rows(at, part.len())?;
                 }
             }
             return Ok(out.into_iter().map(|s| s.expect("every row samples")).collect());
