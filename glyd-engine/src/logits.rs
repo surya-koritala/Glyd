@@ -8621,7 +8621,7 @@ fn users_ref(
     }
     let given: Vec<Vec<u32>> = f.seqs.iter().map(|s| s.1.clone()).collect();
     let (served, mut fails) = served_at_once(step, k, prompts, reply, taking, true, Some(&given))?;
-    let floors = floor_beside(floor, step, k, prompts, reply, taking, Some(&given), &served, &bound, &mut fails)?;
+    let floors = floor_beside(floor, step, k, prompts, reply, (taking, !moe.is_empty()), Some(&given), &served, &bound, &mut fails)?;
     // (the engine's own best token against the token given: where it is the reference's at every row, the engine would have chosen the same tokens)
     let own: usize =
         served.iter().zip(&given).map(|(s, g)| s.rows.iter().zip(g).filter(|(r, &t)| Row::from_logits(&r.0).is_ok_and(|x| x.ids[0] == t)).count()).sum();
@@ -8659,7 +8659,9 @@ fn users_ref(
 }
 
 /// `usercheck --ref --floor`: every prompt served again alone (`forced`: on the same tokens given), a row a step: the draw's own floor (`draw_floor`) of the
-/// rows `served` at once; a floor past a tenth of `bound` added to `fails`. None without `floor`.
+/// rows `served` at once; a floor past a tenth of `bound` added to `fails`. None without `floor`. A model with experts (`routed`) has its routers' choices
+/// traced in both runs, so that a row after a choice the two runs made apart is not judged: where the rows `served` were not traced (a lossy level's, run
+/// as a server's), the prompts are served at once again, traced, for the floor.
 #[allow(clippy::too_many_arguments)]
 fn floor_beside(
     floor: bool,
@@ -8667,7 +8669,7 @@ fn floor_beside(
     k: usize,
     prompts: &[Vec<u32>],
     reply: &crate::sched::Reply,
-    taking: bool,
+    (taking, routed): (bool, bool),
     forced: Option<&[Vec<u32>]>,
     served: &[Served],
     bound: &Bound,
@@ -8676,15 +8678,22 @@ fn floor_beside(
     if !floor {
         return Ok(None);
     }
+    let fresh;
+    let base: &[Served] = if routed && !taking {
+        fresh = served_at_once(step, k, prompts, reply, true, false, forced)?.0;
+        &fresh
+    } else {
+        served
+    };
     let alone: Vec<Served> = prompts
         .iter()
         .enumerate()
         .map(|(i, p)| {
             let f = forced.map(|f| vec![f[i].clone()]);
-            served_at_once(step, k, std::slice::from_ref(p), reply, taking, false, f.as_deref()).map(|(mut s, _)| s.remove(0))
+            served_at_once(step, k, std::slice::from_ref(p), reply, routed, false, f.as_deref()).map(|(mut s, _)| s.remove(0))
         })
         .collect::<Result<_>>()?;
-    let (ok, kl) = draw_floor(&alone, served, bound)?;
+    let (ok, kl) = draw_floor(&alone, base, bound)?;
     if !ok {
         fails.push("the draw's floor is past a tenth of the bound: the rows cannot tell a fault from the GPU's own rounding".to_string());
     }
