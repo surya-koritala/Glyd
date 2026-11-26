@@ -474,42 +474,6 @@ extern "C" __global__ void expsum_bf16(const bf16* logits, int V, const float* m
     }
 }
 
-// A row's draw over all of its vocabulary without the row read on the host (src/sampler.rs `sample_hist`): each token's quotient q = (x - max) / temp in float, as the host's
-// draw takes it, its exp(q) in double summed by bucket of q, bucket b = min(B - 1, floor(-q * per)) (the largest logits in bucket 0), with the bucket's count. sums and counts:
-// B a row, zeroed before; row blockIdx.x.
-extern "C" __global__ void __launch_bounds__(1024) exp_hist_bf16(const bf16* logits, int V, const float* maxv, float temp, int B, float per, double* sums, unsigned* counts) {
-    logits += (size_t)blockIdx.x * V;
-    sums += (size_t)blockIdx.x * B;
-    counts += (size_t)blockIdx.x * B;
-    const float mx = maxv[blockIdx.x];
-    for (int i = threadIdx.x; i < V; i += blockDim.x) {
-        const float q = __fdiv_rn(b2f(logits[i]) - mx, temp);
-        const int b = max(0, (int)fminf((float)(B - 1), floorf(-q * per)));
-        atomicAdd(&sums[b], exp((double)q));
-        atomicAdd(&counts[b], 1u);
-    }
-}
-
-// The tokens of bucket want[row] of `exp_hist_bf16`'s (the same quotient, the same bucket): token and logit into tok and val, cap a row at most, and how many there are into n
-// (more than cap: some left out). n zeroed before; row blockIdx.x.
-extern "C" __global__ void __launch_bounds__(1024) hist_bucket_bf16(const bf16* logits, int V, const float* maxv, float temp, int B, float per, const int* want, int cap, unsigned* n, int* tok, float* val) {
-    logits += (size_t)blockIdx.x * V;
-    const float mx = maxv[blockIdx.x];
-    const int w = want[blockIdx.x];
-    for (int i = threadIdx.x; i < V; i += blockDim.x) {
-        const float x = b2f(logits[i]);
-        const float q = __fdiv_rn(x - mx, temp);
-        const int b = max(0, (int)fminf((float)(B - 1), floorf(-q * per)));
-        if (b == w) {
-            const unsigned j = atomicAdd(&n[blockIdx.x], 1u);
-            if (j < (unsigned)cap) {
-                tok[(size_t)blockIdx.x * cap + j] = i;
-                val[(size_t)blockIdx.x * cap + j] = x;
-            }
-        }
-    }
-}
-
 // ---- The row a request's draw sees, made on the GPU (src/sampler.rs `Proc`, `Resolved`; src/kern/mod.rs `ProcGpu`): the penalties, a bias and the tokens taken out (an allowed list,
 // a grammar's mask, a least length) put on the model's row before its candidates, sums and buckets are made, so that the host draws from those of the row it would have made and
 // never reads the row. Row r of W (floats, V a row) is made from row src[r] of the step's bf16 logits; mask: `words` words a row (1 + (V + 31) / 32), the first nonzero where the row
@@ -711,65 +675,163 @@ extern "C" __global__ void __launch_bounds__(1024) topk64_f32(const float* W, in
     }
 }
 
-// `expsum_bf16` of rows of floats (W): the sum over row r of exp((x - max) / temp) into out[r], maxv[r] its largest (the first of its candidates); a token taken out (-inf) adds 0. V a
-// multiple of 8; one block of 1024 threads a row.
-extern "C" __global__ void expsum_f32(const float* W, int V, const float* maxv, float temp, double* out) {
-    W += (size_t)blockIdx.x * V;
-    const float mx = maxv[blockIdx.x];
-    double acc = 0.0;
-    for (int c = threadIdx.x; c * 8 < V; c += blockDim.x) {
-        const float4 a = reinterpret_cast<const float4*>(W + (size_t)c * 8)[0], b = reinterpret_cast<const float4*>(W + (size_t)c * 8)[1];
-        const float x[8] = {a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w};
-        float s = 0.f;
+// ---- A draw's weights (src/sampler.rs `weight`, `key`, `Query`, `View`): a token's weight is exp(q) for q = (x - max) / temp as a whole number of 2^-40, made by the host's float
+// operations in the host's order, each rounded alone, so that every sum of weights a draw takes is the host's to the bit, in any order (whole numbers); a token's key falls along the
+// draw's order (the larger logit first, the smaller token of equal ones). Rows of bf16 logits (the model's) or of floats (W, the rows the draws see); a token of -inf is in no sum.
+
+__device__ __forceinline__ unsigned long long draw_weight(float q) {
+    if (!(q > -32.f)) return 0ull;
+    if (q >= 0.f) return 1ull << 40;
+    const float k = rintf(__fmul_rn(q, __uint_as_float(0x3FB8AA3Bu)));
+    const float r = __fsub_rn(__fsub_rn(q, __fmul_rn(k, __uint_as_float(0x3F318000u))), __fmul_rn(k, __uint_as_float(0xB95E8083u)));
+    const unsigned c[6] = {0x3F000000u, 0x3E2AAAABu, 0x3D2AAAABu, 0x3C088889u, 0x3AB60B61u, 0x39500D01u};
+    float p = __uint_as_float(c[5]);
 #pragma unroll
-        for (int k = 0; k < 8; k++) s += expf(__fdiv_rn(x[k] - mx, temp));
-        acc += (double)s;
+    for (int i = 4; i >= 0; i--) p = __fadd_rn(__fmul_rn(p, r), __uint_as_float(c[i]));
+    p = __fadd_rn(__fmul_rn(p, r), 1.f);
+    p = __fadd_rn(__fmul_rn(p, r), 1.f);
+    const unsigned b = __float_as_uint(p);
+    const unsigned long long m = (b & 0x7FFFFFu) | 0x800000u;
+    const int sh = (int)((b >> 23) & 0xFFu) - 127 - 23 + (int)k + 40;
+    return sh >= 0 ? (m << sh) : (sh > -64 ? (m >> -sh) : 0ull);
+}
+
+__device__ __forceinline__ unsigned long long draw_key(float x, int t) {
+    return ((unsigned long long)f32_key(__float_as_uint(x)) << 32) | (unsigned long long)(0xFFFFFFFFu - (unsigned)t);
+}
+
+__device__ __forceinline__ float draw_x(const bf16* row, int i) { return b2f(row[i]); }
+__device__ __forceinline__ float draw_x(const float* row, int i) { return row[i]; }
+
+// The sum over row blockIdx.x of the weights of its tokens (not -inf) about maxv[row] (its largest) at temp, into out[row]: a draw's total (src/sampler.rs `View::total`), made with a
+// step's candidates. One block of 1024 threads a row.
+template <typename T>
+__device__ void draw_total_impl(const T* rows, int V, const float* maxv, float temp, unsigned long long* out) {
+    const T* row = rows + (size_t)blockIdx.x * V;
+    const float mx = maxv[blockIdx.x];
+    unsigned long long acc = 0;
+    for (int i = threadIdx.x; i < V; i += blockDim.x) {
+        const float x = draw_x(row, i);
+        if (x > -INFINITY) acc += draw_weight(__fdiv_rn(__fsub_rn(x, mx), temp));
     }
-    __shared__ double sh[32];
     for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, o);
+    __shared__ unsigned long long sh[32];
     if ((threadIdx.x & 31) == 0) sh[threadIdx.x >> 5] = acc;
     __syncthreads();
     if (threadIdx.x < 32) {
-        double t = threadIdx.x < (blockDim.x >> 5) ? sh[threadIdx.x] : 0.0;
+        unsigned long long t = threadIdx.x < (blockDim.x >> 5) ? sh[threadIdx.x] : 0ull;
         for (int o = 16; o > 0; o >>= 1) t += __shfl_xor_sync(0xffffffffu, t, o);
         if (threadIdx.x == 0) out[blockIdx.x] = t;
     }
 }
 
-// `exp_hist_bf16` of a row of floats (W): a token taken out (-inf) is in no bucket and not counted (under a grammar the host's draw leaves those out; elsewhere their weight is 0).
-extern "C" __global__ void __launch_bounds__(1024) exp_hist_f32(const float* W, int V, const float* maxv, float temp, int B, float per, double* sums, unsigned* counts) {
-    W += (size_t)blockIdx.x * V;
-    sums += (size_t)blockIdx.x * B;
-    counts += (size_t)blockIdx.x * B;
-    const float mx = maxv[blockIdx.x];
-    for (int i = threadIdx.x; i < V; i += blockDim.x) {
-        const float x = W[i];
+extern "C" __global__ void __launch_bounds__(1024) draw_total_bf16(const bf16* rows, int V, const float* maxv, float temp, unsigned long long* out) {
+    draw_total_impl(rows, V, maxv, temp, out);
+}
+extern "C" __global__ void __launch_bounds__(1024) draw_total_f32(const float* rows, int V, const float* maxv, float temp, unsigned long long* out) {
+    draw_total_impl(rows, V, maxv, temp, out);
+}
+
+// A query of a row (src/sampler.rs `Query`): its tokens (not -inf) whose keys lie in [lo, hi] and whose quotients (x - mx) / temp are qmin or more, in 256 bins by bits shift ..
+// shift + 8 of their keys: each bin's count, weight, least and greatest key, into out (count: 256 u32, then weight, least, most: 256 u64 each). A thread takes a run of the row and
+// adds to the bins once a run of tokens of one bin ends (a flat row's tokens are mostly of a few bins). One block of 1024 threads.
+template <typename T>
+__device__ void draw_bins_impl(const T* row, int V, float mx, float temp, unsigned long long lo, unsigned long long hi, float qmin, int shift, unsigned* out) {
+    __shared__ unsigned cnt[256];
+    __shared__ unsigned long long wsum[256], least[256], most[256];
+    for (int i = threadIdx.x; i < 256; i += blockDim.x) {
+        cnt[i] = 0;
+        wsum[i] = 0;
+        least[i] = ~0ull;
+        most[i] = 0;
+    }
+    __syncthreads();
+    const int per = (V + blockDim.x - 1) / blockDim.x, a = threadIdx.x * per, e = min(V, a + per);
+    int bin = -1;
+    unsigned c = 0;
+    unsigned long long w = 0, kl = ~0ull, kh = 0;
+    for (int i = a; i < e; i++) {
+        const float x = draw_x(row, i);
         if (!(x > -INFINITY)) continue;
-        const float q = __fdiv_rn(x - mx, temp);
-        const int b = max(0, (int)fminf((float)(B - 1), floorf(-q * per)));
-        atomicAdd(&sums[b], exp((double)q));
-        atomicAdd(&counts[b], 1u);
+        const unsigned long long k = draw_key(x, i);
+        const float q = __fdiv_rn(__fsub_rn(x, mx), temp);
+        if (k < lo || k > hi || !(q >= qmin)) continue;
+        const int b = (int)((k >> shift) & 0xFFull);
+        if (b != bin) {
+            if (bin >= 0) {
+                atomicAdd(&cnt[bin], c);
+                atomicAdd(&wsum[bin], w);
+                atomicMin(&least[bin], kl);
+                atomicMax(&most[bin], kh);
+            }
+            bin = b;
+            c = 0;
+            w = 0;
+            kl = ~0ull;
+            kh = 0;
+        }
+        c++;
+        w += draw_weight(q);
+        kl = min(kl, k);
+        kh = max(kh, k);
+    }
+    if (bin >= 0) {
+        atomicAdd(&cnt[bin], c);
+        atomicAdd(&wsum[bin], w);
+        atomicMin(&least[bin], kl);
+        atomicMax(&most[bin], kh);
+    }
+    __syncthreads();
+    unsigned long long* o64 = reinterpret_cast<unsigned long long*>(out + 256);
+    for (int i = threadIdx.x; i < 256; i += blockDim.x) {
+        out[i] = cnt[i];
+        o64[i] = wsum[i];
+        o64[256 + i] = least[i];
+        o64[512 + i] = most[i];
     }
 }
 
-// `hist_bucket_bf16` of a row of floats (W), the tokens taken out (-inf) in no bucket.
-extern "C" __global__ void __launch_bounds__(1024) hist_bucket_f32(const float* W, int V, const float* maxv, float temp, int B, float per, const int* want, int cap, unsigned* n, int* tok, float* val) {
-    W += (size_t)blockIdx.x * V;
-    const float mx = maxv[blockIdx.x];
-    const int w = want[blockIdx.x];
-    for (int i = threadIdx.x; i < V; i += blockDim.x) {
-        const float x = W[i];
+extern "C" __global__ void __launch_bounds__(1024) draw_bins_bf16(const bf16* row, int V, float mx, float temp, unsigned long long lo, unsigned long long hi, float qmin, int shift, unsigned* out) {
+    draw_bins_impl(row, V, mx, temp, lo, hi, qmin, shift, out);
+}
+extern "C" __global__ void __launch_bounds__(1024) draw_bins_f32(const float* row, int V, float mx, float temp, unsigned long long lo, unsigned long long hi, float qmin, int shift, unsigned* out) {
+    draw_bins_impl(row, V, mx, temp, lo, hi, qmin, shift, out);
+}
+
+// The tokens of a query (as `draw_bins`', without the bins): token and logit into tok and val, cap at most, how many there are into n[0] (zeroed before; more than cap: some left out).
+template <typename T>
+__device__ void draw_tokens_impl(const T* row, int V, float mx, float temp, unsigned long long lo, unsigned long long hi, float qmin, int cap, unsigned* n, int* tok, float* val) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < V; i += gridDim.x * blockDim.x) {
+        const float x = draw_x(row, i);
         if (!(x > -INFINITY)) continue;
-        const float q = __fdiv_rn(x - mx, temp);
-        const int b = max(0, (int)fminf((float)(B - 1), floorf(-q * per)));
-        if (b == w) {
-            const unsigned j = atomicAdd(&n[blockIdx.x], 1u);
-            if (j < (unsigned)cap) {
-                tok[(size_t)blockIdx.x * cap + j] = i;
-                val[(size_t)blockIdx.x * cap + j] = x;
-            }
+        const unsigned long long k = draw_key(x, i);
+        if (k < lo || k > hi || !(__fdiv_rn(__fsub_rn(x, mx), temp) >= qmin)) continue;
+        const unsigned j = atomicAdd(n, 1u);
+        if (j < (unsigned)cap) {
+            tok[j] = i;
+            val[j] = x;
         }
     }
+}
+
+extern "C" __global__ void __launch_bounds__(256) draw_tokens_bf16(const bf16* row, int V, float mx, float temp, unsigned long long lo, unsigned long long hi, float qmin, int cap, unsigned* n, int* tok, float* val) {
+    draw_tokens_impl(row, V, mx, temp, lo, hi, qmin, cap, n, tok, val);
+}
+extern "C" __global__ void __launch_bounds__(256) draw_tokens_f32(const float* row, int V, float mx, float temp, unsigned long long lo, unsigned long long hi, float qmin, int cap, unsigned* n, int* tok, float* val) {
+    draw_tokens_impl(row, V, mx, temp, lo, hi, qmin, cap, n, tok, val);
+}
+
+// Every float q from -0 down to -32 (bits 0x80000001 .. 0xC2000000) weighed (`draw_weight`): the sum of the weights and the sum of each weight times its q's bits, mod 2^64, into
+// out[0], out[1] (zeroed before), against the host's (`weightcheck`). Grid-stride.
+extern "C" __global__ void __launch_bounds__(256) draw_weight_sums(unsigned long long* out) {
+    unsigned long long s = 0, h = 0;
+    for (unsigned long long b = 0x80000001ull + blockIdx.x * 256ull + threadIdx.x; b <= 0xC2000000ull; b += (unsigned long long)gridDim.x * 256ull) {
+        const unsigned long long w = draw_weight(__uint_as_float((unsigned)b));
+        s += w;
+        h += w * b;
+    }
+    atomicAdd(&out[0], s);
+    atomicAdd(&out[1], h);
 }
 
 // The 16-bit values of a [n] (a page's [16, H, 2 D]) that are not b's: added to count[0] (all of them) and, by head and by key or value, to count[1 + 2 h + half] (the KV cache's check against a bf16 copy).

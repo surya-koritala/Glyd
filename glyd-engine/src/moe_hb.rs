@@ -1219,7 +1219,7 @@ mod tests {
         assert_eq!(layer, 1_052_706_816);
         assert_eq!(expert_bytes_mean(c.moe.experts, c.moe.inter, c.moe.latent).unwrap(), layer / 512);
         // the expert cache's plan at the real shape counts the mean expert: a 24 GB card's 13 GiB buys 169 places a layer of 40 layers of 512, the host tier holds the 42.1 GB
-        let plan = crate::plan::sizing::cache_plan(&c, Layout::Hummingbird, 13 << 30, 22).unwrap().unwrap();
+        let plan = crate::plan::sizing::nemotron_cache(&c, Layout::Hummingbird, 13 << 30, 22).unwrap().unwrap();
         let mean = expert_bytes_mean(c.moe.experts, c.moe.inter, c.moe.latent).unwrap();
         assert_eq!((plan.layers, plan.experts, plan.expert_bytes, plan.slots), (40, 512, mean, ((13u64 << 30) / (40 * mean)) as usize));
         assert_eq!((plan.slots, plan.host_bytes()), (169, 40 * 512 * mean));

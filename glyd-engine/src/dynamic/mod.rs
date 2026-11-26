@@ -24,9 +24,10 @@ pub(crate) use kvpages::room_of as kv12_room;
 #[cfg(all(test, feature = "dev"))]
 pub(crate) use rows::pool_blocks;
 pub(crate) use rows::seq_blocks;
+pub use rows::size_by_free_memory;
 #[cfg(all(test, feature = "dev"))]
 pub(crate) use rows::Hold;
-pub(crate) use rows::{layer_rooms, marks_kept, stage_holds, twelve_bit_rings, SeqRoom};
+pub(crate) use rows::{free_sized, layer_rooms, marks_kept, stage_holds, twelve_bit_rings, unplanned, SeqRoom};
 pub mod lower;
 pub mod lower_comp;
 pub mod mla;
@@ -54,7 +55,7 @@ use crate::dynamic::experts::MoeBlock;
 use crate::ffi::{err, Error, Lib, Result};
 use crate::gemma4::{rotary, EMBED_GROUPS};
 use crate::gpu_ops::{Gemm, GpuOps};
-use crate::kern::{embed_plan, TopGpu};
+use crate::kern::embed_plan;
 use crate::kern::{norm_threads, Kern};
 use crate::kern::{pf_kib, KernG4, NextPf};
 use crate::kern::{KernMamba2, SsdWs};
@@ -1470,7 +1471,8 @@ pub struct Dyn {
     pos: Buf,
     st: Buf,
     lse: Buf,
-    pub top: TopGpu,
+    /// GLYD_ENGINE_HOST_SAMPLING=1 (to compare): no candidates, totals or queries are made on the GPU, and the draws read their rows.
+    pub host_sampling: bool,
     /// A decode row's attention parts (attn::SPLITS a row and query head).
     part: Buf,
     /// Nemotron-H's chunked scan's buffers (its loader's), and the mixture-of-experts layers' scratch.
@@ -1630,7 +1632,7 @@ pub struct Dyn {
     /// GLYD_ENGINE_STEP_PROF=1 or GLYD_PROF=1 on a served model: the GPU's time of each step and its idle time before it (src/dynamic/rows.rs `Gaps`).
     gaps: Option<rows::Gaps>,
     /// What the sampled rows of the next launched step ask of it (`ModelStep::draws`): their candidates and sums are queued with the step.
-    draws: Vec<Option<f32>>,
+    draws: Vec<Option<crate::sched::Sum>>,
     /// The 12-bit pages' status as the lane of the step landed last copied it (src/dynamic/kvpages.rs `kv12_lost` reads it once); None: the GPU's own.
     status_from: Option<*const u32>,
     /// What the next step's sampled rows' draws put on their rows (`ModelStep::procs`): the rows the draws see, made on the GPU before their candidates (`procg`); and the room for
@@ -1638,6 +1640,8 @@ pub struct Dyn {
     row_procs: Vec<Option<crate::sampler::Proc>>,
     procg: Option<crate::kern::ProcGpu>,
     sums: Option<Buf>,
+    /// The room a draw's query of a row answers in (src/dynamic/rows.rs `query_room`: its bins, or its tokens).
+    qroom: Option<Buf>,
     /// Launched steps landed with a later one queued, whose expert cache's end of a step is owed (src/dynamic/rows.rs `quiet`).
     owed: usize,
     /// The images of a description with a vision tower (src/dynamic/images.rs): the tower, each sequence's images and positions, the pass's rows' positions.
@@ -2261,7 +2265,6 @@ impl Dyn {
         let embed_groups = Buf::new(EMBED_GROUPS * 64 * hid * 2)?;
         let embed_pairs = Buf::new(ch * 8)?;
         let (pos, st, lse) = (Buf::zeroed(4 * ch)?, Buf::zeroed(16)?, Buf::zeroed(4)?);
-        let top = TopGpu::new(d.vocab)?;
         let part = Buf::zeroed(rows_out * heads.max(1) * attn::SPLITS * (dmax + 2) * 4)?;
         let attns = || ops().filter_map(|op| if let Op::Attn(a) = op { Some(a) } else { None });
         let ldec = attn::LibDecode::new(&lib, attns(), ch, rows_out.max(VERIFY_ROWS), ctx)?;
@@ -2437,7 +2440,7 @@ impl Dyn {
             pos,
             st,
             lse,
-            top,
+            host_sampling: crate::tune!("GLYD_ENGINE_HOST_SAMPLING").is_some(),
             part,
             ssd,
             moe_sc,
@@ -2545,6 +2548,7 @@ impl Dyn {
             row_procs: Vec::new(),
             procg: None,
             sums: None,
+            qroom: None,
             owed: 0,
             vis: None,
         };
@@ -2606,7 +2610,6 @@ impl Dyn {
         self.n = 0;
         self.pending = None;
         self.head_reset();
-        (self.top.ask, self.top.proc) = (None, None);
         for b in &self.states {
             b.fill_async(0, self.dev.stream)?;
         }
@@ -3571,7 +3574,6 @@ impl Dyn {
         unsafe {
             copy_d2h_async(self.host.ptr, self.big.tok.ptr, 4, self.dev.stream)?;
             copy_d2h_async((self.host.ptr as *mut u8).add(8) as *mut _, self.big.val.ptr, 4, self.dev.stream)?;
-            self.top.queue(&self.kern, &self.dev, self.big.logits.ptr, self.big.val.ptr)?;
         }
         self.dev.sync()?;
         // SAFETY: the pinned bytes were just written.
@@ -3998,6 +4000,12 @@ impl Dyn {
         self.dev.sync()?;
         self.big.logits = Buf::new(self.big.d.vocab * rows * 2)?;
         (self.big.tok, self.big.val) = (Buf::zeroed(4 * rows)?, Buf::zeroed(4 * rows)?);
+        // (the rows the draws see, a part of the plan's work: made with the head's, not when a request first changes its row)
+        let v = self.big.d.vocab;
+        let g = self.procg.get_or_insert_with(|| crate::kern::ProcGpu::new(v));
+        if g.can() {
+            g.reserve(rows)?;
+        }
         // (a step's rows that decode take their attention at once (`attn_lead`): the parts kernel's room and the library decode's workspace for that many)
         let (heads, dmax) = self.big.d.heads();
         self.part = Buf::zeroed(rows.max(self.split_rows) * heads.max(1) * attn::SPLITS * (dmax + 2) * 4)?;
@@ -4080,6 +4088,8 @@ impl Dyn {
         // (a pass outside the scheduler, which would take a lost step back: an error)
         self.kv12_check()?;
         let s = self.read_sample()?;
+        // (its head row: the draw's candidates and queries made of it when asked, `Gen::reply`'s, a group's first GPU's)
+        self.cands.fresh(1);
         self.end_expert_step()?;
         prof::end(timed, 0, tokens.len());
         Ok(s)
@@ -4154,6 +4164,7 @@ impl Dyn {
         }
         self.n += 1;
         let s = self.read_sample()?;
+        self.cands.fresh(1);
         self.end_expert_step()?;
         self.prof_pass(1, 0)?;
         prof::end(timed, 1, 0);
@@ -4205,13 +4216,9 @@ impl Dyn {
         self.dev.sync()?;
         // SAFETY: the pinned buffer holds n ints, just written.
         let big: Vec<u32> = unsafe { std::slice::from_raw_parts(self.host.ptr as *const i32, n) }.iter().map(|&t| t as u32).collect();
-        let v = self.big.d.vocab;
-        let mut words = Vec::new();
-        if sampler.is_some() {
-            words = vec![0u16; n * v];
-            self.big.logits.read(0, &mut words)?;
-        }
-        let (out, kept) = accept(&seq, &big, &words, v, sampler);
+        // (the pass's n head rows: each draft's check made of its row on the GPU)
+        self.cands.fresh(n);
+        let (out, kept) = accept(&seq, &big, &mut crate::sched::Step(self), sampler)?;
         // SAFETY: h holds the n rows' final hidden states.
         unsafe { self.kern.copy_row(self.dev.stream, self.big.slot(Slot::H), kept as i32, self.big.d.hidden as i32, dr.p.slot(Slot::Hid))? };
         self.n = n0 + kept + 1;
@@ -4222,31 +4229,30 @@ impl Dyn {
 }
 
 /// A drafted round's tokens from the model's check of `seq` (the last token, then the drafts): greedy (no `sampler`), the drafts kept up to the model's first
-/// disagreement (its own token a row: `big`) and its token there; with `sampler`, each draft checked against its row's logits (`words`, bf16 [rows, vocab]) and
-/// the sampler's token where it is not kept, or after the last. The tokens and how many drafts were kept.
-fn accept(seq: &[u32], big: &[u32], words: &[u16], vocab: usize, sampler: Option<&mut crate::sampler::Sampler>) -> (Vec<u32>, usize) {
+/// disagreement (its own token a row: `big`) and its token there; with `sampler`, each draft checked against its row of the pass's head rows (`rows`) as the draw sees it,
+/// made on the GPU (`sched::check_row`), and the sampler's token where it is not kept, or after the last (`sched::draw_row_again`). The tokens and how many drafts were kept.
+pub(super) fn accept(seq: &[u32], big: &[u32], rows: &mut dyn crate::sched::Rows, sampler: Option<&mut crate::sampler::Sampler>) -> Result<(Vec<u32>, usize)> {
     let k = seq.len() - 1;
     match sampler {
         None => {
             let kept = (0..k).take_while(|&i| seq[i + 1] == big[i]).count();
-            (big[..=kept].to_vec(), kept)
+            Ok((big[..=kept].to_vec(), kept))
         }
         Some(sm) => {
-            let row = |i: usize| -> Vec<f32> { words[i * vocab..(i + 1) * vocab].iter().map(|&w| f32::from_bits((w as u32) << 16)).collect() };
             let mut out = Vec::with_capacity(k + 1);
             for i in 0..=k {
                 if i == k {
-                    out.push(sm.sample(&row(i)));
+                    out.push(crate::sched::draw_row_again(rows, i, sm)?.0);
                     break;
                 }
-                let (t, same) = sm.check_draft(&row(i), seq[i + 1]);
+                let (t, same, _) = crate::sched::check_row(rows, i, sm, seq[i + 1])?;
                 out.push(t);
                 if !same {
                     break;
                 }
             }
             let kept = out.len() - 1;
-            (out, kept)
+            Ok((out, kept))
         }
     }
 }
@@ -4311,13 +4317,15 @@ impl crate::conv::Gen for Dyn {
         }
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
-        (self.top.ask, self.top.proc) = sampler.gpu_ask();
+        // (a drawn token: from what the GPU makes of the pass's head row, the request's changes put on it first: `sched::draw_row`)
+        let draw = |e: &mut Dyn, sampler: &mut crate::sampler::Sampler| crate::sched::draw_row(&mut crate::sched::Step(e), 0, sampler).map(|x| x.0);
+        self.row_procs = vec![sampler.proc()];
         let mut s = self.prefill(prompt)?;
         let mut out = Vec::new();
         let eos = self.big.d.eos.clone();
         if self.drafting() {
             // drafted: the big model's tokens a round at a time (the last of a round is not in the cache yet: the next round starts from it)
-            let first = if greedy { s.token } else { sampler.sample_with(self.top.read().as_ref(), || self.logits())? };
+            let first = if greedy { s.token } else { draw(self, &mut sampler)? };
             let mut pending = std::collections::VecDeque::from([first]);
             while let Some(tok) = pending.pop_front() {
                 if !o.ignore_eos && (eos.contains(&(tok as i64)) || o.stop_ids.contains(&tok)) {
@@ -4336,7 +4344,7 @@ impl crate::conv::Gen for Dyn {
             }
         }
         loop {
-            let tok = if greedy { s.token } else { sampler.sample_with(self.top.read().as_ref(), || self.logits())? };
+            let tok = if greedy { s.token } else { draw(self, &mut sampler)? };
             if !o.ignore_eos && (eos.contains(&(tok as i64)) || o.stop_ids.contains(&tok)) {
                 return Ok((out, Finish::Stop));
             }
@@ -4347,7 +4355,7 @@ impl crate::conv::Gen for Dyn {
             if out.len() >= o.max_new || self.n + 1 > self.ctx {
                 return Ok((out, Finish::Length));
             }
-            (self.top.ask, self.top.proc) = sampler.gpu_ask();
+            self.row_procs = vec![sampler.proc()];
             s = self.step(tok)?;
         }
     }

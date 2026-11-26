@@ -132,15 +132,15 @@ enum Family {
 }
 
 impl Family {
-    fn parse(text: &str, generation: Option<&str>, saved_causal: bool) -> Result<Family> {
-        let m = crate::runtime::config::ModelConfig::parse(text)?;
+    /// The family of the config.json `m` (parsed once).
+    fn of(m: &crate::runtime::config::ModelConfig, generation: Option<&str>, saved_causal: bool) -> Result<Family> {
         match m.family() {
-            Some(crate::support::Family::NemotronH) => return Ok(Family::Nemotron(ConfigNemotronH::of(&m, "config.json", generation)?)),
+            Some(crate::support::Family::NemotronH) => return Ok(Family::Nemotron(ConfigNemotronH::of(m, "config.json", generation)?)),
             Some(crate::support::Family::Gemma4) => return err("a Gemma 4 model: `costs` describes Qwen3.5-family and Nemotron-H models alone"),
             _ => {}
         }
         let mut c =
-            Config35::of(&m, "config.json", generation).map_err(|e| Error(format!("costs: {} (Qwen3.5-family and Nemotron-H models are described)", e.msg)))?;
+            Config35::of(m, "config.json", generation).map_err(|e| Error(format!("costs: {} (Qwen3.5-family and Nemotron-H models are described)", e.msg)))?;
         if saved_causal {
             // (a glyd-v7 save holds the text model under the causal LM's names, whatever its config.json says of the checkpoint it came from, and no vision tower)
             (c.prefix, c.vision) = ("model.", false);
@@ -416,11 +416,17 @@ impl Profile {
     /// The profile of MODEL (a directory, a Hub name with a level tag, a pre-packed repo's name): its files where they are, else the Hub's by ranges.
     pub fn of(model: &str) -> Result<Profile> {
         let f = find(model)?;
-        Profile::from_found(&f)
+        Profile::from_found(&f, None)
     }
 
-    fn from_found(f: &Found) -> Result<Profile> {
-        let config = f.text("config.json").ok_or_else(|| Error(format!("{}: no config.json", f.id)))?;
+    /// The profile of the model `f` found, its config.json `parsed` where the caller has it parsed already (else read and parsed here, once).
+    fn from_found(f: &Found, parsed: Option<&crate::runtime::config::ModelConfig>) -> Result<Profile> {
+        let config = match parsed {
+            Some(c) => std::borrow::Cow::Borrowed(c),
+            None => std::borrow::Cow::Owned(crate::runtime::config::ModelConfig::parse(
+                &f.text("config.json").ok_or_else(|| Error(format!("{}: no config.json", f.id)))?,
+            )?),
+        };
         let generation = f.text("generation_config.json");
         let manifest = f.text("glyd.json").and_then(|t| json::parse(&t).ok());
         let m_str = |k: &str| manifest.as_ref().and_then(|m| m.get(k)).and_then(Value::as_str).map(str::to_string);
@@ -428,7 +434,7 @@ impl Profile {
             manifest.as_ref().and_then(|m| m.get(k)).and_then(Value::as_object).is_some_and(|o| o.iter().any(|(n, _)| n.starts_with("model.layers.")))
         };
         let saved = m_str("format").as_deref().is_some_and(|x| x.starts_with("glyd-v")) && (causal("packs") || causal("tensors"));
-        let fam = Family::parse(&config, generation.as_deref(), saved)?;
+        let fam = Family::of(&config, generation.as_deref(), saved)?;
         // the level: the save's, else the tag's, else lossless
         let layout = match (m_str("layout").as_deref().and_then(layout_of), f.tag.as_deref().and_then(layout_of)) {
             (Some(l), _) => l,
@@ -1323,14 +1329,23 @@ pub fn probe_rates(ordinal: i32) -> Result<Rates> {
     Ok(Rates { vram, link, ram, ssd: 0.0 })
 }
 
-/// The costs object of /v1/glyd/info for the model served from `dir` (never an error: what went wrong, where it did).
-pub fn served(dir: &Path, id: &str, requested: Option<&str>, ctx: usize, chunk: usize, held: Option<crate::dev::Held>) -> Value {
+/// The costs object of /v1/glyd/info for the model served from `dir`, its config.json `c` (parsed once, the load's) (never an error: what went wrong, where it did).
+#[allow(clippy::too_many_arguments)]
+pub fn served(
+    dir: &Path,
+    c: &crate::runtime::config::ModelConfig,
+    id: &str,
+    requested: Option<&str>,
+    ctx: usize,
+    chunk: usize,
+    held: Option<crate::dev::Held>,
+) -> Value {
     let f = Found { id: id.to_string(), tag: requested.map(str::to_string), dir: Some(dir.to_path_buf()), repo: None, revision: None, remote: None };
     let f = match find(&dir.to_string_lossy()) {
         Ok(found) => Found { id: f.id, tag: f.tag, ..found },
         Err(_) => f,
     };
-    match Profile::from_found(&f) {
+    match Profile::from_found(&f, Some(c)) {
         Ok(p) => p.json(&Workload { ctx, prompt: 0, output: 0, chunk }, held.map(|h| Allocated::now(h, ctx)).as_ref(), None),
         Err(e) => obj(vec![("object", Value::from("glyd.costs")), ("status", Value::from("unavailable")), ("error", Value::from(e.msg.as_str()))]),
     }

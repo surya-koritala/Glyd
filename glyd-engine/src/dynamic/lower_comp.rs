@@ -589,9 +589,9 @@ pub(crate) fn split_apart_parts(l: usize) -> String {
     format!("a compressed attention model: layer {l} reads a compressed part of a layer of another stage: a split must keep them together")
 }
 
-/// Whether the config.json `text` describes a compressed attention that reads parts of another layer's (`CompShare`: DeepSeek-V4.1's).
-pub(crate) fn shares_parts(text: &str) -> bool {
-    serde_json::from_str(text).ok().and_then(|v| crate::runtime::describe::describe(&v).ok()).is_some_and(|d| {
+/// Whether the config.json `c` (parsed once) describes a compressed attention that reads parts of another layer's (`CompShare`: DeepSeek-V4.1's).
+pub(crate) fn shares_parts(c: &crate::runtime::config::ModelConfig) -> bool {
+    crate::runtime::describe::describe_config(c).is_ok_and(|d| {
         d.desc
             .blocks
             .iter()
@@ -748,7 +748,7 @@ mod tests {
     fn v41_stages_begin_where_no_part_is_shared_across_them() {
         let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deepseek_v41_tiny_config.json")).unwrap();
         let d = described("tests/fixtures/deepseek_v41_tiny_config.json");
-        let starts = crate::plan::sizing::stage_starts(&text, 6);
+        let starts = crate::plan::sizing::stage_starts(&crate::runtime::config::ModelConfig::parse(&text).unwrap(), 6);
         assert_eq!(starts, [true, true, false, true, false, false]);
         for c in 1..6 {
             let st = Stage { layers: (c, 6), first: false, last: true };
