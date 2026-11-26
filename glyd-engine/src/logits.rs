@@ -4855,7 +4855,8 @@ mod tests {
 
     /// A pin is found by its kernel set (`fold::kernel_set`, `pin_key`): every pin of tests/logits is the file `fixture_name` gives its case, `gpu` and level, and
     /// the Hummingbird digests of tests/packs are `packcheck::hb_digest`'s. The two sm89 cards of the M2 gate have their own: the RTX 4080 SUPER's (the CI runner's,
-    /// its rows the ones recorded on 2026-11-20 under the name sm89: the first and last hashes below) and the L4's; the A10's as recorded on 2026-11-25.
+    /// its first 13 rows the ones recorded on 2026-11-20 under the name sm89, the long prompt's row recorded again on 2026-11-26 after the attention kind's prompt
+    /// kernels: the first and last hashes below; its qwen35 pin and Hummingbird digest recorded on 2026-11-26) and the L4's; the A10's as recorded on 2026-11-25.
     #[test]
     fn a_pin_is_found_by_its_kernel_set() {
         use crate::fold::kernel_set;
@@ -4873,9 +4874,10 @@ mod tests {
             by_key.entry(key.clone()).or_default().push(format!("{}@{level}", fx.case));
             if *key == rtx {
                 let want = match (fx.case.as_str(), level.as_str()) {
-                    ("dense", "penguin") => ("c10bf3a7802bd57f", "58c0377f0d316a5d"),
-                    ("nemotron-h", "penguin") => ("6d103e0f42360970", "52a84a052b1e09b1"),
-                    ("nemotron-h", "kestrel") => ("3e37ca1da26d4ccd", "02b19e993dfc36b1"),
+                    ("dense", "penguin") => ("c10bf3a7802bd57f", "26899fdc2b62608f"),
+                    ("nemotron-h", "penguin") => ("6d103e0f42360970", "12d93c41a0347be4"),
+                    ("nemotron-h", "kestrel") => ("3e37ca1da26d4ccd", "821f510efcda820e"),
+                    ("qwen35", "penguin") => ("7e366b09534f9cd2", "1befa773880536c4"),
                     other => panic!("{other:?}: a pin of the RTX 4080 SUPER not named here"),
                 };
                 let hash = |r: &Row| format!("{:016x}", r.hash);
@@ -4885,12 +4887,12 @@ mod tests {
         for v in by_key.values_mut() {
             v.sort();
         }
-        assert_eq!(by_key[&rtx], ["dense@penguin", "nemotron-h@kestrel", "nemotron-h@penguin"]);
+        assert_eq!(by_key[&rtx], ["dense@penguin", "nemotron-h@kestrel", "nemotron-h@penguin", "qwen35@penguin"]);
         assert_eq!(by_key[&l4], ["dense@penguin", "nemotron-h@kestrel", "nemotron-h@penguin", "qwen35@penguin"]);
         assert_eq!(by_key[&a10], ["gemma4@penguin"]);
         assert_eq!(fixture_name("nemotron-h", Some(&l4), "kestrel"), "nemotron-h.sm89-l4-58sm.kestrel.json.gz");
         assert_eq!(fixture_name("qwen35", None, "penguin"), "qwen35.json.gz");
-        for key in [&l4, &a10] {
+        for key in [&rtx, &l4, &a10] {
             let d = crate::packcheck::hb_digest(key);
             assert_eq!(Fixture::read(&d).unwrap().gpu.as_deref(), Some(key.as_str()), "{}", d.display());
         }

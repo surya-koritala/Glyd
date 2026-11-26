@@ -734,6 +734,27 @@ bit: with prompts one a pass every reply under preemption is the reply alone (`u
   is used for calls of at most `CPU_TOKENS = 64` tokens (`offload.rs:53`).
 - **Promotion.** A miss seen again within 16 calls is copied in behind the call, at most 4 a call (`offload.rs:300-312`); over the
   record's traces a window of 16 found as many hits as 32 or 128 with fewer copies.
+- **Run to run.** Two things follow the copy link's timing:
+  - In the auto and split modes, `plan_groups` weighs measured times to choose which misses the host computes.
+  - In the cpu, split and auto modes, a call's promotions are copied only while the copy stream's backlog is at most `BACKLOG_US`
+    (10 ms). The backlog is the copy batches not yet seen done, at the measured time of a copy.
+
+  So which experts have places, and which pairs the host computes, can change from one run to the next. For example, another
+  process's work on the GPU changes it. A reply's bits change with it only where the host's product of an expert is not the GPU's
+  bits. That holds for two cases:
+  - Kimi-K3 at penguin: the host adds a release-format expert's products in another fp32 order than the GPU's MMA. A pair stays
+    within one bf16 last place, so the reply holds at the kind's bound.
+  - Condor's codes packs, in every mode.
+
+  `tiercheck --mode cpu` on an RTX 4080 SUPER (2026-11-26) measured this. Kimi-K3 at penguin: 11,907 of 20,480 logits differ
+  (copy: 0). Every other family with experts gives 0, at penguin and at every lossy layout (Kimi's too): the Qwen3.5 layout,
+  GLM-5.3 in bf16 and FP8, GLM-DSA, DeepSeek-V4 and V4.1, Muse Spark. So:
+  - Copy mode is bit-stable run to run for every model.
+  - The cpu, split and auto modes are bit-stable for every model except those two.
+
+  A check that holds one run to another to the bit holds the planner's times (`ExpertStore::hold_costs`,
+  `offload::hold_costs_from_now`: no backlog, no measured cost). `usercheck`, the tier checks and `servecheck` do this; a server
+  does not.
 - **Host and disk.** Condor's host tier is the memory-mapped pack (page cache, `will_need` read-ahead); an O_DIRECT pool with 16 reads
   in flight (`disk.rs`) serves hummingbird and Nemotron-H layers kept on NVMe.
 - **Host compute.** AVX2/AVX-512/NEON kernels per format (`cpu_cb.rs`, `cpu_hb.rs`, `cpu_experts.rs`, which skips the ~92% zero relu^2

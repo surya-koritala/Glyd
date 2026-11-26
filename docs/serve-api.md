@@ -311,7 +311,10 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
 - Every model is served by the scheduler and takes `logprobs` and `min_tokens`: a model on one GPU to `--users` at once
   (`limits.concurrency`); a model with a draft model, a model split across GPUs, or one with an operation that takes one sequence, one request at a time (`concurrency: 1`). `GLYD_ENGINE_BATCH_PREFILL=0` makes every reply the one the same
   request alone gets: prompts run one a pass, and a model with experts (Muse Spark, Kimi-K3, GLM-5.3-Flash) decodes one sequence a step (its
-  experts' products differ in the last bits at several rows).
+  experts' products differ in the last bits at several rows). There is one exception: a model whose expert cache has the host compute
+  some misses (Kimi-K3 at penguin, a Condor codes pack). There, which pairs the host computes follows the copy link's timing. Such a
+  reply holds within the kind's bound from one run to the next, not to the bit (docs/design/runtime.md, the expert cache's
+  "Run to run").
 - A field this server does not know is answered without it, and said once on stderr.
 - `model` is not checked: one model is served, and the reply names it.
 - The context holds the prompt and the reply. A prompt of the context's size or more is refused; with `max_tokens` (or

@@ -2305,8 +2305,20 @@ unsafe fn send_host(cuda: &mut Cuda, call: &Call, mine: &[usize], ids: &[i64], w
     Ok(Hybrid { gpu, ids: call.way, extra: 0, rows: true })
 }
 
+/// Whether the stores this process makes from now on hold the planner's times from the start (`ExpertStore::hold_costs`): said by a development check that
+/// holds one engine's tokens to another's made in its process (`servecheck`: a served model and the scheduler's), so that both plan alike whatever their
+/// timings. Without it a call's promotions are left out while the copy stream's measured backlog is past `BACKLOG_US`, and the places' state, so which
+/// pairs the host sums, turns on the copy link's timing.
+static HOLD_COSTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Every store this process makes from now on holds the planner's times (`HOLD_COSTS`).
+pub fn hold_costs_from_now() {
+    HOLD_COSTS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 impl ExpertStore {
-    /// An empty store. Its GPU side (the copy stream) is made with the first layer, in the context the engine made current.
+    /// An empty store. Its GPU side (the copy stream) is made with the first layer, in the context the engine made current. Its planner's times are held
+    /// where the process said so (`hold_costs_from_now`).
     pub fn new() -> Rc<ExpertStore> {
         Rc::new(ExpertStore {
             inner: RefCell::new(Inner {
@@ -2321,7 +2333,7 @@ impl ExpertStore {
                 expert_bytes: 0,
                 host: None,
                 pinned: 0,
-                frozen: false,
+                frozen: HOLD_COSTS.load(std::sync::atomic::Ordering::Relaxed),
                 ready: None,
                 last: Vec::new(),
             }),
