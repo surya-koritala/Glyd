@@ -494,9 +494,69 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
         hc: (s0.eps, s0.sinkhorn_iters as i32),
         logit_mult: 0.0,
         host: Vec::new(),
+        context: Vec::new(),
         v4: Some(V4Dims { heads: nh, idx_heads: ih, topk: itop, window: c0.window, all_ratio, sim: vo.sim, o_groups: og, idx_ratio }),
     };
     Ok((desc, plan))
+}
+
+/// The whole of a description of compressed attention layers lowered (`lower`) with its loader's plan, as a draft head's blocks are lowered by its model's
+/// lowering (`lower::draft_head`): the head's own tensors go into the plan, a matrix the release holds in FP8 (`fp8`, the description's scales) by the
+/// lowering's rule of FP8 products (`V4Opts`), another as the bf16 it is (a table looked up by row: held as it is).
+pub struct Lowered {
+    pub desc: ModelDesc,
+    pub plan: Plan,
+    vo: V4Opts,
+    fp8: std::collections::BTreeSet<String>,
+}
+
+impl Lowered {
+    /// `lower` of the whole of `d` (its compressed attention layers) with `vo`.
+    pub fn of(d: &Described, eos: Vec<i64>, max_pos: usize, vo: &V4Opts) -> Result<Lowered> {
+        let layers = d.desc.blocks.iter().filter(|b| matches!(b.body, Body::Mixer(_))).count();
+        let (desc, plan) = lower(d, eos, max_pos, &Stage::whole(layers), vo)?;
+        // (the products' rule as `lower` takes it: the library's FP8 products are of blocks of 128)
+        let vo = V4Opts { exact8: vo.exact8 && d.fp8_block.is_none_or(|b| b == 128), ..*vo };
+        Ok(Lowered { desc, plan, vo, fp8: d.scales.keys().cloned().collect() })
+    }
+}
+
+impl super::lower::Lowered for Lowered {
+    fn desc(&mut self) -> &mut ModelDesc {
+        &mut self.desc
+    }
+
+    fn own_mat(&mut self, name: &str, rows: usize, cols: usize, table: bool, shape: super::lower::Shape) -> Result<(usize, bool)> {
+        if let Some(s) = shape(name).filter(|s| s[..] != [rows, cols]) {
+            return err(format!("{name}: {s:?}, where the head reads {rows}x{cols}"));
+        }
+        let mut n = (self.plan.lins.iter().filter(|x| !x.f8).count(), self.plan.lins.iter().filter(|x| x.f8).count());
+        let lin = if table {
+            self.plan.lins.push(LinLoad { name: name.to_string(), form: LinForm::Table, f8: false });
+            Lin::next(&mut n, false)
+        } else if self.fp8.contains(name) {
+            self.plan.lin(&mut n, &self.vo, name.to_string(), (rows, cols, 0), None)
+        } else {
+            self.plan.lins.push(LinLoad { name: name.to_string(), form: LinForm::Bf16 { slice: false }, f8: false });
+            Lin::next(&mut n, false)
+        };
+        Ok(match lin {
+            Lin::Mat(i) => (i, false),
+            Lin::F8(i) => (i, true),
+        })
+    }
+
+    fn own_small(&mut self, name: &str) -> usize {
+        self.plan.small(vec![Piece::Tensor(name.to_string())])
+    }
+
+    fn share_ends(&mut self) {
+        for k in [self.desc.embed, self.desc.lm] {
+            if let Some(x) = self.plan.lins.iter_mut().filter(|x| !x.f8).nth(k) {
+                x.form = LinForm::Absent;
+            }
+        }
+    }
 }
 
 /// The pick of an indexer of `heads` over entries of `ratio` tokens (state `keys`), its `top_k` best kept as entries, its scores the release's bf16 arithmetic.
@@ -650,6 +710,108 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod drafters {
+    use super::*;
+    use crate::dynamic::{head, lower::draft_head, MtpFront};
+
+    const VO: V4Opts = V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 256 };
+
+    /// A description's DSpark drafter lowered by the model's own lowering (`lower::draft_head` of `Lowered::of`), and the model with its taps (`head::tap`).
+    fn lowered(d: &Described) -> (Lowered, ModelDesc) {
+        let h = draft_head(d, vec![1], 4096, |d, e, mp| Lowered::of(d, e, mp, &VO)).unwrap_or_else(|e| panic!("{}", e.msg));
+        let mut m = Lowered::of(d, vec![1], 4096, &VO).unwrap_or_else(|e| panic!("{}", e.msg)).desc;
+        head::tap(&mut m, d).unwrap_or_else(|e| panic!("{}", e.msg));
+        (h, m)
+    }
+
+    /// The head's own lowering: its front the block's, its context main_x of the taps (to FP8, main_proj, main_norm, to FP8) then each layer's own key product
+    /// and key operation, each layer a compressed attention of the window alone and its experts, its collapse the model's into its own final norm; every
+    /// matrix and small tensor an operation names is one of its plan's, every tensor of the plan one the description names, the model's embedding and LM head
+    /// not loaded again; the model's taps before each target layer's attention, after its n-gram block where it has one.
+    fn holds(d: &Described, layers: usize, block: usize, rank: usize, targets: &[usize]) {
+        let (h, m) = lowered(d);
+        let Op::MtpIn { front: MtpFront::Block { block: b, noise, markov, rank: r }, norm_embed, norm_hidden } = h.desc.first else {
+            panic!("{:?}", h.desc.first)
+        };
+        assert_eq!((b, r, norm_embed == norm_hidden), (block, rank, true));
+        assert_eq!(noise, d.desc.mtp[0].dspark.as_ref().unwrap().noise);
+        assert_eq!(h.desc.layers.len(), layers);
+        let ctx = &h.desc.context;
+        assert_eq!(ctx.len(), 4 + 2 * layers, "{ctx:?}");
+        assert!(matches!(ctx[0], Op::Fp8 { x: Slot::Hid, y: Slot::In, .. }) && matches!(ctx[2], Op::RmsNorm { x: Slot::X, y: Slot::H, .. }));
+        assert!(matches!(ctx[3], Op::Fp8 { x: Slot::H, y: Slot::Hq, .. }));
+        for (l, ops) in h.desc.layers.iter().enumerate() {
+            let kv = ops.iter().find(|op| matches!(op, Op::CompKv { .. })).unwrap();
+            assert_eq!(format!("{:?}", ctx[5 + 2 * l]), format!("{kv:?}"), "layer {l}'s key operation");
+            assert_eq!(ops.iter().filter(|op| matches!(op, Op::CompAttn { cache: None, ratio: 0, picked: false, .. })).count(), 1, "layer {l}");
+            assert!(ops.iter().all(|op| op.states().is_empty()), "layer {l}");
+        }
+        assert!(matches!(h.desc.layers[layers - 1].last(), Some(Op::StreamsHead { .. })));
+        assert_eq!((h.desc.width(Slot::Hid), h.desc.width(Slot::In)), (targets.len() * h.desc.hidden, targets.len() * h.desc.hidden));
+        // (every index the operations read is the plan's: the matrices', the FP8 ones', the small tensors')
+        let (mats, f8) = (h.plan.lins.iter().filter(|x| !x.f8).count(), h.plan.lins.iter().filter(|x| x.f8).count());
+        let ops: Vec<&Op> = h.desc.layers.iter().flatten().chain(ctx).collect();
+        for op in &ops {
+            match **op {
+                Op::Linear { w, .. } => assert!(w < mats, "{op:?}"),
+                Op::F8Lin { w, .. } => assert!(w < f8, "{op:?}"),
+                Op::CompKv { norm, .. } => assert!(norm < h.plan.small.len()),
+                _ => {}
+            }
+        }
+        assert!(markov.0 < mats && markov.1 < mats && norm_hidden < h.plan.small.len());
+        assert_eq!(h.plan.moe.len(), layers);
+        let names = d.names();
+        for x in h.plan.lins.iter().filter(|x| x.form != LinForm::Absent) {
+            assert!(names.contains(&x.name), "{}", x.name);
+        }
+        let absent: Vec<&str> = h.plan.lins.iter().filter(|x| x.form == LinForm::Absent).map(|x| x.name.as_str()).collect();
+        assert_eq!(absent, [d.embed.as_str(), d.head.as_deref().unwrap_or(&d.embed)]);
+        for t in h.plan.small.iter().flatten() {
+            if let Piece::Tensor(t) | Piece::Fp32(t) = t {
+                assert!(names.contains(t), "{t}");
+            }
+        }
+        // the model's taps: at each target layer's input, the k-th in its place
+        assert_eq!(m.width(Slot::Blk), targets.len() * m.hidden);
+        for (k, &l) in targets.iter().enumerate() {
+            let at = m.layers[l].iter().position(|op| matches!(op, Op::Tap { .. })).unwrap();
+            assert!(matches!(m.layers[l][at], Op::Tap { at: a, of } if a == k && of == targets.len()));
+            assert!(matches!(m.layers[l][at + 1], Op::StreamsPre { .. }), "layer {l}");
+            assert!(m.layers[l][..at].iter().all(|op| matches!(op, Op::NgramRows(_) | Op::NgramAdd(_) | Op::Linear { .. } | Op::F8Lin { .. })), "layer {l}");
+        }
+        assert_eq!(m.layers.iter().flatten().filter(|op| matches!(op, Op::Tap { .. })).count(), targets.len());
+    }
+
+    /// DeepSeek-V4.1's tiny config's drafter (one draft layer, a block of 5, Markov rank 32, targets 3 to 5: layer 4 with an n-gram block before it).
+    #[test]
+    fn v41s_dspark_drafter_lowers_to_a_block_head() {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deepseek_v41_tiny_config.json");
+        let d = crate::runtime::describe::describe(&serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()).unwrap();
+        holds(&d, 1, 5, 32, &[3, 4, 5]);
+        let (h, m) = lowered(&d);
+        // (lagged mHC's: no hyper-head of its own; the n-gram block of layer 4 before its tap)
+        assert!(matches!(h.desc.layers[0].last(), Some(Op::StreamsHead { mix: HeadMix::LastPre, .. })));
+        assert!(matches!(m.layers[4][0], Op::NgramRows(_)));
+    }
+
+    /// The deepseek-v4 draftcheck case's drafter (`dsv4_ref::random_dspark`'s config: two draft layers, a block of 8, the hyper-head of its own roles).
+    #[cfg(feature = "dev")]
+    #[test]
+    fn v4s_dspark_drafter_lowers_to_a_block_head() {
+        let d = crate::runtime::describe::describe(&serde_json::from_str(&crate::dsv4_ref::dspark_config()).unwrap()).unwrap();
+        holds(&d, 2, 8, 32, &[2, 3, 4]);
+        let (h, _) = lowered(&d);
+        let Some(Op::StreamsHead { mix: HeadMix::Weighted(w), .. }) = h.desc.layers[1].last() else { panic!("{:?}", h.desc.layers[1].last()) };
+        let pieces: Vec<&Piece> = w.iter().flat_map(|&i| &h.plan.small[i]).collect();
+        assert_eq!(
+            pieces,
+            [&Piece::Tensor("mtp.1.hc_head_fn".into()), &Piece::Tensor("mtp.1.hc_head_base".into()), &Piece::Tensor("mtp.1.hc_head_scale".into())]
+        );
     }
 }
 

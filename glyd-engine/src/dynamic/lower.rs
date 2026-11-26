@@ -206,6 +206,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         hc: (0.0, 0),
         logit_mult: 0.0,
         host: Vec::new(),
+        context: Vec::new(),
     })
 }
 
@@ -375,6 +376,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         hc: (0.0, 0),
         logit_mult: 0.0,
         host: Vec::new(),
+        context: Vec::new(),
     })
 }
 
@@ -670,11 +672,48 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         hc: (0.0, 0),
         logit_mult: 0.0,
         host: super::tables::held(m, embed, lm, &tables),
+        context: Vec::new(),
     })
 }
 
 /// A model's lowering of its blocks (its family's: `qwen4x`, or `latent_moe` of the whole model): what a draft head's blocks are lowered by.
 pub type Blocks = fn(&Described, Vec<i64>, usize) -> Result<ModelDesc>;
+
+/// What a model's lowering gives a draft head's blocks back as (`draft_head`): the executor's description, and where the loader is told of the head's own
+/// tensors: by name in the description's lists (`ModelDesc` itself: `mats`, `small`), or in a plan of the compressed attention's lowering (`lower_comp::Lowered`).
+pub trait Lowered {
+    fn desc(&mut self) -> &mut ModelDesc;
+    /// The head's own matrix `name` of `rows` x `cols` (held as the checkpoint has it: a row's table where `table`): its index, and whether it is in the FP8
+    /// matrices' list (`Op::F8Lin`'s) rather than the matrices'.
+    fn own_mat(&mut self, name: &str, rows: usize, cols: usize, table: bool, shape: Shape) -> Result<(usize, bool)>;
+    /// The head's own small tensor `name`: its index.
+    fn own_small(&mut self, name: &str) -> usize;
+    /// The model's embedding and LM head, which the head reads as the model's: not loaded with it.
+    fn share_ends(&mut self) {}
+}
+
+impl Lowered for ModelDesc {
+    fn desc(&mut self) -> &mut ModelDesc {
+        self
+    }
+
+    fn own_mat(&mut self, name: &str, rows: usize, cols: usize, table: bool, shape: Shape) -> Result<(usize, bool)> {
+        if table {
+            return err(format!("{name}: a table looked up by row among a description's matrices by name, which the executor packs"));
+        }
+        self.mats.push(item(vec![name.to_string()], shape)?);
+        let it = &self.mats[self.mats.len() - 1];
+        if (it.rows, it.cols) != (rows, cols) {
+            return err(format!("{name} of {}x{}, where the head reads {rows}x{cols}", it.rows, it.cols));
+        }
+        Ok((self.mats.len() - 1, false))
+    }
+
+    fn own_small(&mut self, name: &str) -> usize {
+        self.small.push(name.to_string());
+        self.small.len() - 1
+    }
+}
 
 /// The description's first draft head (`kinds::MtpHead`) as a draft part on the shared operations, for every family that has one: its blocks lowered as the
 /// model's layers are (`blocks`, the model's lowering, on a model of the head's blocks and final norm), after `Op::MtpIn`, the head's input from the model's
@@ -684,10 +723,11 @@ pub type Blocks = fn(&Described, Vec<i64>, usize) -> Result<ModelDesc>;
 /// - `MtpInput::Joined` (DeepSeek-V3's, GLM-5.3's): its residual from eh_proj of the two normed rows joined; the first block's norm then reads it as the
 ///   model's first layer's reads the embedding; its final norm's output the LM head's input and the next draft's state; its norms plain, rounded as
 ///   transformers' bf16 RMSNorm (`Rounding::Twice`).
+/// - DSpark's (`kinds::DSpark`, every DeepSeek release's drafter): a block of tokens in one pass (`block_head`).
 ///
 /// The model's embedding and LM head are named (the executor shares the model's, never loading them twice: `DraftSpec`); its rings are its own, from 0 (the
 /// executor puts them after the model's).
-pub fn draft_head(d: &Described, eos: Vec<i64>, max_pos: usize, blocks: Blocks) -> Result<ModelDesc> {
+pub fn draft_head<L: Lowered>(d: &Described, eos: Vec<i64>, max_pos: usize, blocks: impl Fn(&Described, Vec<i64>, usize) -> Result<L>) -> Result<L> {
     use super::MtpFront;
     use crate::runtime::kinds::{MtpInput, NormKind, NormWeight, Rounding};
     let what = "a draft head";
@@ -695,7 +735,7 @@ pub fn draft_head(d: &Described, eos: Vec<i64>, max_pos: usize, blocks: Blocks) 
         return err(format!("{what}: the description names no draft head"));
     };
     if h.dspark.is_some() {
-        return err(format!("{what}: DSpark's form, whose blocks draft a block of tokens in one pass, is not this operation's"));
+        return block_head(d, eos, max_pos, blocks);
     }
     let eps = d.desc.final_norm.eps;
     let (weight, rounding) = match h.input {
@@ -724,26 +764,26 @@ pub fn draft_head(d: &Described, eos: Vec<i64>, max_pos: usize, blocks: Blocks) 
         hd.extra = vec![("out_mix_down".into(), Source::Tensor(one("out_mix_down")?)), ("out_mix_up".into(), Source::Tensor(one("out_mix_up")?))];
     }
     hd.mtp = Vec::new();
-    let mut m = blocks(&hd, eos, max_pos).map_err(|e| e.context(what))?;
+    let mut l = blocks(&hd, eos, max_pos).map_err(|e| e.context(what))?;
     let shape = |n: &str| d.shapes.get(n).cloned();
-    let (ne, nh) = (m.small.len(), m.small.len() + 1);
-    m.small.extend([one("norm_embed")?, one("norm_hidden")?]);
-    let k0 = m.mats.len();
+    let (ne, nh) = (l.own_small(&one("norm_embed")?), l.own_small(&one("norm_hidden")?));
+    let hidden = l.desc().hidden;
     let fronts: Vec<(&str, usize)> = match h.input {
-        MtpInput::Streams => vec![("fc_embedding", m.hidden), ("fc_hidden", m.hidden)],
-        MtpInput::Joined => vec![("eh_proj", 2 * m.hidden)],
+        MtpInput::Streams => vec![("fc_embedding", hidden), ("fc_hidden", hidden)],
+        MtpInput::Joined => vec![("eh_proj", 2 * hidden)],
     };
-    for (k, &(r, cols)) in fronts.iter().enumerate() {
-        m.mats.push(item(vec![one(r)?], &shape)?);
-        let it = &m.mats[k0 + k];
-        if (it.rows, it.cols) != (m.hidden, cols) {
-            return err(format!("{what}: {} of {}x{}, where the head's front is {}x{cols}", it.members[0], it.rows, it.cols, m.hidden));
+    let mut k = Vec::new();
+    for &(r, cols) in &fronts {
+        match l.own_mat(&one(r)?, hidden, cols, false, &shape).map_err(|e| e.context(what))? {
+            (i, false) => k.push(i),
+            (_, true) => return err(format!("{what}: its front's {r} held FP8, where the front's products are the matrices'")),
         }
     }
+    let m = l.desc();
     let front = match h.input {
         MtpInput::Streams => {
             m.widths[Slot::Hid as usize] = m.width(Slot::S);
-            MtpFront::Streams { embed: k0, hidden: k0 + 1 }
+            MtpFront::Streams { embed: k[0], hidden: k[1] }
         }
         MtpInput::Joined => {
             // (the head's input is its residual, as the embedding is the model's: the lowered first operation, the first block's norm of it, runs after it)
@@ -752,11 +792,101 @@ pub fn draft_head(d: &Described, eos: Vec<i64>, max_pos: usize, blocks: Blocks) 
                 m.layers.first_mut().ok_or_else(|| Error(format!("{what}: no blocks")))?.insert(0, first);
             }
             (m.widths[Slot::Hid as usize], m.widths[Slot::In as usize]) = (m.hidden, 2 * m.hidden);
-            MtpFront::Joined { eh: k0 }
+            MtpFront::Joined { eh: k[0] }
         }
     };
     m.first = Op::MtpIn { norm_embed: ne, norm_hidden: nh, front };
-    Ok(m)
+    Ok(l)
+}
+
+/// DSpark's draft head (`kinds::DSpark`; vLLM models/deepseek_v4/nvidia/dspark.py, SGLang models/deepseek_v4_dspark.py): its blocks the model's decoder layers
+/// of the window alone, lowered as the model's are (`blocks`) on a model of them with the head's final norm and its collapse's own roles (a hyper-head's
+/// `out_hc_*`); its front `MtpFront::Block` (the block's tokens' embeddings as its streams, the Markov head's two matrices after the LM head); its context
+/// (`ModelDesc::context`): the model's taps of a row (Hid, the target layers' inputs side by side) to FP8 where the release's products quantize their input,
+/// `main_proj`, `main_norm` (the head's `norm_hidden` kind), to FP8, then each layer's own key product and key operation (normed, rotated, into its window) of
+/// that main_x. A layer's attention reads its window to the block's last row (`Dyn::ahead`).
+fn block_head<L: Lowered>(d: &Described, eos: Vec<i64>, max_pos: usize, blocks: impl Fn(&Described, Vec<i64>, usize) -> Result<L>) -> Result<L> {
+    use super::MtpFront;
+    use crate::runtime::kinds::{NormKind, NormWeight};
+    let what = "a DSpark draft head";
+    let (Some(h), Some((roles, own))) = (d.desc.mtp.first(), d.mtp.first()) else {
+        return err(format!("{what}: the description names no draft head"));
+    };
+    let ds = h.dspark.as_ref().ok_or_else(|| Error(format!("{what}: no DSpark form")))?;
+    if ds.block < 2 || ds.block > super::VERIFY_ROWS || ds.targets.is_empty() || ds.markov_rank == 0 {
+        return err(format!(
+            "{what}: a block of {} tokens over {} target layers, a Markov rank of {}: blocks of 2 to {} and some of each",
+            ds.block,
+            ds.targets.len(),
+            ds.markov_rank,
+            super::VERIFY_ROWS
+        ));
+    }
+    let n = &h.norm_hidden;
+    if n.kind != NormKind::Rms || n.weight != NormWeight::Plain {
+        return err(format!("{what}: main_x's norm is {n:?}, where the kernels take an RMS norm of a plain weight"));
+    }
+    let one = |r: &str| -> Result<String> {
+        match role(own, r) {
+            Some(Source::Tensor(n)) => Ok(n.clone()),
+            other => err(format!("{what}: the role {r} is {other:?}, where one tensor is")),
+        }
+    };
+    // (the head as a model of its blocks, its final norm, and its collapse's own roles where the model's collapse has some)
+    let mut hd = d.clone();
+    hd.desc.blocks = h.blocks.clone();
+    hd.desc.final_norm = h.final_norm;
+    hd.desc.mtp = Vec::new();
+    hd.blocks = roles.clone();
+    hd.final_norm = one("final_norm")?;
+    hd.extra = own.iter().filter(|(r, _)| r.starts_with("out_hc_")).cloned().collect();
+    hd.mtp = Vec::new();
+    let mut l = blocks(&hd, eos, max_pos).map_err(|e| e.context(what))?;
+    l.share_ends();
+    let shape = |n: &str| d.shapes.get(n).cloned();
+    let (hidden, vocab, taps) = (d.desc.hidden, d.desc.vocab, ds.targets.len());
+    let main = l.own_mat(&one("main_proj")?, hidden, taps * hidden, false, &shape).map_err(|e| e.context(what))?;
+    let main_norm = l.own_small(&one("main_norm")?);
+    let (me, mh) = (
+        l.own_mat(&one("markov_embed")?, vocab, ds.markov_rank, true, &shape).map_err(|e| e.context(what))?,
+        l.own_mat(&one("markov_head")?, vocab, ds.markov_rank, false, &shape).map_err(|e| e.context(what))?,
+    );
+    if me.1 || mh.1 {
+        return err(format!("{what}: its Markov head's matrices held FP8, where its products are the matrices'"));
+    }
+    let m = l.desc();
+    let lin = |(w, f8): (usize, bool), x: Slot, y: Slot, name: &'static str| if f8 { Op::F8Lin { w, x, y, name } } else { Op::Linear { w, x, y, name } };
+    let mut context = vec![
+        Op::Fp8 { x: Slot::Hid, y: Slot::In, block: 128 },
+        lin(main, Slot::In, Slot::X, "draft head: main projection"),
+        Op::RmsNorm { x: Slot::X, w: main_norm, y: Slot::H, weight: NormW::Plain, eps: n.eps },
+        Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
+    ];
+    // (each layer: its key product of Hq and its key operation, as the layer's own; its attention over the window alone)
+    for (i, ops) in m.layers.iter().enumerate() {
+        let key = ops.iter().position(|op| matches!(op, Op::Linear { y: Slot::Kv, .. } | Op::F8Lin { y: Slot::Kv, .. }));
+        let kv = ops.iter().position(|op| matches!(op, Op::CompKv { .. }));
+        let window_only = ops.iter().all(|op| !matches!(op, Op::CompAttn { cache: Some(_), .. } | Op::Compress { .. } | Op::IdxPick(_)));
+        match (key, kv) {
+            (Some(a), Some(b)) if a < b && window_only && matches!(ops[a], Op::Linear { x: Slot::Hq, .. } | Op::F8Lin { x: Slot::Hq, .. }) => {
+                context.extend([ops[a].clone(), ops[b].clone()]);
+            }
+            _ => return err(format!("{what}: its layer {i} is not a compressed attention of the window alone whose key product reads Hq")),
+        }
+    }
+    m.context = context;
+    m.widths[Slot::Hid as usize] = taps * hidden;
+    m.widths[Slot::In as usize] = m.widths[Slot::In as usize].max(taps * hidden);
+    // (the lowering's first operation, the streams from the embedding: the block's front makes them of the model's X)
+    if !matches!(m.first, Op::Streams) {
+        return err(format!("{what}: its blocks begin with {:?}, where they begin with the streams of the embedding", m.first));
+    }
+    m.first = Op::MtpIn {
+        norm_embed: main_norm,
+        norm_hidden: main_norm,
+        front: MtpFront::Block { block: ds.block, noise: ds.noise, markov: (me.0, mh.0), rank: ds.markov_rank },
+    };
+    Ok(l)
 }
 
 /// Qwen3.5's layout (dense: Qwen3.5, 3.6 and 3.8 of 256-wide heads): pairs of blocks, a Gated DeltaNet or a gated full attention, then the SiLU MLP, the (1 + w)
@@ -958,6 +1088,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
         hc: (0.0, 0),
         logit_mult: 0.0,
         host: Vec::new(),
+        context: Vec::new(),
     })
 }
 
@@ -1123,6 +1254,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
         hc: (0.0, 0),
         logit_mult: 0.0,
         host: Vec::new(),
+        context: Vec::new(),
     })
 }
 
@@ -1284,6 +1416,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         hc: (0.0, 0),
         logit_mult: m.head.scale,
         host: Vec::new(),
+        context: Vec::new(),
     })
 }
 
@@ -1675,6 +1808,7 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
         hc: (0.0, 0),
         logit_mult: 0.0,
         host: Vec::new(),
+        context: Vec::new(),
     })
 }
 
@@ -2776,8 +2910,9 @@ mod tests {
     /// The decisions the executor made by a family's name, made by its description's operations now, give every family the answer the name lists gave, but
     /// where named: a second sequence for Qwen3.8-Flash-Next (`add_seqs`: every one of its operations keeps a sequence's data in its rings and states, as
     /// `batchable` said already); a verify pass for Gemma 4 and the plain dense models (attention rings and row-wise operations alone; the range worker,
-    /// verify's caller with Qwen3.5) and for Qwen3.8-Flash-Next (its draft head's rounds, src/dynamic/head.rs: its sparse attention, its plain experts held on
-    /// the GPU, its n-gram embedding's states, which `rewind` goes back in).
+    /// verify's caller with Qwen3.5), for Qwen3.8-Flash-Next (its draft head's rounds, src/dynamic/head.rs: its sparse attention, its plain experts held on
+    /// the GPU, its n-gram embedding's states, which `rewind` goes back in) and for DeepSeek-V4 (its DSpark drafter's rounds: the compressed attention, whose
+    /// compressors' open windows `rewind` pools again over the kept rows, its weighed experts held on the GPU).
     #[cfg(feature = "dev")]
     #[test]
     fn decisions_by_operation_give_the_family_lists_answers() {
@@ -2791,7 +2926,7 @@ mod tests {
             assert_eq!(rows::one_sequence_op(d).is_none(), listed || f == QX, "{f}: more sequences than one");
             assert_eq!(
                 unverifiable_op(d).is_none(),
-                matches!(f, "Qwen3.5" | "Gemma 4" | DENSE | QX),
+                matches!(f, "Qwen3.5" | "Gemma 4" | DENSE | QX | "DeepSeek-V4"),
                 "{f}: a verify pass ({:?})",
                 unverifiable_op(d).map(rows::op_name)
             );

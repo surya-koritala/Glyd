@@ -87,7 +87,8 @@ pub(crate) struct V4Run {
 
 impl V4Run {
     pub fn new(dev: &Dev, d: &ModelDesc, dims: &V4Dims, ch: usize, ctx: usize) -> Result<V4Run> {
-        let lmax = dims.window + dims.topk.max(if dims.all_ratio > 0 { ctx / dims.all_ratio + 1 } else { 0 });
+        // (and a block draft head's rows past its own a row reads: `Dyn::ahead`, a verify pass's at most)
+        let lmax = dims.window + super::VERIFY_ROWS + dims.topk.max(if dims.all_ratio > 0 { ctx / dims.all_ratio + 1 } else { 0 });
         // (the entries an indexer scores, a chunk's compressors make: the smallest ratio's; 4 where there is none, as before the ratios of DeepSeek-V4.1)
         let emax = ctx / if dims.idx_ratio > 0 { dims.idx_ratio } else { 4 } + 1;
         let minr = [dims.idx_ratio, dims.all_ratio, 4].into_iter().filter(|&r| r > 0).min().unwrap_or(4);
@@ -211,10 +212,39 @@ pub fn load_sim(dir: &Path, o: &Opts, sim: bool) -> Result<Dyn> {
 
 /// `load_stage_hb` with the options `vo` given.
 pub fn load_stage_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>, vo: V4Opts) -> Result<Dyn> {
+    load_with(dir, o, st, caching, vo, None)
+}
+
+/// The whole model of `dir` on one GPU with its draft head (its DSpark drafter: `lower::draft_head` of the compressed attention's lowering, src/dynamic/head.rs)
+/// drafting `k` tokens a round (at most `VERIFY_ROWS` - 1 and the head's block), every expert on the GPU; the model taps its target layers' inputs for it
+/// (`Op::Tap`). `sim`: the release's simulated quantizations on or off (the load's own where None, GLYD_V4_SIM).
+pub fn load_drafting(dir: &Path, o: &Opts, k: usize, sim: Option<bool>) -> Result<Dyn> {
+    let vo = V4Opts::of(o.layout.unwrap_or(Layout::Tiered), o.ctx);
+    let vo = V4Opts { sim: sim.unwrap_or(vo.sim), ..vo };
+    load_with(dir, o, Stage::whole(ends(dir)?.0), None, vo, Some(k))
+}
+
+/// `load_stage_with`, with the model's draft head drafting `draft` tokens a round where given (the whole model on one GPU, no expert cache).
+fn load_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>, vo: V4Opts, draft: Option<usize>) -> Result<Dyn> {
     let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
     let (_, eos, max_pos) = ends(dir)?;
     let layout = o.layout.unwrap_or(Layout::Tiered);
-    let (desc, plan) = super::lower_comp::lower(&kinds, eos, max_pos, &st, &vo).map_err(|e| e.context(&label))?;
+    let (mut desc, plan) = super::lower_comp::lower(&kinds, eos.clone(), max_pos, &st, &vo).map_err(|e| e.context(&label))?;
+    // (a draft head: the model's own lowering of its blocks, its tensors in a plan of its own; the model's taps of its target layers for it)
+    let head = match draft {
+        None => None,
+        Some(_) if caching.is_some() || !(st.first && st.last) => {
+            return err(format!("{label}: a draft head on a model of one GPU whose experts are all on it (its verify pass takes them so)"))
+        }
+        Some(k) => {
+            let h = super::lower::draft_head(&kinds, eos, max_pos, |d, e, mp| super::lower_comp::Lowered::of(d, e, mp, &vo)).map_err(|e| e.context(&label))?;
+            super::head::tap(&mut desc, &kinds)?;
+            if h.plan.ropes.first() != plan.ropes.first() {
+                return err(format!("{label}: the draft head's window rotary is not the model's window layers'"));
+            }
+            Some((h, k))
+        }
+    };
     let cfg = crate::runtime::config::ModelConfig::load(dir)?;
     let inter = cfg.text.get("moe_intermediate_size").and_then(|v| v.as_u64()).ok_or_else(|| Error(format!("{label}: no moe_intermediate_size")))? as usize;
     let dev = Dev::new(o.device)?;
@@ -276,127 +306,134 @@ pub fn load_stage_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::
     // (the library's FP8 products take blocks of 128: a release of other blocks has its shared experts held as their bf16 too, as `lower_comp::lower` holds its matrices)
     let exact8 = vo.exact8 && kinds.fp8_block.is_none_or(|b| b == 128);
     let lib = crate::ffi::Lib::find()?;
-    let (mut mats, mut f8): (Vec<Mat>, Vec<crate::f8::F8Mat>) = Default::default();
-    // the products' matrices, in the plan's order: the large FP8 ones held FP8 as released where the lowering says (`LinLoad::f8`: the level and their size), the rest as
-    // the bf16 they are or decode to, packed lossless (or at the level asked)
-    for x in &plan.lins {
-        crate::status::STATUS.beat();
-        let label = x.name.trim_end_matches(".weight");
-        match x.form {
-            LinForm::Fp8 { rows, groups } => {
-                let (all, cols) = dims(&x.name)?;
-                let (r0, r1) = rows.unwrap_or((0, all));
-                let what = if rows.is_some() { format!("{label} rows {r0}..{r1}") } else { label.to_string() };
-                if !x.f8 {
-                    mats.push(pack(&dense(&x.name, r0, r1)?, r1 - r0, cols, &what)?);
-                    continue;
+    // a plan's tensors loaded (the model's; a draft head's, `model` false: no hummingbird rows or expert cache for its experts, which are its own layers')
+    let load_plan = |desc: &ModelDesc, plan: &super::lower_comp::Plan, model: bool| -> Result<super::Loaded> {
+        let (mut mats, mut f8): (Vec<Mat>, Vec<crate::f8::F8Mat>) = Default::default();
+        // the products' matrices, in the plan's order: the large FP8 ones held FP8 as released where the lowering says (`LinLoad::f8`: the level and their size), the rest as
+        // the bf16 they are or decode to, packed lossless (or at the level asked)
+        for x in &plan.lins {
+            crate::status::STATUS.beat();
+            let label = x.name.trim_end_matches(".weight");
+            match x.form {
+                LinForm::Fp8 { rows, groups } => {
+                    let (all, cols) = dims(&x.name)?;
+                    let (r0, r1) = rows.unwrap_or((0, all));
+                    let what = if rows.is_some() { format!("{label} rows {r0}..{r1}") } else { label.to_string() };
+                    if !x.f8 {
+                        mats.push(pack(&dense(&x.name, r0, r1)?, r1 - r0, cols, &what)?);
+                        continue;
+                    }
+                    let (sc, b) = scaled(&x.name, all, cols)?.ok_or_else(|| Error(format!("{}: held FP8, and it has no scales", x.name)))?;
+                    if b != [128, 128] {
+                        return err(format!(
+                            "{}: FP8 in blocks of {b:?}: the library's FP8 products take blocks of 128 (GLYD_V4_F8=0 holds it as its bf16)",
+                            x.name
+                        ));
+                    }
+                    let q = read(&x.name)?;
+                    let gc = cols.div_ceil(128);
+                    // (a group of GPUs: this GPU's rows of each group's, whole blocks of 128 for the scales)
+                    let per = (r1 - r0) / groups.max(1);
+                    let parts: Vec<(usize, usize)> = match tpr.filter(|&(_, n)| per % (128 * n) == 0 && tp.as_ref().is_some_and(|t| t.slices(r1 - r0, cols))) {
+                        Some((rank, n)) => (0..groups).map(|g| (r0 + g * per + rank * per / n, r0 + g * per + (rank + 1) * per / n)).collect(),
+                        None => vec![(r0, r1)],
+                    };
+                    let (mut qq, mut ss) = (Vec::new(), Vec::new());
+                    for &(a, b) in &parts {
+                        qq.extend_from_slice(&q[a * cols..b * cols]);
+                        ss.extend(sc[a / 128 * gc..b.div_ceil(128) * gc].iter().map(|&x| crate::deepseek_v4::e8m0(x)));
+                    }
+                    let rows_here = parts.iter().map(|p| p.1 - p.0).sum();
+                    let mut m = crate::f8::F8Mat::pack(&dev, &lib, &qq, &ss, rows_here, cols, cfg!(feature = "dev"))?;
+                    m.tp_rows = if parts.len() > 1 || rows_here < r1 - r0 { per } else { 0 };
+                    f8.push(m);
                 }
-                let (sc, b) = scaled(&x.name, all, cols)?.ok_or_else(|| Error(format!("{}: held FP8, and it has no scales", x.name)))?;
-                if b != [128, 128] {
-                    return err(format!(
-                        "{}: FP8 in blocks of {b:?}: the library's FP8 products take blocks of 128 (GLYD_V4_F8=0 holds it as its bf16)",
-                        x.name
-                    ));
+                LinForm::Bf16 { slice } => {
+                    let (rows, cols) = dims(&x.name)?;
+                    mats.push(pack_as(&words(&read(&x.name)?), rows, cols, label, slice)?);
                 }
-                let q = read(&x.name)?;
-                let gc = cols.div_ceil(128);
-                // (a group of GPUs: this GPU's rows of each group's, whole blocks of 128 for the scales)
-                let per = (r1 - r0) / groups.max(1);
-                let parts: Vec<(usize, usize)> = match tpr.filter(|&(_, n)| per % (128 * n) == 0 && tp.as_ref().is_some_and(|t| t.slices(r1 - r0, cols))) {
-                    Some((rank, n)) => (0..groups).map(|g| (r0 + g * per + rank * per / n, r0 + g * per + (rank + 1) * per / n)).collect(),
-                    None => vec![(r0, r1)],
-                };
-                let (mut qq, mut ss) = (Vec::new(), Vec::new());
-                for &(a, b) in &parts {
-                    qq.extend_from_slice(&q[a * cols..b * cols]);
-                    ss.extend(sc[a / 128 * gc..b.div_ceil(128) * gc].iter().map(|&x| crate::deepseek_v4::e8m0(x)));
+                LinForm::Table => {
+                    let (rows, cols) = dims(&x.name)?;
+                    mats.push(Mat::Dense(upload_bytes(as_bytes(&dense(&x.name, 0, rows)?))?, rows, cols));
                 }
-                let rows_here = parts.iter().map(|p| p.1 - p.0).sum();
-                let mut m = crate::f8::F8Mat::pack(&dev, &lib, &qq, &ss, rows_here, cols, cfg!(feature = "dev"))?;
-                m.tp_rows = if parts.len() > 1 || rows_here < r1 - r0 { per } else { 0 };
-                f8.push(m);
+                LinForm::Absent => mats.push(Mat::Dense(Buf::new(2)?, 0, 0)),
             }
-            LinForm::Bf16 { slice } => {
-                let (rows, cols) = dims(&x.name)?;
-                mats.push(pack_as(&words(&read(&x.name)?), rows, cols, label, slice)?);
-            }
-            LinForm::Table => {
-                let (rows, cols) = dims(&x.name)?;
-                mats.push(Mat::Dense(upload_bytes(as_bytes(&dense(&x.name, 0, rows)?))?, rows, cols));
-            }
-            LinForm::Absent => mats.push(Mat::Dense(Buf::new(2)?, 0, 0)),
         }
-    }
-    if mats.len() != desc.lm + 1 || f8.len() != plan.lins.iter().filter(|x| x.f8).count() {
-        return err(format!(
-            "{label}: {} matrices and {} FP8 ones loaded for a description of {} and {}",
-            mats.len(),
-            f8.len(),
-            desc.lm + 1,
-            plan.lins.iter().filter(|x| x.f8).count()
-        ));
-    }
-    // the small tensors: each its pieces one after another (a tensor as stored, zeros, the lowering's numbers, the tokenizer's compressed vocabulary)
-    let token_map = || -> Result<Vec<u8>> {
-        let p = dir.join("engram_token_map.json");
-        let v: Vec<i64> = serde_json::from_str(&io(std::fs::read_to_string(&p))?).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        if v.len() != desc.vocab {
-            return err(format!("{}: {} ids for a vocabulary of {}", p.display(), v.len(), desc.vocab));
+        // (the description's matrices end with the embedding and the LM head; a draft head's own after them)
+        let want = (plan.lins.iter().filter(|x| !x.f8).count(), plan.lins.iter().filter(|x| x.f8).count());
+        if (mats.len(), f8.len()) != want || want.0 < desc.lm + 1 {
+            return err(format!("{label}: {} matrices and {} FP8 ones loaded for a description of {} and {}", mats.len(), f8.len(), want.0, want.1));
         }
-        Ok(v.iter().flat_map(|&t| (t as i32).to_le_bytes()).collect())
+        // the small tensors: each its pieces one after another (a tensor as stored, zeros, the lowering's numbers, the tokenizer's compressed vocabulary)
+        let token_map = || -> Result<Vec<u8>> {
+            let p = dir.join("engram_token_map.json");
+            let v: Vec<i64> = serde_json::from_str(&io(std::fs::read_to_string(&p))?).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+            if v.len() != desc.vocab {
+                return err(format!("{}: {} ids for a vocabulary of {}", p.display(), v.len(), desc.vocab));
+            }
+            Ok(v.iter().flat_map(|&t| (t as i32).to_le_bytes()).collect())
+        };
+        let sm: Vec<Buf> = plan
+            .small
+            .iter()
+            .map(|pieces| {
+                let mut b = Vec::new();
+                for p in pieces {
+                    match p {
+                        Piece::Tensor(t) => b.extend(read(t)?),
+                        Piece::Fp32(t) => match ck.get(t).map(|(_, x)| x.dtype.as_str()) {
+                            Some("F32") => b.extend(read(t)?),
+                            Some("BF16") => {
+                                b.extend(read(t)?.chunks(2).flat_map(|w| f32::from_bits((u16::from_le_bytes([w[0], w[1]]) as u32) << 16).to_le_bytes()))
+                            }
+                            d => return err(format!("{t}: {d:?}, where fp32 or bf16 is read")),
+                        },
+                        Piece::Zeros(n) => b.resize(b.len() + n, 0),
+                        Piece::I64(v) => b.extend(v.iter().flat_map(|x| x.to_le_bytes())),
+                        Piece::TokenMap => b.extend(token_map()?),
+                    }
+                }
+                upload_bytes(&b)
+            })
+            .collect::<Result<_>>()?;
+        // the experts, block by block
+        let mut moe: Vec<Box<dyn MoeBlock>> = Vec::new();
+        for ml in &plan.moe {
+            crate::status::STATUS.beat();
+            moe.push(experts(
+                &ExpertsAt {
+                    ck: &ck,
+                    kinds: &kinds,
+                    dev: &dev,
+                    lib: &lib,
+                    hb: hb.as_ref().filter(|_| model),
+                    caching: caching.filter(|_| model),
+                    store: store.as_ref().filter(|_| model),
+                    threads,
+                    tpr,
+                    exact8,
+                    // (the description's: a release whose quantizations the kernels do not simulate runs without them, `lower_comp::lower`)
+                    sim: desc.v4.as_ref().is_some_and(|v| v.sim),
+                    inter,
+                },
+                ml,
+                d,
+                &pack,
+                &dense,
+            )?);
+        }
+        Ok(super::Loaded { mats, f8, small: sm, moe, ..Default::default() })
     };
-    let sm: Vec<Buf> = plan
-        .small
-        .iter()
-        .map(|pieces| {
-            let mut b = Vec::new();
-            for p in pieces {
-                match p {
-                    Piece::Tensor(t) => b.extend(read(t)?),
-                    Piece::Fp32(t) => match ck.get(t).map(|(_, x)| x.dtype.as_str()) {
-                        Some("F32") => b.extend(read(t)?),
-                        Some("BF16") => {
-                            b.extend(read(t)?.chunks(2).flat_map(|w| f32::from_bits((u16::from_le_bytes([w[0], w[1]]) as u32) << 16).to_le_bytes()))
-                        }
-                        d => return err(format!("{t}: {d:?}, where fp32 or bf16 is read")),
-                    },
-                    Piece::Zeros(n) => b.resize(b.len() + n, 0),
-                    Piece::I64(v) => b.extend(v.iter().flat_map(|x| x.to_le_bytes())),
-                    Piece::TokenMap => b.extend(token_map()?),
-                }
-            }
-            upload_bytes(&b)
-        })
-        .collect::<Result<_>>()?;
-    // the experts, block by block
-    let mut moe: Vec<Box<dyn MoeBlock>> = Vec::new();
-    for ml in &plan.moe {
-        crate::status::STATUS.beat();
-        moe.push(experts(
-            &ExpertsAt {
-                ck: &ck,
-                kinds: &kinds,
-                dev: &dev,
-                lib: &lib,
-                hb: hb.as_ref(),
-                caching,
-                store: store.as_ref(),
-                threads,
-                tpr,
-                exact8,
-                // (the description's: a release whose quantizations the kernels do not simulate runs without them, `lower_comp::lower`)
-                sim: desc.v4.as_ref().is_some_and(|v| v.sim),
-                inter,
-            },
-            ml,
-            d,
-            &pack,
-            &dense,
-        )?);
-    }
+    let loaded = load_plan(&desc, &plan, true)?;
     let mp = ctx + ch + 16;
     let ropes = plan.ropes.iter().map(|r| tables(&freqs_of(r), mp)).collect::<Result<Vec<_>>>()?;
-    Dyn::from_loaded_f8(dev, desc, mats, f8, sm, moe, ropes, layout, st, o)
+    match head {
+        None => Dyn::from_parts(dev, desc, loaded, ropes, layout, st, o),
+        Some((h, k)) => {
+            let hl = load_plan(&h.desc, &h.plan, false)?;
+            Dyn::from_parts_drafting(dev, desc, loaded, ropes, layout, st, o, (h.desc, hl, k))
+        }
+    }
 }
 
 /// What a layer's experts are loaded with: the checkpoint and its description, the GPU and the library, a hummingbird directory and the expert cache where

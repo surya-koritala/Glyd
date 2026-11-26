@@ -1660,6 +1660,50 @@ pub fn ref_head(dir: &Path, rows: &[HeadRow], edit: fn(&mut crate::runtime::desc
     Ok(out)
 }
 
+/// The DSpark drafter of the model in `dir` (its description's first draft head) on the CPU reference of the kinds (`RefDSpark::load`), and the model's
+/// embedding and LM head (f32 [vocab, hidden]) its block reads.
+pub fn ref_dspark(dir: &Path) -> Result<(Vec<f32>, Vec<f32>, crate::runtime::reference::mtp::RefDSpark)> {
+    use crate::runtime::reference::{model::checkpoint_tensor, mtp::RefDSpark};
+    let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(dir.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
+    let desc = crate::runtime::describe::describe(&cfg)?;
+    let ck = io(glyd_gpu::safetensors::Checkpoint::open(dir))?;
+    let src = |n: &str| checkpoint_tensor(&ck, n);
+    let t = |n: &str| src(n).map(|x| x.1).ok_or_else(|| Error(format!("the checkpoint has no tensor {n}")));
+    let (embed, head) = (t(&desc.embed)?, t(desc.head.as_deref().unwrap_or(&desc.embed))?);
+    Ok((embed, head, RefDSpark::load(&desc, &src)?))
+}
+
+/// The CPU reference of the kinds on the model in `dir` over `tokens` (one sequence from position 0): each position's taps for its DSpark drafter
+/// (`kinds::DSpark::targets`), the mean of the streams each target layer's attention reads (after an n-gram block before it), the targets' side by side.
+pub fn ref_taps(dir: &Path, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
+    let mut m = ref_model(dir)?;
+    let ds = m.desc.mtp.first().and_then(|h| h.dspark.clone()).ok_or_else(|| Error("the description has no DSpark drafter".into()))?;
+    // (the block of each target layer's attention: a layer's mixer the l-th of the blocks')
+    let mixers: Vec<usize> =
+        m.desc.blocks.iter().enumerate().filter(|(_, b)| matches!(b.body, crate::runtime::kinds::Body::Mixer(_))).map(|(i, _)| i).collect();
+    let at: Vec<usize> =
+        ds.targets.iter().map(|&t| mixers.get(t).copied().ok_or_else(|| Error(format!("target layer {t} of {}", mixers.len())))).collect::<Result<_>>()?;
+    let (n, d) = (m.desc.embed.streams.max(1), m.desc.hidden);
+    let mut out = vec![vec![0f32; at.len() * d]; tokens.len()];
+    let mut b = 0usize;
+    m.forward_seen(tokens, 0, &mut |x| {
+        for (k, _) in at.iter().enumerate().filter(|(_, &a)| a == b) {
+            for (t, xt) in x.chunks(n * d).enumerate() {
+                for c in 0..d {
+                    out[t][k * d + c] = (0..n).map(|s| xt[s * d + c]).sum::<f32>() / n as f32;
+                }
+            }
+        }
+        b += 1;
+    })?;
+    Ok(out)
+}
+
+/// The `deepseek-v4` case's random model with its DSpark drafter (`dsv4_ref::random_dspark`: the case's model to the bit, two draft layers, a block of 8).
+pub fn deepseek_v4_dspark_random(out: &Path) -> Result<()> {
+    crate::dsv4_ref::random_dspark(out)
+}
+
 /// The plain dense kind's small model (a pre-norm decoder of one attention and one gated SiLU MLP a layer: 4 layers, 16 query and 8 key-value heads of 128 with normed
 /// queries and keys, a vocabulary of 4096): the kind's case, no release's.
 pub fn dense_random(out: &Path) -> Result<()> {
@@ -3311,6 +3355,34 @@ mod tests {
         assert!(same < base.len(), "the head's best token is the model's next at every row");
     }
 
+    /// The DSpark drafters' cases (`draft_model`: deepseek-v4's two draft layers and a block of 8, deepseek-v41's release-shaped one) hold every tensor their
+    /// descriptions read (`describe_dir`), and the CPU reference drafts a block on each: on the reference's own taps of a prompt of 20, the block after it of
+    /// the drafter's size, its logits finite, the Markov head moving them, its blocks of experts each choosing for every row.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_dspark_drafters_cases_draft_on_the_reference() {
+        for case in ["deepseek-v4", "deepseek-v41"] {
+            let dir = std::env::temp_dir().join(format!("glyd-dspark-{case}-{}", std::process::id()));
+            draft_model(case, &dir).unwrap();
+            let (d, _) = crate::runtime::describe::describe_dir(&dir).unwrap_or_else(|e| panic!("{case}: {}", e.msg));
+            let ds = d.desc.mtp[0].dspark.clone().unwrap();
+            let toks: Vec<u32> = (0..20u32).map(|i| 3 + (i * 7919) % (d.desc.vocab as u32 - 3)).collect();
+            let taps = ref_taps(&dir, &toks).unwrap();
+            let (embed, head, mut r) = ref_dspark(&dir).unwrap();
+            std::fs::remove_dir_all(&dir).ok();
+            assert_eq!((taps.len(), taps[0].len()), (20, ds.targets.len() * d.desc.hidden), "{case}");
+            for b in r.blocks.iter_mut().filter(|b| matches!(b.block.body, crate::runtime::kinds::Body::Ffn(_))) {
+                b.routed = Some(Vec::new());
+            }
+            let out = r.draft(&taps[..19], toks[19], &embed, &head).unwrap();
+            assert_eq!(out.tokens.len(), ds.block, "{case}");
+            assert!(out.logits.iter().flatten().all(|x| x.is_finite()), "{case}");
+            assert!(out.logits.iter().zip(&out.base).all(|(l, b)| l != b), "{case}: the Markov head moves no draft's logits");
+            assert!(r.blocks.iter().filter_map(|b| b.routed.as_ref()).all(|x| x.len() == ds.block), "{case}");
+            println!("{case}: the reference's block after a prompt of 20: drafts {:?}, confidence {:?}", out.tokens, out.confidence);
+        }
+    }
+
     /// GLM-5.3's draft head (`glm_dsa_mtp_random`: the glm-dsa and glm-dsa-f8 cases' models with one MTP layer, DeepSeek-V3's joined head) is well conditioned
     /// for the bound the family is held to (each case's fixture's): on the reference's own final normed states of the fixture's prompt and decode tokens, a
     /// row a position (the state there and the token after it), the head with its description's rounding points (its norms' `Twice`) against every one in
@@ -4612,6 +4684,142 @@ pub(crate) fn random_model(case: &str, dir: &Path) -> Result<()> {
             "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, glm-dsa-f8, nemotron, deepseek-v4, deepseek-v41, qwen4x, qwen4x-s2 or qwen4x-cb"
         )),
     }
+}
+
+/// The draft heads' cases' random models with their heads (`draftcheck`'s): the case's model to the bit and its MTP layer or DSpark drafter.
+fn draft_model(case: &str, dir: &Path) -> Result<()> {
+    match case {
+        "qwen4x" => qwen4x_mtp_random(dir),
+        "glm-dsa" => glm_dsa_mtp_random(dir, false),
+        "glm-dsa-f8" => glm_dsa_mtp_random(dir, true),
+        "deepseek-v4" => deepseek_v4_dspark_random(dir),
+        "deepseek-v41" => deepseek_v41_random(dir),
+        other => err(format!("{other}: the draft heads' cases are qwen4x, glm-dsa, glm-dsa-f8, deepseek-v4 and deepseek-v41")),
+    }
+}
+
+/// The model of a draft head's case in `dir` drafting with its head `k` tokens a round, by its family's loader.
+fn load_drafting_dyn(case: &str, dir: &Path, o: &DynOpts, k: usize) -> Result<Dyn> {
+    match case {
+        "qwen4x" => crate::dynamic::qwen4x::load_drafting(dir, o, crate::dynamic::qwen4x::experts_at(o.layout), k),
+        "glm-dsa" | "glm-dsa-f8" => crate::dynamic::glm::load_plain_drafting(dir, o, k),
+        "deepseek-v4" | "deepseek-v41" => crate::dynamic::deepseek_v4::load_drafting(dir, o, k, None),
+        other => err(format!("{other}: the draft heads' cases are qwen4x, glm-dsa, glm-dsa-f8, deepseek-v4 and deepseek-v41")),
+    }
+}
+
+/// `usercheck CASE --draft K [--users N] [--tokens T]`: the case's model with its draft head (`draft_model`) drafting K tokens a round, its greedy replies held to
+/// the model's own alone (its engine without the head), token for token: each reply alone (`Gen::reply`, drafted), then through the scheduler (a drafted model
+/// serves one sequence at a time, each of its decode steps a drafting round: `ModelStep::draft`), one prompt at a time and all of them asked at once.
+fn users_drafted(case: &str, level: &str, users: usize, tokens: usize, k: usize) -> Result<()> {
+    use crate::conv::Gen;
+    use crate::sched::{Ev, Finish, Reply, Sched, Submit};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    let dir = std::env::temp_dir().join(format!("glyd-usercheck-draft-{case}-{}", std::process::id()));
+    let o = DynOpts { ctx: 1024, ..dyn_opts(level_layout(level)?) };
+    let r: Result<(Vec<Vec<u32>>, Dyn, Vec<Vec<u32>>)> = (|| {
+        draft_model(case, &dir)?;
+        let vocab = crate::runtime::describe::describe_dir(&dir)?.0.desc.vocab as u32;
+        let prompts: Vec<Vec<u32>> = (0..users).map(|u| (0..5 + 29 * u as u32).map(|i| 3 + (i * 7919 + u as u32 * 104_729) % (vocab - 3)).collect()).collect();
+        let reply = Reply {
+            params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
+            max_new: tokens,
+            ignore_eos: true,
+            logprobs: None,
+            stop_ids: Vec::new(),
+        };
+        // (the model's own replies, its engine without the head)
+        let mut plain = load_dyn(case, &dir, &o, level)?;
+        let want = prompts.iter().map(|p| plain.reply(p, &reply, &mut |_| true).map(|r| r.0)).collect::<Result<Vec<_>>>()?;
+        drop(plain);
+        Ok((want, load_drafting_dyn(case, &dir, &o, k)?, prompts))
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    let (want, mut e, prompts) = r?;
+    let reply = Reply {
+        params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
+        max_new: tokens,
+        ignore_eos: true,
+        logprobs: None,
+        stop_ids: Vec::new(),
+    };
+    println!(
+        "{case} at {level}: drafting {k} tokens a round with its draft head, {users} prompts of {:?} tokens, {tokens} tokens each",
+        prompts.iter().map(Vec::len).collect::<Vec<_>>()
+    );
+    let mut fails = 0usize;
+    for (i, p) in prompts.iter().enumerate() {
+        let got = e.reply(p, &reply, &mut |_| true)?.0;
+        let ok = got == want[i];
+        fails += !ok as usize;
+        println!(
+            "{} drafted reply {i} alone: {}",
+            if ok { "PASS" } else { "FAIL" },
+            if ok { "the model's own, token for token".into() } else { format!("{got:?} against {:?}", want[i]) }
+        );
+    }
+    let Some((slots, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step of the drafted model")) };
+    let mut s = Sched::new(step, slots).keeping(false);
+    let mut ask = |ps: &[Vec<u32>]| -> Result<Vec<Vec<u32>>> {
+        let mut rx = Vec::new();
+        for p in ps {
+            let (tx, r) = std::sync::mpsc::channel();
+            s.submit(Submit {
+                prompt: p.clone(),
+                reply: reply.clone(),
+                out: tx,
+                abort: Arc::new(AtomicBool::new(false)),
+                resumed: Default::default(),
+                cached: Default::default(),
+                created: Default::default(),
+                salt: 0,
+                pin: 0,
+                images: Vec::new(),
+            });
+            rx.push(r);
+        }
+        while !s.idle() {
+            s.tick()?;
+        }
+        rx.iter()
+            .map(|r| {
+                let mut out = Vec::new();
+                loop {
+                    match r.recv().map_err(|_| Error("the scheduler dropped a sequence".into()))? {
+                        Ev::Token(t) => out.push(t),
+                        Ev::Lp(_) => {}
+                        Ev::End(Ok(Finish::Length)) => return Ok(out),
+                        Ev::End(f) => return err(format!("a sequence ended {f:?} before its {tokens} tokens")),
+                    }
+                }
+            })
+            .collect()
+    };
+    for (i, p) in prompts.iter().enumerate() {
+        let got = ask(std::slice::from_ref(p))?.remove(0);
+        let ok = got == want[i];
+        fails += !ok as usize;
+        println!(
+            "{} through the scheduler, drafted, reply {i} alone: {}",
+            if ok { "PASS" } else { "FAIL" },
+            if ok { "the model's own, token for token".into() } else { format!("{got:?} against {:?}", want[i]) }
+        );
+    }
+    let together = ask(&prompts)?;
+    let same = together.iter().zip(&want).filter(|(a, b)| a == b).count();
+    fails += prompts.len() - same;
+    println!(
+        "{} through the scheduler, drafted, {} prompts at once ({slots} sequence at a time): {same} of {} replies the model's own, token for token",
+        if same == prompts.len() { "PASS" } else { "FAIL" },
+        prompts.len(),
+        prompts.len()
+    );
+    if fails > 0 {
+        return err(format!("usercheck {case} --draft {k}: {fails} replies not the model's own"));
+    }
+    println!("PASS usercheck {case} --draft {k}");
+    Ok(())
 }
 
 /// The plan `serve` makes of the case's random model at `level` on this GPU for `users` sequences, its draft model off (`plan::planned`): the plan the load takes,
@@ -6093,6 +6301,8 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
 /// With a page budget too small for all of them at once (GLYD_ENGINE_PAGES, R4d) the prompts are run at once three more times: sequences sent back for room swapped to the host wherever they can be,
 /// swapped where that costs less than their recompute (the default), and run again from their tokens only; each run's replies against the references, its sequences sent back and swapped, and each
 /// request's first token and the mean time between its tokens. Swapped sequences go on with the cache they had, bit for bit: with prompts one a pass their replies must be the references.
+///
+/// With `--draft K` (the draft heads' cases: qwen4x, glm-dsa, glm-dsa-f8, deepseek-v4, deepseek-v41): `users_drafted`.
 pub fn users_check(a: &crate::args::Args) -> Result<()> {
     use crate::conv::Gen;
     use crate::sched::{Ev, Finish, Reply, Sched, Submit, SwapMode};
@@ -6102,6 +6312,10 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let level = a.flag("level").unwrap_or("penguin");
     let users: usize = a.num("users", 4usize)?;
     let tokens: usize = a.num("tokens", 24usize)?;
+    if let Some(k) = a.flag("draft") {
+        let k = k.parse().map_err(|_| Error(format!("--draft {k}: not a number")))?;
+        return users_drafted(case, level, users, tokens, k);
+    }
     // (--ctx plan: the random model at the context the planner gives it on this GPU, each prompt filling it to within half a chunk with its reply: the long-context check;
     // with --kv12 the plan of a server whose keys and values are in 12-bit pages, as GLYD_KV=lossless asks `serve` for them)
     let kv12 = a.has("kv12");

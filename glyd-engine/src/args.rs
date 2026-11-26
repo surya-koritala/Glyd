@@ -60,6 +60,7 @@ const SWITCHES: &[&str] = &[
     "dynamic",
     "prof",
     "plain",
+    "sim",
     "encode",
     "gpu",
     "old",
