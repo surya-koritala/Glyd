@@ -837,12 +837,20 @@ fn ref_model_with(d: &Path, edit: fn(&mut crate::runtime::describe::Described)) 
     Ok(m)
 }
 
-/// Engram's compressed vocabulary (`engram_token_map`) into the reference's Engram blocks (role `ngram_map`), where the model in `dir` has them.
+/// Engram's compressed vocabulary (the directory's map, else its tokenizer's: src/tok.rs `engram_map`) into the reference's Engram blocks (role `ngram_map`),
+/// where the model in `dir` has them.
 pub(crate) fn put_token_map(m: &mut crate::runtime::reference::model::RefModel, dir: &Path) -> Result<()> {
-    if let Some(map) = engram_token_map(dir)? {
-        for l in
-            m.layers.iter_mut().filter(|l| matches!(l.block.body, crate::runtime::kinds::Body::Ngram(g) if g.form == crate::runtime::kinds::NgramForm::Engram))
-        {
+    use crate::runtime::kinds::{Body, NgramForm};
+    let Some(g) = m.layers.iter().find_map(|l| match l.block.body {
+        Body::Ngram(g) if g.form == NgramForm::Engram => Some(g),
+        _ => None,
+    }) else {
+        return Ok(());
+    };
+    let vocab = crate::runtime::config::ModelConfig::load(dir)?.num("vocab_size").ok_or_else(|| Error(format!("{}: no vocab_size", dir.display())))?;
+    if let Some(map) = crate::tok::engram_map(dir, vocab, g.vocab, g.eos)? {
+        let map: Vec<f32> = map.into_iter().map(|x| x as f32).collect();
+        for l in m.layers.iter_mut().filter(|l| matches!(l.block.body, Body::Ngram(g) if g.form == NgramForm::Engram)) {
             l.p.put("ngram_map", &[map.len()], map.clone());
         }
     }
@@ -2385,15 +2393,6 @@ pub fn deepseek_v41_draw(out: &Path, seed: u64) -> Result<()> {
     crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
     println!("{}: a random DeepSeek-V4.1, {} tensors, {:.0} MB", out.display(), tensors.len(), tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6);
     Ok(())
-}
-
-/// The compressed vocabulary DeepSeek-V4.1's Engram hashes (`kinds::NgramForm::Engram`): the model directory's `engram_token_map.json` (a list, the compressed id of
-/// each token), which `deepseek_v41_random` writes for the random model (no loader makes one from a release's tokenizer); None where the directory has none.
-pub fn engram_token_map(dir: &Path) -> Result<Option<Vec<f32>>> {
-    let p = dir.join("engram_token_map.json");
-    let Ok(text) = std::fs::read_to_string(&p) else { return Ok(None) };
-    let v: Vec<u32> = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    Ok(Some(v.into_iter().map(|x| x as f32).collect()))
 }
 
 fn qwen35_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {

@@ -376,12 +376,20 @@ fn load_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store:
             return err(format!("{label}: {} matrices and {} FP8 ones loaded for a description of {} and {}", mats.len(), f8.len(), want.0, want.1));
         }
         // the small tensors: each its pieces one after another (a tensor as stored, zeros, the lowering's numbers, the tokenizer's compressed vocabulary)
+        // (Engram's compressed vocabulary: the directory's map, else its tokenizer's, src/tok.rs `engram_map`)
         let token_map = || -> Result<Vec<u8>> {
-            let p = dir.join("engram_token_map.json");
-            let v: Vec<i64> = serde_json::from_str(&io(std::fs::read_to_string(&p))?).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-            if v.len() != desc.vocab {
-                return err(format!("{}: {} ids for a vocabulary of {}", p.display(), v.len(), desc.vocab));
-            }
+            let g = kinds
+                .desc
+                .blocks
+                .iter()
+                .find_map(|b| match &b.body {
+                    Body::Ngram(g) if g.form == crate::runtime::kinds::NgramForm::Engram => Some(*g),
+                    _ => None,
+                })
+                .ok_or_else(|| Error(format!("{label}: a compressed vocabulary, and no Engram block reads one")))?;
+            let v = crate::tok::engram_map(dir, desc.vocab, g.vocab, g.eos)?.ok_or_else(|| {
+                Error(format!("{}: no engram_token_map.json and no tokenizer.json, of which Engram's compressed vocabulary is made", dir.display()))
+            })?;
             Ok(v.iter().flat_map(|&t| (t as i32).to_le_bytes()).collect())
         };
         let sm: Vec<Buf> = plan
