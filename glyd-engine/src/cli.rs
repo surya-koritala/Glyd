@@ -1452,8 +1452,9 @@ fn load_lossy(
         let (held, lossless) = (e.held(), matches!(layout, Layout::Tiered | Layout::Int4H));
         let weights = format!("{} level: about {bits:.1} bits per weight, {exact}", level_name(layout));
         let mut about = about(served, &dir, requested(served, a.has("lossy")), level_name(layout), lossless, &weights, held.as_ref(), &gpu);
-        about.push(("costs", crate::costs::served(&dir, &c, served, requested(served, a.has("lossy")), e.capacity(), plan.chunk, held)));
-        server::Info { about, gpu: Some(used.first().map_or(gpu.ordinal, |g| g.ordinal)), held, concurrency: 1, window: e.capacity(), refused: &[], started }
+        let first = used.first().map_or(gpu.ordinal, |g| g.ordinal);
+        about.push(("costs", crate::costs::served(&dir, &c, served, requested(served, a.has("lossy")), e.capacity(), plan.chunk, held, first)));
+        server::Info { about, gpu: Some(first), held, concurrency: 1, window: e.capacity(), refused: &[], started }
     });
     Ok((e, tok, chat, defaults, vocab, line, info))
 }

@@ -5932,28 +5932,38 @@ fn users_drafted(case: &str, level: &str, users: usize, tokens: usize, k: usize)
 /// its context, prompt chunk, layout, sequences and their bytes; or why it gives none (a refusal is the planner's word that it would not load).
 /// The plan `serve DIR --users N` makes of the dynamic route's model in `dir` on this machine (src/cli.rs `dynamic_plan`, what `serve` loads), with the run's flags:
 /// `usercheck --dir DIR --ctx plan`'s.
-fn planned_dir(dir: &Path, users: usize) -> Result<crate::plan::LoadPlan> {
+/// The plan `serve DIR --users N` makes of the model in `dir` on this machine (the dynamic route's: it spreads the model) and the GPU it loads its first
+/// layers on, which the check loads it on and reads the memory of.
+fn planned_dir(dir: &Path, users: usize) -> Result<(crate::plan::LoadPlan, i32)> {
     let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
     let family = crate::dynamic::split::family(&text).ok_or_else(|| Error(format!("{}: not a model of the dynamic route", dir.display())))?;
     let words = ["serve".to_string(), dir.display().to_string(), "--users".into(), users.to_string()];
-    crate::cli::dynamic_plan(&crate::args::Args::from(words), &crate::cli::short_name(&dir.display().to_string()), family, dir, false)
+    let lp = crate::cli::dynamic_plan(&crate::args::Args::from(words), &crate::cli::short_name(&dir.display().to_string()), family, dir, false)
         .map(|p| p.3)
-        .map_err(|r| Error(format!("the planner: {} ({})", r.what, r.fix)))
+        .map_err(|r| Error(format!("the planner: {} ({})", r.what, r.fix)))?;
+    let gpu = lp.first_gpu(None);
+    Ok((lp, gpu))
 }
 
-fn planned_for(case: &str, level: &str, users: usize) -> Result<crate::plan::LoadPlan> {
+/// The plan `serve` makes of the random `case` model at `level` for `users` on this machine, and the GPU it loads on (`LoadPlan::first_gpu`: the one with the
+/// most free memory where one holds it, as `run` and `serve` load it), which the check loads it on and reads the memory of (it took GPU 0 for both, and a plan
+/// of GPU 1 on a machine of two was loaded there, read 0 MiB taken on GPU 0 and launched GPU 0's kernels: 2026-11-26).
+fn planned_for(case: &str, level: &str, users: usize) -> Result<(crate::plan::LoadPlan, i32)> {
     let dir = std::env::temp_dir().join(format!("glyd-planned-{case}-{}", std::process::id()));
-    let got = (|| -> Result<crate::plan::LoadPlan> {
+    let got = (|| -> Result<(crate::plan::LoadPlan, i32)> {
         random_model(case, &dir)?;
         let words = ["serve".to_string(), format!("{}:{level}", dir.display()), "--users".into(), users.to_string(), "--no-draft".into()];
         let f = crate::plan::planned(&crate::args::Args::from(words)).map_err(|r| Error(format!("the planner: {}", r.what)))?;
         if let Some(r) = f.refusal {
             return err(format!("the planner refuses the random {case} model at {level} for {users} users: {}", r.what));
         }
-        f.plan
-            .chosen
-            .and_then(|c| c.load)
+        let c = f.plan.chosen.ok_or_else(|| Error(format!("the planner chose no plan for the random {case} model")))?;
+        c.load
             .filter(|l| l.context > 0)
+            .map(|l| {
+                let gpu = l.first_gpu(c.placement.as_ref());
+                (l, gpu)
+            })
             .ok_or_else(|| Error(format!("the planner has no plan of the loader for the random {case} model (an estimate alone)")))
     })();
     let _ = std::fs::remove_dir_all(&dir);
@@ -8010,10 +8020,11 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // `take_plan`); the GPU's memory the load and the step's sequences take is held to the plan's figure, and the users to the plan's)
     // (with --dir DIR, the plan `serve DIR --users N` makes of that model on this machine, which the load takes too: its experts in the expert cache where the GPU
     // does not hold them, every user's keys, values and states first and the places what is left)
-    let plan = match (a.flag("ctx") == Some("plan"), a.flag("dir")) {
-        (true, Some(d)) => Some(planned_dir(Path::new(d), users)?),
-        (true, None) => Some(planned_for(case, level, users)?),
-        _ => None,
+    // (the GPU the plan loads on: the check's model is loaded there and its memory read there, whichever GPU that is)
+    let (plan, gpu) = match (a.flag("ctx") == Some("plan"), a.flag("dir")) {
+        (true, Some(d)) => planned_dir(Path::new(d), users).map(|(p, g)| (Some(p), g))?,
+        (true, None) => planned_for(case, level, users).map(|(p, g)| (Some(p), g))?,
+        _ => (None, 0),
     };
     // (whether the plan is of the pages this run holds. The planner plans no 12-bit pages where the description has no ring in pools they take (heads of 64, the
     // compressed attention's entries: `rows::twelve_bit_rings`): there --kv12 runs them at the bf16 plan's context in pools of what the GPU has free, and its
@@ -8032,11 +8043,11 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             if own_plan { "" } else { ": the planner plans no 12-bit pages for this route; the check runs them in pools of what the GPU has free" },
             lp.context.saturating_sub(tokens + 32)
         );
-        println!("  the plan: {}", lp.text());
+        println!("  the plan: {} (GPU {gpu})", lp.text());
     }
-    // (the GPU's free memory before the load, its context made: what the load and the sequences take of it is the plan's at most)
+    // (the free memory of the plan's GPU before the load, its context made: what the load and the sequences take of it is the plan's at most)
     let free_before = match &plan {
-        Some(_) => Some(crate::dev::Dev::new(0)?.mem_info()?.0 as u64),
+        Some(_) => Some(crate::dev::Dev::new(gpu)?.mem_info()?.0 as u64),
         None => None,
     };
     let planned = plan.as_ref().map(|p| p.context);
@@ -8130,7 +8141,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         (None, _) if plan.is_some() => {
             let lp = plan.as_ref().expect("a plan");
             let (mut e, r) =
-                random_dyn_with(case, level, "usercheck", &DynOpts { ctx: lp.context, chunk: lp.chunk, graph: true, device: 0, layout: Some(lp.layout) })?;
+                random_dyn_with(case, level, "usercheck", &DynOpts { ctx: lp.context, chunk: lp.chunk, graph: true, device: gpu, layout: Some(lp.layout) })?;
             if own_plan {
                 e.take_plan(lp.users, lp.kv);
             }
@@ -8182,7 +8193,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             println!("  (GPU memory {when} is not held to the plan: the plan is of bf16 pages, this run's are 12-bit)");
             return Ok(true);
         }
-        let used = before.saturating_sub(crate::dev::Dev::new(0)?.mem_info()?.0 as u64);
+        // (a look at the plan's GPU: this thread's context, the engine's, stays current)
+        let used = before.saturating_sub(crate::dev::Dev::probe(gpu)?.free);
         let planned = lp.gpu_total() - lp.reserve;
         let ok = used <= planned;
         println!(

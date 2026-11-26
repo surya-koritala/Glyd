@@ -1463,6 +1463,8 @@ impl Dyn {
     /// Ready to be a scheduler's step for up to `users` sequences: the head's room for a row each, and as many more sequences as the GPU's free memory holds (the first is this one's). None where this
     /// engine runs one sequence only (a draft model, a stage of a split model, a description `add_seqs` refuses).
     pub fn serve_rows(&mut self, users: usize) -> Result<Option<usize>> {
+        // (the pools are made on this engine's GPU, whatever looked at another one on this thread since the load)
+        self.dev.make_current()?;
         if self.draft.is_some() && self.stage.first && self.stage.last {
             // (a drafted model: its one sequence, each decode step a drafting round, `ModelStep::draft`)
             self.reset()?;
@@ -2509,6 +2511,9 @@ impl ModelStep for Dyn {
     fn cold(&mut self) -> Result<()> {
         self.owed = 0;
         self.stores().iter().try_for_each(|st| st.cold(&self.dev))
+    }
+    fn make_current(&mut self) -> Result<()> {
+        self.dev.make_current()
     }
     fn trace_choices(&mut self, on: bool) {
         self.trace_row_routes(on);
