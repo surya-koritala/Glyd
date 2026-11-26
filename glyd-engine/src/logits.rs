@@ -4160,7 +4160,8 @@ mod tests {
         bound: &Bound,
         hand: fn(&Path, Vec<VecDeque<Vec<usize>>>) -> Box<dyn FnMut(u32) -> Vec<f32>>,
     ) -> Verdict {
-        let dir = std::env::temp_dir().join(format!("glyd-{case}-refs-{}", std::process::id()));
+        // (a directory of this test's own: two tests of one case run in one process at once, and each removes its directory)
+        let dir = std::env::temp_dir().join(format!("glyd-{case}-refs-{}-{:?}", std::process::id(), std::thread::current().id()));
         make(&dir).unwrap();
         let fx = Fixture::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/logits/{case}.json.gz"))).unwrap();
         let desc = ref_drive_with(&dir, &fx, None, None, edit).unwrap();

@@ -485,6 +485,11 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: The engine's tests (the development build)
         run: cargo test --profile ci -p glyd-engine
+      # (the tests #[ignore]d for their minutes that hold a rule, a random test model's noise floor at most a tenth of the kind's bound and the two references' agreement: the `run` lines of
+      # glyd-engine/tests/ignored-in-gate.txt, the one list; scripts/check_tree.sh fails on an ignored test that is on neither list)
+      - name: The engine's ignored tests that hold a rule (the noise floors, the references' agreement)
+        timeout-minutes: 20
+        run: bash scripts/test_ignored.sh
       # (R10: each saved checkpoint of tests/data/packs, every pack format Glyd has written, read as its readers read it and run on the CPU reference of the layer kinds, its
       # logits against the digest recorded for it in glyd-engine/tests/packs; the unit test above holds the same, this prints a line for each format)
       - name: Every pack format loads to its recorded logits on the CPU (src/packcheck.rs)

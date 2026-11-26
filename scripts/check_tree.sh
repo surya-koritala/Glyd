@@ -22,6 +22,16 @@ if (( bad )); then
   echo "Keep summaries in the tree and raw outputs out of it (benchmarks/README.md); or list a file in scripts/large-files.allow."
   exit 1
 fi
+# every #[ignore]d test of glyd-engine and glyd-gpu is on glyd-engine/tests/ignored-in-gate.txt, as `run` (the gate runs it: scripts/test_ignored.sh) or as `skip ... because ...`;
+# a name there that is no longer ignored fails too
+ign=$(git ls-files glyd-engine glyd-gpu | grep '\.rs$' | xargs awk '/^[ \t]*#\[.*ignore/ { i = 1; next }
+  i && /^[ \t]*(pub[ \t]+)?fn[ \t]+[A-Za-z_]/ { sub(/^[ \t]*(pub[ \t]+)?fn[ \t]+/, ""); sub(/[^A-Za-z0-9_].*/, ""); print; i = 0 }' | sort)
+lst=$(awk '$1 == "run" || $1 == "skip" { print $2 }' glyd-engine/tests/ignored-in-gate.txt | sort)
+if [[ "$ign" != "$lst" ]]; then
+  echo "glyd-engine/tests/ignored-in-gate.txt and the #[ignore]d tests differ (< ignored, > listed):"; diff <(echo "$ign") <(echo "$lst") | grep '^[<>]' || true
+  echo "List a new ignored test there as \`run NAME\` (the gate runs it) or \`skip NAME because REASON\`; take a name off it when the test is no longer ignored."
+  exit 1
+fi
 # every step of the M1 gate script is named on the guide's gate page (docs/guide/src/gate.md)
 python3 -I scripts/check_gate_docs.py > /dev/null
 echo "tree ok"
