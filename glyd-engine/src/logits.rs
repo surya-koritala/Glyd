@@ -5321,7 +5321,8 @@ impl Judge {
                 }
                 None => {
                     j.failed += 1;
-                    j.notes.push(format!("row {i}: FAILED, past the bound with no choice apart in its history{seen}; {figures}"));
+                    let past = if bound == BESIDE_KL { "the kind's bound" } else { "a tenth of the kind's bound" };
+                    j.notes.push(format!("row {i}: FAILED, past {past} with no choice apart in its history{seen}; {figures}"));
                 }
             }
         }
