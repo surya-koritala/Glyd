@@ -1385,7 +1385,8 @@ pub fn qwen4x_random(out: &Path) -> Result<()> {
 /// A second random model of the Qwen3.8-Flash-Next family (`qwen4_exp`) with other counts than the release's: the tiny model's manifest with 2 residual streams,
 /// index heads of 64 over pools of 2 and no n-gram embedding (its kernels take four streams yet); each tensor's shape the counts make (the gated residuals'
 /// [2 hidden] norms, [rank, 2 hidden] and [2 hidden, rank] products, [2, 2 hidden] inject weights; the index product's (heads + 1) 64 rows, its norms of 64).
-/// Its experts are drawn as its other matrices are, not on the six-bit grid the first case's sit on: only a lossless load holds them.
+/// Its experts are drawn as its other matrices are, not on the six-bit grid the first case's sit on: only a lossless load holds them; its Gated DeltaNet's
+/// decay as the family initializes it (`qwen4x_s2_manifest`).
 pub fn qwen4x_s2_random(out: &Path) -> Result<()> {
     manifest_random(&qwen4x_s2_manifest()?, out, 0x2026_1125_0000_0002, false, "Qwen3.8-Flash-Next family of 2 streams, index heads of 64 over pools of 2")
 }
@@ -1810,6 +1811,9 @@ pub fn qwen4x_s2_manifest() -> Result<String> {
     m["config"] = Value::String(c.to_string());
     // (its experts not on the six-bit grid: a lossy level's codes under the lossless level's name then move its logits and its experts' bits)
     m["experts"] = OFF_GRID.into();
+    // (its Gated DeltaNet's dt_bias about N(-4.6, 1), as the family initializes it (dt log-uniform from 0.001 to 0.1, its inverse softplus -6.9 to -2.3), not
+    // N(0, 1): there the state forgot a token in about a step, and a last place of q or k moved a step's row past the kind's bound (`ref_tests::qwen4x_s2_deltanet_floor`))
+    m["dt_bias"] = (-4.6).into();
     Ok(m.to_string())
 }
 
@@ -2227,6 +2231,8 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
         v
     };
     let on_grid = m["experts"] != OFF_GRID;
+    // (the Gated DeltaNet's dt_bias about N(`dt_bias`, 1): the manifest's, else 0)
+    let dt_bias = m["dt_bias"].as_f64().unwrap_or(0.0);
     let tied = !m["tensors"].as_array().is_some_and(|t| t.iter().any(|e| e[0] == "lm_head.weight"));
     let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
     for e in m["tensors"].as_array().ok_or_else(|| Error("manifest".into()))? {
@@ -2248,7 +2254,7 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
         } else if name.ends_with("A_log") {
             (0..n).map(|_| (u01() * 15.0 + 1.0).ln() as f32).collect()
         } else if name.ends_with("dt_bias") {
-            (0..n).map(|_| gauss(&mut u01) as f32).collect()
+            (0..n).map(|_| (gauss(&mut u01) + dt_bias) as f32).collect()
         } else if name.contains("conv1d") {
             (0..n).map(|_| (gauss(&mut u01) * 0.4) as f32).collect()
         } else if on_grid && (name.contains("experts.gate_up_proj") || name.contains("experts.down_proj")) {
