@@ -12,6 +12,7 @@ use crate::ffi::{err, Error, Result};
 use crate::glm::{ConfigGlm, GlmKind};
 use crate::kern::GM_D;
 use crate::moe::Act;
+use crate::runtime::config::ModelConfig;
 use crate::runtime::kinds::Rounding;
 use crate::weights::Layout;
 use glyd_gpu::safetensors::Checkpoint;
@@ -24,12 +25,12 @@ pub fn load(dir: &Path, o: &Opts, level: Layout) -> Result<Dyn> {
 
 /// Stage `st` of it (a model split across GPUs: its layers, the embedding where it is the first, the head and the final norm where the last; a layer of another stage is an empty one here).
 pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: Stage) -> Result<Dyn> {
-    load_stage_hb(dir, o, level, st, None)
+    load_stage_hb(dir, &ModelConfig::load(dir)?, o, level, st, None)
 }
 
 /// The dynamic route's stage (src/dynamic/split.rs `StageLoad`): `load_stage_hb` with its experts at `o.layout`'s level (penguin's lossless where none is given).
-pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
-    load_stage_hb(dir, o, o.layout.unwrap_or(Layout::Tiered), st, caching)
+pub fn stage(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    load_stage_hb(dir, m, o, o.layout.unwrap_or(Layout::Tiered), st, caching)
 }
 
 /// `load_stage` with its experts as `caching` says, where it is given (the stage's places and memory, src/hbg_store.rs): a hummingbird directory's in the expert
@@ -37,13 +38,13 @@ pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store:
 /// from the lowered description (`lower::glm`, every tensor named); each layer's experts the Moe kind's block (`experts::held`). Every layer is across the
 /// thread's group of GPUs where it has one (src/dynamic/tp.rs); the stage's last layers' matrices in the computer's memory where the cache says so
 /// (src/dense_ram.rs). A development build's GLYD_GLM_F8=0: FP8 experts as the bf16 they dequantise to.
-pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
-    let c = ConfigGlm::load(dir)?;
+pub fn load_stage_hb(dir: &Path, m: &ModelConfig, o: &Opts, level: Layout, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    let c = m.read_with(dir, ConfigGlm::of)?;
     if c.kda.dim != GM_D || c.hc.mult != 4 {
         return err(format!("Kimi delta heads of {} and {} streams: this engine runs heads of {GM_D} and 4 streams", c.kda.dim, c.hc.mult));
     }
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
-    let d = lowered(dir, &c, &st).map_err(|e| e.context(&label))?;
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
+    let d = lowered_of(dir, m, &c, &st).map_err(|e| e.context(&label))?;
     let (dev, lib) = (Dev::new(o.device)?, crate::ffi::Lib::find()?);
     // (a hummingbird directory, src/hb_pack.rs: the routed experts' codebook rows in place of the release's)
     let hb = crate::hb_pack::HbDir::open(dir)?;
@@ -60,7 +61,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
             .collect()
     };
     let placing = Placing { across: true, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, caching.map_or(0, |x| x.dense)) };
-    Dyn::new_placed(dir, d, None, st, o, &experts, &placing)
+    Dyn::new_placed(dir, m, d, None, st, o, &experts, &placing)
 }
 
 /// GLM-5.3 (`glm_moe_dsa`, the full-size layout: no streams; the latent attention on every layer, its rotary and its indexer its own or shared) from `dir`, by
@@ -70,33 +71,32 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
 /// indexer's products as their E4M3 codes and scales (`Part::scales`), the experts and the shared expert (`experts::F8`); at a block level its matrices are
 /// packed from the bf16 they dequantise to. A development build's GLYD_GLM_F8=0: the experts as that bf16 at the lossless level too.
 pub fn load_plain(dir: &Path, o: &Opts) -> Result<Dyn> {
-    plain(dir, o, None, None, None)
+    plain(dir, &ModelConfig::load(dir)?, o, None, None, None)
 }
 
 /// `load_plain` with the model's draft head (its MTP layer, DeepSeek-V3's joined form: `lower::draft_head`, src/dynamic/head.rs) drafting `k` tokens a round
 /// (at most `VERIFY_ROWS` - 1), its experts held as the model's.
 pub fn load_plain_drafting(dir: &Path, o: &Opts, k: usize) -> Result<Dyn> {
-    plain(dir, o, None, Some(k), None)
+    plain(dir, &ModelConfig::load(dir)?, o, None, Some(k), None)
 }
 
 /// The dynamic route's stage of the model (src/dynamic/split.rs `StageLoad`): stage `st`'s layers, every expert of them on its GPU, or in the expert cache as
 /// `caching` says where it is given (src/tiering.rs: its places a layer on the GPU, every expert in the computer's memory; FP8 experts as released each packed
 /// on its own, `experts::F8`), and the stage's last layers' matrices in the computer's memory where it says so (src/dense_ram.rs: refused where they are released
 /// in FP8, whichever the family).
-pub fn stage_plain(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
-    plain(dir, o, Some(st), None, caching)
+pub fn stage_plain(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    plain(dir, m, o, Some(st), None, caching)
 }
 
 /// The layers and end tokens of the model in `dir`, as `load_plain` reads them (the dynamic route's `Loader::ends`).
-pub fn plain_ends(dir: &Path) -> Result<(usize, Vec<i64>)> {
-    let (kinds, _, eos, _) = plain_config(dir)?;
+pub fn plain_ends(dir: &Path, m: &ModelConfig) -> Result<(usize, Vec<i64>)> {
+    let (kinds, _, eos, _) = plain_config(dir, m)?;
     Ok((kinds.desc.blocks.len() / 2, eos))
 }
 
 /// The model's description, its label, its end tokens (generation_config.json's, else the config's) and its most positions.
-fn plain_config(dir: &Path) -> Result<(crate::runtime::describe::Described, String, Vec<i64>, usize)> {
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
-    let cfg = crate::runtime::config::ModelConfig::load(dir)?;
+fn plain_config(dir: &Path, cfg: &ModelConfig) -> Result<(crate::runtime::describe::Described, String, Vec<i64>, usize)> {
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, cfg)?;
     let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
     let mut eos = crate::runtime::config::eos_ids(&cfg.text, generation.as_deref());
     if eos.is_empty() {
@@ -113,11 +113,11 @@ fn latent_whole(d: &crate::runtime::describe::Described, eos: Vec<i64>, max_pos:
 
 /// `load_plain` of stage `st` (the whole model where None), with its draft head drafting `draft` tokens a round where given, its experts in the expert cache as
 /// `caching` says where it is given (not with a draft head: its verify pass takes the experts on the GPU).
-fn plain(dir: &Path, o: &Opts, st: Option<Stage>, draft: Option<usize>, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+fn plain(dir: &Path, m: &ModelConfig, o: &Opts, st: Option<Stage>, draft: Option<usize>, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     if draft.is_some() && caching.is_some() {
         return err("GLM-5.3's draft head with its experts in the expert cache: its verify pass takes the experts on the GPU");
     }
-    let (kinds, label, eos, max_pos) = plain_config(dir)?;
+    let (kinds, label, eos, max_pos) = plain_config(dir, m)?;
     let layers = kinds.desc.blocks.len() / 2;
     let st = st.unwrap_or(Stage::whole(layers));
     let d = super::lower::latent_moe(&kinds, eos.clone(), max_pos, &st).map_err(|e| e.context(&label))?;
@@ -155,7 +155,7 @@ fn plain(dir: &Path, o: &Opts, st: Option<Stage>, draft: Option<usize>, caching:
     };
     let spec = head.zip(draft).map(|(h, k)| super::DraftSpec { dir, desc: h, k, experts: Some(&head_experts) });
     let placing = Placing { across: false, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, caching.map_or(0, |x| x.dense)) };
-    Dyn::new_placed(dir, d, spec, st, o, &experts, &placing)
+    Dyn::new_placed(dir, m, d, spec, st, o, &experts, &placing)
 }
 
 /// A layer's matrices as the loader holds them: a Kimi delta layer's seven (qkv, o, f_a, f_b, g_a, g_b, b) or a latent attention layer's four (q_a, q_b, kv_a, o),
@@ -218,7 +218,12 @@ pub(crate) fn latent(c: &ConfigGlm) -> MlaOp {
 /// GLM-5.3-Flash's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::glm`, every tensor named), held to
 /// `describe` with the names left out (the family's own description names none).
 pub fn lowered(dir: &Path, c: &ConfigGlm, st: &Stage) -> Result<ModelDesc> {
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    lowered_of(dir, &ModelConfig::load(dir)?, c, st)
+}
+
+/// `lowered` of a config.json parsed once (`m`: `dir`'s).
+pub fn lowered_of(dir: &Path, m: &ModelConfig, c: &ConfigGlm, st: &Stage) -> Result<ModelDesc> {
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
     let lowered = super::lower::glm(&kinds, c.eos.clone(), c.max_pos, st)?;
     super::lower::agree(super::lower::nameless(&lowered), &describe(c, st)?, &label)?;
     Ok(lowered)

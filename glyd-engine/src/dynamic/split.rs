@@ -7,6 +7,7 @@
 
 use super::{Dyn, HeadOut, ModelDesc, Opts, Stage};
 use crate::ffi::{err, Error, Result};
+use crate::runtime::config::ModelConfig;
 use crate::sched::Sample;
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -98,8 +99,8 @@ impl Split {
     /// The model of `dir` described by `d`, its layers cut before each of `cuts` (ascending, inside 1..layers), stage k on GPU `devices[k]`
     /// (one more device than cuts; a device may repeat: two stages on one GPU check the hand-over on a machine with one).
     pub fn new(dir: &Path, d: ModelDesc, cuts: &[usize], devices: &[i32], o: &Opts) -> Result<Split> {
-        let (nl, eos, dir) = (d.layers.len(), d.eos.clone(), dir.to_path_buf());
-        Split::with(nl, eos, cuts, devices, o, std::sync::Arc::new(move |st: Stage, o: &Opts| Dyn::new_stage(&dir, d.clone(), None, st, o)))
+        let (nl, eos, dir, m) = (d.layers.len(), d.eos.clone(), dir.to_path_buf(), std::sync::Arc::new(ModelConfig::load(dir)?));
+        Split::with(nl, eos, cuts, devices, o, std::sync::Arc::new(move |st: Stage, o: &Opts| Dyn::new_stage(&dir, &m, d.clone(), None, st, o)))
     }
 
     /// A model of `nl` layers whose stage `make` builds on the GPU of the options it is given (a loader of the dynamic route's: `StageLoad`).
@@ -899,8 +900,9 @@ fn dynamic_row(f: crate::support::Family) -> Option<&'static str> {
 /// The model of `dir` as `plan` says it loads (src/plan.rs `size_dynamic`): its layers cut over the plan's GPUs (`Spread::cuts`, `devices`) or across them
 /// (`across`), its context, prompt chunk and layout (the 12-bit one where `twelve`), and where its experts are in the computer's memory each stage's places
 /// of them, the memory the plan gives them and the last layers' dense matrices there (`dense`), with the expert cache's copy-or-compute policy `offload`; on one GPU
-/// its sequences' keys, values and states in the plan's bytes (`Dyn::take_plan`). Nothing is sized here.
-pub fn open_plan(dir: &Path, plan: &crate::plan::LoadPlan, offload: crate::offload::Offload) -> Result<Run> {
+/// its sequences' keys, values and states in the plan's bytes (`Dyn::take_plan`). Nothing is sized here. `m`: the directory's config.json, parsed once (the plan's):
+/// every stage's loader reads the model from it.
+pub fn open_plan(dir: &Path, m: &ModelConfig, plan: &crate::plan::LoadPlan, offload: crate::offload::Offload) -> Result<Run> {
     let sp = plan.spread.as_ref().ok_or_else(|| Error("a plan of the dynamic route spreads the model (Spread)".into()))?;
     let layout = if sp.twelve { crate::weights::Layout::Twelve } else { crate::weights::Layout::Tiered };
     let o = Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device: sp.devices[0], layout: Some(layout) };
@@ -908,20 +910,20 @@ pub fn open_plan(dir: &Path, plan: &crate::plan::LoadPlan, offload: crate::offlo
     let (cuts, devices) = (&sp.cuts, &sp.devices);
     let mut run = if sp.host_bytes == 0 {
         if sp.across {
-            open_tp(dir, &o, devices)?
+            open_tp_of(dir, m, &o, devices)?
         } else {
-            open(dir, &o, cuts, devices)?
+            open_of(dir, m, &o, cuts, devices)?
         }
     } else {
         // (each stage's experts in the expert cache: a hummingbird directory's, or the release's in places of their own; the release's experts of the latent block
         // across the GPUs where the plan says so, their cache's host tier and plans shared: src/dynamic/tp_cache.rs)
         let cachings: Vec<crate::hbg_store::HbCaching> =
             sp.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect();
-        if sp.across && plan.level != "hummingbird" && latent_experts(dir)? {
+        if sp.across && plan.level != "hummingbird" && latent_experts(dir, m)? {
             let c = cachings.into_iter().next().ok_or_else(|| Error("a plan across GPUs with no places for its experts".into()))?;
-            open_tp_cached(dir, &o, devices, c)?
+            open_tp_cached_of(dir, m, &o, devices, c)?
         } else {
-            open_cached(dir, &o, cuts, devices, cachings)?
+            open_cached_of(dir, m, &o, cuts, devices, cachings)?
         }
     };
     // (its sequences' keys, values and states the plan's: on one GPU their pools take its bytes, no more)
@@ -930,9 +932,9 @@ pub fn open_plan(dir: &Path, plan: &crate::plan::LoadPlan, offload: crate::offlo
 }
 
 /// Whether the model of `dir` has experts of the Moe kind's latent block (`experts::latent_block`: a latent of their own projections whose sum is normed),
-/// whose expert cache runs across a group of GPUs (src/dynamic/tp_cache.rs), by its description.
-fn latent_experts(dir: &Path) -> Result<bool> {
-    Ok(latent_experts_of(&crate::runtime::describe::describe_dir(dir)?.0))
+/// whose expert cache runs across a group of GPUs (src/dynamic/tp_cache.rs), by its description (`m`: its config.json, parsed once).
+fn latent_experts(dir: &Path, m: &ModelConfig) -> Result<bool> {
+    Ok(latent_experts_of(&crate::runtime::describe::describe_dir_of(dir, m)?.0))
 }
 
 /// `latent_experts` of a description.
@@ -947,31 +949,41 @@ fn latent_experts_of(d: &crate::runtime::describe::Described) -> bool {
 /// The model of `dir` on the dynamic engine, by its description's loader (`loader`): on one GPU where `cuts` is empty, else in stages (`devices`: one more than
 /// `cuts`). The experts at `o.layout`'s level where the loader takes a level (penguin's lossless where none is given), else as the release has them, exact.
 pub fn open(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32]) -> Result<Run> {
-    let (nl, eos, make) = maker(dir)?;
+    open_of(dir, &ModelConfig::load(dir)?, o, cuts, devices)
+}
+
+/// `open` of a config.json parsed once (`m`: `dir`'s).
+pub fn open_of(dir: &Path, m: &ModelConfig, o: &Opts, cuts: &[usize], devices: &[i32]) -> Result<Run> {
+    let (nl, eos, make) = maker(dir, m)?;
     Run::new(nl, eos, cuts, devices, o, make)
 }
 
 /// The model of `dir` with every layer across `devices` (src/dynamic/tp.rs).
 pub fn open_tp(dir: &Path, o: &Opts, devices: &[i32]) -> Result<Run> {
-    let (nl, eos, make) = maker(dir)?;
+    open_tp_of(dir, &ModelConfig::load(dir)?, o, devices)
+}
+
+/// `open_tp` of a config.json parsed once.
+pub fn open_tp_of(dir: &Path, m: &ModelConfig, o: &Opts, devices: &[i32]) -> Result<Run> {
+    let (nl, eos, make) = maker(dir, m)?;
     Ok(Run::Tp(super::tp::Tp::with(nl, eos, devices, o, make)?))
 }
 
 /// The layers, end tokens and loader of a stage of the model of `dir` (its description's loader's, every expert as the stage's level holds it).
-fn maker(dir: &Path) -> Result<(usize, Vec<i64>, MakeStage)> {
-    let (nl, eos, load) = cached_stage(dir)?;
+fn maker(dir: &Path, m: &ModelConfig) -> Result<(usize, Vec<i64>, MakeStage)> {
+    let (nl, eos, load) = cached_stage(dir, m)?;
     Ok((nl, eos, std::sync::Arc::new(move |st, o: &Opts| load(st, o, None))))
 }
 
 /// What loads a stage of a model on the dynamic route, the same for every description: the stage's layers on the options' GPU, the experts at the options'
 /// level where the loader takes one (penguin's lossless where none is given), in the expert cache as the caching says where one is given. A loader whose
 /// experts the expert cache does not take refuses a caching, in words.
-pub type StageLoad = fn(&Path, &Opts, Stage, Option<&crate::hbg_store::HbCaching>) -> Result<Dyn>;
+pub type StageLoad = fn(&Path, &ModelConfig, &Opts, Stage, Option<&crate::hbg_store::HbCaching>) -> Result<Dyn>;
 
-/// A loader of the dynamic route: the model's layers and end tokens, from its directory (`ends`), and a stage of it (`stage`).
+/// A loader of the dynamic route: the model's layers and end tokens, from its directory and its config.json parsed once (`ends`), and a stage of it (`stage`).
 #[derive(Clone, Copy)]
 pub struct Loader {
-    pub ends: fn(&Path) -> Result<(usize, Vec<i64>)>,
+    pub ends: fn(&Path, &ModelConfig) -> Result<(usize, Vec<i64>)>,
     pub stage: StageLoad,
 }
 
@@ -1036,12 +1048,18 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
 pub fn loader(d: &crate::runtime::describe::Described) -> Result<Loader> {
     Ok(match lowering(d)? {
         // (its layers and end tokens by the description: DeepSeek-V4's flat config and V4.1's nested one alike)
-        Lowering::Compressed => Loader { ends: |dir| super::deepseek_v4::ends(dir).map(|(l, e, _)| (l, e)), stage: super::deepseek_v4::load_stage_hb },
-        Lowering::Mamba2 => Loader { ends: |dir| crate::nemotron::ConfigNemotronH::load(dir).map(|c| (c.layers, c.eos)), stage: super::nemotron::stage },
-        Lowering::DeltaStreams => Loader { ends: |dir| crate::glm::ConfigGlm::load(dir).map(|c| (c.layers, c.eos)), stage: super::glm::stage },
-        Lowering::DeltaDepth => Loader { ends: |dir| crate::kimi::ConfigKimi::load(dir).map(|c| (c.layers, c.eos)), stage: super::kimi::stage },
-        Lowering::GatedResidual => Loader { ends: |dir| crate::muse::ConfigMuse::load(dir).map(|c| (c.layers, c.eos)), stage: super::muse::load_stage_hb },
-        Lowering::GatedStreams => Loader { ends: |dir| crate::qwen4x::ConfigQx::load(dir).map(|c| (c.layers, c.eos)), stage: super::qwen4x::stage },
+        Lowering::Compressed => Loader { ends: |dir, m| super::deepseek_v4::ends_of(dir, m).map(|(l, e, _)| (l, e)), stage: super::deepseek_v4::load_stage_hb },
+        Lowering::Mamba2 => {
+            Loader { ends: |dir, m| m.read_with(dir, crate::nemotron::ConfigNemotronH::of).map(|c| (c.layers, c.eos)), stage: super::nemotron::stage }
+        }
+        Lowering::DeltaStreams => Loader { ends: |dir, m| m.read_with(dir, crate::glm::ConfigGlm::of).map(|c| (c.layers, c.eos)), stage: super::glm::stage },
+        Lowering::DeltaDepth => Loader { ends: |dir, m| m.read_with(dir, crate::kimi::ConfigKimi::of).map(|c| (c.layers, c.eos)), stage: super::kimi::stage },
+        Lowering::GatedResidual => {
+            Loader { ends: |dir, m| m.read_with(dir, crate::muse::ConfigMuse::of).map(|c| (c.layers, c.eos)), stage: super::muse::load_stage_hb }
+        }
+        Lowering::GatedStreams => {
+            Loader { ends: |dir, m| m.read_with(dir, crate::qwen4x::ConfigQx::of).map(|c| (c.layers, c.eos)), stage: super::qwen4x::stage }
+        }
         Lowering::GatedDelta => Loader { ends: super::qwen35::ends, stage: super::qwen35::stage },
         Lowering::LatentPlain => Loader { ends: super::glm::plain_ends, stage: super::glm::stage_plain },
     })
@@ -1081,7 +1099,12 @@ pub use crate::plan::sizing::{
 /// A model of the dynamic route in stages (`open`'s), stage k's layers with their experts in the expert cache as `cachings[k]` says: a hummingbird directory's (src/hbg_store.rs: places on its GPU, the computer's memory, the disk),
 /// or the release's where its experts are each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4). A loader whose experts the cache does not take refuses it.
 pub fn open_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachings: Vec<crate::hbg_store::HbCaching>) -> Result<Run> {
-    let (nl, eos, load) = cached_stage(dir)?;
+    open_cached_of(dir, &ModelConfig::load(dir)?, o, cuts, devices, cachings)
+}
+
+/// `open_cached` of a config.json parsed once.
+pub fn open_cached_of(dir: &Path, m: &ModelConfig, o: &Opts, cuts: &[usize], devices: &[i32], cachings: Vec<crate::hbg_store::HbCaching>) -> Result<Run> {
+    let (nl, eos, load) = cached_stage(dir, m)?;
     let firsts: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).collect();
     let make: MakeStage = std::sync::Arc::new(move |st, o: &Opts| {
         let k = firsts.iter().position(|&f| f == st.layers.0).unwrap_or(0);
@@ -1093,20 +1116,26 @@ pub fn open_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachin
 /// The model of `dir` with every layer across `devices` (src/dynamic/tp.rs), its experts in the expert cache as `caching` says: `places` of a layer's in each
 /// GPU's slices of its places, the rest in the cache's host tier, shared by the group (src/dynamic/tp_cache.rs).
 pub fn open_tp_cached(dir: &Path, o: &Opts, devices: &[i32], caching: crate::hbg_store::HbCaching) -> Result<Run> {
-    let (nl, eos, load) = cached_stage(dir)?;
+    open_tp_cached_of(dir, &ModelConfig::load(dir)?, o, devices, caching)
+}
+
+/// `open_tp_cached` of a config.json parsed once.
+pub fn open_tp_cached_of(dir: &Path, m: &ModelConfig, o: &Opts, devices: &[i32], caching: crate::hbg_store::HbCaching) -> Result<Run> {
+    let (nl, eos, load) = cached_stage(dir, m)?;
     Ok(Run::Tp(super::tp::Tp::with(nl, eos, devices, o, std::sync::Arc::new(move |st, o: &Opts| load(st, o, Some(&caching))))?))
 }
 
 /// A stage of a model with its experts as a caching says (none: as the stage's level holds them).
 type CachedStage = std::sync::Arc<dyn Fn(Stage, &Opts, Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> + Send + Sync>;
 
-/// The layers, end tokens and stage loader (`CachedStage`) of the model of `dir`, by its description's loader (`loader`).
-fn cached_stage(dir: &Path) -> Result<(usize, Vec<i64>, CachedStage)> {
-    let (d, label) = crate::runtime::describe::describe_dir(dir)?;
+/// The layers, end tokens and stage loader (`CachedStage`) of the model of `dir` (`m`: its config.json, parsed once, which each stage's loader reads from), by its
+/// description's loader (`loader`).
+fn cached_stage(dir: &Path, m: &ModelConfig) -> Result<(usize, Vec<i64>, CachedStage)> {
+    let (d, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
     let l = loader(&d).map_err(|e| e.context(&label))?;
-    let (nl, eos) = (l.ends)(dir)?;
-    let owned = dir.to_path_buf();
-    Ok((nl, eos, std::sync::Arc::new(move |st, o: &Opts, c| (l.stage)(&owned, o, st, c))))
+    let (nl, eos) = (l.ends)(dir, m)?;
+    let (owned, m) = (dir.to_path_buf(), std::sync::Arc::new(m.clone()));
+    Ok((nl, eos, std::sync::Arc::new(move |st, o: &Opts, c| (l.stage)(&owned, &m, o, st, c))))
 }
 
 #[cfg(test)]

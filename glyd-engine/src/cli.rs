@@ -427,7 +427,7 @@ fn level_dir(a: &Args, model: &str, layout: Layout, gpu: &Gpu, ui: &RefCell<Ui>)
     }
     let source = Source::find(model).map_err(cannot)?;
     first_run_checks(&name, pack_bytes, layout, Some(&source), 0)?;
-    let dir = store::pack(&source, model, layout, pack_bytes, ui)?;
+    let dir = store::pack(&source, model, &*model_config(model)?, layout, pack_bytes, ui)?;
     Ok((dir.clone(), Some(dir), layout))
 }
 
@@ -1403,11 +1403,11 @@ fn load_lossy(
         ui.borrow_mut().line(&format!("Note: {n}"));
     }
     ui.borrow_mut().status(&format!("{} {name} and loading it onto the GPU...", if packed.is_some() { "Reading" } else { "Packing" }));
-    let (mut e, bytes, vocab) = open_lossy(a, &plan, &dir, &gpu, &name, ui)?;
+    let (mut e, bytes, vocab) = open_lossy(a, &plan, &dir, &c, &gpu, &name, ui)?;
     loaded_report(&model, &c, &plan, &[&gpu], bytes as u64);
     // (the model's first load on this GPU: a reply timed, its speeds measured here from then on)
     crate::plan::first_use(&mut *e, vocab);
-    let tok = Tok::load(&dir).map_err(cannot)?;
+    let tok = Tok::load_with(&dir, &c).map_err(cannot)?;
     let chat = Chat::load(&dir).map_err(cannot)?;
     let mut defaults = sampler::generation_defaults(&dir);
     if let Some(t) = a.flag("temp") {
@@ -1436,7 +1436,7 @@ fn load_lossy(
 /// The engine of a level's plan (Gemma 4's, Qwen3's, Nemotron-H's or Qwen3.5's description on the executor) from the directory `dir`, on `gpu`: everything it holds is the
 /// plan's (its context, its prompt chunk, its layout, its draft model, its expert cache, its sequences and their keys, values and states); nothing is sized here. The
 /// engine, its weights' bytes and its vocabulary.
-fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: &RefCell<Ui>) -> Done<(Box<dyn Gen>, usize, usize)> {
+fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, m: &ModelConfig, gpu: &Gpu, name: &str, ui: &RefCell<Ui>) -> Done<(Box<dyn Gen>, usize, usize)> {
     let o = crate::dynamic::Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device: gpu.ordinal, layout: Some(plan.layout) };
     let oom = |e: crate::ffi::Error| {
         if e.out_of_memory() {
@@ -1455,7 +1455,7 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
             ui.borrow_mut().line(&format!("Drafting with {} ({k} tokens a round; --no-draft runs without it).", d.display()));
         }
         // the dynamic engine (GLY-326): Gemma 4's description and, where one is found, its draft model's
-        let c = crate::gemma4::ConfigG4::load(dir).map_err(cannot)?;
+        let c = crate::gemma4::ConfigG4::load_for_of(dir, m, false).map_err(cannot)?;
         let spec = match &draft {
             Some((d, k)) => {
                 let dc = crate::gemma4::ConfigG4::load_for(d, true).map_err(cannot)?;
@@ -1463,16 +1463,16 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
             }
             None => None,
         };
-        let mut e = crate::dynamic::Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c).map_err(cannot)?, spec, &o).map_err(oom)?;
+        let mut e = crate::dynamic::Dyn::new(dir, m, crate::dynamic::gemma4::lowered_of(dir, m, &c).map_err(cannot)?, spec, &o).map_err(oom)?;
         if draft.is_none() {
-            twelve_bit_pages(&mut e, plan, dir, name, ui)?;
+            twelve_bit_pages(&mut e, plan, dir, m, name, ui)?;
         }
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     } else if plan.kind == Kind::Qwen3 {
         // the executor (R3c, #139): a Llama-style dense model's description from its config, its products at the plan's level
-        let mut e = crate::dynamic::dense::load(dir, &o).map_err(|e| engine_refusal(e, name, plan, gpu))?;
-        twelve_bit_pages(&mut e, plan, dir, name, ui)?;
+        let mut e = crate::dynamic::dense::load_of(dir, m, &o).map_err(|e| engine_refusal(e, name, plan, gpu))?;
+        twelve_bit_pages(&mut e, plan, dir, m, name, ui)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     } else if plan.kind == Kind::NemotronH {
@@ -1505,10 +1505,10 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
         }
         store.set_offload(offload);
         // the executor (GLY-354): Nemotron-H's description, its blocks of experts the Moe kind's, in the expert cache of the plan's places where it has one
-        let layers = crate::nemotron::ConfigNemotronH::load(dir).map_err(cannot)?.layers;
+        let layers = m.read_with(dir, crate::nemotron::ConfigNemotronH::of).map_err(cannot)?.layers;
         let cache = plan.experts.map(|c| (c.slots, &store));
-        let mut e = crate::dynamic::nemotron::load_cached(dir, &o, plan.layout, cache, crate::dynamic::Stage::whole(layers)).map_err(oom)?;
-        twelve_bit_pages(&mut e, plan, dir, name, ui)?;
+        let mut e = crate::dynamic::nemotron::load_cached_of(dir, m, &o, plan.layout, cache, crate::dynamic::Stage::whole(layers)).map_err(oom)?;
+        twelve_bit_pages(&mut e, plan, dir, m, name, ui)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     } else {
@@ -1518,12 +1518,12 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
             Some(c) => {
                 let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.msg, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
                 let caching = crate::hbg_store::HbCaching { places: c.slots, ram: None, offload, dense: 0 };
-                let layers = crate::dynamic::qwen35::ends(dir).map_err(cannot)?.0;
-                crate::dynamic::qwen35::stage(dir, &o, crate::dynamic::Stage::whole(layers), Some(&caching)).map_err(oom)?
+                let layers = crate::dynamic::qwen35::ends(dir, m).map_err(cannot)?.0;
+                crate::dynamic::qwen35::stage(dir, m, &o, crate::dynamic::Stage::whole(layers), Some(&caching)).map_err(oom)?
             }
-            None => crate::dynamic::qwen35::load(dir, &o).map_err(oom)?,
+            None => crate::dynamic::qwen35::load_of(dir, m, &o).map_err(oom)?,
         };
-        twelve_bit_pages(&mut e, plan, dir, name, ui)?;
+        twelve_bit_pages(&mut e, plan, dir, m, name, ui)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     };
@@ -1535,12 +1535,12 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
 /// The 12-bit lossless KV pages for `e` where its plan has them (`LoadPlan::kv12`: GLYD_KV=lossless asked for them for a server, its description's attention kinds
 /// have rings they take, and they reserve no more than bf16 for the plan; off unless asked for), on every path that loads a plan on the executor: the tables made
 /// on the model's first run and kept in the cache (`kv12::tables_for`).
-fn twelve_bit_pages(e: &mut crate::dynamic::Dyn, plan: &LoadPlan, dir: &Path, name: &str, ui: &RefCell<Ui>) -> Done<()> {
+fn twelve_bit_pages(e: &mut crate::dynamic::Dyn, plan: &LoadPlan, dir: &Path, m: &ModelConfig, name: &str, ui: &RefCell<Ui>) -> Done<()> {
     if !plan.kv12 {
         return Ok(());
     }
     let t0 = std::time::Instant::now();
-    let (t, made) = crate::dynamic::kv12::tables_for(e, dir, name).map_err(cannot)?;
+    let (t, made) = crate::dynamic::kv12::tables_for(e, dir, m, name).map_err(cannot)?;
     if made {
         ui.borrow_mut().line(&format!("Made the 12-bit KV tables of {} in {:.0} s (once: kept in the cache).", name, t0.elapsed().as_secs_f64()));
     }
@@ -1853,7 +1853,7 @@ fn load_dynamic(
         ui.borrow_mut().line("Its FP8 matrices are held coded (the same values in about 7 bits of 8) for it to fit; as they are, they do not.");
     }
     ui.borrow_mut().status(&format!("Reading {name} and loading it onto the GPU{}...", if devices.len() == 1 { "" } else { "s" }));
-    let mut e = open_dynamic(a, &plan, &dir)?.map_err(|e| {
+    let mut e = open_dynamic(a, &plan, &dir, &c)?.map_err(|e| {
         if e.out_of_memory() {
             Refusal::unsupported(
                 format!("a GPU ran out of memory loading {name} ({})", stages.join(", ")),
@@ -1865,7 +1865,7 @@ fn load_dynamic(
     })?;
     // (its keys and values in 12-bit pages where the plan has them: a server's pools with the whole model on one GPU, `size_dynamic_at`)
     match &mut e {
-        crate::dynamic::split::Run::One(d) => twelve_bit_pages(d, &plan, &dir, &name, ui)?,
+        crate::dynamic::split::Run::One(d) => twelve_bit_pages(d, &plan, &dir, &c, &name, ui)?,
         _ if plan.kv12 => return Err(cannot("a plan of 12-bit KV pages holds the whole model on one GPU")),
         _ => {}
     }
@@ -1873,7 +1873,7 @@ fn load_dynamic(
     let weights = crate::conv::Gen::held(&e).map_or(0, |h| h.weights);
     loaded_report(model, &c, &plan, &gpus.iter().filter(|g| devices.contains(&g.ordinal)).collect::<Vec<_>>(), weights);
     crate::plan::first_use(&mut e, c.num("vocab_size").unwrap_or(0));
-    let tok = Tok::load(&dir).map_err(cannot)?;
+    let tok = Tok::load_with(&dir, &c).map_err(cannot)?;
     // (DeepSeek-V4's and Kimi-K3's releases have their chat formats in Python alone: ours as templates)
     let own = match family {
         "DeepSeek-V4" => Some(crate::chat::DSV4_CHAT),
@@ -1911,10 +1911,10 @@ fn load_dynamic(
 }
 
 /// The engine of a dynamic-route plan from the directory `dir` (src/dynamic/split.rs `open_plan`: it loads what the plan says), the flags' copy-or-compute policy
-/// of its expert cache.
-fn open_dynamic(a: &Args, plan: &LoadPlan, dir: &Path) -> Done<std::result::Result<crate::dynamic::split::Run, crate::ffi::Error>> {
+/// of its expert cache; `m`: the directory's config.json, parsed once (the plan's).
+fn open_dynamic(a: &Args, plan: &LoadPlan, dir: &Path, m: &ModelConfig) -> Done<std::result::Result<crate::dynamic::split::Run, crate::ffi::Error>> {
     let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.msg, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
-    Ok(crate::dynamic::split::open_plan(dir, plan, offload))
+    Ok(crate::dynamic::split::open_plan(dir, m, plan, offload))
 }
 
 /// `run MODEL:kestrel` (or `:swift`, or `--lossy`): the model (a directory in the Hub's layout, the cache's copy, else downloaded), every weight rounded and packed in `layout` once into the cache and read from there (a glyd-v7 directory: read
@@ -3624,5 +3624,100 @@ mod tests {
         let none = crate::tools::obj(about("m", &root, None, "penguin", true, "w", None, &gpu("g", (8, 9), 15)));
         assert_eq!(none.get("precision").and_then(|p| p.get("kv")), Some(&Value::Null));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// #136: a model's config.json is parsed once by `fit`, `run` and `serve`: the planner's parse is the loaders' and every typed reader's, not read and parsed
+    /// again at each stage (the stage loaders, the family readers, the description, the images and the tokenizer's end tokens). Counted on this thread by
+    /// `ModelConfig::parse`, on every family's random model: `fit`'s plan; `run`'s and `serve`'s (the plan their level makes and the engine it opens from the
+    /// directory, as far as a computer with no GPU goes: its first call), on the dynamic route and on the lossy levels'.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_models_config_is_parsed_once_by_fit_run_and_serve() {
+        use crate::runtime::config::parses;
+        let dir = std::env::temp_dir().join(format!("glyd-cli-parsed-once-{}", std::process::id()));
+        let big =
+            Target { ordinal: 0, name: "NVIDIA GeForce RTX 4080 SUPER".into(), cc: (8, 9), total: 16 << 30, free: 15 << 30, host: None, cublas: Some(false) };
+        let (mut counts, mut bad) = (Vec::new(), Vec::new());
+        // (the text of each model's config.json is its own in this process: the planner's cache of a text parsed would hide its parse)
+        let fresh = |case: &str, what: &str| {
+            let _ = std::fs::remove_dir_all(&dir);
+            crate::logits::random_model(case, &dir).unwrap();
+            let path = dir.join("config.json");
+            let mut c: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            c["_name_or_path"] = format!("parsed-once-{}-{case}-{what}", std::process::id()).into();
+            std::fs::write(&path, c.to_string()).unwrap();
+        };
+        let name = dir.to_string_lossy().into_owned();
+        for case in ["qwen35", "qwen35moe", "glm", "glm-dsa", "kimi", "kimi-dsa", "deepseek-v4", "muse", "qwen4x", "nemotron"] {
+            for what in ["fit", "run", "serve"] {
+                fresh(case, what);
+                let before = parses();
+                if what == "fit" {
+                    let _ = crate::plan::planned(&args(&["fit", &name, "--machine", "rtx4080s", "--users", "4"]));
+                } else {
+                    // (what `load_dynamic` does: the directory's config, its plan on the GPU, the engine the plan opens)
+                    let c = dir_config(&dir, &name).unwrap();
+                    let family = crate::dynamic::split::family_in(&c).unwrap();
+                    let plan = plan_in(&args(&[what, &name, "--context", "64"]), &name, family, &dir, &c, false, std::slice::from_ref(&big))
+                        .unwrap_or_else(|r| panic!("{case}: {}", r.what));
+                    let _ = crate::dynamic::split::open_plan(&dir, &c, &plan, Default::default());
+                }
+                let n = parses() - before;
+                counts.push(format!("{what} {case}: {n}"));
+                if n != 1 {
+                    bad.push(format!("{what} {case}: {n}"));
+                }
+            }
+        }
+        // (`load_lossy`'s: the plan of the directory's config at a level, and the engine of that plan: the lossy route's families, Nemotron-H at kestrel)
+        let (gpu, ui) = (gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 15), RefCell::new(Ui::silent()));
+        for (case, layout) in [("gemma4", Layout::Tiered), ("dense", Layout::Tiered), ("qwen35", Layout::Tiered), ("nemotron", Layout::Int6)] {
+            for what in ["run", "serve"] {
+                fresh(case, &format!("lossy-{what}"));
+                let before = parses();
+                let a = args(&[what, &name, "--context", "64"]);
+                let c = dir_config(&dir, &name).unwrap();
+                let plan = plan_level(&a, &name, layout, &c, None, &gpu, None).unwrap_or_else(|r| panic!("{case}: {}", r.what));
+                let _ = open_lossy(&a, &plan, &dir, &c, &gpu, &name, &ui);
+                let n = parses() - before;
+                counts.push(format!("{what} {case} (lossy route): {n}"));
+                if n != 1 {
+                    bad.push(format!("{what} {case} (lossy route): {n}"));
+                }
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+        eprintln!("parses of a model's config.json:\n{}", counts.join("\n"));
+        assert!(bad.is_empty(), "a config.json parsed more than once (or not at all): {bad:?}");
+    }
+
+    /// #136: `pack` parses the model's config.json once too, a GLM-5.3-Flash release's whose keys do not parse included: it was parsed again there to say which key
+    /// (the refusal's words are the same).
+    #[cfg(feature = "dev")]
+    #[test]
+    fn pack_parses_a_models_config_once() {
+        use crate::runtime::config::parses;
+        let dir = std::env::temp_dir().join(format!("glyd-cli-pack-parsed-once-{}", std::process::id()));
+        let mut counts = Vec::new();
+        for (case, key_of_another_type) in [("qwen35", false), ("glm", false), ("glm", true)] {
+            let _ = std::fs::remove_dir_all(&dir);
+            crate::logits::random_model(case, &dir).unwrap();
+            if key_of_another_type {
+                let path = dir.join("config.json");
+                let mut c: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                c["text_config"]["num_hidden_layers"] = "eight".into();
+                std::fs::write(&path, c.to_string()).unwrap();
+            }
+            let before = parses();
+            let packed = crate::pack::run_with(&dir.to_string_lossy(), &dir.join("packed"), 1, Layout::Int6, true);
+            counts.push((case, key_of_another_type, parses() - before));
+            if key_of_another_type {
+                assert!(packed.unwrap_err().msg.contains("num_hidden_layers"), "the key is named");
+            } else {
+                packed.unwrap();
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(counts, [("qwen35", false, 1), ("glm", false, 1), ("glm", true, 1)]);
     }
 }

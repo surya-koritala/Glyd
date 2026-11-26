@@ -18,6 +18,7 @@ use crate::ffi::{err, Result};
 use crate::moe_cb::{CbShared, Codes};
 use crate::offload::{ExpertStore, Offload};
 pub use crate::qwen4x::PackMode;
+use crate::runtime::config::ModelConfig;
 use crate::weights::Layout;
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
@@ -28,8 +29,13 @@ pub const FAMILY: &str = "Qwen3.8-Flash-Next";
 /// The executor's description of the model in `dir` for sequences of up to `ctx` positions: its kinds lowered (`lower::qwen4x`), held to Condor's own reading of
 /// the config (`ConfigQx::agrees`).
 pub fn lowered(dir: &Path, ctx: usize) -> Result<ModelDesc> {
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
-    let c = crate::qwen4x::ConfigQx::agrees(crate::qwen4x::ConfigQx::load(dir)?, &kinds).map_err(|e| e.context(&label))?;
+    lowered_of(dir, &ModelConfig::load(dir)?, ctx)
+}
+
+/// `lowered` of a config.json parsed once (`m`: `dir`'s).
+pub fn lowered_of(dir: &Path, m: &ModelConfig, ctx: usize) -> Result<ModelDesc> {
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
+    let c = crate::qwen4x::ConfigQx::agrees(m.read_with(dir, crate::qwen4x::ConfigQx::of)?, &kinds).map_err(|e| e.context(&label))?;
     super::lower::qwen4x(&kinds, c.eos.clone(), ctx.min(c.max_pos)).map_err(|e| e.context(&label))
 }
 
@@ -53,8 +59,8 @@ pub fn experts_at(layout: Option<Layout>) -> Layout {
 /// (the hummingbird level's plan, `plan::sizing::codes_plan`), the codes pack beside its weights (`DIR/pack`) or `--pack`'s (`codes_of`) in the expert cache's places,
 /// `caching.places` a layer, its misses as `caching.offload` says (`load_cached_stage`). A caching that asks for layers' matrices in the computer's memory is
 /// refused in words: the family's stay on the GPU.
-pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
-    let Some(c) = caching else { return load_stage(dir, o, experts_at(o.layout), st, None) };
+pub fn stage(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    let Some(c) = caching else { return load_stage(dir, m, o, experts_at(o.layout), st, None) };
     if c.dense > 0 {
         return err(format!(
             "{FAMILY}: its layers' matrices stay on the GPU beside its expert cache ({} layers of them in the computer's memory are asked)",
@@ -69,38 +75,43 @@ pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store:
     })?;
     // (the pack's experts exact: none of a call's pairs skipped unless `caching.offload` says so)
     let k = Caching { pack: pack.clone(), mode: PackMode::of(&pack, false), places: Some(c.places), offload: c.offload, users: 1 };
-    load_cached_stage(dir, o, &k, st)
+    load_cached_stage(dir, m, o, &k, st)
 }
 
 /// The draft head of the model in `dir` (its MTP layers: `lower::draft_head` of the family's lowering) for sequences of up to `ctx` positions; None where its
 /// config has none.
 pub fn head_lowered(dir: &Path, ctx: usize) -> Result<Option<ModelDesc>> {
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    head_lowered_of(dir, &ModelConfig::load(dir)?, ctx)
+}
+
+/// `head_lowered` of a config.json parsed once (`m`: `dir`'s).
+pub fn head_lowered_of(dir: &Path, m: &ModelConfig, ctx: usize) -> Result<Option<ModelDesc>> {
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
     if kinds.desc.mtp.is_empty() {
         return Ok(None);
     }
-    let c = crate::qwen4x::ConfigQx::agrees(crate::qwen4x::ConfigQx::load(dir)?, &kinds).map_err(|e| e.context(&label))?;
+    let c = crate::qwen4x::ConfigQx::agrees(m.read_with(dir, crate::qwen4x::ConfigQx::of)?, &kinds).map_err(|e| e.context(&label))?;
     super::lower::draft_head(&kinds, c.eos.clone(), ctx.min(c.max_pos), super::lower::qwen4x).map(Some).map_err(|e| e.context(&label))
 }
 
 /// `load` with the experts at `level` (lossless, or a lossy level's codes: six, five or four bits).
 pub fn load_level(dir: &Path, o: &Opts, level: Layout) -> Result<Dyn> {
-    load_stage(dir, o, level, None, None)
+    load_stage(dir, &ModelConfig::load(dir)?, o, level, None, None)
 }
 
 /// `load_level` with the model's draft head (`head_lowered`) drafting `k` tokens a round (at most `VERIFY_ROWS` - 1), its experts held as the model's: each round's
 /// drafts checked in one verify pass whose rows are the steps' (src/dynamic/head.rs).
 pub fn load_drafting(dir: &Path, o: &Opts, level: Layout, k: usize) -> Result<Dyn> {
-    load_stage(dir, o, level, None, Some(k))
+    load_stage(dir, &ModelConfig::load(dir)?, o, level, None, Some(k))
 }
 
 /// Stage `st` of the model in `dir` (None: the whole model) on the executor's loader (`Dyn::new_placed`): the stage's layers' matrices and their experts all on
 /// its GPU at `level`, the embedding on the first, the final mixer and the LM head on the last; where `draft` is given, the last stage holds the draft head too
 /// (`load_drafting`'s, drafting k tokens a round: src/dynamic/split.rs runs its rounds across the stages).
-pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: impl Into<Option<Stage>>, draft: Option<usize>) -> Result<Dyn> {
-    let c = crate::qwen4x::ConfigQx::load(dir)?;
+pub fn load_stage(dir: &Path, m: &ModelConfig, o: &Opts, level: Layout, st: impl Into<Option<Stage>>, draft: Option<usize>) -> Result<Dyn> {
+    let c = m.read_with(dir, crate::qwen4x::ConfigQx::of)?;
     let st = st.into().unwrap_or(Stage::whole(c.layers));
-    let d = lowered(dir, o.ctx + o.chunk + 16)?.staged(&st);
+    let d = lowered_of(dir, m, o.ctx + o.chunk + 16)?.staged(&st);
     // (what the GPU would hold of the stage: its layers' experts at the level (lossless: two bytes a weight at most) and their table of n-grams as saved where
     // it is on the GPU (`ModelDesc::host`: the release's is on the host); past that, `load_cached`)
     let per = match level {
@@ -126,7 +137,7 @@ pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: impl Into<Option<Stag
     }
     // (each layer's experts the Moe kind's block of its roles, every expert on the GPU at the level; the MTP layers' after the model's, each the expert cache's
     // next layer)
-    let (kinds, _) = crate::runtime::describe::describe_dir(dir)?;
+    let (kinds, _) = crate::runtime::describe::describe_dir_of(dir, m)?;
     let held = super::experts::Held { hb: None, cache: None, ordinal: o.device, f8: None, dense: None, codebooks: None, codes: None };
     let hidden = kinds.desc.hidden;
     let blocks = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
@@ -144,21 +155,22 @@ pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: impl Into<Option<Stag
     let spec = match draft.filter(|_| st.last) {
         None => None,
         Some(k) => {
-            let h = head_lowered(dir, o.ctx + o.chunk + 16)?
+            let h = head_lowered_of(dir, m, o.ctx + o.chunk + 16)?
                 .ok_or_else(|| crate::ffi::Error(format!("{FAMILY}: {} has no MTP layer to draft with", dir.display())))?;
             Some(super::DraftSpec { dir, desc: h, k, experts: Some(&head) })
         }
     };
-    Dyn::new_placed(dir, d, spec, st, o, &blocks, &super::Placing::default())
+    Dyn::new_placed(dir, m, d, spec, st, o, &blocks, &super::Placing::default())
 }
 
 /// The model in `dir` at `level` with its layers cut before each of `cuts` over `devices` (one more than the cuts; a GPU named twice: two stages on it, the
 /// split's check on one GPU), through the generic split (src/dynamic/split.rs: a stage a thread, the rows handed over through host memory), each stage's
 /// experts all on its GPU (`load_stage`); the draft head on the last stage drafting `draft` tokens a round where given. One GPU where `cuts` is empty.
 pub fn open_split(dir: &Path, o: &Opts, level: Layout, cuts: &[usize], devices: &[i32], draft: Option<usize>) -> Result<super::split::Run> {
-    let c = crate::qwen4x::ConfigQx::load(dir)?;
-    let owned = dir.to_path_buf();
-    super::split::Run::new(c.layers, c.eos, cuts, devices, o, std::sync::Arc::new(move |st, o: &Opts| load_stage(&owned, o, level, st, draft)))
+    let m = ModelConfig::load(dir)?;
+    let c = m.read_with(dir, crate::qwen4x::ConfigQx::of)?;
+    let (owned, m) = (dir.to_path_buf(), std::sync::Arc::new(m));
+    super::split::Run::new(c.layers, c.eos, cuts, devices, o, std::sync::Arc::new(move |st, o: &Opts| load_stage(&owned, &m, o, level, st, draft)))
 }
 
 /// The routed experts from a codes pack (glyd-hbr-codes/2: each expert cb2, cb3, cb4, ternary, q, q3 or q4, the pack's mode's sidecar over them) in the
@@ -193,18 +205,18 @@ pub fn reserve_for(d: &ModelDesc, users: usize, st: &Stage) -> u64 {
 /// The model in `dir` on the executor's loader with its routed experts in the expert cache (`Caching`): the always-on matrices as `load` loads them, each layer's
 /// experts the Moe kind's block at the codes pack's hummingbird level (src/moe_cb.rs `CbMoe`) over one store shared by the layers.
 pub fn load_cached(dir: &Path, o: &Opts, k: &Caching) -> Result<Dyn> {
-    load_cached_stage(dir, o, k, None)
+    load_cached_stage(dir, &ModelConfig::load(dir)?, o, k, None)
 }
 
 /// Stage `st` of `load_cached`'s model (None: the whole model), with an expert cache of its own: its layers' blocks over one store and one set of the codebook
 /// block's shared settings, made on this stage's GPU (src/dynamic/split.rs makes each stage on a thread of its own), the places a layer `k.places` or what the
 /// GPU has free after the stage's always-on matrices, less the reserve its own layers' sequences take (`reserve_for`), over its layers.
-pub fn load_cached_stage(dir: &Path, o: &Opts, k: &Caching, st: impl Into<Option<Stage>>) -> Result<Dyn> {
-    let c = crate::qwen4x::ConfigQx::load(dir)?;
+pub fn load_cached_stage(dir: &Path, m: &ModelConfig, o: &Opts, k: &Caching, st: impl Into<Option<Stage>>) -> Result<Dyn> {
+    let c = m.read_with(dir, crate::qwen4x::ConfigQx::of)?;
     // (a width the codebook kernels do not take is refused before anything is read or put on the GPU)
     crate::moe_cb::takes(c.hidden, c.inter).map_err(|e| e.context(FAMILY))?;
     let st = st.into().unwrap_or(Stage::whole(c.layers));
-    let d = lowered(dir, o.ctx + o.chunk + 16)?.staged(&st);
+    let d = lowered_of(dir, m, o.ctx + o.chunk + 16)?.staged(&st);
     let mut pack = CbPack::open_dims(&k.pack, c.hidden, c.inter)?;
     if let Some(side) = k.mode.side(&k.pack) {
         pack = pack.with_side(&side)?;
@@ -219,7 +231,7 @@ pub fn load_cached_stage(dir: &Path, o: &Opts, k: &Caching, st: impl Into<Option
     let place = layers.clone().map(|l| pack.place_bytes(l)).max().unwrap_or(1);
     let kept = layers.clone().filter_map(|l| pack.kept(l).map(<[usize]>::len)).min().unwrap_or(1);
     let (dev, reserve) = (o.device, reserve_for(&d, k.users, &st));
-    let (kinds, _) = crate::runtime::describe::describe_dir(dir)?;
+    let (kinds, _) = crate::runtime::describe::describe_dir_of(dir, m)?;
     let hidden = kinds.desc.hidden;
     let blocks = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         // (the plan's places (`plan::sizing::codes_plan_with`); a development check's with none, read after the always-on matrices are on the GPU:
@@ -239,7 +251,7 @@ pub fn load_cached_stage(dir: &Path, o: &Opts, k: &Caching, st: impl Into<Option
             })
             .collect()
     };
-    let e = Dyn::new_placed(dir, d, None, st, o, &blocks, &super::Placing::default())?;
+    let e = Dyn::new_placed(dir, m, d, None, st, o, &blocks, &super::Placing::default())?;
     common.fill_page_tables();
     Ok(e)
 }
@@ -248,9 +260,10 @@ pub fn load_cached_stage(dir: &Path, o: &Opts, k: &Caching, st: impl Into<Option
 /// named twice: two stages on it, the split's check on one GPU), through the generic split (src/dynamic/split.rs): each stage's experts in a cache of its own
 /// (`load_cached_stage`: `k.places` a layer, else its GPU's room). One GPU where `cuts` is empty.
 pub fn open_cached(dir: &Path, o: &Opts, k: &Caching, cuts: &[usize], devices: &[i32]) -> Result<super::split::Run> {
-    let c = crate::qwen4x::ConfigQx::load(dir)?;
-    let (owned, k) = (dir.to_path_buf(), k.clone());
-    super::split::Run::new(c.layers, c.eos, cuts, devices, o, std::sync::Arc::new(move |st, o: &Opts| load_cached_stage(&owned, o, &k, st)))
+    let m = ModelConfig::load(dir)?;
+    let c = m.read_with(dir, crate::qwen4x::ConfigQx::of)?;
+    let (owned, k, m) = (dir.to_path_buf(), k.clone(), std::sync::Arc::new(m));
+    super::split::Run::new(c.layers, c.eos, cuts, devices, o, std::sync::Arc::new(move |st, o: &Opts| load_cached_stage(&owned, &m, o, &k, st)))
 }
 
 /// `load_cached` of the pack in `pack` served as its mode (`PackMode::of`), room kept for `users` sequences.
