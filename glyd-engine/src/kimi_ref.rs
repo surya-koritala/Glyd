@@ -508,8 +508,8 @@ impl RefKimi {
 /// blocks of 3 (so that the depth mix sees up to four sources), the latent attention at layers 3 and 7 (1-based 4 and 8), the dense MLP in layer 0, 16 experts of
 /// 4 a token on a latent of 128; the delta and latent attention at the release's head widths (128; nope 128, rope 64, v 128).
 ///
-/// `dense`: the layers before which are dense MLPs (1 as released; 8: no experts); `mla`: the latent attention layers (false: every layer delta attention), to check
-/// the parts alone; `real`: Some(experts) for the release's widths instead (`random_real`).
+/// `dense`: the layers before which are dense MLPs (1 as released; 8: no experts); `mla`: the latent attention layers (false: every layer delta attention; with fewer
+/// than 8 layers, the last one), to check the parts alone; `real`: Some(experts) for the release's widths instead (`random_real`).
 pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> {
     random_with(out, dense, mla, layers, None, false, RANDOM_SEED)
 }
@@ -530,9 +530,10 @@ pub fn random_dsa(out: &Path) -> Result<()> {
 
 /// `random` at the release's widths (a width of 7,168, 96 delta heads of 128, experts of 3,072 neurons on a latent of 3,584, 16 of `experts` a token, 2 shared), every layer
 /// delta attention (with `mla` and 8 layers, the latent attention at layers 4 and 8 as `random`'s: a model whose decode rows have tables, so that a step of several rows is
-/// a graph), the first a small dense MLP as released and the others experts, a vocabulary of 4,096 (its embedding small): a model as large as the GPU's memory or larger
-/// (4 layers, 3 of 320 experts: 18 GB) to run through the expert cache. Its router is not the small model's decisive one: the scores spread and a bias of 0.01 at most, so that
-/// the choices spread over the experts as a trained router's do over a batch.
+/// a graph; with `mla` and fewer layers, the last one the latent attention), the first a small dense MLP as released and the others experts, a vocabulary of 4,096 (its
+/// embedding small): a model as large as the GPU's memory or larger (4 layers, 3 of 320 experts: 18 GB) to run through the expert cache. Its scales are the small model's
+/// conditioned draw's (`random_with`), the mix and the head narrower by the root of the width, its router the small model's decisive one: so that a cut of three layers (the
+/// dense MLP, then two blocks of experts) holds a path whose experts' sums are added in another order at a tenth of the kind's bound (`storecheck --floor`).
 pub fn random_real(out: &Path, layers: usize, experts: usize, mla: bool) -> Result<()> {
     random_with(out, 1, mla, layers.min(8), Some(experts), false, RANDOM_SEED)
 }
@@ -556,12 +557,15 @@ fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<
         text.replace(r#""full_attn_layers": [4, 8]"#, r#""full_attn_layers": []"#)
             .replace(r#""kda_layers": [1, 2, 3, 5, 6, 7]"#, r#""kda_layers": [1, 2, 3, 4, 5, 6, 7, 8]"#)
     };
-    // (fewer layers: delta attention alone, the first `layers` of the list)
+    // (fewer layers: the first `layers` of the list, delta attention, and with `mla` the last one the latent attention, so that a cut of a few layers has both kinds
+    // of attention and decode rows with tables)
     let text = if layers < 8 {
-        let kda: Vec<String> = (1..=layers).map(|n| n.to_string()).collect();
+        let last = mla && layers > 1;
+        let kda: Vec<String> = (1..=layers - last as usize).map(|n| n.to_string()).collect();
+        let full = if last { layers.to_string() } else { String::new() };
         text.replace(r#""num_hidden_layers": 8"#, &format!(r#""num_hidden_layers": {layers}"#))
-            .replace(r#""full_attn_layers": [4, 8]"#, r#""full_attn_layers": []"#)
-            .replace(r#""full_attn_layers": []"#, r#""full_attn_layers": []"#)
+            .replace(r#""full_attn_layers": [4, 8]"#, &format!(r#""full_attn_layers": [{full}]"#))
+            .replace(r#""full_attn_layers": []"#, &format!(r#""full_attn_layers": [{full}]"#))
             .replace(r#""kda_layers": [1, 2, 3, 5, 6, 7]"#, &format!(r#""kda_layers": [{}]"#, kda.join(", ")))
             .replace(r#""kda_layers": [1, 2, 3, 4, 5, 6, 7, 8]"#, &format!(r#""kda_layers": [{}]"#, kda.join(", ")))
     } else {
@@ -625,10 +629,15 @@ fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<
     //    or two terms whose query-key products, near 0 for random queries and keys, set its direction, and a rounding of the input swung it by tens of
     //    percent.
     //  None of the three makes an operation an identity: the mix still weighs its sources apart, the norm still norms, the decay still differs by channel
-    //  from about 0.3 to near 1.)
-    let (mix, values, decay) = if real.is_none() { (0.05, 32.0, -3.0) } else { (0.5, 1.0, 0.0) };
+    //  from about 0.3 to near 1.
+    //  The release's widths (`random_real`) are drawn so too, with the mix's projections and the head narrower by the root of the width (a score or a logit is
+    //  a sum of the width's terms: their RMS the small model's) and the small model's decisive router: drawn with the scales of a trained model's spread
+    //  (the mix U(-0.5, 0.5), values and decay as drawn, the head U(-0.05, 0.05), a router of spread scores), a cut of eight layers 7,168 wide moved
+    //  past the routers' margins by the GPU's own sums in another order (KL to 6.5 against itself: `storecheck --floor`).)
+    let narrow = (256.0 / c.hidden as f32).sqrt();
+    let (mix, values, decay) = (0.05 * narrow, 32.0, -3.0);
     bf(&mut t, format!("{p}embed_tokens.weight"), vec![c.vocab as u64, h], -1.0, 1.0, &mut uni);
-    bf(&mut t, "language_model.lm_head.weight".into(), vec![c.vocab as u64, h], -0.05, 0.05, &mut uni);
+    bf(&mut t, "language_model.lm_head.weight".into(), vec![c.vocab as u64, h], -0.05 * narrow, 0.05 * narrow, &mut uni);
     for n in ["norm", "output_attn_res_norm"] {
         bf(&mut t, format!("{p}{n}.weight"), vec![h], 0.9, 1.1, &mut uni);
     }
@@ -703,13 +712,13 @@ fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<
         // (a decisive router, so that the engine's rounding does not flip a choice: weights twenty times a product's, the scores near 0 or 1, and among those near 1 the bias
         // picks, its values 0.05 apart in a random order)
         let (sh, ga) = lin(e.experts, c.hidden);
-        let g = if real.is_some() { ga } else { 20.0 * ga };
+        let g = 20.0 * ga;
         bf(&mut t, format!("{f}.gate.weight"), sh, -g, g, &mut uni);
         let mut order: Vec<usize> = (0..e.experts).collect();
         for i in (1..order.len()).rev() {
             order.swap(i, (uni(0.0, (i + 1) as f32) as usize).min(i));
         }
-        let step = if real.is_some() { 0.01 / e.experts as f32 } else { 0.05 };
+        let step = 0.05;
         t.push((
             format!("{f}.gate.e_score_correction_bias"),
             "F32",
