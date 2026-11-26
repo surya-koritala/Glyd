@@ -90,6 +90,7 @@ const SWITCHES: &[&str] = &[
     "router",
     "last",
     "no-mla",
+    "mla",
     "no-speed",
     "peaked",
     "random-tokens",
