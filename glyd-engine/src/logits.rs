@@ -6529,19 +6529,23 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         println!("steps launched before the step before lands (GLYD_ENGINE_OVERLAP=1): {}", if ahead { "yes" } else { "no, this model's steps land first" });
     }
     let graphs = e.rows_graphs() && !(one_a_pass && !e.rows_exact()) && !ahead;
+    // (where the engine computes experts on the host the runs above recorded every row's logits and traced the routers' choices, for the kind's bound (`recording_rows`), and a
+    // traced pass runs eager (`Dyn::tracing`): no step of theirs replays a graph, so the run of graphs on below is the one counted)
+    let traced = host;
     let by: Vec<String> = e.rows_replays_by_size().iter().map(|(r, n)| format!("{r}:{n}")).collect();
     println!(
         "decode steps of several rows replayed from a CUDA graph: {replays}, run eager: {eager} (graphs up to {top} rows; replays by the graph's rows {}), graphs captured \
-         in a request's step: {late}{}; decode steps of one row replayed from their sequence's graph: {ones} of {one_steps}",
+         in a request's step: {late}{}; decode steps of one row replayed from their sequence's graph: {ones} of {one_steps}{}",
         by.join(" "),
-        if graphs || k < 2 { "" } else { " (this description's steps of several rows run eager)" }
+        if graphs || k < 2 { "" } else { " (this description's steps of several rows run eager)" },
+        if traced { " (runs that traced the routers' choices, every pass eager: the run of graphs on below is counted)" } else { "" }
     );
-    if graphs && batchable && k > 1 && steps[2..].iter().any(|&x| x > 0) && replays == 0 {
+    if !traced && graphs && batchable && k > 1 && steps[2..].iter().any(|&x| x > 0) && replays == 0 {
         println!("FAIL no decode step of several rows replayed a graph");
         fails += 1;
     }
     // (every step of several rows that decode within the ladder replays its graph: where the users fit it, none runs eager)
-    if graphs && k <= top && eager > 0 {
+    if !traced && graphs && k <= top && eager > 0 {
         println!("FAIL {eager} decode steps of several rows ran eager, where the graphs of up to {top} rows hold them");
         fails += 1;
     }
@@ -6550,7 +6554,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         println!("FAIL {} graphs of decode steps of several rows could not be captured (such steps then ran eager)", e.rows_lost.get());
         fails += 1;
     }
-    if e.graphs_taken() && !ahead && steps[1] > 0 && ones == 0 {
+    if !traced && e.graphs_taken() && !ahead && steps[1] > 0 && ones == 0 {
         println!("FAIL no decode step of one row replayed its sequence's graph");
         fails += 1;
     }
@@ -6564,11 +6568,14 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // same rows in the same order, so the replies are the same token for token, and where pieces can run, passes replayed them. Not where sequences are sent back for room,
     // which turns on timings)
     let pieces_on = e.pieces_for_check(true, true);
-    // (a run of the prompts at once, its replies and its sample logits: launched ahead or not where the step can be, `overlapping`)
+    // (a run of the prompts at once, its replies and its sample logits: launched ahead or not where the step can be, `overlapping`; its scheduler's decode steps of one row
+    // in `run_ones`)
+    let run_ones = std::cell::Cell::new(0u64);
     let run = |e: &mut Dyn, ahead: bool| -> Result<(Vec<Vec<u32>>, Vec<Vec<u32>>)> {
         let Some((_, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
         let mut s = Sched::new(step, k).keeping(false).recording(true).overlapping(ahead);
         let got = ask(&mut s, &prompts, 0)?;
+        run_ones.set(s.context().sched[19].load(std::sync::atomic::Ordering::Relaxed));
         Ok((got, seen(&s)))
     };
     let same = |a: &(Vec<Vec<u32>>, Vec<Vec<u32>>), b: &(Vec<Vec<u32>>, Vec<Vec<u32>>)| {
@@ -6577,11 +6584,12 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     if !squeezed && std::env::var_os("GLYD_KV12_POOL").is_none() && (pieces_on || e.graphs_taken()) {
         let eager = run(&mut e, ahead)?;
         e.pieces_for_check(true, false);
-        let (before, rows_before) = (e.piece_replays.get(), e.rows_replays.get());
-        let graphs = run(&mut e, ahead)?;
+        let (before, rows_before, eager_before, ones_on_before) = (e.piece_replays.get(), e.rows_replays.get(), e.rows_eager.get(), e.one_replays.get());
+        let on = run(&mut e, ahead)?;
         let (played, rows_played) = (e.piece_replays.get() - before, e.rows_replays.get() - rows_before);
+        let (eager_on, ones_on, one_steps_on) = (e.rows_eager.get() - eager_before, e.one_replays.get() - ones_on_before, run_ones.get());
         e.pieces_for_check(false, false);
-        let (same_t, same_l) = same(&graphs, &eager);
+        let (same_t, same_l) = same(&on, &eager);
         let ok = same_t == prompts.len() && same_l == prompts.len() && (played > 0 || !pieces_on || ahead);
         println!(
             "{} graphs on against off: {same_t} of {} replies at once the eager passes', token for token, {same_l} logit for logit; {played} passes replayed their pieces, \
@@ -6597,6 +6605,25 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             }
         );
         fails += !ok as usize;
+        // (runs that traced the routers' choices: the run of graphs on held to what the checks above hold an untraced run to)
+        if traced {
+            println!(
+                "  the run of graphs on: {rows_played} decode steps of several rows replayed their graph, {eager_on} ran eager; {ones_on} of its {one_steps_on} decode steps of \
+                 one row replayed their sequence's graph"
+            );
+            if graphs && batchable && k > 1 && rows_played == 0 {
+                println!("FAIL no decode step of several rows replayed a graph in the run of graphs on");
+                fails += 1;
+            }
+            if graphs && k <= top && eager_on > 0 {
+                println!("FAIL {eager_on} decode steps of several rows ran eager in the run of graphs on, where the graphs of up to {top} rows hold them");
+                fails += 1;
+            }
+            if e.graphs_taken() && !ahead && one_steps_on > 0 && ones_on == 0 {
+                println!("FAIL no decode step of one row replayed its sequence's graph in the run of graphs on");
+                fails += 1;
+            }
+        }
     }
     // (launched ahead against not, GLYD_ENGINE_OVERLAP=1: the same steps, each landed before the next is launched in the second run)
     if ahead && !squeezed {
