@@ -34,4 +34,10 @@ if [[ "$ign" != "$lst" ]]; then
 fi
 # every step of the M1 gate script is named on the guide's gate page (docs/guide/src/gate.md)
 python3 -I scripts/check_gate_docs.py > /dev/null
+# the guide's generated pages still read their sources (scripts/build_site.sh runs both): a refactor of support.rs, levels.rs or machine.rs that gen_models.py cannot
+# read fails here, on every pull request, not only on the Pages build; they write to a temporary folder, offline
+guide=$(mktemp -d)
+trap 'rm -rf "$guide"' EXIT
+python3 -I scripts/gen_models.py "$guide/models.md" > /dev/null
+python3 -I scripts/gen_reference.py "$guide" > /dev/null
 echo "tree ok"
