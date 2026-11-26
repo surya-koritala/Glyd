@@ -236,7 +236,8 @@ fn family_by(arch: &str, model_type: &str, nested: Option<&str>) -> Option<Famil
     let (a, m) = (arch, model_type);
     Some(match () {
         _ if a == "MuseSparkForConditionalGeneration" => Family::Muse,
-        _ if m == "kimi_k3" => Family::Kimi,
+        // (the Kimi-K3 layout: a multimodal wrapper over a `kimi_linear` text model, whatever model type the wrapper's release gives itself: kimi_k3, kimi_k31)
+        _ if nested == Some("kimi_linear") => Family::Kimi,
         _ if a == "Glm5NextForConditionalGeneration" => Family::Glm,
         _ if m == "glm_moe_dsa" => Family::GlmDsa,
         _ if a == "NemotronHForCausalLM" => Family::NemotronH,
