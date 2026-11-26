@@ -66,6 +66,7 @@ const SWITCHES: &[&str] = &[
     "best",
     "last",
     "no-mla",
+    "mla",
     "no-speed",
     "peaked",
     "random-tokens",

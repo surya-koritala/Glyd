@@ -822,7 +822,27 @@ What is built (R12b, #327):
   Its GPU check, `tiercheck --device-plan` in copy mode (the logits with the plan against the store's own, bit for bit), ran on an A10 on
   2026-11-25 on random DeepSeek-V4 and Kimi-K3 of release width: 0 of 646,400 and 0 of 20,480 logits differ (the run's record is not
   in this repository). In the modes where the host computes pairs its logits are not the copy mode's bits, and no bound holds
-  them. `storebench --device-plan` measures speed and is not run.
+  them. `storebench --device-plan` measures speed and is not run. A call planned on the GPU joins the host's pairs as the host's plan
+  does: for a layer whose sum adds each pair's own row (a block layout: DeepSeek-V4's and Kimi-K3's FP4 experts) the host answers
+  each pair's weighted row, `xp_rows` puts it in its pair's row of the workspace beside the GPU's, and the sum adds every pair in the
+  order of its choices, rounded once (`rows_sum`); the host's sums by token added after the GPU's pairs (`xp_take`, as before for
+  other layers) round apart from that, which on an A10 put a random DeepSeek-V4's row past the kind's bound at 8 rows.
+- **`storecheck`** (src/tiering.rs, a development build's) is the batched-decode test of a model larger than the GPU: n prompts
+  alone, then decode steps of n rows (1, 8 and 32) through the cache with fewer places than experts, against the same calls with
+  every expert on the GPU (a smaller cut that fits) or, for a model larger than the GPU, against the cache in copy mode planned on
+  the host. A run's rows are held bit for bit where the host computed no pair, else on the run's own routers' choices at the kind's
+  bound (`logits::Judge`, from a traced rerun whose bits must be the run's); each decode step's bytes read from the computer's memory
+  for its misses against its distinct missed experts' bytes, within 2%; each step's statistics, layer by layer, are the step's output
+  (`ModelStep::expert_stats`); the decode steps replay their graphs where the plan is on the GPU, and where the host plans a call (it
+  reads the router's choices, a wait no graph holds) or a description's decode rows have no tables, the line says why they run eager.
+  On an A10 (2026-11-26) with random models at the releases' widths: in copy mode the rows are the resident model's bits at 1, 8
+  and 32 rows for DeepSeek-V4, Kimi-K3, GLM-5.3-Flash in FP8 and the Qwen3.5 layout with experts (cuts of 13 to 16 GB), and the
+  same bits as the copy-mode cache for models of 26 to 40 GB; every decode step of every mode read its distinct missed experts'
+  bytes exactly (+0.00%; at 8 rows 1.3 to 9.2 GB a step); with the plan on the GPU every step of 1, 8 and 32 rows replayed its graph
+  (DeepSeek-V4, and Kimi-K3 with its latent attention: `kimirandom --real --mla`).
+  Open: where the host computes pairs at the releases' widths (DeepSeek-V4, Kimi-K3), rows go past the kind's bound within a few
+  steps (KL to 0.1-0.7), first choices apart are not near ties, and DeepSeek-V4's indexer picks are not in the rows' histories the
+  check reads; the small random models of both hold there.
 - **The slot policy and the hit-rate model at many rows**, checked on the same record's decode traces (20 generations, 1 to 20
   rows side by side): a call's experts are asked for in the order of their pairs, fewest first (`by_rows`), so the busiest stay in
   places across waves (1 to 7 points more pairs found at 16 and 20 rows, never fewer); the planner prices a step's misses as its

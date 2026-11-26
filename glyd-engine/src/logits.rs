@@ -1988,7 +1988,42 @@ pub fn qwen35_random(out: &Path) -> Result<()> {
 /// Gated DeltaNet and a gated full-attention one, each followed by 32 experts of which a token takes 10 and the gated shared expert): every tensor of its description at its
 /// shape, its values by `manifest_random`'s rules for each kind of tensor.
 pub fn qwen35moe_random(out: &Path) -> Result<()> {
-    let text = include_str!("../tests/fixtures/qwen35moe_tiny_config.json");
+    qwen35moe_draw(include_str!("../tests/fixtures/qwen35moe_tiny_config.json"), out)
+}
+
+/// The Qwen3.5 layout with experts at its release's width (tests/fixtures/qwen35_configs.json's Qwen3.5-35B-A3B: 2,048 wide, experts of 512 neurons, 8 a token, the
+/// shared expert of 512, its attention's and linear attention's heads, its kinds of layer in their order), `layers` layers of `experts` experts each, with the small
+/// case's vocabulary and rotation: drawn as `qwen35moe_random` draws its model. A model whose experts exceed a GPU's memory, for the expert cache's checks
+/// (`logitsmodel qwen35moe DIR --real --layers L --experts E`; `storecheck`).
+pub fn qwen35moe_random_real(out: &Path, layers: usize, experts: usize) -> Result<()> {
+    let js = |t: &str| serde_json::from_str::<Value>(t).map_err(|e| Error(e.to_string()));
+    let mut c = js(include_str!("../tests/fixtures/qwen35moe_tiny_config.json"))?;
+    let all = js(include_str!("../tests/fixtures/qwen35_configs.json"))?;
+    let rel =
+        all.get("Qwen/Qwen3.5-35B-A3B").map(|v| v.get("text_config").unwrap_or(v)).ok_or_else(|| Error("no Qwen3.5-35B-A3B config in the fixtures".into()))?;
+    for k in [
+        "hidden_size",
+        "moe_intermediate_size",
+        "shared_expert_intermediate_size",
+        "num_experts_per_tok",
+        "num_attention_heads",
+        "num_key_value_heads",
+        "head_dim",
+        "linear_num_key_heads",
+        "linear_num_value_heads",
+        "linear_key_head_dim",
+        "linear_value_head_dim",
+    ] {
+        c[k] = rel.get(k).cloned().ok_or_else(|| Error(format!("Qwen3.5-35B-A3B's config has no {k}")))?;
+    }
+    let kinds = rel["layer_types"].as_array().filter(|k| !k.is_empty()).ok_or_else(|| Error("Qwen3.5-35B-A3B's config has no layer_types".into()))?;
+    (c["num_hidden_layers"], c["num_experts"]) = (json!(layers.max(1)), json!(experts.max(1)));
+    c["layer_types"] = Value::Array((0..layers.max(1)).map(|l| kinds[l % kinds.len()].clone()).collect());
+    qwen35moe_draw(&c.to_string(), out)
+}
+
+/// `qwen35moe_random`'s draw of the model of config `text`.
+fn qwen35moe_draw(text: &str, out: &Path) -> Result<()> {
     let d = crate::runtime::describe::describe(&serde_json::from_str(text).map_err(|e| Error(e.to_string()))?)?;
     let tensors = d
         .names()
@@ -3274,7 +3309,7 @@ pub fn level_check(a: &crate::args::Args) -> Result<()> {
     }
 }
 
-/// `logitsmodel CASE DIR [--servable]`: the case's random model made in DIR (a model to run the other checks on: `kvtest DIR`, `run DIR`); `qwen4x-rel` the
+/// `logitsmodel CASE DIR [--servable] [--real [--layers L] [--experts E]]`: the case's random model made in DIR (`--real`: the Qwen3.5 layout with experts at its release's width) (a model to run the other checks on: `kvtest DIR`, `run DIR`); `qwen4x-rel` the
 /// family's release's form (`qwen4x_release_random`); `CASE+q4` with its tables on the host stored at 4 bits.
 pub fn make_model(a: &crate::args::Args) -> Result<()> {
     let id = a.need(1, "CASE")?;
@@ -3283,6 +3318,11 @@ pub fn make_model(a: &crate::args::Args) -> Result<()> {
     // (a case of the logits checks by its own maker; another random model `random_model` makes, the release's form among them; + q4: its tables at 4 bits)
     match find_case(base).map(|c| c.weights) {
         Ok(Weights::Hub(h)) => return err(format!("{id}: a real model ({h}), not a random one")),
+        // (`--real --layers L --experts E`: the Qwen3.5 layout with experts at its release's width, `qwen35moe_random_real`)
+        Ok(Weights::Random(_)) if a.has("real") => match base {
+            "qwen35moe" => qwen35moe_random_real(dir, a.num("layers", 8usize)?, a.num("experts", 256usize)?)?,
+            id => return err(format!("--real: the qwen35moe case's release width only (not {id})")),
+        },
         Ok(Weights::Random(make)) => make(dir)?,
         Err(_) => random_model_of(base, dir)?,
     }
