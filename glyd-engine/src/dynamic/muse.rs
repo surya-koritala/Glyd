@@ -9,8 +9,8 @@
 
 use super::{Dyn, ModelDesc, Opts, Placing, ResidentMoe, Stage};
 use crate::dev::Dev;
+use crate::dynamic::experts::MoeBlock;
 use crate::ffi::Result;
-use crate::kern_nh::MoeBlock;
 use crate::muse::ConfigMuse;
 use crate::weights::Layout;
 use glyd_gpu::safetensors::Checkpoint;

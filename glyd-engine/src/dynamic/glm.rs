@@ -7,10 +7,10 @@ use super::{
     Dyn, HeadMix, IdxKeys, IdxPick, IdxScore, MlaIn, MlaIndexer, MlaOp, ModelDesc, MoeOp, Op, Opts, Placing, ResidentMoe, Ring, Slot, Stage, StreamsMix, View,
 };
 use crate::dev::Dev;
+use crate::dynamic::experts::MoeBlock;
 use crate::ffi::{err, Error, Result};
 use crate::glm::{ConfigGlm, GlmKind};
 use crate::kern::GM_D;
-use crate::kern_nh::MoeBlock;
 use crate::moe::Act;
 use crate::runtime::kinds::Rounding;
 use crate::weights::Layout;

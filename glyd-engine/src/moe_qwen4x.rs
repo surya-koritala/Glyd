@@ -1,4 +1,4 @@
-//! Qwen3.8-Flash-Next's mixture-of-experts layers on the description executor (`kern_nh::MoeBlock`): every expert of a layer on the GPU (`QxMoe`, a model
+//! Qwen3.8-Flash-Next's mixture-of-experts layers on the description executor (`dynamic::experts::MoeBlock`): every expert of a layer on the GPU (`QxMoe`, a model
 //! whose experts fit it), or its routed experts in the expert cache (`QxMoeCb`): the router (softmax over the 512 experts, the top 10 renormalised;
 //! a pruned expert never chosen), the rotation of the layer's input, the experts' two products over the cache's places (kernels/qwen4x.cu `qx_cb_*`), the weighted sum and the rotation back, the shared expert times
 //! its gate. The experts are glyd-hbr-codes/2 rows at 2,560 x 640 (cb2, cb3, cb4 or ternary, an expert's own format; ~/glyd-scratch/qwen/qwen_pack.py writes them), every layer's file mapped as the cache's host tier
@@ -6,8 +6,8 @@
 
 use crate::cb_pack::{CbPack, LayerMap};
 use crate::dev::{Buf, Dev};
+use crate::dynamic::experts::{MoeBlock, NhHost};
 use crate::ffi::{err, Error, Result, Stream};
-use crate::kern_nh::{MoeBlock, NhHost};
 use crate::launch;
 use crate::moe::{route_with, Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Shared};
 use crate::moe_rows::Down;

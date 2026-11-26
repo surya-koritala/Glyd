@@ -48,6 +48,7 @@ pub mod tp;
 pub mod tp_cache;
 
 use crate::dev::{copy_d2d_async, copy_d2h_async, copy_h2d_async, Buf, Dev, Ev, Graph, Pinned};
+use crate::dynamic::experts::MoeBlock;
 use crate::ffi::{err, Error, Lib, Result};
 use crate::gemma4::{rotary, EMBED_GROUPS};
 use crate::gpu_ops::{Gemm, GpuOps};
@@ -56,7 +57,6 @@ use crate::kern::{norm_threads, Kern};
 use crate::kern::{pf_kib, KernG4, NextPf};
 use crate::kern::{KernMamba2, SsdWs};
 use crate::kern35::{Kern35, Mat};
-use crate::kern_nh::MoeBlock;
 use crate::launch;
 use crate::runtime::kinds::Rounding;
 use crate::sched::Sample;
@@ -517,7 +517,7 @@ impl MoeOp {
 pub struct ResidentMoe(pub crate::moe::MoeLayer);
 
 impl MoeBlock for ResidentMoe {
-    unsafe fn forward(&self, _: &dyn crate::kern_nh::NhHost, _: u64, _: usize, _: u64) -> Result<()> {
+    unsafe fn forward(&self, _: &dyn crate::dynamic::experts::NhHost, _: u64, _: usize, _: u64) -> Result<()> {
         err("these experts run on the dynamic engine")
     }
     fn graphable(&self) -> bool {
@@ -1662,7 +1662,7 @@ struct Verify {
 pub const TRACED: [Slot; 10] = [Slot::H, Slot::O, Slot::S, Slot::Hq, Slot::Mid, Slot::Cp, Slot::Mix, Slot::Ba, Slot::Xc, Slot::Core];
 
 // ponytail: the big model's buffers; a draft model's own where one has a block of experts
-impl crate::kern_nh::NhHost for Dyn {
+impl crate::dynamic::experts::NhHost for Dyn {
     fn dev(&self) -> &Dev {
         &self.dev
     }
