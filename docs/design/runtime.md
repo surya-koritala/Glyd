@@ -840,9 +840,15 @@ What is built (R12b, #327):
   same bits as the copy-mode cache for models of 26 to 40 GB; every decode step of every mode read its distinct missed experts'
   bytes exactly (+0.00%; at 8 rows 1.3 to 9.2 GB a step); with the plan on the GPU every step of 1, 8 and 32 rows replayed its graph
   (DeepSeek-V4, and Kimi-K3 with its latent attention: `kimirandom --real --mla`).
-  Open: where the host computes pairs at the releases' widths (DeepSeek-V4, Kimi-K3), rows go past the kind's bound within a few
-  steps (KL to 0.1-0.7), first choices apart are not near ties, and DeepSeek-V4's indexer picks are not in the rows' histories the
-  check reads; the small random models of both hold there.
+  Where the host computes pairs at the releases' widths (DeepSeek-V4, Kimi-K3), rows went past the kind's bound within a few
+  steps (KL to 0.1-0.7). The cause is the random draws, not the host: each pair the host computes is the GPU's within one or two
+  bf16 last places (the fp32 order of its sums: `--pairs`, which also replays the host's FP4 pairs in an A10's tensor-core order), and
+  the same draws put the GPU against itself past the bound when only its experts' sums are split over K (`--floor`: KL 0.1-1.3 on
+  the DeepSeek-V4, Kimi-K3 and Qwen3.5-layout cuts, nearly every row a router choice apart by the first decode step). `floortrace`
+  shows the amplification: a reordering moves one layer's output 1e-3 of itself, and the residual's difference grows two to a
+  hundred times a layer from there. Open: the release-width makers drawn so that their floor is within a tenth of the bound (as
+  the small Kimi-K3 and DeepSeek-V4 draws were); until then `storecheck --floor` fails on them. DeepSeek-V4's indexer picks are in
+  the rows' histories now (`Dyn::trace_row_picked`).
 - **The slot policy and the hit-rate model at many rows**, checked on the same record's decode traces (20 generations, 1 to 20
   rows side by side): a call's experts are asked for in the order of their pairs, fewest first (`by_rows`), so the busiest stay in
   places across waves (1 to 7 points more pairs found at 16 and 20 rows, never fewer); the planner prices a step's misses as its
