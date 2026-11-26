@@ -111,7 +111,9 @@ pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: impl Into<Option<Stag
     };
     let experts = ((st.layers.1 - st.layers.0) * c.experts * 3 * c.inter * c.hidden) as u64 * per / 8;
     let table: u64 = held_as_saved(&d, &st).iter().filter(|k| !d.host.contains(k)).map(|&k| (d.mats[k].rows * d.mats[k].cols * 2) as u64).sum();
-    let free = Dev::new(o.device)?.mem_info()?.0 as u64;
+    // (a plan put the experts here where its GPU holds them (`plan::sizing::size_dynamic`), else in the expert cache: the free memory is asked only by a
+    // development check that loads with no plan (`free_sized`), which is refused past it)
+    let free = if super::free_sized() { Dev::new(o.device)?.mem_info()?.0 as u64 } else { u64::MAX };
     if !crate::plan::sizing::resident_fits(experts + table, free) {
         return err(format!(
             "{FAMILY}: the experts of layers {}..{} ({:.1} GB at {per} bits) and their table of n-grams ({:.1} GB) do not fit this GPU's {:.1} GB free: a pack of its experts serves it (`load_cached`)",
@@ -166,7 +168,8 @@ pub fn open_split(dir: &Path, o: &Opts, level: Layout, cuts: &[usize], devices: 
 pub struct Caching {
     pub pack: std::path::PathBuf,
     pub mode: PackMode,
-    /// places a layer (None: what the GPU has free after the always-on matrices, less the reserve, over the layers)
+    /// places a layer (the plan's; None: what the GPU has free after the always-on matrices, less the reserve, over the layers, a development check's or
+    /// server's alone: `free_sized`)
     pub places: Option<usize>,
     pub offload: Offload,
     /// the sequences the GPU keeps room for beside the places: their keys, values and states, and the executor's scratch (`reserve_for`, the planner's)
@@ -219,10 +222,12 @@ pub fn load_cached_stage(dir: &Path, o: &Opts, k: &Caching, st: impl Into<Option
     let (kinds, _) = crate::runtime::describe::describe_dir(dir)?;
     let hidden = kinds.desc.hidden;
     let blocks = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
-        // (read after the always-on matrices are on the GPU: what is free now, less the reserve, is the places')
+        // (the plan's places (`plan::sizing::codes_plan`); a development check's or server's with none, read after the always-on matrices are on the GPU:
+        // what is free now, less the reserve, is the places')
         let places = match k.places {
             Some(p) => p,
-            None => crate::plan::sizing::cache_places(Dev::new(dev)?.mem_info()?.0 as u64, reserve, layers.len(), place, kept),
+            None if super::free_sized() => crate::plan::sizing::cache_places(Dev::new(dev)?.mem_info()?.0 as u64, reserve, layers.len(), place, kept),
+            None => return super::unplanned("the expert cache's places"),
         };
         // (each layer's experts the Moe kind's block at the codes pack's hummingbird level: its places in the stage's one store)
         let codes = Codes { pack: &pack, places, store: &store, common: &common };
@@ -342,6 +347,8 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     use crate::server;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    // (a development server: no plan sizes it, its places and its pools are what the GPU has free (`glyd serve` of the model's hummingbird level is the planned one))
+    super::size_by_free_memory();
     let name = a.flag("name").unwrap_or("qwen3.8-flash-next").to_string();
     let ctx = a.num("ctx", 33536usize)?;
     let users = a.num("users", 4usize)?;

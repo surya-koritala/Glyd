@@ -523,6 +523,27 @@ pub(crate) fn marks_kept() -> bool {
     *ON.get_or_init(|| std::env::var_os("GLYD_ENGINE_KEEP").is_none_or(|v| v != "0")) && Dyn::batch_prefill()
 }
 
+/// Whether this process's engines that no plan sized take their pools (and an expert cache its places: src/dynamic/qwen4x.rs) from the GPU's free memory: a
+/// development check's or a development server's, which says so (`size_by_free_memory`). Every product path (`run`, `serve`, `fit`) loads by its plan
+/// (`Dyn::take_plan`, `split::open_plan`); an engine no plan sized is refused in words where none says so.
+static FREE_SIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Said by a development check or server (`glyd-engine`'s development commands, `qwenserve`): its engines that no plan sized size their pools and an
+/// expert cache's places from the GPU's free memory (`free_sized`).
+pub fn size_by_free_memory() {
+    FREE_SIZED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether an engine no plan sized may take the GPU's free memory (`size_by_free_memory`; a unit test is a development check).
+pub(crate) fn free_sized() -> bool {
+    cfg!(test) || FREE_SIZED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The refusal of an engine no plan sized, in a process that did not say it sizes engines from the GPU's free memory (`free_sized`): what to do is the plan's.
+pub(crate) fn unplanned<T>(what: &str) -> Result<T> {
+    err(format!("no plan sized {what}: every product path loads by its plan (a development check sizes it from the GPU's free memory and says so)"))
+}
+
 /// Whether the engine pages a description's keys and values where it can (`pages_all`): unless a development build's GLYD_ENGINE_PAGED=0 says not.
 fn paging_asked() -> bool {
     crate::tune!("GLYD_ENGINE_PAGED").is_none_or(|v| v != "0")
@@ -845,13 +866,14 @@ impl Dyn {
     }
 
     /// The plan the loader took (`take_plan`): the sequences it holds and the bytes it gives their keys, values and states (`LoadPlan::users`, `kv`), which
-    /// `serve_rows` holds them in and takes no more than; None: an engine no plan sized (a development check's), whose pools are what the GPU's free memory leaves.
+    /// `serve_rows` holds them in and takes no more than; None: an engine no plan sized, whose pools are what the GPU's free memory leaves where a development
+    /// check says so (`free_sized`), else refused.
     pub fn take_plan(&mut self, users: usize, kv: u64) {
         self.planned = Some((users.max(1), kv));
     }
 
     /// The rings' keys and values moved to pools of blocks shared by `users` sequences: as large as the plan says (`take_plan`: its bytes less what the sequences'
-    /// states, marks and block 0 take, `SeqRoom::pool_budget`), else as the GPU's free memory leaves (`keep` of it kept); a sliding group no more than every user's window
+    /// states, marks and block 0 take, `SeqRoom::pool_budget`), else, a development check's (`free_sized`), as the GPU's free memory leaves (`keep` of it kept); a sliding group no more than every user's window
     /// and a chunk, the full groups the rest. Each ring's room in kc and vc is then its group's blocks; the sequences' tables name every entry block 0 until they grow. A group
     /// is the rings of one window and one ratio: compressed entries' (`Ring::ratio`) are blocks of BLOCK entries, which cover BLOCK `ratio` tokens.
     fn page(&mut self, users: usize) -> Result<()> {
@@ -906,7 +928,8 @@ impl Dyn {
                 }
                 b.min(room.saturating_sub(later + zero))
             }
-            None => room,
+            None if free_sized() => room,
+            None => return unplanned(&format!("the pools of {users} sequences' keys and values")),
         };
         // as many tokens' blocks in every group (a block of a group is its `covers` tokens of every layer in it), the sliding groups capped and what they leave to the full ones
         let least: Vec<usize> = keep.iter().zip(&covers).map(|(&k, &c)| seq_blocks(k, self.ctx, c)).collect();
@@ -1480,7 +1503,8 @@ impl Dyn {
                 }
                 want.min(fit)
             }
-            None => fit,
+            None if free_sized() || users == 1 => fit,
+            None => return unplanned(&format!("the rings of {users} sequences")),
         };
         if marks {
             self.mark_room(more + 1)?;

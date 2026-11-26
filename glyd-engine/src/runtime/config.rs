@@ -317,6 +317,12 @@ impl ModelConfig {
     }
 }
 
+/// A test's config.json parsed (the planner's entry points take a parse, never the text).
+#[cfg(test)]
+pub(crate) fn mc(text: &str) -> ModelConfig {
+    ModelConfig::parse(text).unwrap_or_else(|e| panic!("{}", e.msg))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
