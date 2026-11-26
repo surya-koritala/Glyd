@@ -356,6 +356,7 @@ fn cache_file(root: &Path, repo: &str, commit: &str) -> PathBuf {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::runtime::config::mc;
 
     #[test]
     fn tensors_are_classified_by_name() {
@@ -669,7 +670,7 @@ pub(crate) mod tests {
                 .sum();
             assert_eq!(per.iter().sum::<u64>() + base, counted, "{name}: every layer's bytes and the rest's");
             let args = crate::args::Args::from(["run".to_string(), name.to_string()]);
-            match crate::plan::sizing::size_dynamic(&args, name, &table, None, config, family, &devs, Some(m.ram_free), &|_| true) {
+            match crate::plan::sizing::size_dynamic(&args, name, &table, None, &mc(config), family, &devs, Some(m.ram_free), &|_| true) {
                 Ok(p) => {
                     assert!(p.gpu_total() <= p.free && p.spread.is_some(), "{name}");
                     // (each stage's share of the computer's memory: one a stage, adding up to all of it)

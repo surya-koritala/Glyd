@@ -53,10 +53,10 @@ pub(super) fn held(m: &crate::runtime::kinds::ModelDesc, embed: usize, lm: usize
     e.into_iter().chain(ngram.iter().filter(|x| at(x.1)).map(|x| x.0)).collect()
 }
 
-/// The checkpoint's tensors the description of the config.json `text` holds on the host (`held`'s, by name): its embedding's, its n-gram tables' (with the
-/// block scales of one stored in FP8). Empty for a config no description reads.
-pub fn host_names(text: &str) -> Vec<String> {
-    let Ok(d) = serde_json::from_str(text).map_err(|e| Error(e.to_string())).and_then(|v| crate::runtime::describe::describe(&v)) else {
+/// The checkpoint's tensors the description of the config.json `c` (parsed once) holds on the host (`held`'s, by name): its embedding's, its n-gram tables' (with
+/// the block scales of one stored in FP8). Empty for a config no description reads.
+pub fn host_names(c: &crate::runtime::config::ModelConfig) -> Vec<String> {
+    let Ok(d) = crate::runtime::describe::describe_config(c) else {
         return Vec::new();
     };
     let at = |t: TableAt| forced().unwrap_or(t) == TableAt::Host;
@@ -76,11 +76,11 @@ pub fn host_names(text: &str) -> Vec<String> {
     out
 }
 
-/// The tensors of `table` the GPUs hold (the planner's table less the tables the description of `text` holds on the host, `host_names`, in either stored
+/// The tensors of `table` the GPUs hold (the planner's table less the tables the description of `c` holds on the host, `host_names`, in either stored
 /// form: a table at 4 bits stands for its bf16 name, `formats::stands_for`), and the bytes of those in the computer's memory as stored: the checkpoint's
 /// files mapped, the page cache's.
-pub fn off_gpu(table: &crate::sizes::Table, text: &str) -> (crate::sizes::Table, u64) {
-    let names: std::collections::HashSet<String> = host_names(text).into_iter().collect();
+pub fn off_gpu(table: &crate::sizes::Table, c: &crate::runtime::config::ModelConfig) -> (crate::sizes::Table, u64) {
+    let names: std::collections::HashSet<String> = host_names(c).into_iter().collect();
     let (host, gpu): (Vec<_>, Vec<_>) = table.rows.iter().cloned().partition(|r| names.contains(crate::formats::stands_for(&r.name).as_ref()));
     (crate::sizes::Table { rows: gpu }, host.iter().map(|r| r.bytes).sum())
 }

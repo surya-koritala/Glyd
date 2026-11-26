@@ -1564,8 +1564,8 @@ pub fn q4_case(case: &str) -> (&str, bool) {
 /// value's nearest NF4 level of the scale's (`formats::nf4_encode`). Every file that holds one is written again, the index's names with it. The tables' bf16
 /// rows are then the values their 4-bit rows decode to (`tables_decoded`).
 pub fn tables_at_4_bits(dir: &Path, keep: &dyn Fn(&str) -> bool) -> Result<()> {
-    let text = io(std::fs::read_to_string(dir.join("config.json")))?;
-    let names: std::collections::BTreeSet<String> = crate::dynamic::tables::host_names(&text).into_iter().filter(|n| keep(n)).collect();
+    let c = crate::runtime::config::ModelConfig::load(dir)?;
+    let names: std::collections::BTreeSet<String> = crate::dynamic::tables::host_names(&c).into_iter().filter(|n| keep(n)).collect();
     if names.is_empty() {
         return err(format!("{}: its description holds no table read by rows on the host to store at 4 bits", dir.display()));
     }
@@ -5249,7 +5249,7 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
         let config = |k: &str| crate::dynamic::split::config_num(&text, k).unwrap_or(0);
         let (nl, vocab) = (config("num_hidden_layers"), config("vocab_size"));
         let tables = a.has("tables");
-        let hosted = crate::dynamic::tables::host_names(&text).len();
+        let hosted = crate::dynamic::tables::host_names(&crate::runtime::config::ModelConfig::parse(&text)?).len();
         if tables && hosted == 0 {
             return err(format!("{case}: its description holds no table on the host (--tables compares the two places)"));
         }
