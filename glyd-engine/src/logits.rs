@@ -4692,7 +4692,7 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
         println!(
             "{case} at {level}{}{}: {nl} layers, cut before {cuts:?} on GPUs {devices:?}; {} passes (prompts of {} and {}, {tokens} steps after each), {} with logits that differ from the one-GPU run's",
             if case == "qwen4x-cb" { format!(", the expert cache's misses by {}", mode.name()) } else { String::new() },
-            if tables { format!(", {hosted} tables read by rows on the GPU in the one-GPU run and on the host in the other") } else { String::new() },
+            if tables { format!(", its tables read by rows ({hosted} tensors) on the GPU in the one-GPU run and on the host in the other") } else { String::new() },
             one.len(),
             prompts[0].len(),
             prompts[1].len(),
