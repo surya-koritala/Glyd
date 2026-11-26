@@ -59,26 +59,56 @@ fn has_word(name: &str, word: &str) -> bool {
     name.match_indices(word).any(|(i, _)| !part(i.checked_sub(1).map(|j| b[j])) && !part(b.get(i + word.len()).copied()))
 }
 
-/// A GPU's class by its name (glyd_gpu.h): "GeForce" in it; "A10" as a word (an A10, not an A10G, A100 or A40); "L4" as one (not an L40S or
-/// L40); "L40S" as one; "PCIe" in any case (an A100 PCIe, an H100 PCIe); "GH200" as a word; "H100" as one, but not an H100 NVL; else 0.
+/// The words of a GPU's name that the kernels' choices read, each as `kernel_set` spells it, in `gpu_class`'s order: "GeForce" in it; "A10" as a word (an A10,
+/// not an A10G, A100 or A40); "L4" as one (not an L40S or L40); "L40S" as one; "PCIe" in any case (an A100 PCIe, an H100 PCIe); "GH200", "H100" and "NVL" as
+/// words. `gpu_class` and the experts' `moe_gpu` read the name through this alone (the library's gpu_class and h100_gpu test the same words).
+fn name_words(name: &str) -> [(&'static str, bool); 8] {
+    [
+        ("geforce", name.contains("GeForce")),
+        ("a10", has_word(name, "A10")),
+        ("l4", has_word(name, "L4")),
+        ("l40s", has_word(name, "L40S")),
+        ("pcie", name.to_ascii_lowercase().contains("pcie")),
+        ("gh200", has_word(name, "GH200")),
+        ("h100", has_word(name, "H100")),
+        ("nvl", has_word(name, "NVL")),
+    ]
+}
+
+/// A GPU's class by its name (glyd_gpu.h), from its words (`name_words`): GeForce, else A10, L4, L40S, PCIe, GH200, H100 but not an H100 NVL; else 0.
 pub fn gpu_class(name: &str) -> i64 {
-    if name.contains("GeForce") {
+    let [geforce, a10, l4, l40s, pcie, gh200, h100, nvl] = name_words(name).map(|w| w.1);
+    if geforce {
         GEFORCE
-    } else if has_word(name, "A10") {
+    } else if a10 {
         A10
-    } else if has_word(name, "L4") {
+    } else if l4 {
         L4
-    } else if has_word(name, "L40S") {
+    } else if l40s {
         L40S
-    } else if name.to_ascii_lowercase().contains("pcie") {
+    } else if pcie {
         PCIE
-    } else if has_word(name, "GH200") {
+    } else if gh200 {
         GH200
-    } else if has_word(name, "H100") && !has_word(name, "NVL") {
+    } else if h100 && !nvl {
         H100
     } else {
         0
     }
+}
+
+/// The kernel set a GPU runs, and the launches it runs them in, as the engine's own recorded bits are keyed (a pin: `tests/logits/CASE.KEY[.LEVEL].json.gz`,
+/// `tests/packs/nemotron-h-hb.KEY.json.gz`): all that the kernels' choices and launches read of the GPU. Its compute capability; each word of its name a choice
+/// reads (`name_words`: GeForce Ada's stream-K prompt kernels, an L4's prompts decoded for cuBLAS, an A10's and an L40S's decoded ahead, Hopper's routes, the
+/// experts' H100 settings); and its SMs, which the products' blocks and K splits are sized to (`per_sm`), and so the order of their sums. Kernel choice and sum
+/// order follow from the layer's shape alone on these, so two GPUs of one key make the same bits and another key's bits are not this GPU's: an RTX 4080 SUPER is
+/// sm89-geforce-80sm, an L4 sm89-l4-58sm, an A10 sm86-a10-72sm, an L40 sm89-142sm.
+pub fn kernel_set(cc: (i32, i32), name: &str, sms: i32) -> String {
+    let mut key = format!("sm{}{}", cc.0, cc.1);
+    for (w, _) in name_words(name).into_iter().filter(|w| w.1) {
+        key += &format!("-{w}");
+    }
+    key + &format!("-{sms}sm")
 }
 
 /// A GPU's code as the routes take it: its compute capability, major * 10 + minor, plus its class by name.
@@ -875,7 +905,7 @@ fn prompt_run(u: Unpacker, o: i64, k: i64, m: i64) -> Result<Option<PromptRun>> 
     let twelve = matches!(u, Unpacker::Twelve { .. });
     let dev = D::current_device()?;
     let cc = (D::attribute(dev, Attr::CcMajor)?, D::attribute(dev, Attr::CcMinor)?);
-    let ada = cc == (8, 9) && D::name(dev)?.contains("GeForce");
+    let ada = cc == (8, 9) && gpu_class(&D::name(dev)?) == GEFORCE;
     let a100 = twelve && cc == (8, 0);
     let most = if a100 {
         640
@@ -2198,7 +2228,7 @@ fn moe_gpu() -> Result<(bool, bool, bool)> {
     let dev = D::current_device()?;
     let (major, minor) = (D::attribute(dev, Attr::CcMajor)?, D::attribute(dev, Attr::CcMinor)?);
     let hbm = minor == 0 && (8..=10).contains(&major);
-    let h100 = (major, minor) == (9, 0) && has_word(&D::name(dev)?, "H100");
+    let h100 = (major, minor) == (9, 0) && name_words(&D::name(dev)?).contains(&("h100", true));
     Ok((hbm, h100, (major, minor) == (8, 0)))
 }
 
@@ -4446,6 +4476,33 @@ mod tests {
         }
         assert_eq!(gpu_code((8, 9), "NVIDIA GeForce RTX 4090"), 1089);
         assert_eq!(gpu_code((9, 0), "NVIDIA H100 80GB HBM3"), 7090);
+    }
+
+    /// A pin's key is the kernel set and the SMs: the two sm89 cards of the M2 gate (the CI runner's RTX 4080 SUPER, with GeForce Ada's stream-K prompt kernels; the
+    /// L4, an L4's routes and 58 SMs) are two keys, and so are two cards of one class with other SMs (the products' blocks and K splits); two names of one class,
+    /// capability and SM count are one key (an L40 and an RTX 6000 Ada), and the name words that tell the experts' H100 settings apart are in it (an H100 NVL, of
+    /// class 0, against an H200).
+    #[test]
+    fn a_pins_key_is_the_kernel_set_and_the_sms() {
+        let key = |cc, name: &str, sms| kernel_set(cc, name, sms);
+        assert_eq!(key((8, 9), "NVIDIA GeForce RTX 4080 SUPER", 80), "sm89-geforce-80sm");
+        assert_eq!(key((8, 9), "NVIDIA L4", 58), "sm89-l4-58sm");
+        assert_eq!(key((8, 6), "NVIDIA A10", 72), "sm86-a10-72sm");
+        assert_ne!(key((8, 9), "NVIDIA GeForce RTX 4090", 128), key((8, 9), "NVIDIA GeForce RTX 4080 SUPER", 80));
+        assert_eq!(key((8, 9), "NVIDIA L40", 142), key((8, 9), "NVIDIA RTX 6000 Ada Generation", 142));
+        assert_eq!(key((8, 9), "NVIDIA L40", 142), "sm89-142sm");
+        assert_ne!(key((9, 0), "NVIDIA H100 NVL", 132), key((9, 0), "NVIDIA H200", 132));
+        assert_ne!(key((9, 0), "NVIDIA H100 NVL", 132), key((9, 0), "NVIDIA H100 80GB HBM3", 132));
+        assert_eq!(key((9, 0), "NVIDIA H100 PCIe", 114), "sm90-pcie-h100-114sm");
+        // (what the key reads of the name is all the class reads: names of one key's words are of one class)
+        let names = ["NVIDIA GeForce RTX 4080 SUPER", "NVIDIA A10", "NVIDIA A10G", "NVIDIA L4", "NVIDIA L40S", "NVIDIA A100-PCIE-40GB", "NVIDIA GH200 480GB"];
+        for a in names.iter().chain(&["NVIDIA H100 NVL", "NVIDIA H100 PCIe", "NVIDIA H100 80GB HBM3", "NVIDIA H200", "L4_x"]) {
+            for b in names.iter().chain(&["NVIDIA GeForce RTX 4090", "NVIDIA L40", "NVIDIA H800", "NVIDIA RTX A6000"]) {
+                if key((8, 9), a, 1) == key((8, 9), b, 1) {
+                    assert_eq!(gpu_class(a), gpu_class(b), "{a} / {b}");
+                }
+            }
+        }
     }
 
     /// The ways the library's table gives, at its measured thresholds (gpu/glyd_gpu.cu route_for), with no tuning variable set.

@@ -10,11 +10,11 @@
 //!   kestrel, swift and wren (glyd-v4 and glyd-v3 with the earlier dense engine's `engine.safetensors` went with that engine, R3c #139: such a cache is packed again). Each is
 //!   made here from a logits case's random model of a family published in it (Qwen3.5's layout, Gemma 4, the glyd/nemotron-3-* repos' layout; the plain dense kind for the engine's cache) by the packer that made those repos (`pack::run`), loaded from the saved directory as
 //!   `run` loads a pre-packed repo, in the layout it was saved in; its rows held to the same bits as the engine's own run of the model packed as it loads in that layout,
-//!   made in the same run (on any GPU generation, nothing recorded: what a saved directory is for), and within the bound of the case's reference at that level where it
+//!   made in the same run (on any GPU, nothing recorded: what a saved directory is for), and within the bound of the case's reference at that level where it
 //!   has one (`tests/logits`, src/logits.rs: another implementation's numbers, which say the logits are right to that bound). And glyd-v7 at
 //!   hummingbird (glyd/nemotron-3-hummingbird: the experts in codebook rows), from a random model of that repo's layout with latent experts and a random export of them: no level packs it as
-//!   it loads, so its digest is the engine's own bits on the saved directory, one file a GPU generation (`hb_digest`: `tests/packs/nemotron-h-hb.smNN.json.gz`,
-//!   recorded by `packcheck --engine --record` on a GPU of that generation). A GPU whose generation has no digest fails the line: nothing was compared. And the
+//!   it loads, so its digest is the engine's own bits on the saved directory, one file a kernel set (`hb_digest`: `tests/packs/nemotron-h-hb.KEY.json.gz`, KEY
+//!   `logits::pin_key`, recorded by `packcheck --engine --record` on a GPU of that set). A GPU whose kernel set has no digest fails the line: nothing was compared. And the
 //!   codes packs (glyd-x/1, src/cb_pack.rs) of glyd/Qwen3.8-Flash-Next-hummingbird, in each of its forms (precise-v2: q3 and q; best-v2: q3 and q4; fast: q; the
 //!   earlier precise: cb3 and cb2, best: cb3 and cb4, pack: cb2): a random model of the family's codebook widths with its experts in a pack of that form
 //!   (`logits::codes_form_check`), its experts resident and through the expert cache the same bits, the host's computation of the misses within the kind's bound.
@@ -284,7 +284,7 @@ pub fn check_saved(decoder: &Decoder) -> Result<(Vec<String>, Vec<String>)> {
 /// `packcheck [--gpu [--device N]] [--record] [--engine [--scratch DIR]]`: every saved checkpoint of tests/data/packs on the CPU reference against its digest (its packs decoded on
 /// the CPU, or by the GPU library with --gpu); --engine the formats the engine reads, each made from a random model, loaded from the saved directory and held to its fixtures
 /// (`check_engine`). --record writes the saved checkpoints' digests instead (from the CPU's decode); --engine --record writes the Hummingbird level's digest of this GPU's
-/// generation and no other (a recording on a GPU leaves the CPU's digests as they are). Exit 1 where one is not within.
+/// kernel set and no other (a recording on a GPU leaves the CPU's digests as they are). Exit 1 where one is not within.
 pub fn check(a: &crate::args::Args) -> Result<()> {
     if a.has("record") && a.has("engine") {
         return with_scratch(a, |scratch| hummingbird(scratch, true).map(|_| ()));
@@ -327,7 +327,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                     f.push("nemotron-h-hb".into());
                 }
                 None => {
-                    tally.none.push(("nemotron-h-hb".into(), "no digest of this GPU generation".into()));
+                    tally.none.push(("nemotron-h-hb".into(), "no digest of this kernel set".into()));
                     f.push("nemotron-h-hb".into());
                 }
             }
@@ -426,12 +426,12 @@ fn level_fixtures(dir: &Path, case: &str, level: &str) -> Result<Vec<(PathBuf, F
 
 /// `--engine`: each of `SAVED` made from its case's random model (made once in `scratch`), packed by `pack::run` into a directory of its own and loaded from it by the
 /// case's engine at the level, in the layout it was saved in (`logits::engine_at`). Its rows are held, bit for bit, to the engine's own run of the same model packed as it
-/// loads in that layout, made in this run: what a saved directory is for (the same model as the engine makes of the checkpoint), on any GPU generation, with nothing
+/// loads in that layout, made in this run: what a saved directory is for (the same model as the engine makes of the checkpoint), on any GPU, with nothing
 /// recorded. And to the bound of every reference of the case in `fixtures` that bounds the level (another implementation's numbers: `logits::Held::Reference`). The
-/// engine's own recorded bits (`CASE.smNN[.LEVEL].json.gz`, pins) are `logitscheck`'s, not held here. The names that failed, the rows held to the model packed as it
+/// engine's own recorded bits (`CASE.KEY[.LEVEL].json.gz`, pins) are `logitscheck`'s, not held here. The names that failed, the rows held to the model packed as it
 /// loads, and the reference comparisons counted (`logits::Tally`).
 fn check_engine(scratch: &Path, fixtures: &Path) -> Result<(Vec<String>, usize, logits::Tally)> {
-    let gpu = logits::gpu_label()?;
+    let gpu = logits::pin_key()?;
     let (mut failed, mut same) = (Vec::new(), 0usize);
     let mut tally = logits::Tally::default();
     for &(case, level, layout, what) in SAVED {
@@ -524,31 +524,32 @@ fn check_engine(scratch: &Path, fixtures: &Path) -> Result<(Vec<String>, usize, 
     Ok((failed, same, tally))
 }
 
-/// Where the digest the check holds the Hummingbird level to on this GPU generation is not recorded (and this is no recording): the line that says so, a failure, before
-/// any model is made or loaded. A digest of another generation does not stand in: its bits are that generation's kernels', and a line that compared nothing is not a pass.
+/// Where the digest the check holds the Hummingbird level to on this GPU's kernel set is not recorded (and this is no recording): the line that says so, a failure, before
+/// any model is made or loaded. A digest of another kernel set does not stand in: its bits are that set's kernels' and launches', and a line that compared nothing is not
+/// a pass.
 fn digest_missing(path: &Path, record: bool) -> Option<String> {
     (!record && !path.exists()).then(|| {
         format!(
-            "FAIL nemotron-h-hb     glyd-v7 at hummingbird: no digest of this GPU generation recorded ({}), so nothing is compared: packcheck --engine --record on a GPU of it",
+            "FAIL nemotron-h-hb     glyd-v7 at hummingbird: no digest of this kernel set recorded ({}), so nothing is compared: packcheck --engine --record on a GPU of it",
             path.file_name().unwrap_or_default().to_string_lossy()
         )
     })
 }
 
-/// The Hummingbird level's digest on the GPU generation `gpu` (`logits::gpu_label`: sm89): the engine's own bits (no level packs it as it loads, its codes being an
-/// export's), which another generation's kernels do not make to the last bit, so each generation has its own file, as the logits fixtures of an engine's bits do.
-pub fn hb_digest(gpu: &str) -> PathBuf {
-    Path::new(DIGESTS).join(format!("nemotron-h-hb.{gpu}.json.gz"))
+/// The Hummingbird level's digest on the kernel set `key` (`logits::pin_key`: sm89-geforce-80sm): the engine's own bits (no level packs it as it loads, its codes being an
+/// export's), which another set's kernels or launches do not make to the last bit, so each set has its own file, as the logits fixtures of an engine's bits do.
+pub fn hb_digest(key: &str) -> PathBuf {
+    Path::new(DIGESTS).join(format!("nemotron-h-hb.{key}.json.gz"))
 }
 
 /// The Hummingbird level's saved format, as the published glyd/nemotron-3-hummingbird holds it (a compatibility check of that repo's format, no model's): a random
 /// model of its layout with latent experts (`kcheck_nh::random`, a latent of 1,024, 16
 /// experts), a random export of its experts (`hbpack::toy_export`, as `hbtoy` makes one: 40 percent at three bits, the rest at two) and the glyd-v7 directory `hbpack::run`
-/// saves from them, loaded as `run` loads the repo; its rows against this GPU generation's digest (`hb_digest`, written where `record`). Whether it passed; None where
-/// nothing was compared (no digest of this generation, or one that names another): a failure too.
+/// saves from them, loaded as `run` loads the repo; its rows against this GPU's kernel set's digest (`hb_digest`, written where `record`). Whether it passed; None where
+/// nothing was compared (no digest of this kernel set, or one that names another): a failure too.
 fn hummingbird(scratch: &Path, record: bool) -> Result<Option<bool>> {
     use glyd_gpu::save::Layout;
-    let gpu = logits::gpu_label()?;
+    let gpu = logits::pin_key()?;
     let digest = hb_digest(&gpu);
     if let Some(line) = digest_missing(&digest, record) {
         println!("{line}");
@@ -596,9 +597,9 @@ fn hummingbird(scratch: &Path, record: bool) -> Result<Option<bool>> {
     let fx = Fixture::read(&digest)?;
     if fx.gpu.as_deref() != Some(gpu.as_str()) {
         println!(
-            "FAIL nemotron-h-hb     glyd-v7 at hummingbird: {} says its bits are {}'s, this GPU is {gpu}",
+            "FAIL nemotron-h-hb     glyd-v7 at hummingbird: {} says its bits are the kernel set {}'s, this GPU's is {gpu}",
             digest.file_name().unwrap_or_default().to_string_lossy(),
-            fx.gpu.as_deref().unwrap_or("no generation")
+            fx.gpu.as_deref().unwrap_or("no kernel set")
         );
         return Ok(None);
     }

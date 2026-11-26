@@ -93,7 +93,8 @@ pub struct Fixture {
     pub family: String,
     pub model: String,
     pub provenance: BTreeMap<String, String>,
-    /// The GPU generation whose bits these are ("sm89"), where the bound is `bits` of an engine's own output: another generation's kernels differ in the last bits, so it skips them.
+    /// The kernel set whose bits these are (`pin_key`: "sm89-geforce-80sm"), where the bound is `bits` of an engine's own output: another set's kernels or launches differ in the
+    /// last bits, so a GPU of another key skips them.
     pub gpu: Option<String>,
     pub bounds: Vec<LevelBound>,
     pub prompt: Vec<u32>,
@@ -108,7 +109,7 @@ impl Fixture {
         1 + self.decode.len() + (!self.long.is_empty()) as usize
     }
 
-    /// What a comparison with this fixture shows (`Held`): a fixture with a GPU generation is the engine's own recorded output, a pin.
+    /// What a comparison with this fixture shows (`Held`): a fixture with a kernel set is the engine's own recorded output, a pin.
     pub fn held(&self) -> Held {
         if self.gpu.is_some() {
             Held::Pin
@@ -119,7 +120,7 @@ impl Fixture {
 }
 
 /// What a fixture holds the engine to. `Reference`: another implementation's numbers (a CPU reference, transformers), within a bound: it shows the logits are right
-/// to that bound. `Pin`: the engine's own output as one GPU generation recorded it, bit for bit: it shows the logits have not moved since, and nothing of whether
+/// to that bound. `Pin`: the engine's own output as one kernel set recorded it, bit for bit: it shows the logits have not moved since, and nothing of whether
 /// they were right when recorded. A case with pins alone is said to be pinned only, never within bounds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Held {
@@ -155,6 +156,8 @@ pub struct Tally {
     pub none: Vec<(String, String)>,
     /// Cases whose engine is not built: named, not held.
     pub waits: Vec<String>,
+    /// Cases held to a reference whose pins are all another kernel set's: named, their bits not held on this GPU.
+    pub unpinned: Vec<String>,
 }
 
 impl Tally {
@@ -164,8 +167,8 @@ impl Tally {
             Held::Pin => self.pins += 1,
         }
     }
-    /// A case's end: `refs` and `pins` its comparisons, `waiting` its engine not built, `others` the GPU generations whose bits it has and this GPU cannot be held to.
-    /// The line to print for a case no reference held, if any.
+    /// A case's end: `refs` and `pins` its comparisons, `waiting` its engine not built, `others` the kernel sets whose bits it has and this GPU cannot be held to
+    /// (`pin_key`). The line to print for a case no reference held, if any.
     pub fn case(&mut self, id: &str, refs: usize, pins: usize, waiting: bool, others: &[String]) -> Option<String> {
         if refs > 0 {
             return None;
@@ -185,7 +188,7 @@ impl Tally {
         }
         let why = format!("its fixtures are the bits of {}", others.join(", "));
         self.none.push((id.to_string(), why.clone()));
-        Some(format!("FAIL {id:12} nothing compared: {why}, another GPU generation"))
+        Some(format!("FAIL {id:12} nothing compared: {why}, another kernel set"))
     }
     /// The cases that fail for having nothing compared.
     pub fn failed(&self) -> Vec<String> {
@@ -202,6 +205,9 @@ impl Tally {
         }
         if !self.waits.is_empty() {
             s += &format!("; not held, no engine yet: {}", self.waits.join(", "));
+        }
+        if !self.unpinned.is_empty() {
+            s += &format!("; held to a reference, no pin of this kernel set: {}", self.unpinned.join(", "));
         }
         s
     }
@@ -2823,13 +2829,24 @@ fn model_dir(c: &Case, scratch: &Path) -> Result<PathBuf> {
     }
 }
 
-/// The GPU generation as a fixture names it: sm89 for compute capability 8.9.
-pub fn gpu_label() -> Result<String> {
-    let (major, minor) = crate::dev::Dev::new(0)?.cc_pair();
-    Ok(format!("sm{major}{minor}"))
+/// The key of this GPU's pins (a fixture's `gpu`, its file `CASE.KEY[.LEVEL].json.gz`): the kernel set it runs and the SMs it launches them on
+/// (`fold::kernel_set`: sm89-geforce-80sm on an RTX 4080 SUPER, sm89-l4-58sm on an L4), all that makes the engine's bits on a GPU.
+pub fn pin_key() -> Result<String> {
+    let d = crate::dev::Dev::new(0)?;
+    Ok(crate::fold::kernel_set(d.cc, &d.name, d.sms))
 }
 
-/// A case's fixtures: CASE.json.gz (a reference's) and CASE.*.json.gz (an engine's own bits on a GPU generation).
+/// A fixture's file name in a directory: CASE.json.gz for a reference's, CASE.KEY.json.gz for a pin of the kernel set KEY (`pin_key`) at penguin and
+/// CASE.KEY.LEVEL.json.gz at another level.
+pub fn fixture_name(case: &str, key: Option<&str>, level: &str) -> String {
+    match key {
+        None => format!("{case}.json.gz"),
+        Some(k) if level == "penguin" => format!("{case}.{k}.json.gz"),
+        Some(k) => format!("{case}.{k}.{level}.json.gz"),
+    }
+}
+
+/// A case's fixtures: CASE.json.gz (a reference's) and CASE.*.json.gz (an engine's own bits on a kernel set, `pin_key`).
 fn fixture_files(dir: &Path, id: &str) -> Result<Vec<PathBuf>> {
     let mut v: Vec<PathBuf> = io(std::fs::read_dir(dir))
         .map_err(|e| Error(format!("{}: {}", dir.display(), e.msg)))?
@@ -2884,7 +2901,7 @@ fn fixtures_dir(a: &crate::args::Args) -> PathBuf {
 }
 
 /// `logitscheck [CASE...] [--fixtures DIR] [--scratch DIR] [--cpu-ref] [--level L]`: each case's engine (or CPU reference) against its fixture at each level the fixture bounds. Exit 1 where one is not within,
-/// and where a case had no fixture this GPU can be held to (every one of them another GPU generation's bits): a case with nothing compared is not one within its bounds.
+/// and where a case had no fixture this GPU can be held to (every one of them another kernel set's bits, `pin_key`): a case with nothing compared is not one within its bounds.
 /// A line says what held it (`Held`): PASS a reference's bound kept, PIN the engine's own recorded bits unchanged. The last lines count them apart ("N held to a
 /// reference, M pinned, K not held") and name the cases pinned only (no reference of another implementation: GLM-5.3's case today) and not held.
 pub fn check(a: &crate::args::Args) -> Result<()> {
@@ -2908,7 +2925,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let (mut failed, mut ran) = (Vec::new(), 0usize);
     let mut tally = Tally::default();
     let t_all = std::time::Instant::now();
-    let gpu = gpu_label().ok();
+    let gpu = pin_key().ok();
     for c in &all {
         let dir = model_dir(c, &scratch.dir)?;
         let (mut others, mut waiting) = (Vec::new(), false);
@@ -2920,7 +2937,11 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
             }
             if let (Some(want), Some(have)) = (&fx.gpu, &gpu) {
                 if want != have && !cpu {
-                    println!("SKIP {:12} {}: its bits are {want}'s, this GPU is {have}", c.id, path.file_name().unwrap_or_default().to_string_lossy());
+                    println!(
+                        "SKIP {:12} {}: the bits of the kernel set {want}, this GPU's is {have}",
+                        c.id,
+                        path.file_name().unwrap_or_default().to_string_lossy()
+                    );
                     others.push(want.clone());
                     continue;
                 }
@@ -3006,20 +3027,25 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
                 }
             }
         }
-        // (a case no reference held: pinned only; its engine not built; or nothing compared, every fixture it has being another GPU generation's bits)
+        // (a case no reference held: pinned only; its engine not built; or nothing compared, every fixture it has being another kernel set's bits)
+        others.sort();
         others.dedup();
-        if let Some(line) = tally.case(c.id, tally.refs - refs_before, tally.pins - pins_before, waiting, &others) {
-            let how = if line.starts_with("FAIL") {
-                format!(
-                    "; this GPU is {} (logitsrecord {} --from engine --out {} records this generation's pin)",
-                    gpu.as_deref().unwrap_or("unknown"),
-                    c.id,
-                    fixtures.display()
-                )
-            } else {
-                String::new()
-            };
-            println!("{line}{how}");
+        let (refs, pins) = (tally.refs - refs_before, tally.pins - pins_before);
+        let how = format!(
+            "no pin of this kernel set ({}) recorded: logitsrecord {} --from engine --bound bits --out {} on a GPU of it",
+            gpu.as_deref().unwrap_or("unknown"),
+            c.id,
+            fixtures.display()
+        );
+        match tally.case(c.id, refs, pins, waiting, &others) {
+            Some(line) if line.starts_with("FAIL") => println!("{line}; {how}"),
+            Some(line) => println!("{line}"),
+            // (held to a reference, its pins all another kernel set's: said, and counted apart)
+            None if pins == 0 && !others.is_empty() && !cpu => {
+                println!("     {:12} {how}", c.id);
+                tally.unpinned.push(c.id.to_string());
+            }
+            None => {}
         }
     }
     failed.extend(tally.failed());
@@ -3693,6 +3719,7 @@ fn git_sha() -> String {
 
 /// `logitsrecord CASE --from cpu|engine --out FILE|DIR [--level L] [--bound bits|kl:MEAN:MAX:TOP1] [--note TEXT] [--scratch DIR]`: a fixture from the CPU reference of src/*_ref.rs, or from this engine
 /// (a release's own, where the family has no reference: say so in --note). The levels the fixture bounds: --bound gives the first's (the lossless one), `--levels kestrel=kl:1e-3:5e-3:0.9,...` more.
+/// The engine's is a pin of this GPU's kernel set (`pin_key`); --out DIR names the file `fixture_name` (CASE.KEY.json.gz, CASE.KEY.LEVEL.json.gz past penguin).
 pub fn record(a: &crate::args::Args) -> Result<()> {
     let c = find_case(a.need(1, "CASE")?)?;
     let from = a.flag("from").unwrap_or("engine");
@@ -3749,17 +3776,10 @@ pub fn record(a: &crate::args::Args) -> Result<()> {
         Weights::Hub(id) => id.to_string(),
         Weights::Random(_) => format!("random {} model, made by the generator of this case", c.id),
     };
-    let gpu = if from == "engine" { Some(gpu_label()?) } else { None };
+    let gpu = if from == "engine" { Some(pin_key()?) } else { None };
     let fx = Fixture { case: c.id.into(), family: c.family.into(), model, provenance, gpu, bounds, prompt, decode, long, rows };
     let out = PathBuf::from(a.flag("out").ok_or_else(|| Error("--out FILE".into()))?);
-    let out = if out.is_dir() {
-        out.join(match &fx.gpu {
-            Some(g) => format!("{}.{g}.json.gz", c.id),
-            None => format!("{}.json.gz", c.id),
-        })
-    } else {
-        out
-    };
+    let out = if out.is_dir() { out.join(fixture_name(c.id, fx.gpu.as_deref(), level)) } else { out };
     fx.write(&out)?;
     println!(
         "{}: {} rows from {from} in {:.1} s, {} bytes",
@@ -4771,15 +4791,18 @@ mod tests {
         t.add(Held::Pin);
         let line = t.case("gemma4", 0, 1, false, &[]).unwrap();
         assert!(line.starts_with("PIN  gemma4") && line.contains("pinned only") && !line.contains("within"), "{line}");
-        // a case whose fixtures are another generation's bits, one whose engine is not built, one with no fixture at this level
-        let line = t.case("glm", 0, 0, false, &["sm89".to_string()]).unwrap();
-        assert!(line.starts_with("FAIL glm") && line.contains("nothing compared") && line.contains("sm89"), "{line}");
+        // a case whose fixtures are another kernel set's bits, one whose engine is not built, one with no fixture at this level
+        let line = t.case("glm", 0, 0, false, &["sm89-geforce-80sm".to_string()]).unwrap();
+        assert!(line.starts_with("FAIL glm") && line.contains("nothing compared") && line.contains("sm89-geforce-80sm, another kernel set"), "{line}");
         assert!(t.case("a-later-family", 0, 0, true, &[]).is_none() && t.case("dense", 0, 0, false, &[]).is_none());
-        assert_eq!(t.failed(), vec!["glm: nothing compared (its fixtures are the bits of sm89)".to_string()]);
+        assert_eq!(t.failed(), vec!["glm: nothing compared (its fixtures are the bits of sm89-geforce-80sm)".to_string()]);
         assert_eq!(
             t.summary(),
             "2 held to a reference, 2 pinned, 2 not held; pinned only (no reference): gemma4; not held: glm; not held, no engine yet: a-later-family"
         );
+        // (a case a reference held whose pins are all another kernel set's: named, not counted as held or failed)
+        t.unpinned.push("dense".into());
+        assert!(t.summary().ends_with("; held to a reference, no pin of this kernel set: dense"), "{}", t.summary());
         assert_eq!(Tally::default().summary(), "0 held to a reference, 0 pinned, 0 not held");
     }
 
@@ -4803,6 +4826,49 @@ mod tests {
             assert!((x.lse - y.lse).abs() < 1e-9);
         }
         assert!(compare(&back, &Bound::Bits, &rows).ok);
+    }
+
+    /// A pin is found by its kernel set (`fold::kernel_set`, `pin_key`): every pin of tests/logits is the file `fixture_name` gives its case, `gpu` and level, and
+    /// the Hummingbird digests of tests/packs are `packcheck::hb_digest`'s. The two sm89 cards of the M2 gate have their own: the RTX 4080 SUPER's (the CI runner's,
+    /// its rows the ones recorded on 2026-11-20 under the name sm89: the first and last hashes below) and the L4's; the A10's as recorded on 2026-11-25.
+    #[test]
+    fn a_pin_is_found_by_its_kernel_set() {
+        use crate::fold::kernel_set;
+        let (rtx, l4, a10) =
+            (kernel_set((8, 9), "NVIDIA GeForce RTX 4080 SUPER", 80), kernel_set((8, 9), "NVIDIA L4", 58), kernel_set((8, 6), "NVIDIA A10", 72));
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits");
+        let mut by_key: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for e in std::fs::read_dir(&dir).unwrap() {
+            let p = e.unwrap().path();
+            let fx = Fixture::read(&p).unwrap();
+            let Some(key) = &fx.gpu else { continue };
+            assert_eq!(fx.bounds.len(), 1, "{}", p.display());
+            let level = &fx.bounds[0].level;
+            assert_eq!(p.file_name().unwrap().to_string_lossy(), fixture_name(&fx.case, Some(key), level));
+            by_key.entry(key.clone()).or_default().push(format!("{}@{level}", fx.case));
+            if *key == rtx {
+                let want = match (fx.case.as_str(), level.as_str()) {
+                    ("dense", "penguin") => ("c10bf3a7802bd57f", "58c0377f0d316a5d"),
+                    ("nemotron-h", "penguin") => ("6d103e0f42360970", "52a84a052b1e09b1"),
+                    ("nemotron-h", "kestrel") => ("3e37ca1da26d4ccd", "02b19e993dfc36b1"),
+                    other => panic!("{other:?}: a pin of the RTX 4080 SUPER not named here"),
+                };
+                let hash = |r: &Row| format!("{:016x}", r.hash);
+                assert_eq!((hash(&fx.rows[0]), hash(fx.rows.last().unwrap())), (want.0.to_string(), want.1.to_string()), "{}", p.display());
+            }
+        }
+        for v in by_key.values_mut() {
+            v.sort();
+        }
+        assert_eq!(by_key[&rtx], ["dense@penguin", "nemotron-h@kestrel", "nemotron-h@penguin"]);
+        assert_eq!(by_key[&l4], ["dense@penguin", "nemotron-h@kestrel", "nemotron-h@penguin", "qwen35@penguin"]);
+        assert_eq!(by_key[&a10], ["gemma4@penguin"]);
+        assert_eq!(fixture_name("nemotron-h", Some(&l4), "kestrel"), "nemotron-h.sm89-l4-58sm.kestrel.json.gz");
+        assert_eq!(fixture_name("qwen35", None, "penguin"), "qwen35.json.gz");
+        for key in [&l4, &a10] {
+            let d = crate::packcheck::hb_digest(key);
+            assert_eq!(Fixture::read(&d).unwrap().gpu.as_deref(), Some(key.as_str()), "{}", d.display());
+        }
     }
 
     /// The kind's bound `usercheck --ref` holds a lossless level to is the one every fixture of a CPU reference of another implementation holds at
