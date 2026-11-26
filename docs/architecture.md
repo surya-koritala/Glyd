@@ -17,11 +17,11 @@ What holds today:
 - `glyd-engine run` refuses with one line and a fix where it cannot run a model (`machine.rs`, `support.rs`).
 - Every choice can be overridden: `MODEL:level`, `--context`, `--split`, `--devices`, `--users`.
 - At run time the engine needs only the GPU driver, which it opens itself (`glyd-engine/src/ffi.rs`); building it needs
-  nvcc, or hipcc for AMD. The v0.33.0 `install.sh` installs the engine without Python; `glyd run` goes through the Python tool (vLLM) only where that tool is installed and the GPU is not one the engine is the default on.
+  nvcc, or hipcc for AMD. The v0.33.0 `install.sh` installs the engine without Python; `glyd run` goes through the Python tool (vLLM) only where that tool is installed and the model is a plain dense one at penguin on a GPU the engine is not the default on: every other family and level is the engine's.
 
 What is planned:
 
-- One `glyd` binary with the engine linked, no Python, no toolkit (P1). The AMD HIP runtime would ship in the backend bundle.
+- A small core that downloads its backend, so that the AMD HIP runtime ships in a backend bundle (P7b); today an AMD build is a development build.
 - Adapting at run time when other programs take GPU memory, instead of refusing at start. Today an out-of-memory load is
   refused with the numbers.
 - Datacenter transports (NCCL, RCCL, NIXL) loaded when present. The engine uses none of them today.
@@ -139,8 +139,8 @@ a GPU newer than the machine code still runs (P6). The target is a small core th
 
 ## Build or reuse (split execution bottom)
 
-Used today: `tokenizers`, `minijinja` (chat templates), `flate2`, `sha2`, `ureq`; the Hub client, safetensors reader and
-JSON parser are Glyd's own. Planned (all Apache-2.0/MIT/BSD): `llguidance` (constrained decoding, R5a), `cudarc` for NCCL
+Used today: `tokenizers`, `minijinja` (chat templates), `flate2`, `sha2`, `ureq`, `llguidance` (constrained decoding, R5a), `tokio` (the async front end); the Hub client, safetensors reader and
+JSON parser are Glyd's own. Planned (all Apache-2.0/MIT/BSD): `cudarc` for NCCL
 (C2a), `mlx-c` (V3a), NIXL (after 1.0), and kernel libraries where they beat Glyd's own (`V8a` in M2: FlashInfer, CUTLASS,
 Marlin, cuBLASLt — including datacenter Blackwell `sm_100` standard dense/FP8/NVFP4 GEMMs; `V8b` in M5b: hipBLASLt, aiter
 and composable_kernel). Built here: the kernels for Glyd's compressed formats (one CUDA/HIP source tree, MLX custom Metal
