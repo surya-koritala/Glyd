@@ -3592,6 +3592,8 @@ impl Dyn {
         }
         // (a chunk past a verify pass: nothing to go back in)
         self.pending = None;
+        // (the last stage's head rows: their candidates and sums are made of them when asked, as of one GPU's step's: `Split::top`, `Split::mass`)
+        self.cands.fresh(if self.stage.last { head } else { 0 });
         self.dev.sync()?;
         let one = n == 1 && self.graph.is_some() && !self.verifying.get();
         if one {
