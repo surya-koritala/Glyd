@@ -2676,8 +2676,6 @@ impl ExpertStore {
         ((1..=most).contains(&tokens) && pairs <= crate::devplan::XP_PAIRS && pairs.is_multiple_of(tokens)).then(|| dp.args(mail, layer))
     }
 
-    /// Layer `layer`'s places emptied and their copies done (the copy thread's batch joined and the copy stream past it), so that their memory can be freed (a block's places released); the places at `dev` from now on
-    /// (the same strides and number), where a layer's places are made again (`restore_places`): its cache starts empty.
     /// Every layer's copies still queued done (the host waits): `hint`s behind a prompt finished before the decode's first step, not beside it.
     pub fn drain(&self) -> Result<()> {
         let mut guard = self.inner.borrow_mut();
@@ -2690,6 +2688,8 @@ impl ExpertStore {
         Ok(())
     }
 
+    /// Layer `layer`'s places emptied and their copies done (the copy thread's batch joined and the copy stream past it), so that their memory can be freed (a block's places released); the places at `dev` from now on
+    /// (the same strides and number): its cache starts empty.
     pub fn reset_places(&self, layer: usize, dev: [u64; 2]) -> Result<()> {
         let mut guard = self.inner.borrow_mut();
         let inner = &mut *guard;

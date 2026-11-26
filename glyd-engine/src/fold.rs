@@ -2692,7 +2692,7 @@ fn f8_lin_need(n: i64, k: i64, m: i64, ctas: i64) -> i64 {
 
 /// The experts' product's CTAs a slot (f8_moe_ctas): one a row group of 128 rows of a matrix, which adds all of the row group's K in order, so a pair's sum is
 /// the same whatever shares its call (its tokens, its slots, the one-token kernel on the same plan) and follows from the matrix's shape alone (the rule of the
-/// other experts' products: handoff notes, moe-kernels.md); GLYD_F8_MOE_GRID's in a development build.
+/// other experts' products); GLYD_F8_MOE_GRID's in a development build.
 fn f8_moe_ctas(n: i64, k: i64) -> i64 {
     let w = f8_work(n, k);
     let c = tuned(crate::tune!("GLYD_F8_MOE_GRID"), 0);

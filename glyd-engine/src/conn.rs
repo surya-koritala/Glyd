@@ -1,6 +1,6 @@
 //! What a request's answer is written to: a `Conn`. The handlers of every API (OpenAI's completions, Anthropic's Messages, OpenAI's Responses, Ollama's) write the HTTP answer to one, and
 //! ask it whether the client has gone; they do not know whether it is a socket they own (`TcpStream`, the thread-per-connection server of before, kept for the programs that serve with one
-//! thread each) or the pipe the async front end (src/frontend.rs) pumps to the client's socket (`Piped`).
+//! thread each) or the pipe the async front end (src/server/frontend.rs) pumps to the client's socket (`Piped`).
 
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};

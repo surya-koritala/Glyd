@@ -64,9 +64,9 @@ models, but not for this one.
 
 ## Known limits
 
-- Text only. The base model's vision part isn't supported yet.
+- Images: PNG and JPEG only, no video (the README says how an image is sent).
 - Linux + NVIDIA only, 16 GB minimum.
-- One request at a time, and others queue.
+- Four requests at once by default (`GLYD_USERS`, 1 to 64, as many as the card's memory holds); others queue. With two cards (`GLYD_GPUS=0,1`) one at a time.
 - Fast mode is noticeably weaker on long code.
 - If you don't have enough free RAM, it gets very slow and the disk gets busy. Close the browser tabs eating your RAM.
 - The expert skipping above is a small approximation on top of the compression.

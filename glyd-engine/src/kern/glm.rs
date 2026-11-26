@@ -39,7 +39,7 @@ pub fn mla_smem(dev: &Dev) -> Result<u32> {
     Ok(dev.smem_optin()?.saturating_sub(1 << 10))
 }
 
-/// The most positions a pass of the latent attention (scores over `ks` channels) holds where a block has `smem` bytes of shared memory: `mla_attn_with`'s
+/// The most positions a pass of the latent attention (scores over `ks` channels) holds where a block has `smem` bytes of shared memory: `mla_attn`'s
 /// tile, a multiple of 16.
 pub fn mla_positions(smem: u32, ks: i32) -> usize {
     ((smem as usize / 4).saturating_sub(ks as usize) / 2) / 16 * 16

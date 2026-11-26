@@ -173,7 +173,7 @@ pub enum ExpertCache {
     /// An expert as the loader packs it, in the layouts of these tags (glyd_gpu::pack's), each place the largest of its bytes in them (the layout its scales
     /// allow is the load's), from the Moe kind's shape in the model's description and the experts as it records them released (src/plan.rs `packed_experts`).
     Packed(&'static [u32]),
-    /// An expert's bytes as released, each the same (`release_cache`).
+    /// An expert's bytes as released, each the same (`release_experts`: src/plan.rs).
     Release,
     /// A codes pack of the experts beside the release's weights at the hummingbird level (src/cb_pack.rs, src/moe_cb.rs): places of the pack's largest expert
     /// a layer, every expert the pack's bytes in the computer's memory, its files mapped (`codes_plan`).

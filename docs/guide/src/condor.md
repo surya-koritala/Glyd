@@ -1,9 +1,9 @@
 # Condor: a big MoE on one GPU
 
 Condor runs Qwen3.8-Flash-Next, a 180B mixture of experts, on one 12-16 GB NVIDIA GPU with 32-64 GB of RAM, or with its layers
-cut over two. It has its own setup script, its own server and chat page. `glyd run` takes this model lossless only, every expert
-on the GPUs (`glyd fit` says what that needs); Condor's packs of experts in the computer's memory are served here (ROADMAP P8
-moves them into `run`).
+cut over two. It has its own setup script, its own server and chat page. `glyd run` takes this model at penguin, every expert
+on the GPUs (`glyd fit` says what that needs), and at the hummingbird level from a codes pack beside its weights (`glyd run DIR:hummingbird`); Condor's own
+scripts serve those packs of experts with `qwenserve`.
 
 ## What you need
 

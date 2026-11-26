@@ -91,12 +91,12 @@ Two steps, both Rust, replacing `nemotron_hbr.py`:
 
 1. `glyd-engine calibrate-experts MODEL OUT.json`: the model runs on the engine (any level and placement that runs it) over the built-in
    calibration corpus (`calib.rs`, chat-templated, 32,768 tokens by default), prompt passes only; each MoE layer's router choices are
-   read back and counted per expert. With `--hessians DIR` each expert's E[x' x'^T] and E[h h^T] are kept too, for GPTQ.
+   read back and counted per expert. The codec takes each expert's E[x' x'^T] and E[h h^T] where they are given, for GPTQ (`hb_codec::ExpertHessians`); this command does not collect them.
 2. `glyd-engine pack MODEL OUT --layout hummingbird --usage OUT.json`: for each MoE layer, the experts ranked by use; the recipe hb40
    puts the 40% most used at 3 bits and the rest at 2 (ties to the lower index; an expert never chosen stays, at 2 bits). Each expert's
    matrices are read from the release exactly (bf16, FP8 with its block scales, FP4 and MXFP4 decoded to f32), rotated, and rounded
    row by row: to the nearest codebook entry, or with GPTQ act-order (over the columns for `gate_up`, over the neurons for `down_t`)
-   where Hessians were collected and the expert has at least 2,048 tokens. The rest of the release is copied byte for byte.
+   where Hessians are given and the expert has at least 2,048 tokens. The rest of the release is copied byte for byte.
 
 Nearest rounding needs only the counts, which is what a corpus pass on a single machine gives cheaply. Whether a family needs GPTQ is
 the quality bar's question (#235): Nemotron 3 Super shipped with it (+10.3% perplexity at 2.99 bits, KL 0.095).

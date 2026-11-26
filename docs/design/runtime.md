@@ -8,7 +8,7 @@ formula is given. Written 2026-11-20 against main ea26239f; revised the same day
 **Reading this document.** "Top gaps" and section 1 are the tree the design was written against (main ea26239f, 2026-11-20): the
 files, line numbers and limits they cite are that tree's. Since then the hand-written engines (`model.rs`, `model35.rs`,
 `model_gemma4.rs`, Nemotron-H's and the GLM development engine) have been deleted, and every family runs on the description executor
-through the one scheduler (Qwen3.8-Flash-Next's own engine, `model_qwen4x.rs`, is deleted too: `glyd run`, `serve` and `fit` take its release at penguin on one GPU, and `qwenserve` serves Condor's packs of codebook experts on the executor). What was built is
+through the one scheduler (Qwen3.8-Flash-Next's own engine, `model_qwen4x.rs`, is deleted too: `glyd run`, `serve` and `fit` take its release at penguin on one GPU or with its layers cut over several, and `qwenserve` serves Condor's packs of codebook experts on the executor). What was built is
 marked **As built** or **Built** where it differs from the text around it.
 
 **Scope.** What M2 tests and optimises for are the models released in the last six months (cutoff 2026-05-20): Qwen3.8 (27B dense,
@@ -522,8 +522,8 @@ and layers across GPUs (`ModelStep for Run`: a prompt in one call, a token a ste
 model (`ModelStep::draft`: a decode step is a drafting round, `spec_round`, each of its tokens sent and added as a step's; a request that
 asks for log-probabilities or a least length has plain steps). Condor's own engine (`qwenserve`, `qwen4x_serve.rs`'s `Qx` over
 `EngineQx`) was not the executor's and kept its loop. As built (R3d, #140): that engine is deleted. The family's description runs on the executor and through the
-scheduler: the release at penguin through `glyd run`, `serve` and `fit` (one GPU), and Condor's packs through `qwenserve CKPT PACK --port` (`dynamic/qwen4x.rs` `http`:
-the chat page and the APIs, up to `--users` requests through `server::work_with`; on one GPU, a list of more refused in words; not yet on the executor: the vision tower, and the draft head over the expert cache).
+scheduler: the release at penguin through `glyd run`, `serve` and `fit` (one GPU, or its layers cut over several), and Condor's packs through `qwenserve CKPT PACK --port` (`dynamic/qwen4x.rs` `http`:
+the chat page and the APIs, up to `--users` requests through `server::work_with`; `--gpus 0,1` cuts the layers over those cards through the generic split; the vision tower runs on the executor; not yet on the executor: the draft head over the expert cache).
 
 What the family's move was held to (`paritycheck` while Condor's engine existed, and `logitscheck` now it is deleted). The two engines gave the same bits
 through the first seven stages of layer 0 (the gated residual's norm, bottleneck, up product and mix; the linear attention's two products
@@ -727,7 +727,7 @@ bit: with prompts one a pass every reply under preemption is the reply alone (`u
 
 `offload.rs` is the expert store Condor runs on, and Nemotron-H and Kimi-K3 (`tp_cache.rs`) use parts of it:
 
-- **Slots.** Each MoE layer has GPU places, the GPU's free memory less the reserve for the sequences, over the layers' places of an expert's bytes (`dynamic/qwen4x.rs` `places_for`; `qwen4x_serve.rs:290-295` before it was deleted), replaced LRU among the
+- **Slots.** Each MoE layer has GPU places: the GPU memory the plan leaves (`plan::expert_cache_with`: every user's sequences first, the engine's work next, the places what is left) over the layers' places of an expert's bytes, replaced LRU among the
   experts the current call does not need (`offload.rs:62-110`); a call needing more experts than slots runs in waves (`offload.rs:241`).
 - **Misses.** `Mode` Copy, Cpu, Split or Auto (default Auto, `offload.rs:283-337`): `plan_groups` weighs the copy time against the
   host's time per (token, expert) pair, with smoothed measured costs and the copy stream's backlog (`offload.rs:401-497`). Host compute
