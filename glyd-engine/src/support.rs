@@ -65,7 +65,31 @@ pub struct Support {
     pub drafts: bool,
     /// How the planner sizes the family's path and what its loader takes (src/plan.rs `sizing`).
     pub route: Route,
+    /// How `glyd-engine pack` saves the family (src/pack.rs `plan`, made from the model's description); None: it saves no level of it.
+    pub saves: Option<Saves>,
 }
+
+/// How `glyd-engine pack` saves a family at a lossy level (and at penguin where it says so): one plan for every family, made from the model's description
+/// (src/pack.rs `plan`). The plain form: each layer's matrices packed in the order its weight map names them, every pack before every tensor kept, a
+/// tensor the checkpoint holds as F32 cast to bf16, a layer's matrices the library does not pack kept beside their own block's tensors, every matrix in the
+/// level's layout but the routed experts' second matrices where their activation is relu squared (the row layout, src/moe_rows.rs). Where a family's
+/// published saves differ from that, its row says how: they are read back by those bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Saves {
+    /// penguin too: a glyd-v7 directory of the lossless layout, which the executor reads as saved (else the lossy levels alone).
+    pub penguin: bool,
+    /// Each layer's packs then its tensors kept, layer by layer (glyd/gemma-4-*).
+    pub by_layer: bool,
+    /// A tensor the checkpoint holds as F32 saved as F32, not cast to bf16.
+    pub f32_kept: bool,
+    /// A layer's matrices the library does not pack kept after the tensors of all its blocks, not each after its own block's.
+    pub parts_last: bool,
+    /// The layout of every matrix but the routed experts' at wren and hummingbird (Nemotron 3: six-bit codes, its routed experts alone at the level's).
+    pub rest_at_wren: Option<crate::weights::Layout>,
+}
+
+/// The plain form (`Saves`).
+const SAVED: Saves = Saves { penguin: false, by_layer: false, f32_kept: false, parts_last: false, rest_at_wren: None };
 
 /// What a family's loader takes, as the planner reads it: every branch of `plan::sizing` that differs between families reads a field here, so a
 /// family of the same layer kinds is a row, not an edit there.
@@ -153,6 +177,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: NONE,
         drafts: false,
         route: Route { sizing: Sizing::Dense, ..ONE_GPU },
+        saves: Some(Saves { penguin: true, ..SAVED }),
     },
     Support {
         family: Family::Qwen35,
@@ -166,6 +191,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: PENGUIN,
         drafts: false,
         route: Route { bf16_twelve: true, expert_cache: ExpertCache::Release, ..ONE_GPU },
+        saves: Some(SAVED),
     },
     Support {
         family: Family::NemotronH,
@@ -178,6 +204,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: &["kestrel", "swift", "wren", "hummingbird"],
         drafts: false,
         route: ONE_GPU,
+        saves: Some(Saves { rest_at_wren: Some(crate::weights::Layout::Int6), ..SAVED }),
     },
     Support {
         family: Family::Gemma4,
@@ -190,6 +217,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: NONE,
         drafts: false,
         route: ONE_GPU,
+        saves: Some(Saves { penguin: true, by_layer: true, ..SAVED }),
     },
     Support {
         family: Family::Kimi,
@@ -208,6 +236,7 @@ pub static TABLE: [Support; 11] = [
             expert_cache: ExpertCache::Packed,
             ram_linears: RamLinears::Products,
         },
+        saves: None,
     },
     Support {
         family: Family::Glm,
@@ -220,6 +249,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: PENGUIN_HB,
         drafts: false,
         route: Route { sizing: Sizing::Dynamic, across: Across::Asked, expert_cache: ExpertCache::Release, ..ONE_GPU },
+        saves: Some(Saves { f32_kept: true, parts_last: true, ..SAVED }),
     },
     Support {
         family: Family::GlmDsa,
@@ -232,6 +262,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: PENGUIN,
         drafts: false,
         route: Route { sizing: Sizing::Dynamic, expert_cache: ExpertCache::Release, ..ONE_GPU },
+        saves: None,
     },
     Support {
         family: Family::DeepSeekV4,
@@ -244,6 +275,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: PENGUIN_HB,
         drafts: false,
         route: Route { sizing: Sizing::Dynamic, across: Across::Default, expert_cache: ExpertCache::Release, ..ONE_GPU },
+        saves: None,
     },
     Support {
         family: Family::DeepSeekV41,
@@ -256,6 +288,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: PENGUIN,
         drafts: false,
         route: Route { sizing: Sizing::Dynamic, expert_cache: ExpertCache::Release, ..ONE_GPU },
+        saves: None,
     },
     Support {
         family: Family::Muse,
@@ -268,6 +301,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: PENGUIN_HB,
         drafts: false,
         route: Route { sizing: Sizing::Dynamic, across: Across::Asked, expert_cache: ExpertCache::Release, ram_linears: RamLinears::Products, ..ONE_GPU },
+        saves: None,
     },
     Support {
         family: Family::FlashNext,
@@ -280,6 +314,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: HB,
         drafts: true,
         route: Route { sizing: Sizing::Dynamic, expert_cache: ExpertCache::Codes, ..ONE_GPU },
+        saves: None,
     },
 ];
 

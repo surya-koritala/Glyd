@@ -7286,6 +7286,7 @@ mod tests {
                 experts_in_ram_levels: glm.experts_in_ram_levels,
                 drafts: glm.drafts,
                 route,
+                saves: glm.saves,
             }))
         };
         let another = row("Another", glm.route);

@@ -403,6 +403,8 @@ pub const SAVED: &[(&str, &str, &str, &str)] = &[
     ("gemma4", "kestrel", "i6", "glyd-v7 i6: Gemma 4 at kestrel"),
     ("gemma4", "swift", "i5", "glyd-v7 i5: Gemma 4 at swift"),
     ("gemma4", "wren", "i4", "glyd-v7 i4: Gemma 4 at wren (a checkpoint not trained to four bits)"),
+    ("gemma4-kv", "penguin", "mma", "glyd-v7 at penguin: Gemma 4's KV-sharing layers, each sharing layer's queries alone as its description reads them"),
+    ("gemma4-kv", "kestrel", "i6", "glyd-v7 i6: the same at kestrel"),
     ("nemotron-h", "kestrel", "i6", "glyd-v7 i6: the published glyd/nemotron-3-* repos' format at kestrel"),
 ];
 

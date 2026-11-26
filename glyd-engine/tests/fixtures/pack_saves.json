@@ -260,22 +260,47 @@
       "plan": "353b27eb9beeadcd3ba6c523a55cc3dae7dd17010031a8e1c96299d33e9b83a8"
     },
     "gemma4-kv mma": {
-      "refused": "plan: model.language_model.layers.4.self_attn.k_proj.weight is not in MODEL"
+      "files": {
+        "config.json": "7f426722941afebecd3e26bb44a7393817f1111e7caff80fd153d4a3fcc9e27b",
+        "glyd.json": "dfcfaf140657f430aca92795e83410bfcf82aa7fc9e695cf296b737aed6e16b2",
+        "model.safetensors": "2f1bc39b23e725ea594816c22c92362fec82736f8d5cc2156a24f619619d79c2"
+      },
+      "plan": "e3b5892e8a07ffe870a3a18a786141493afeb3edcf53474a3a9df95b60ab2915"
     },
     "gemma4-kv i6": {
-      "refused": "plan: model.language_model.layers.4.self_attn.k_proj.weight is not in MODEL"
+      "files": {
+        "config.json": "7f426722941afebecd3e26bb44a7393817f1111e7caff80fd153d4a3fcc9e27b",
+        "glyd.json": "87b6723ef5fe73e64ca8aae61758ff12b7452d08454a6a4086b3521714c9cc13",
+        "model.safetensors": "9c57b5d0013b6b677a05f4031cb402397ff17d19b8ba7479d0afa903a3b9ef2a"
+      },
+      "plan": "e3b5892e8a07ffe870a3a18a786141493afeb3edcf53474a3a9df95b60ab2915"
     },
     "gemma4-kv i5": {
-      "refused": "plan: model.language_model.layers.4.self_attn.k_proj.weight is not in MODEL"
+      "files": {
+        "config.json": "7f426722941afebecd3e26bb44a7393817f1111e7caff80fd153d4a3fcc9e27b",
+        "glyd.json": "bc62fa14e6695fe14001d96eef713c7471667d7fb112964f9fd845270f882957",
+        "model.safetensors": "e21ae56285f6342811497dbb5b05c31e7ec347970c350d3e8b20b28897f1c7c6"
+      },
+      "plan": "e3b5892e8a07ffe870a3a18a786141493afeb3edcf53474a3a9df95b60ab2915"
     },
     "gemma4-kv i4": {
-      "refused": "plan: model.language_model.layers.4.self_attn.k_proj.weight is not in MODEL"
+      "files": {
+        "config.json": "7f426722941afebecd3e26bb44a7393817f1111e7caff80fd153d4a3fcc9e27b",
+        "glyd.json": "ec1fc7ae5ea42e65a59b239f1f8e5885d9f5575538be9aef13589d0138e10ada",
+        "model.safetensors": "d17cff8db7f37e40e3ba521c82ddc3b719afbd3e776c3994d8df5d6ca0641139"
+      },
+      "plan": "e3b5892e8a07ffe870a3a18a786141493afeb3edcf53474a3a9df95b60ab2915"
     },
     "gemma4-kv i4x": {
-      "refused": "plan: model.language_model.layers.4.self_attn.k_proj.weight is not in MODEL"
+      "refused": "model.language_model.layers.0.self_attn.q_proj + model.language_model.layers.0.self_attn.k_proj + model.language_model.layers.0.self_attn.v_proj: not a checkpoint trained to four bits (no codes times a scale give its weights bit for bit)"
     },
     "gemma4-kv i3": {
-      "refused": "plan: model.language_model.layers.4.self_attn.k_proj.weight is not in MODEL"
+      "files": {
+        "config.json": "7f426722941afebecd3e26bb44a7393817f1111e7caff80fd153d4a3fcc9e27b",
+        "glyd.json": "244e4d443dcaaca21766f8b023540c521d8f93878ea11f6b2c497490de6f1ab6",
+        "model.safetensors": "94ad6e21779118a3e19b2c7009f81fc97c93ff31d9ac997e2b49d5ea0c7d35c3"
+      },
+      "plan": "e3b5892e8a07ffe870a3a18a786141493afeb3edcf53474a3a9df95b60ab2915"
     },
     "nemotron mma": {
       "refused": "NemotronHForCausalLM: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
