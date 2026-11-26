@@ -425,19 +425,20 @@ fn split(a: &Args) -> Result<()> {
     Ok(())
 }
 
-/// The rows of `b` whose logits are not `a`'s to the bit (a row missing counts), and the largest difference of a logit.
-fn apart_of(a: &[Vec<f32>], b: &[Vec<f32>]) -> (usize, f32) {
-    let rows = (0..a.len()).filter(|&i| b.get(i).is_none_or(|r| a[i].iter().map(|x| x.to_bits()).ne(r.iter().map(|x| x.to_bits())))).count();
+/// The rows of `b` whose logits are not `a`'s to the bit (a row missing counts), the first of them, and the largest difference of a logit.
+fn apart_of(a: &[Vec<f32>], b: &[Vec<f32>]) -> (usize, Option<usize>, f32) {
+    let rows: Vec<usize> = (0..a.len()).filter(|&i| b.get(i).is_none_or(|r| a[i].iter().map(|x| x.to_bits()).ne(r.iter().map(|x| x.to_bits())))).collect();
     let most = a.iter().zip(b).flat_map(|(x, y)| x.iter().zip(y).map(|(p, q)| (p - q).abs())).fold(0f32, f32::max);
-    (rows, most)
+    (rows.len(), rows.first().copied(), most)
 }
 
 /// `repeat DIR IMAGE [--times N] [--engines E] [--split CUT,..] [--devices GPU,..] [--places P] [--mode copy|cpu]`: the image prompt's teacher-forced logits
 /// (`scored`'s rows) N times on one GPU, then N times on each of E engines made after it in this process (one GPU each, or the layers cut into stages with --split:
-/// both on GPU 0 unless --devices names two), every pass against one GPU's first, bit for bit; a text prompt of more than 64 rows a chunk (the expert cache's
-/// streaming prefill, as the image prompt's) N times on each, and the short text once, each against one GPU's. `--places P`: the engines after the first hold P
-/// experts a layer on the GPU (the first, every one): the streaming prefill copies the others through its ring; `--mode`: the misses' (the expert cache's own,
-/// cpu, by default). An error where any row is apart.
+/// both on GPU 0 unless --devices names two), each pass against one GPU's pass of the same number, bit for bit; a text prompt of more than 64 rows a chunk (the
+/// expert cache's streaming prefill, as the image prompt's) N times on each, and the short text once, the same way. One GPU's later passes are said against its
+/// first, not judged: in the cache's own mode (cpu) a cold cache's misses are computed by the host, a warm one's are in places. `--places P`: the engines after the
+/// first hold P experts a layer on the GPU (the first, every one): the streaming prefill copies the others through its ring; `--mode`: the misses'. An error where
+/// any row is apart.
 fn repeat(a: &Args) -> Result<()> {
     use crate::dynamic::qwen4x::{open_cached, Caching, PackMode};
     let dir = Path::new(a.need(2, "DIR")?);
@@ -450,7 +451,9 @@ fn repeat(a: &Args) -> Result<()> {
     }
     let places = a.flag("places").map(|p| p.parse::<usize>().map_err(|_| Error(format!("--places {p}: a number")))).transpose()?;
     let (cuts, devices) = crate::dynamic::split::split_args(a)?;
-    let (mut first, mut first_t, mut first_l, mut apart): (Option<Vec<Vec<f32>>>, Option<Vec<Vec<f32>>>, Option<Vec<Vec<f32>>>, usize) = (None, None, None, 0);
+    // (one GPU's rows of each pass: the image prompt's, the short text's, the long text's)
+    let mut refs: [Vec<Vec<Vec<f32>>>; 3] = Default::default();
+    let mut apart = 0usize;
     for en in 0..=engines {
         let (c, d) = if en == 0 { (Vec::new(), vec![devices[0]]) } else { (cuts.clone(), devices.clone()) };
         let held = if en == 0 { None } else { places };
@@ -482,33 +485,43 @@ fn repeat(a: &Args) -> Result<()> {
             }
             Ok(rows)
         };
-        let mut said = |rows: Vec<Vec<f32>>, held: &mut Option<Vec<Vec<f32>>>, what: String| {
-            let line = match held.as_ref() {
-                None => format!("{} rows, the reference", rows.len()),
-                Some(f) => {
-                    let (n, most) = apart_of(f, &rows);
-                    apart += (n > 0) as usize;
-                    format!("{} rows, {n} apart from one GPU's first (largest difference {most:.3e})", rows.len())
-                }
+        let row = |r: Option<usize>| r.map_or(String::new(), |r| format!(", from row {r}"));
+        let mut judge = |rows: Vec<Vec<f32>>, refs: &mut Vec<Vec<Vec<f32>>>, t: usize, what: String| {
+            let line = if en == 0 {
+                let l = match refs.first() {
+                    None => format!("{} rows, the reference", rows.len()),
+                    Some(f) => {
+                        let (n, r, most) = apart_of(f, &rows);
+                        format!(
+                            "{} rows, the reference; against this GPU's first pass {n} apart{} (largest difference {most:.3e}; said, not judged)",
+                            rows.len(),
+                            row(r)
+                        )
+                    }
+                };
+                refs.push(rows);
+                l
+            } else {
+                let (n, r, most) = apart_of(&refs[t], &rows);
+                apart += (n > 0) as usize;
+                format!("{} rows, {n} apart from one GPU's pass {t}{} (largest difference {most:.3e})", rows.len(), row(r))
             };
             println!("{what}: {line}");
-            if held.is_none() {
-                *held = Some(rows);
-            }
         };
+        let [ri, rt, rl] = &mut refs;
         for t in 0..times {
             let rows = scored(&expanded, std::slice::from_ref(&img), from - 1 + img.tokens())?;
-            said(rows, &mut first, format!("engine {en} ({what}) image pass {t} ({} rows a chunk)", from - 1 + img.tokens()));
+            judge(rows, ri, t, format!("engine {en} ({what}) image pass {t} ({} rows a chunk)", from - 1 + img.tokens()));
         }
         let rows = scored(&text, &[], from_t)?;
-        said(rows, &mut first_t, format!("engine {en} ({what}) text ({from_t} rows a chunk)"));
+        judge(rows, rt, 0, format!("engine {en} ({what}) text ({from_t} rows a chunk)"));
         for t in 0..times {
             let rows = scored(&long, &[], from_l)?;
-            said(rows, &mut first_l, format!("engine {en} ({what}) long text pass {t} ({from_l} rows a chunk)"));
+            judge(rows, rl, t, format!("engine {en} ({what}) long text pass {t} ({from_l} rows a chunk)"));
         }
     }
     if apart > 0 {
-        return err(format!("{apart} passes apart from one GPU's first"));
+        return err(format!("{apart} passes apart from one GPU's"));
     }
     println!("PASS visioncheck repeat");
     Ok(())
