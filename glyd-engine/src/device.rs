@@ -21,7 +21,7 @@ pub enum Attr {
     WarpSize = 10,
     Sms = 16,
     /// Windows' TCC mode (1) or a display driver, WDDM (0).
-    Tcc = 17,
+    Tcc = 35,
     CcMajor = 75,
     CcMinor = 76,
     /// The most shared memory a block may ask for once its kernel opts in.
@@ -230,8 +230,8 @@ pub trait Device {
     // Hopper (compute capability 9.0): its kernels' tensor maps and clusters. An AMD build: not supported.
 
     /// A tensor map of a bf16 matrix at `base` of `rows` rows of `cols` values, rows `row_bytes` apart, read in boxes of `box_cols` by `box_rows` with the
-    /// 128-byte swizzle and L2's 256-byte promotion, rows past the matrix read as zeros (cuTensorMapEncodeTiled): the 128 bytes a kernel takes as its parameter.
-    fn tensor_map(base: u64, shape: (u64, u64, u64), boxes: (u32, u32)) -> Result<[u64; 16]>;
+    /// 128-byte swizzle and L2's 256-byte promotion, rows past the matrix read as zeros (cuTensorMapEncodeTiled): the map a kernel takes as its parameter.
+    fn tensor_map(base: u64, shape: (u64, u64, u64), boxes: (u32, u32)) -> Result<TensorMap>;
     /// The clusters of `cluster` blocks of `threads` and `smem` the GPU runs at once of `f`, for a grid of `grid` blocks (cuOccupancyMaxActiveClusters).
     ///
     /// # Safety
@@ -579,17 +579,17 @@ impl Device for CudaDevice {
     }
 
     #[cfg(not(glyd_hip))]
-    fn tensor_map(base: u64, (cols, rows, row_bytes): (u64, u64, u64), (box_cols, box_rows): (u32, u32)) -> Result<[u64; 16]> {
+    fn tensor_map(base: u64, (cols, rows, row_bytes): (u64, u64, u64), (box_cols, box_rows): (u32, u32)) -> Result<TensorMap> {
         let h = crate::ffi::hopper()?;
-        let mut map = [0u64; 16];
+        let mut map = TensorMap([0; 16]);
         let (dims, strides, boxes, unit) = ([cols, rows], [row_bytes], [box_cols, box_rows], [1u32, 1]);
-        // SAFETY: a map of 128 bytes the driver writes (16 u64: 8-byte aligned, as the driver asks of a CUtensorMap's start: 64 where a kernel reads it, which
-        // the caller's copy gives); the arrays of the rank's lengths. 9: bf16, 0: no interleave, 3: the 128-byte swizzle, 3: L2's 256-byte promotion, 0: no NaN fill.
+        // SAFETY: the map the driver writes, 128 bytes at an address aligned to 64 at least (the driver's rule for it); the arrays of the rank's lengths.
+        // 9: bf16, 0: no interleave, 3: the 128-byte swizzle, 3: L2's 256-byte promotion, 0: no NaN fill.
         unsafe {
             cu(
                 "cuTensorMapEncodeTiled",
                 (h.cuTensorMapEncodeTiled)(
-                    map.as_mut_ptr() as *mut c_void,
+                    &mut map as *mut TensorMap as *mut c_void,
                     9,
                     2,
                     base as *mut c_void,
@@ -608,7 +608,7 @@ impl Device for CudaDevice {
     }
 
     #[cfg(glyd_hip)]
-    fn tensor_map(_: u64, _: (u64, u64, u64), _: (u32, u32)) -> Result<[u64; 16]> {
+    fn tensor_map(_: u64, _: (u64, u64, u64), _: (u32, u32)) -> Result<TensorMap> {
         crate::ffi::err("tensor maps are Hopper's: not in an AMD build")
     }
 
@@ -643,6 +643,14 @@ impl Device for CudaDevice {
     }
 }
 
+/// cuda.h's CUtensorMap: the 128 bytes cuTensorMapEncodeTiled writes (at an address aligned to 64, the driver's rule) and Hopper's kernels take by value, aligned as the toolkit
+/// of the main fatbin aligns it (build.rs: 128 by CUDA 13's cuda.h, cfg `tensor_map_128`; 64 by CUDA 12's, whose fatbin a binary of both also carries: 64 divides 128).
+/// kernels/fold.cu holds each toolkit's to it.
+#[cfg_attr(tensor_map_128, repr(C, align(128)))]
+#[cfg_attr(not(tensor_map_128), repr(C, align(64)))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TensorMap(pub [u64; 16]);
+
 /// cuda.h's CUlaunchConfig and CUlaunchAttribute (one: the cluster's dimension, CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION 4), as cuLaunchKernelEx and
 /// cuOccupancyMaxActiveClusters take them.
 #[repr(C)]
@@ -675,12 +683,15 @@ mod tests {
     /// The attribute and flag numbers are the driver's (CUDA's cuda.h; an AMD build's table maps the attributes to HIP's).
     #[test]
     fn the_numbers_are_the_drivers() {
-        let attrs = [(Attr::WarpSize, 10), (Attr::Sms, 16), (Attr::Tcc, 17), (Attr::CcMajor, 75), (Attr::CcMinor, 76), (Attr::SmemOptin, 97)];
+        let attrs = [(Attr::WarpSize, 10), (Attr::Sms, 16), (Attr::Tcc, 35), (Attr::CcMajor, 75), (Attr::CcMinor, 76), (Attr::SmemOptin, 97)];
         assert!(attrs.iter().all(|&(a, n)| a as i32 == n));
         assert_eq!([HostMem::Pinned as u32, HostMem::Portable as u32, HostMem::Mapped as u32], [0, 1, 2]);
         // cuda.h's launch configuration and attribute: 56 and 72 bytes (the stream at 32, the attributes at 40)
         assert_eq!((std::mem::size_of::<super::LaunchConfig>(), std::mem::size_of::<super::LaunchAttribute>()), (56, 72));
         assert_eq!((std::mem::offset_of!(super::LaunchConfig, stream), std::mem::offset_of!(super::LaunchConfig, num_attrs)), (32, 48));
+        // cuda.h's CUtensorMap: 128 bytes, aligned to 128 by CUDA 13's toolkit and to 64 by CUDA 12's (the main fatbin's, build.rs's cfg)
+        let align = if cfg!(tensor_map_128) { 128 } else { 64 };
+        assert_eq!((std::mem::size_of::<super::TensorMap>(), std::mem::align_of::<super::TensorMap>()), (128, align));
     }
 
     /// Where there is no driver (a machine with no GPU, a CPU runner), a call is an error of the kind that says so, not a crash.

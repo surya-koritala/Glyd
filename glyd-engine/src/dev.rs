@@ -90,7 +90,7 @@ impl Dev {
     }
 
     /// Whether GPU `ordinal` runs under Windows' WDDM (the display driver model: the memory it has is the card's and, past that, system memory the driver pages in without an error): on Windows, a
-    /// GPU that is not in the TCC mode (CU_DEVICE_ATTRIBUTE_TCC_DRIVER, 17). False elsewhere and where the driver does not say.
+    /// GPU that is not in the TCC mode (CU_DEVICE_ATTRIBUTE_TCC_DRIVER, 35). False elsewhere and where the driver does not say.
     pub fn wddm(ordinal: i32) -> bool {
         wddm_from(cfg!(windows), D::device(ordinal).and_then(|dev| D::attribute(dev, Attr::Tcc)).ok())
     }

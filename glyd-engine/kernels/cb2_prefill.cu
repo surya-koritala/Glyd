@@ -260,7 +260,6 @@ __device__ __forceinline__ void c2_up_t(const unsigned short* __restrict__ xrb, 
     const int m0 = (tile - sg.tiles[seg]) * BM;
     const int rows = sg.rows[seg] - m0;
     const int j0 = blockIdx.y * 64;  // the tile's first neuron
-    const int mi = lane >> 3, r8 = lane & 7;
     const int lr = F::row(tid), lc = F::chunk(tid);
     const uint32_t soff = (uint32_t)F::soff(tid) * 2;
     uint32_t goffA[PA];

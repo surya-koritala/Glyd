@@ -986,7 +986,6 @@ __device__ __forceinline__ void gemm3_nt_t(const bf16* __restrict__ X, const bf1
     const int n_tile = (pid % in_group) / gsz;
     const int m0 = m_tile * BM, n0 = n_tile * BN;
     const int nk = K / BK;
-    const int mi = lane >> 3, r8 = lane & 7;
 
     // the loads: this thread's chunk of each pass, as byte offsets from the start of the operand's k-tile
     const int lr = F::row(tid), lc = F::chunk(tid);
