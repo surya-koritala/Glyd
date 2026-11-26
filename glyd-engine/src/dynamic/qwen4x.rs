@@ -744,7 +744,9 @@ fn wait_ready(
 /// flags): for a short prompt and one past a chunk, the served completion's tokens (greedy, N of them, by their ids) the scheduler's for the same tokens.
 /// `--serve-mode`: tools/serve.sh's words for that mode and its pack's folder name (precise `--precise --layout i6 --hi i6` of `precise-v2`, best `--no-side
 /// --layout i6 --hi i6` of `best-v2`, fast none of `fast`); none: the pack as made, no flags. With `--gpus` and `--split` the server cuts the layers over those
-/// GPUs (`open_cached`), which the one-GPU scheduler's tokens then hold to. An error where one differs.
+/// GPUs (`open_cached`), which the one-GPU scheduler's tokens then hold to. An error where one differs. Both sides' expert caches hold the planner's times
+/// (`offload::hold_costs_from_now`, as usercheck's do): the host computes a miss in another order than the GPU, and a call's promotions turn on the copy
+/// stream's measured backlog, so without it the two sides' tokens turn on the copy link's timing (another tenant's work on the GPU moved them apart).
 #[cfg(feature = "dev")]
 pub fn serve_check(a: &crate::args::Args) -> Result<()> {
     use crate::sched::{Ev, Finish, Reply, Sched, Submit};
@@ -756,6 +758,7 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
         ));
     }
     let tokens = a.num("tokens", 16usize)?;
+    crate::offload::hold_costs_from_now();
     let dir = std::env::temp_dir().join(format!("glyd-servecheck-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| crate::ffi::Error(e.to_string()))?;
     crate::logits::random_model(case, &dir)?;
@@ -896,7 +899,7 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
             if same { "PASS" } else { "FAIL" },
             p.len(),
             if same { "are" } else { "are NOT" },
-            if same { String::new() } else { format!(" (served {served:?}, here {mine:?})") }
+            if same { format!(" ({mine:?})") } else { format!(" (served {served:?}, here {mine:?})") }
         );
     }
     std::fs::remove_dir_all(&dir).ok();
