@@ -859,7 +859,7 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `glyd-engine servescore CKPT PACK [--precise] [--layout L] [--hi L] [--side A,B | --no-side] --ids A,B,.. --from N --out FILE [--places N] [--ctx N] [--chunk N]`:
+/// `glyd-engine servescore CKPT PACK [--precise] [--layout L] [--hi L] [--side A,B | --no-side] --ids A,B,.. --from N --out FILE [--places N] [--ctx N] [--chunk N] [--passes N]`:
 /// the family's model as Condor's server loads it with those flags (`form_of`, `Caching::of_form`; its places `--places` a layer, else what the GPU has free),
 /// the ids before the N-th as a prompt, then each id after it a step: every scored position's whole row of logits (the prompt's last, then each step's) appended
 /// to FILE as little-endian f32, as v0.34.2's `qwenserve` wrote them for a request's `score_from` and `dump` (the rows a check holds the two engines to).
@@ -880,19 +880,28 @@ pub fn serve_score(a: &crate::args::Args) -> Result<()> {
     let mut k = Caching::of_form(pack, &form, 1);
     k.places = a.flag("places").map(|p| p.parse::<usize>().map_err(|_| Error(format!("--places {p}: a number")))).transpose()?;
     let mut e = load_cached(dir, &o, &k)?;
-    e.reset()?;
-    e.prefill(&ids[..from])?;
-    let mut rows = vec![e.logits()?];
-    for &t in &ids[from..ids.len() - 1] {
-        e.step(t)?;
+    // (the sequence `--passes` times (3 by default), the last one's rows written: a fresh cache's places fill as the router asks, the first pass's misses the
+    // host's, as a server's first request; the last two passes' rows compared)
+    let passes = a.num("passes", 3usize)?.max(1);
+    let (mut rows, mut last): (Vec<Vec<f32>>, Vec<Vec<f32>>) = (Vec::new(), Vec::new());
+    for _ in 0..passes {
+        last = std::mem::take(&mut rows);
+        e.reset()?;
+        e.prefill(&ids[..from])?;
         rows.push(e.logits()?);
+        for &t in &ids[from..ids.len() - 1] {
+            e.step(t)?;
+            rows.push(e.logits()?);
+        }
     }
+    let bits = |r: &[Vec<f32>]| r.iter().flatten().map(|x| x.to_bits()).collect::<Vec<u32>>();
     let bytes: Vec<u8> = rows.iter().flatten().flat_map(|x| x.to_le_bytes()).collect();
     std::fs::write(out, bytes).map_err(|x| Error(format!("{out}: {x}")))?;
     println!(
-        "servescore: {} rows of {} logits to {out} ({:?}, sidecars {:?}, the matrices at {:?}, the attention's and head's at {:?})",
+        "servescore: {} rows of {} logits to {out} after {passes} passes (the last two {}; {:?}, sidecars {:?}, the matrices at {:?}, the attention's and head's at {:?})",
         rows.len(),
         rows[0].len(),
+        if passes < 2 { "not compared" } else if bits(&rows) == bits(&last) { "the same bits" } else { "APART" },
         form.mode,
         form.sides,
         form.layout,
