@@ -4457,7 +4457,7 @@ mod tests {
         }
     }
 
-    /// The CPU's candidates usercheck holds the step's to: the largest first, equal logits by the smaller token, as the sampler's `sample_top` takes them.
+    /// The CPU's candidates usercheck holds the step's to: the largest first, equal logits by the smaller token, as a draw's candidates are ordered (`sampler::emu::top`).
     #[test]
     fn host_top_orders_by_logit_then_token() {
         let row = [0.5f32, 2.0, -1.0, 2.0, 7.0, f32::NEG_INFINITY, 0.5, 2.0];

@@ -776,8 +776,8 @@ mod tests {
         assert_eq!(embed_plan(&[], 4).1.len(), 0);
     }
 
-    /// A row's candidates are read from where the copies put them: several rows, a step's TOPK of each one after the other from two places, and the one row of the
-    /// engines' `TopGpu`, its tokens and then its logits from the start.
+    /// A row's candidates are read from where the copies put them: several rows, a step's TOPK of each one after the other from two places, and one row, its tokens and
+    /// then its logits from the start.
     #[test]
     fn candidates_are_read_where_the_copies_put_them() {
         const ROWS: usize = 8;
