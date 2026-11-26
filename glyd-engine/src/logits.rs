@@ -6542,7 +6542,13 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             fails += 1;
         }
     }
-    if batchable && k > 1 && steps[2..].iter().all(|&x| x == 0) {
+    // (decode steps of several rows where the replies' decoding can meet: a sequence decodes its tokens while the next prompt's passes run, so where every next prompt
+    // takes more passes than the tokens made (prompts that fill a long planned context, `--ctx plan`), no two of them decode alone together)
+    let meet = (1..users).any(|k| (len(k) - len(k - 1)).div_ceil(chunk.max(1)) < tokens);
+    if batchable && k > 1 && !meet {
+        println!("decode steps of several rows: not asked (each prompt is more passes past the one before than the {tokens} tokens made)");
+    }
+    if batchable && k > 1 && meet && steps[2..].iter().all(|&x| x == 0) {
         println!("FAIL no decode step had more than one row");
         fails += 1;
     }
