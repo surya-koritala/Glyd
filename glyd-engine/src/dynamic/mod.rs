@@ -2606,6 +2606,12 @@ impl Dyn {
         self.v4.as_ref().map(|v| v.dims.sim != crate::cpu_fp4::Sim::Off)
     }
 
+    /// The form of the release's quantizations the model's arithmetic simulates (`V4Dims::sim`: DeepSeek-V4's blocks of 128, DeepSeek-V4.1's of 32); `Sim::Off`
+    /// where it simulates none.
+    pub fn sim(&self) -> crate::cpu_fp4::Sim {
+        self.v4.as_ref().map_or(crate::cpu_fp4::Sim::Off, |v| v.dims.sim)
+    }
+
     pub fn reset(&mut self) -> Result<()> {
         self.n = 0;
         self.pending = None;
