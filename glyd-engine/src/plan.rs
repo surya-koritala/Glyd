@@ -1314,6 +1314,8 @@ pub fn room_of(free: u64) -> u64 {
 /// The activations and workspaces of the lossy paths' engines (Qwen3.5, Qwen3.6, Qwen3.8, Nemotron-H, Gemma 4): 1.26 GiB measured for
 /// Qwen3.8-27B with prompts in chunks of 2,048, about 1 GiB for Nemotron 3 Super by the sizes of its buffers (not yet measured).
 pub const LOSSY_WORK: u64 = 1280 << 20;
+/// The prompt chunk the lossy path of the Qwen3.5 and Nemotron-H layouts takes (`LoadPlan::chunk`).
+pub const LOSSY_CHUNK: usize = 2048;
 /// The Qwen3 path's fixed workspaces: the CUDA context and the library's own buffers, cuBLAS's and the pool's, 1,400 MiB (600 + 400 + 400) measured
 /// as the path's total before the reserve was one model, less that reserve; a prompt chunk's activations are on top (`sizing::work`).
 pub const QWEN3_WORK: u64 = (1400 << 20) - CONTEXT_FLOOR;
@@ -2662,16 +2664,11 @@ pub fn kv_format_of(twelve: bool) -> &'static str {
     }
 }
 
-/// Whether the run of `a` holds its keys and values in the executor's 12-bit lossless pages (GLYD_KV=lossless), as the family's load plan sizes them: Gemma 4 with no draft model,
-/// a plain dense decoder served (`sizing::twelve_pages`); the loaders that take them (src/cli.rs `twelve_bit_pages`).
-fn takes_twelve(a: &crate::args::Args, f: crate::support::Family) -> bool {
-    use crate::support::Family;
-    let lossless = sizing::lossless_asked();
-    match f {
-        Family::Gemma4 => lossless && a.has("no-draft"),
-        Family::Qwen3 => sizing::twelve_pages(a),
-        _ => false,
-    }
+/// Whether the plan of `a` for a model of shape `sh` may hold its keys and values in the executor's 12-bit lossless pages: a server's where GLYD_KV=lossless asks for
+/// them (`sizing::twelve_pages`), and its attention kinds have rings the pages take (`Shape::kv12_rings`: heads of 128, 256 or 512 channels, latents; heads of 64
+/// and the compressed attention's entries stay bf16), whatever its family; the loaders that take them make the model's tables (src/cli.rs `twelve_bit_pages`).
+fn takes_twelve(a: &crate::args::Args, sh: &Shape) -> bool {
+    sizing::twelve_pages(a) && !sh.kv12_rings.is_empty()
 }
 
 pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
@@ -2701,7 +2698,7 @@ pub fn planned(a: &crate::args::Args) -> Result<Planned, crate::ui::Refusal> {
         crate::support::check(&config, model, &name, "penguin")?;
     }
     let sh = shape_of(model, &config).map_err(|e| Refusal::unsupported(format!("{name}: {e}"), ""))?;
-    let sh = if takes_twelve(a, fam.family) { sh.in_twelve() } else { sh };
+    let sh = if takes_twelve(a, &sh) { sh.in_twelve() } else { sh };
     let context: Option<usize> = a.flag("context").map(|c| c.parse()).transpose().map_err(|_| Refusal::new("--context takes a number", "--context 8192"))?;
     crate::support::context_check(&name, fam, sh.max_ctx, context)?;
     let users: usize = a.num("users", 1usize)?;
@@ -2825,7 +2822,9 @@ fn index_total(model: &str) -> Option<f64> {
 
 /// The loaders' sizing (P2f): the plan `run`, `serve`, `preflight` and `fit` load and print.
 pub mod sizing {
-    use super::{reserve_of, Kind, LoadPlan, Target, GEMMA_CHUNK, GEMMA_DRAFT_BYTES, HOST_MARGIN, LOSSY_CTX, LOSSY_MIN_CTX, LOSSY_WORK, QWEN3_WORK};
+    use super::{
+        reserve_of, Kind, LoadPlan, Target, GEMMA_CHUNK, GEMMA_DRAFT_BYTES, HOST_MARGIN, LOSSY_CHUNK, LOSSY_CTX, LOSSY_MIN_CTX, LOSSY_WORK, QWEN3_WORK,
+    };
     use crate::args::Args;
     use crate::cli::{cannot, gemma_draft, gemma_wren, level, level_name, shape_checks, short_name, supported_in, unrun_fix, users_of};
     use crate::dev::Gpu;
@@ -3767,10 +3766,12 @@ pub mod sizing {
         dense_fit(cfg, dense_row(), name, gpu, free, layout, asked, users, cublas, false, false)
     }
 
-    /// Whether a run of `a` puts its keys and values in the executor's 12-bit lossless pages: a server's (whose scheduler pages the cache) where GLYD_KV=lossless asks for
-    /// them, as Gemma 4's (src/dynamic/kvpages.rs).
+    /// Whether the plan of `a` may put its keys and values in the executor's 12-bit lossless pages (src/dynamic/kvpages.rs): GLYD_KV=lossless asks for them, and the
+    /// plan is a server's (`served`: `serve`, or `fit --users`), whose scheduler holds its sequences in pools of blocks, which the pages are (`Dyn::page`); `run`
+    /// answers one prompt by itself, in rings of its own. Each path's plan takes them where its description's rings take them and they reserve no more than bf16
+    /// (`one_gpu_pages`, `size_dynamic_at`).
     pub(crate) fn twelve_pages(a: &Args) -> bool {
-        lossless_asked() && a.pos.first().is_some_and(|c| c == "serve")
+        lossless_asked() && served(a)
     }
 
     /// Whether GLYD_KV=lossless asks for the executor's 12-bit lossless pages (a test's thread says so for itself alone: `asking_lossless`).
@@ -4104,7 +4105,7 @@ pub mod sizing {
         // the matrices and the tensors kept as they are, what a sequence holds (its states, a token's KV) and the longest context (config.json parsed once)
         let m = ModelConfig::parse(text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
         let nemotron = m.family() == Some(crate::support::Family::NemotronH);
-        let (packs, kept, state, per, max_pos) = if nemotron {
+        let (packs, kept, state, per, max_pos, low) = if nemotron {
             if !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Hummingbird) {
                 return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for the Nemotron-H layout, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
             }
@@ -4121,7 +4122,9 @@ pub mod sizing {
                     format!("Run it at the swift or kestrel level: glyd run {model}:swift"),
                 ));
             }
-            (cfg.packs(), cfg.kept(), cfg.state_bytes(), cfg.kv_bytes_per_token(), cfg.max_pos)
+            // (its description, for the rings the 12-bit pages take where a server asks for them)
+            let low = twelve_pages(a).then(|| crate::dynamic::split::lowered_of(&m, cfg.max_pos).ok()).flatten();
+            (cfg.packs(), cfg.kept(), cfg.state_bytes(), cfg.kv_bytes_per_token(), cfg.max_pos, low)
         } else {
             if layout == Layout::Hummingbird {
                 return Err(Refusal::unsupported(
@@ -4152,7 +4155,7 @@ pub mod sizing {
                 ));
             }
             let (state, per) = (low.states.iter().sum::<usize>() as u64, low.rings.iter().map(|r| r.token_bytes()).sum::<usize>() as u64);
-            (packs, kept, state, per, low.max_pos)
+            (packs, kept, state, per, low.max_pos, Some(low))
         };
         let ck = packed.map(|d| glyd_gpu::safetensors::Checkpoint::open(d).map_err(cannot)).transpose()?;
         let (mut weights, mut bf16) = (0u64, 0u64);
@@ -4183,26 +4186,35 @@ pub mod sizing {
         let users = users_asked(a)?;
         // (a server's: each sequence's states and their copies at its mark, the pool of copies at block boundaries and the pool's block 0: `rows::SeqRoom`)
         let (seq_state, once) = pools_of(state, &[per], served(a));
-        let n = Needs {
+        // (a server's keys and values in the executor's 12-bit pages where GLYD_KV=lossless asks for them and its description has rings they take, by its attention
+        // kinds (`twelve_bit_rings`): those rings at the pages' bytes a token, the others bf16, and what their pools spend once; taken by `one_gpu_pages`' rule)
+        let taken: Vec<crate::dynamic::kv12::KvShape> =
+            low.as_ref().filter(|_| twelve_pages(a)).map_or(Vec::new(), |l| crate::dynamic::twelve_bit_rings(l).into_iter().flatten().collect());
+        let per12 = |l: &crate::dynamic::ModelDesc| -> u64 {
+            let rings = crate::dynamic::twelve_bit_rings(l);
+            l.rings.iter().zip(&rings).map(|(r, t)| t.map_or(r.token_bytes() as u64, |k| kv12_token_bytes(k.heads, k.channels, k.one))).sum()
+        };
+        let needs = |twelve: bool| Needs {
             kind: if nemotron { Kind::NemotronH } else { Kind::Qwen35 },
             family: crate::support::row(fam).name,
             layout,
             weights,
             bf16,
             per_seq: seq_state,
-            per_token: per.max(1),
-            once: Once { fixed: once, ..Once::default() },
+            per_token: if twelve { low.as_ref().map_or(per, per12) } else { per }.max(1),
+            once: Once { rings: if twelve { taken.clone() } else { Vec::new() }, chunk: LOSSY_CHUNK, fixed: once },
             users,
             fewer: true,
             draft: 0,
-            chunks: vec![(2048, LOSSY_WORK)],
+            chunks: vec![(LOSSY_CHUNK, LOSSY_WORK)],
             want: LOSSY_CTX,
             least: LOSSY_MIN_CTX,
             cap: max_pos.max(LOSSY_MIN_CTX),
             grain: 1,
             page: 1,
         };
-        let fitted = one_gpu(&n, free, asked, gpu);
+        let (n, pages) = (needs(false), (!taken.is_empty()).then(|| needs(true)));
+        let fitted = one_gpu_pages(&n, pages.as_ref(), free, asked, gpu);
         // (the flags of the experts in the computer's memory: Nemotron-H's at these levels; the Qwen3.5 layout with experts keeps every expert on the GPU here,
         // and in the computer's memory at penguin, where its GPUs do not hold them)
         let not_here = |flag: &str| {
@@ -4316,9 +4328,9 @@ pub mod sizing {
         let draft = if users == 1 && (gemma_draft(a, packed).is_some() || draft_to_come) { GEMMA_DRAFT_BYTES } else { 0 };
         let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
         crate::support::context_check(name, crate::support::row(crate::support::Family::Gemma4), cfg.max_pos, asked)?;
-        // (12-bit lossless pages where the run asks for them and has no draft model, whose executor then pages its cache (src/dynamic/kvpages.rs), and they reserve
-        // no more than bf16 for the plan: `one_gpu_pages`)
-        let twelve = lossless_asked() && a.has("no-draft");
+        // (12-bit lossless pages where a server asks for them (`twelve_pages`) and has no draft model, whose executor then pages its cache (src/dynamic/kvpages.rs),
+        // and they reserve no more than bf16 for the plan: `one_gpu_pages`)
+        let twelve = twelve_pages(a) && draft == 0;
         // (with no draft model, the scheduler gives each of the users a room of its own, its sliding layers' rings and its context (src/dynamic/rows.rs): the context not asked for is what the room gives
         // each of them, at least LOSSY_MIN_CTX (where that leaves room for fewer, the server takes fewer))
         let needs = |twelve: bool| gemma_needs(&cfg, layout, (weights, bf16, draft), users, asked.unwrap_or(LOSSY_CTX).max(LOSSY_MIN_CTX), twelve, served(a));
@@ -4833,6 +4845,12 @@ pub mod sizing {
     /// sequence's, and a server's least for its users beside, are held with its weights where the layers are cut; on one GPU the whole model is one engine, whose
     /// server's users share pools of what the GPU leaves them (as many as their states leave one sequence's context room); a run's one sequence, and stages and
     /// layers across GPUs, hold one sequence, each part its own of it.
+    ///
+    /// The keys and values bf16, or in the executor's 12-bit lossless pages where GLYD_KV=lossless asks for them for a server (`twelve_pages`) and its description
+    /// has rings the pages take in pools (`SeqRoom::pages`, by its attention kinds: heads of 128, 256 or 512, latents; never by its family): both are lossless, so
+    /// the pages are taken by `one_gpu_pages`' rule, only where they reserve no more than bf16 for the plan's users (`SeqRoom::most_bytes`: every one holding the
+    /// context, with what the pages spend once), or where bf16 does not fit and they do; a check of the pages against their own plan takes them wherever they fit
+    /// (`twelve_always`).
     #[allow(clippy::too_many_arguments)]
     fn size_dynamic_at(
         a: &Args,
@@ -4847,6 +4865,44 @@ pub mod sizing {
         reach: &dyn Fn(&[i32]) -> bool,
         ctx: usize,
         users: usize,
+    ) -> Done<LoadPlan> {
+        // (the sequences' keys, values and states: the description's lowered as the loader lowers it, at the context, for the users. A description the executor does
+        // not lower (a shape its kernels do not take, which its loader refuses) is sized by the config's estimate of one sequence, `Shape`, a layer its share)
+        let low = crate::dynamic::split::lowered_of(c, ctx + DYN_CHUNK + 16).ok();
+        let bf16 = low.as_ref().map(|l| crate::dynamic::SeqRoom::of(l, ctx, DYN_CHUNK));
+        let held = |seq: Option<crate::dynamic::SeqRoom>, pages: bool| {
+            size_dynamic_held(a, name, table, dir, text, c, row, devs, host, reach, ctx, users, low.as_ref(), seq, pages)
+        };
+        let Some(t) = low.as_ref().filter(|_| twelve_pages(a)).and_then(|l| crate::dynamic::SeqRoom::pages(l, ctx, DYN_CHUNK)) else {
+            return held(bf16, false);
+        };
+        let fewer = bf16.as_ref().is_some_and(|b| t.most_bytes(users) <= b.most_bytes(users));
+        match (held(bf16, false), held(Some(t), true)) {
+            (Ok(b), Ok(p)) => Ok(if twelve_always() || fewer { p } else { b }),
+            (Err(_), Ok(p)) => Ok(p),
+            (b, _) => b,
+        }
+    }
+
+    /// `size_dynamic_at` with the sequences' rule `seq` of the lowered description `low` (None: the config's estimate), its keys and values in 12-bit pages where
+    /// `pages` (a server's pools with the whole model on one GPU, else refused: elsewhere each part holds one sequence in rings of its own, in bf16).
+    #[allow(clippy::too_many_arguments)]
+    fn size_dynamic_held(
+        a: &Args,
+        name: &str,
+        table: &crate::sizes::Table,
+        dir: Option<&Path>,
+        text: &str,
+        c: &ModelConfig,
+        row: &'static Support,
+        devs: &[Target],
+        host: Option<u64>,
+        reach: &dyn Fn(&[i32]) -> bool,
+        ctx: usize,
+        users: usize,
+        low: Option<&crate::dynamic::ModelDesc>,
+        seq: Option<crate::dynamic::SeqRoom>,
+        pages: bool,
     ) -> Done<LoadPlan> {
         let (family, route) = (row.name, row.route);
         // (the tables its description reads on the host take none of the GPUs' memory: their bytes are the computer's, the checkpoint's files mapped)
@@ -4866,18 +4922,15 @@ pub mod sizing {
             Some(d) => crate::dynamic::split::hb_layer_bytes(d, nl).map_err(cannot)?,
             None => Vec::new(),
         };
-        // (the sequences' keys, values and states: the description's lowered as the loader lowers it, at the context, for the users. A description the executor does
-        // not lower (a shape its kernels do not take, which its loader refuses) is sized by the config's estimate of one sequence, `Shape`, a layer its share)
-        let seq = crate::dynamic::split::lowered_of(c, ctx + DYN_CHUNK + 16).ok().map(|low| (crate::dynamic::SeqRoom::of(&low, ctx, DYN_CHUNK), low));
-        let rooms = match &seq {
-            Some((_, low)) => crate::dynamic::layer_rooms(low, ctx, DYN_CHUNK),
+        // (one sequence's keys, values and states, each layer its share: the description's (`layer_rooms`), else the config's estimate)
+        let rooms = match low {
+            Some(low) => crate::dynamic::layer_rooms(low, ctx, DYN_CHUNK),
             None => {
                 let sh = crate::plan::Shape::from_model(c).map_err(cannot)?;
                 vec![((sh.kv_full * ctx as f64 + sh.kv_sliding * ctx.min(sh.window.max(1)) as f64 + sh.state) / nl.max(1) as f64) as u64; nl]
             }
         };
         let one_seq = rooms.iter().sum::<u64>();
-        let seq = seq.map(|s| s.0);
         // (the loaders that take penguin's 12-bit layout for their bf16 matrices, which an HBM GPU reads faster where it fits: the row says (`Route::bf16_twelve`);
         // a release with no FP8 matrices takes it on every GPU but Ada's where it fits, as the one-GPU paths choose it (`best_layout`) and as their checks
         // of several sequences at once ran)
@@ -5019,6 +5072,12 @@ pub mod sizing {
         // the sequences: on one GPU the whole model is one engine (`split::Run::One`), a server's users in pools of what the GPU leaves them (`SeqRoom::plan`); a
         // run's one sequence, and stages and layers across GPUs, one sequence at a time, its rings and states as each part loads them (across: every GPU the whole)
         let whole = cuts.is_empty() && devices.len() == 1 && !across;
+        if pages && !(whole && served) {
+            return Err(Refusal::unsupported(
+                format!("{name}: 12-bit KV pages are a server's pools with the whole model on one GPU; this plan holds one sequence in each part"),
+                "Its plan in bf16",
+            ));
+        }
         let (users, kv) = if let Some(seq) = seq.as_ref().filter(|_| whole && served) {
             let gpu = devs.iter().find(|t| t.ordinal == devices[0]);
             let left = gpu.map_or(0, |t| crate::plan::dynamic_room_of(t.free)).saturating_sub(total);
@@ -5077,7 +5136,7 @@ pub mod sizing {
             weights: total + host_bytes + dense_ram.1 + tables,
             bf16: 0,
             kv,
-            kv12: false,
+            kv12: pages,
             work,
             draft: 0,
             reserve: used.len() as u64 * crate::plan::CONTEXT_FLOOR,
@@ -7105,7 +7164,7 @@ mod tests {
         let (kinds, _) = crate::runtime::describe::describe_dir(dir).unwrap();
         let d = match case {
             // (the dense layout by its reader's config, the layout with experts by its kinds alone: `qwen35::load_stage`)
-            "qwen35" | "qwen35moe" => match crate::qwen35::Config35::load(dir) {
+            "qwen35" | "qwen35-wide" | "qwen35moe" => match crate::qwen35::Config35::load(dir) {
                 Ok(c) => crate::dynamic::qwen35::lowered(dir, &c, &Stage::whole(c.layers)),
                 Err(_) => crate::dynamic::lower::qwen35(&kinds, Vec::new(), max_pos, &Stage::whole(kinds.desc.blocks.len() / 2)),
             },
@@ -7183,6 +7242,109 @@ mod tests {
                 assert_eq!((lp.users, lp.kv), (1, seq.rings + seq.state), "{case} {machine}: run's one sequence");
             }
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The 12-bit pages by kind on the dynamic route, at the releases' shapes (#332: Qwen3.8-27B's heads of 256, Kimi-K3's latents of 512 + 64, GLM-5.3-Flash's
+    /// latents): every ring the pages take is fewer bytes a token in them than in bf16 (`SeqRoom::pages`; the latent's 576 values as 5 heads of 128, one stream),
+    /// so 32 users at 8,192 tokens each reserve less in them than in bf16 (`SeqRoom::most_bytes`, the rule's figure), and one user at the context more (what the
+    /// pages spend once: a raw slab for every page of the sequence and the rows a pass unpacks).
+    #[test]
+    fn the_releases_attention_kinds_reserve_less_in_twelve_bit_pages_for_many_users() {
+        let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
+        let kimi: serde_json::Value = serde_json::from_str(&fixture("headers/Kimi-K3.json")).unwrap();
+        let cases = [
+            ("Qwen3.8-27B", json::to_compact(q35.get("Qwen/Qwen3.8-27B").unwrap())),
+            ("Kimi-K3", kimi["config"].as_str().unwrap().to_string()),
+            ("GLM-5.3-Flash", fixture("glm5_next_config.json")),
+        ];
+        let ctx = 8192;
+        for (name, text) in cases {
+            let c = crate::runtime::config::ModelConfig::parse(&text).unwrap();
+            let low = crate::dynamic::split::lowered_of(&c, ctx + sizing::DYN_CHUNK + 16).unwrap_or_else(|e| panic!("{name}: {}", e.msg));
+            let b = crate::dynamic::SeqRoom::of(&low, ctx, sizing::DYN_CHUNK);
+            let t = crate::dynamic::SeqRoom::pages(&low, ctx, sizing::DYN_CHUNK).unwrap_or_else(|| panic!("{name}: no ring in 12-bit pages"));
+            let taken = crate::dynamic::twelve_bit_rings(&low).into_iter().flatten().count();
+            eprintln!(
+                "{name}: {taken} rings in 12-bit pages, {:?} bytes a token against bf16's {:?}; once {} bytes; 32 users {} against {}, one {} against {}",
+                t.per,
+                b.per,
+                t.once,
+                t.most_bytes(32),
+                b.most_bytes(32),
+                t.most_bytes(1),
+                b.most_bytes(1)
+            );
+            assert!(taken > 0 && t.once > 0 && t.per.iter().zip(&b.per).all(|(x, y)| x <= y) && t.per != b.per, "{name}");
+            assert!(t.most_bytes(32) < b.most_bytes(32), "{name}: 32 users reserve less in 12-bit pages");
+            assert!(t.most_bytes(1) > b.most_bytes(1), "{name}: one user reserves more in 12-bit pages");
+        }
+    }
+
+    /// The 12-bit KV pages are planned by kind on every route of the executor (#332), never by family: a server's plan with GLYD_KV=lossless takes them where its
+    /// description has rings in pools the pages take (`rows::twelve_bit_rings`: heads of 128, 256 or 512 channels, latents) and they reserve no more than bf16 for its
+    /// users (`one_gpu_pages`' rule; a check's `twelve_always` takes them wherever they fit), and says so (`kv_format`). On the random cases of the dynamic route:
+    /// 32 users on an L4 and an RTX 4080 SUPER are planned in them where a token is fewer bytes in them than in bf16 (the Qwen3.5 layout's heads of 256, GLM-5.3's
+    /// latent of 128), in bf16 where it is more (Kimi-K3's random latent of 192 as 2 heads of 128 and GLM-5.3-Flash's of 64 as one: padded, more than bf16), and
+    /// for a check in them, every plan's bytes holding one sequence's context in each group's pool by the executor's rule (`Dyn::page`: the plan's bytes less the
+    /// states, block 0 and what the pages spend once, over each group's 12-bit bytes a token); one user at the context in bf16, a check's in 12-bit pages of more
+    /// bytes; `run`'s one sequence and plans with nothing asked in bf16; heads of 64 (muse) and the compressed attention (deepseek-v4) never in them. The Qwen3.5
+    /// layout's lossy route the same (kestrel). Before, the planner planned 12-bit pages for Gemma 4 and the plain dense kind alone.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_twelve_bit_pages_are_planned_by_kind_on_every_route() {
+        let dir = std::env::temp_dir().join(format!("glyd-plan-kv12-kinds-{}", std::process::id()));
+        let plan = |machine: &str, more: &[&str], lossless: bool, always: bool| -> LoadPlan {
+            let f = sizing::always_twelve(always, || sizing::asking_lossless(lossless, || planned_fit(&dir, machine, more)));
+            f.plan.chosen.as_ref().and_then(|c| c.load.clone()).unwrap_or_else(|| panic!("{machine} {more:?}: {:?}", f.refusal))
+        };
+        let mut twelve = Vec::new();
+        for case in ["qwen35", "qwen35-wide", "kimi", "kimi-dsa", "glm", "glm-dsa", "muse", "deepseek-v4"] {
+            let _ = std::fs::remove_dir_all(&dir);
+            crate::logits::random_model(case, &dir).unwrap();
+            for machine in ["l4", "rtx4080s"] {
+                let users = ["--users", "32"];
+                let (b, t, check) = (plan(machine, &users, false, false), plan(machine, &users, true, false), plan(machine, &users, true, true));
+                assert!(!b.kv12 && b.kind == Kind::Dynamic, "{case} {machine}: nothing asked, bf16: {}", b.text());
+                let d = loader_desc(case, &dir, check.context + check.chunk + 16);
+                let Some(pages) = crate::dynamic::SeqRoom::pages(&d, check.context, check.chunk) else {
+                    assert!(!t.kv12 && !check.kv12, "{case} {machine}: no ring the pages take, bf16: {}", check.text());
+                    assert!(matches!(case, "muse" | "deepseek-v4"), "{case}: no ring in 12-bit pages");
+                    continue;
+                };
+                let bf16 = crate::dynamic::SeqRoom::of(&d, check.context, check.chunk);
+                let smaller = pages.per.iter().zip(&bf16.per).all(|(x, y)| x <= y);
+                assert_eq!(t.kv12, smaller, "{case} {machine}: 12-bit pages where they reserve less ({:?} against {:?}): {}", pages.per, bf16.per, t.text());
+                assert!(check.kv12 && check.kv_format() == "12-bit" && check.text().contains("keys and values in 12-bit pages"), "{case} {machine}");
+                assert!(check.json("m").contains(r#""kv_format":"12-bit""#) && check.gpu_total() <= check.free, "{case} {machine}: {}", check.text());
+                // (the executor's pools of the plan's bytes: its budget less the pages' once-only bytes, over each group's 12-bit bytes a token)
+                let budget = bf16.pool_budget(check.users, check.kv, pages.once);
+                let most: Vec<usize> = pages.least.iter().map(|&b| b * check.users).collect();
+                let keep: Vec<Option<usize>> = pages.least.iter().map(|_| None).collect();
+                let blocks = crate::dynamic::pool_blocks(budget, &pages.per, &pages.covers, &keep, &most, &pages.least);
+                assert!(blocks.iter().zip(&pages.least).all(|(b, l)| b >= l), "{case} {machine}: {blocks:?} of {:?}", pages.least);
+                // (one user at the context: bf16 for a server, the pages of more bytes for a check; run's one sequence bf16 whatever is asked)
+                let (one, one_check) = (plan(machine, &["--users", "1"], true, false), plan(machine, &["--users", "1"], true, true));
+                assert!(!one.kv12 && one_check.kv12 && one_check.kv > one.kv, "{case} {machine}: {} / {}", one.text(), one_check.text());
+                assert!(!plan(machine, &[], true, true).kv12, "{case} {machine}: run's one sequence");
+                if t.kv12 {
+                    twelve.push(case);
+                }
+            }
+            // (the Qwen3.5 layout's lossy route, by the same rule)
+            if case == "qwen35" {
+                let lossy = |lossless: bool| -> LoadPlan {
+                    let f = sizing::asking_lossless(lossless, || {
+                        planned(&args(&["fit", &format!("{}:kestrel", dir.display()), "--machine", "l4", "--users", "32"]))
+                    });
+                    f.unwrap().plan.chosen.and_then(|c| c.load).expect("a plan")
+                };
+                let (b, t) = (lossy(false), lossy(true));
+                assert!(b.kind == Kind::Qwen35 && !b.kv12 && t.kv12 && t.level == "kestrel", "{} / {}", b.text(), t.text());
+            }
+        }
+        twelve.dedup();
+        assert_eq!(twelve, ["qwen35", "qwen35-wide", "glm-dsa"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -26,7 +26,7 @@ pub(crate) use rows::pool_blocks;
 pub(crate) use rows::seq_blocks;
 #[cfg(all(test, feature = "dev"))]
 pub(crate) use rows::Hold;
-pub(crate) use rows::{layer_rooms, marks_kept, stage_holds, SeqRoom};
+pub(crate) use rows::{layer_rooms, marks_kept, stage_holds, twelve_bit_rings, SeqRoom};
 pub mod lower;
 pub mod lower_comp;
 pub mod mla;

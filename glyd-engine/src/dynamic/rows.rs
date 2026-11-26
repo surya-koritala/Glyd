@@ -479,6 +479,9 @@ pub(crate) struct SeqRoom {
     pub covers: Vec<usize>,
     pub least: Vec<usize>,
     pub block: Vec<u64>,
+    /// What the pools spend once whatever the sequences where their keys and values are in 12-bit pages (`kv12::once_bytes` of the rings the pages take:
+    /// `SeqRoom::pages`); none in bf16.
+    pub once: u64,
 }
 
 /// Whether the engine keeps a model's states at each sequence's mark and at block boundaries, where it has states and no draft model (`ModelStep::keeps`): unless
@@ -514,7 +517,36 @@ impl SeqRoom {
         let covers: Vec<usize> = windows.iter().map(|w| BLOCK * w.1).collect();
         let keep: Vec<Option<usize>> = windows.iter().map(|&(w, _)| (w > 0 && w != usize::MAX).then_some(w + chunk)).collect();
         let least = keep.iter().zip(&covers).map(|(&k, &c)| seq_blocks(k, ctx, c)).collect();
-        SeqRoom { hold, state, marks: !d.states.is_empty() && marks_kept(), rings, per, covers, least, block }
+        SeqRoom { hold, state, marks: !d.states.is_empty() && marks_kept(), rings, per, covers, least, block, once: 0 }
+    }
+
+    /// The rule for `d` with its keys and values in the executor's 12-bit lossless pages, as `Dyn::page` makes the pools of a loader that set the model's tables
+    /// (`set_kv12`): each ring the pages take (`twelve_bit_rings`) at their bytes a token (`kv12::token_bytes`; `Lossless::token_bytes` asks the library the same
+    /// sizes), the others bf16, and what their pools spend once (`kv12::once_bytes`); block 0 of each group counted at bf16's, as the pools' budget takes it
+    /// (`pool_budget`). None where no ring is held in 12-bit pages.
+    pub(crate) fn pages(d: &super::ModelDesc, ctx: usize, chunk: usize) -> Option<SeqRoom> {
+        let taken = twelve_bit_rings(d);
+        if taken.iter().all(Option::is_none) {
+            return None;
+        }
+        let mut s = SeqRoom::of(d, ctx, chunk);
+        let (group, _) = ring_groups(&d.rings, &vec![true; d.rings.len()]);
+        s.per.iter_mut().for_each(|p| *p = 0);
+        for (r, ring) in d.rings.iter().enumerate() {
+            s.per[group[r]] += taken[r].map_or(ring.token_bytes(), |k| super::kv12::token_bytes(k.heads, k.channels, k.one) as usize);
+        }
+        s.once = super::kv12::once_bytes(&taken.into_iter().flatten().collect::<Vec<_>>(), ctx.div_ceil(16) * 16, chunk.max(1));
+        Some(s)
+    }
+
+    /// The bytes of `users` sequences where every one holds the whole context: the most a plan gives them (`plan`'s bound), what a plan's keys and values reserve for
+    /// its users in the worst case (both formats are lossless: a plan takes the 12-bit pages only where they reserve no more than bf16, src/plan.rs `size_dynamic_at`).
+    pub(crate) fn most_bytes(&self, users: usize) -> u64 {
+        match self.hold {
+            Hold::Pooled => self.fixed(users) + self.budget_of(users),
+            Hold::Own => self.fixed(users),
+            Hold::One => self.fixed(1),
+        }
     }
 
     /// The pools' budget (`pool_blocks`'s) of `k` sequences' blocks in every group, each one's at most (`least`): what one sequence's context takes, and every user's.
@@ -523,13 +555,14 @@ impl SeqRoom {
     }
 
     /// What `users` sequences take whatever their keys and values: pooled, their states, where the engine keeps them, a copy of each at its mark and the pool of
-    /// copies at block boundaries, and each group's block 0; each in its own rings, every one's rings and states and its mark's copy; one alone, its rings and states.
+    /// copies at block boundaries, each group's block 0 and what 12-bit pages spend once (`once`); each in its own rings, every one's rings and states and its
+    /// mark's copy; one alone, its rings and states.
     fn fixed(&self, users: usize) -> u64 {
         let (u, m) = (users as u64, self.marks as u64);
         match self.hold {
             Hold::One => self.rings + self.state,
             Hold::Own => u * (self.rings + self.state * (1 + m)),
-            Hold::Pooled => u * self.state * (1 + m) + m * snaps::count(self.state as usize) as u64 * self.state + self.block.iter().sum::<u64>(),
+            Hold::Pooled => u * self.state * (1 + m) + m * snaps::count(self.state as usize) as u64 * self.state + self.block.iter().sum::<u64>() + self.once,
         }
     }
 
@@ -563,7 +596,7 @@ impl SeqRoom {
     }
 
     /// The pools' budget (`pool_blocks`') a plan gives `users` sequences in `kv` bytes, of which `once` the 12-bit pages spend once (`kv12::once_bytes`): what their
-    /// states, marks and each group's block 0 leave.
+    /// states, marks and each group's block 0 leave. (The bf16 rule's, `of`: the loader's own `once`, which `pages` counts in `fixed`.)
     pub(crate) fn pool_budget(&self, users: usize, kv: u64, once: u64) -> usize {
         kv.saturating_sub(self.fixed(users) + once) as usize
     }
@@ -572,6 +605,14 @@ impl SeqRoom {
     pub(crate) fn own_seqs(&self, users: usize, kv: u64) -> usize {
         ((kv / self.fixed(1).max(1)) as usize).clamp(1, users.max(1))
     }
+}
+
+/// The rings of `d` a server's engine holds in 12-bit pages where its loader sets the model's tables (`Dyn::page`): each ring the pages take
+/// (`kv12::pages_shape`: heads of 128, 256 or 512 channels the decode takes, or a latent attention's one stream) where the sequences are held in pools of blocks
+/// (`Hold::Pooled`), whose pages they are; none where one sequence is held alone or each in rings of its own. A ring's shape, or None where it stays bf16.
+pub(crate) fn twelve_bit_rings(d: &super::ModelDesc) -> Vec<Option<super::kv12::KvShape>> {
+    let pooled = one_sequence_op(d).is_none() && pages_all(d) && paging_asked();
+    (0..d.rings.len()).map(|r| super::kv12::pages_shape(d, r).filter(|_| pooled)).collect()
 }
 
 /// The rings and the states the layers of stage `st` of `d` read or write (what a stage's engine holds of a sequence: `Dyn::build`).

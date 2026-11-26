@@ -3156,16 +3156,18 @@ pub fn make_model(a: &crate::args::Args) -> Result<()> {
             let dir = Path::new(a.need(2, "DIR")?);
             make(dir)?;
             // (`--servable`: the files a server needs besides the weights, for a client to talk to it: a tokenizer, the chat template and the end token; the
-            // family's chat template where one is made: Qwen's for the Qwen3.5 layout's and Qwen3.8-Flash-Next's cases, GLM-5.3's for its layout's, DeepSeek-V4.1's
-            // release's own (tests/fixtures/chat_deepseek_v41.jinja, its chat_template.jinja) for its case)
+            // family's chat template where one is made: Qwen's for the Qwen3.5 layout's and Qwen3.8-Flash-Next's cases, GLM-5.3's for its layout's and
+            // GLM-5.3-Flash's, Kimi-K3's own (src/chat.rs `KIMI_CHAT`) for its cases, DeepSeek-V4.1's release's own (tests/fixtures/chat_deepseek_v41.jinja, its
+            // chat_template.jinja) for its case)
             if a.has("servable") {
                 let template = match c.id {
-                    "qwen35" | "qwen35moe" | "qwen4x" | "qwen4x-s2" => include_str!("../tests/fixtures/chat_qwen38_tools.jinja"),
-                    "glm-dsa" | "glm-dsa-f8" => include_str!("../tests/fixtures/chat_glm53_tools.jinja"),
+                    "qwen35" | "qwen35-wide" | "qwen35moe" | "qwen4x" | "qwen4x-s2" => include_str!("../tests/fixtures/chat_qwen38_tools.jinja"),
+                    "glm" | "glm-dsa" | "glm-dsa-f8" => include_str!("../tests/fixtures/chat_glm53_tools.jinja"),
+                    "kimi" | "kimi-dsa" => crate::chat::KIMI_CHAT,
                     "deepseek-v41" => include_str!("../tests/fixtures/chat_deepseek_v41.jinja"),
                     id => {
                         return err(format!(
-                            "--servable: only the cases whose family's chat template is made (qwen35, qwen35moe, qwen4x, qwen4x-s2, glm-dsa, glm-dsa-f8, deepseek-v41; not {id})"
+                            "--servable: only the cases whose family's chat template is made (qwen35, qwen35-wide, qwen35moe, qwen4x, qwen4x-s2, glm, glm-dsa, glm-dsa-f8, kimi, kimi-dsa, deepseek-v41; not {id})"
                         ))
                     }
                 };
@@ -6769,8 +6771,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // (--ctx plan: the plan `serve` makes of the random model for these users on this GPU, which the load takes (its context, chunk, layout, sequences and their bytes:
     // `take_plan`); the GPU's memory the load and the step's sequences take is held to the plan's figure, and the users to the plan's)
     let plan = if a.flag("ctx") == Some("plan") { Some(planned_for(case, level, users)?) } else { None };
-    // (whether the plan is of the pages this run holds. The planner plans no 12-bit pages for some routes (`plan::takes_twelve`): there --kv12 runs them at the
-    // bf16 plan's context in pools of what the GPU has free, and its memory is not held to that plan, which is of other pages)
+    // (whether the plan is of the pages this run holds. The planner plans no 12-bit pages where the description has no ring in pools they take (heads of 64, the
+    // compressed attention's entries: `rows::twelve_bit_rings`): there --kv12 runs them at the bf16 plan's context in pools of what the GPU has free, and its
+    // memory is not held to that plan, which is of other pages)
     let own_plan = plan.as_ref().is_some_and(|lp| !kv12 || lp.kv_format() == "12-bit");
     let mib = |b: u64| b as f64 / (1u64 << 20) as f64;
     if let Some(lp) = &plan {
