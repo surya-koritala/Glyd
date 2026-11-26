@@ -7622,7 +7622,7 @@ pub fn sample_check(a: &crate::args::Args) -> Result<()> {
     let (host, st_host) = run(&mut e, &all)?;
     e.host_sampling = false;
     let mut fails = 0;
-    let strict = std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "0") && users <= 16;
+    let strict = !crate::dynamic::batch_prefill() && users <= 16;
     let (mut like_alone, mut read_alone) = (0, 0);
     // (a served token's log-probabilities to the bit: the token, its log-probability, and each of the likeliest tokens and theirs)
     let bits = |l: &Lp| (l.token, l.logprob.to_bits(), l.top.iter().map(|&(t, x)| (t, x.to_bits())).collect::<Vec<_>>());
@@ -8325,7 +8325,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // (with a page budget too small for all of them at once (GLYD_ENGINE_PAGES), sequences give their blocks back and run again from their tokens, the generated ones as a prompt: the
     // replies are then counted, not required to be the same)
     let squeezed = std::env::var_os("GLYD_ENGINE_PAGES").is_some();
-    let one_a_pass = std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "0");
+    let one_a_pass = !crate::dynamic::batch_prefill();
     let strict = one_a_pass && !squeezed;
     let steps: Vec<u64> = s.context().sched[18..27].iter().map(|x| x.load(std::sync::atomic::Ordering::Relaxed)).collect();
     // (and the steps that held a prompt's chunk beside their rows that decode, which no graph of rows takes: `Dyn::pass` replays one for rows that decode alone)

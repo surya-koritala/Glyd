@@ -354,6 +354,11 @@ pub fn run_with(model: &str, out: &Path, threads: usize, layout: Layout, quiet: 
 
 /// `run_with` of the model `source`, its config.json parsed once (`config`; `glm`: where its keys do not parse, a GLM-5.3-Flash release's error: `level_plan`).
 pub fn run_of(source: &Source, config: Option<&ModelConfig>, glm: Option<Error>, out: &Path, threads: usize, layout: Layout, quiet: bool) -> Result<()> {
+    // (a level the family's row does not run is refused in `run`'s words: a save of it no level reads)
+    let row = config.and_then(ModelConfig::family).map(crate::support::row);
+    if let Some(r) = row.and_then(|s| s.pack_refusal(layout, &source.repo, &crate::levels::short_name(&source.repo))) {
+        return err(r.to_string());
+    }
     // (penguin of a family whose row says so, a Gemma 4 model's and a plain dense one's, is a glyd-v7 save too: the executor reads its packs as saved)
     let saved_penguin = config.and_then(saves_of).is_some_and(|s| s.penguin);
     let t0 = Instant::now();
@@ -888,8 +893,8 @@ mod tests {
     }
 
     /// A tiny GLM-5.3-Flash checkpoint laid out as the real one is (Kimi delta attention and latent attention layers, a dense MLP and mixture-of-experts layers, the experts, the MLPs and the latent attention's projections as
-    /// E4M3 bytes with block scales that do not divide into whole blocks, the rest bf16, fp32 parameters, the hyper-connections, an indexer; with a tensor of the MTP layer and one of the vision tower) packed by `run_with`
-    /// in each of the two block layouts the engine runs: a glyd-v7 directory under the source's names, whose packs the loader's checks accept and which are, buffer for buffer, the packer's of the bf16 the matrices dequantise to
+    /// E4M3 bytes with block scales that do not divide into whole blocks, the rest bf16, fp32 parameters, the hyper-connections, an indexer; with a tensor of the MTP layer and one of the vision tower) saved by its row's
+    /// plan (`level_plan`; `run_with` refuses those levels, which the row does not run) in each of two block layouts: a glyd-v7 directory under the source's names, whose packs the loader's checks accept and which are, buffer for buffer, the packer's of the bf16 the matrices dequantise to
     /// (the same checkpoint with them dequantised first, and the FP8 one packed as the loader packs a bf16 directory), whose small tensors are the source's bytes (the fp32 ones fp32), and which glyd-gpu's verify decodes
     /// to the sha256 of its glyd.json. A config whose experts the kernels do not run (another activation) is refused in words.
     #[test]
@@ -907,9 +912,12 @@ mod tests {
         let src: Vec<(String, String, Vec<u64>)> =
             fp8.files.iter().flat_map(|f| f.tensors.iter().map(|(n, t)| (n.clone(), t.dtype.clone(), t.shape.clone()))).collect();
         assert_eq!(c.check(&src, &Default::default()).unwrap(), 3);
+        let source = Source::find(dir.join("fp8").to_str().unwrap()).unwrap();
+        let config = ModelConfig::load(&source.dir).unwrap();
         for asked in [Layout::Int6, Layout::Int5] {
             let out = dir.join(asked.name());
-            run_with(dir.join("fp8").to_str().unwrap(), &out, 2, asked, true).unwrap();
+            let plan = level_plan(&source.dir, asked, Some(&config), None).unwrap().unwrap();
+            save::save_planned(&source, &out, 2, 5 << 30, asked, &plan).unwrap();
             // the saved directory: a glyd-v7 one of the layout asked, of the same model under the same names, with every pack the loader reads and every tensor it keeps, and nothing of the MTP layer, the vision tower or the scales
             let (layout, m) = v7_manifest(&out).unwrap().unwrap();
             assert_eq!(layout, asked);
@@ -968,7 +976,7 @@ mod tests {
         std::fs::create_dir_all(&bad).unwrap();
         std::fs::write(bad.join("config.json"), text.replace("\"silu\"", "\"gelu\"")).unwrap();
         std::fs::copy(dir.join("fp8").join("model.safetensors"), bad.join("model.safetensors")).unwrap();
-        let e = run_with(bad.to_str().unwrap(), &dir.join("out-refused"), 2, Layout::Int6, true).unwrap_err().msg;
+        let e = level_plan(&bad, Layout::Int6, ModelConfig::load(&bad).ok().as_ref(), None).unwrap_err().msg;
         assert!(e.contains("the kernels take SwiGLU, GeGLU, relu squared and SiTU"), "{e:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1189,19 +1197,61 @@ mod tests {
     }
 
     /// The models of the saves the packer writes: each family's random model of the logits checks (`logits::random_model`'s case, or its maker's form) and the
-    /// layouts each is packed at, those it is refused at among them (the levels a family is not saved at, and Int4H where no codes times a scale give the weights).
+    /// layouts each is packed at, those it is refused at among them (the levels a family is not saved at, a level its row does not run, and Int4H where no codes
+    /// times a scale give the weights). GLM-5.3-Flash's row runs no block level: its lossy saves are refused (`a_level_its_row_does_not_run_is_not_packed`).
     #[cfg(feature = "dev")]
     fn saved_models() -> Vec<(&'static str, Vec<Layout>)> {
         use Layout::*;
         let lossy = || vec![Tiered, Int6, Int5, Int4, Int4H, Int3];
         let mut v = vec![("dense", vec![Tiered, Twelve, Compact, Int6, Int5, Int4, Int4H, Int3])];
-        for c in ["qwen35", "qwen35-wide", "qwen35moe", "qwen35moe-st", "gemma4", "gemma4-kv", "nemotron", "nemotron-latent", "glm", "glm-fp8"] {
+        for c in ["qwen35", "qwen35-wide", "qwen35moe", "qwen35moe-st", "gemma4", "gemma4-kv", "nemotron", "nemotron-latent"] {
             v.push((c, lossy()));
+        }
+        for c in ["glm", "glm-fp8"] {
+            v.push((c, vec![Tiered]));
         }
         for c in ["glm-dsa", "kimi", "muse", "deepseek-v4", "qwen4x"] {
             v.push((c, vec![Tiered, Int6]));
         }
         v
+    }
+
+    /// `pack` saves a family at the levels its row runs alone (src/support.rs `levels`): at another it refuses in the words `run` gives, before anything is
+    /// read or written, whatever the family. GLM-5.3-Flash's row runs penguin and hummingbird: its block levels' saves (whose kv_b was the earlier engine's
+    /// form, which nothing loads) are refused; the three-bit layout, no level, is packed where the row runs a block level (the plain dense kind's) and refused
+    /// where it runs none.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_level_its_row_does_not_run_is_not_packed() {
+        let root = std::env::temp_dir().join(format!("glyd-pack-levels-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (glm, dense) = (root.join("glm"), root.join("dense"));
+        crate::logits::random_model("glm", &glm).unwrap();
+        crate::logits::random_model("dense", &dense).unwrap();
+        let row = crate::support::row(Family::Glm);
+        for (layout, level) in [(Layout::Int6, "kestrel"), (Layout::Int5, "swift"), (Layout::Int4, "wren"), (Layout::Int4H, "wren"), (Layout::Int3, "i3")] {
+            let out = root.join(format!("glm-{}", layout.name()));
+            let e = run_with(glm.to_str().unwrap(), &out, 2, layout, true).unwrap_err().msg;
+            let want = format!(
+                "glm (GLM-5.3-Flash) runs at the penguin and hummingbird levels in this engine, not {level}: Run it lossless: glyd run {}",
+                glm.display()
+            );
+            assert_eq!(e, want, "{level}");
+            assert_eq!(row.pack_refusal(layout, &glm.display().to_string(), "glm").unwrap().to_string(), want);
+            assert!(!out.exists(), "nothing written at {level}");
+        }
+        let dense_row = crate::support::row(Family::Qwen3);
+        assert!(dense_row.pack_refusal(Layout::Int3, "d", "d").is_none() && dense_row.pack_refusal(Layout::Hummingbird, "d", "d").is_some());
+        run_with(dense.to_str().unwrap(), &root.join("dense-i3"), 2, Layout::Int3, true).unwrap();
+        // (every row: a level it does not run refused in run's words, one it runs not refused for its level)
+        for r in &crate::support::TABLE {
+            for layout in [Layout::Tiered, Layout::Int6, Layout::Int5, Layout::Int4, Layout::Hummingbird] {
+                let level = crate::levels::name_of(layout);
+                assert_eq!(r.pack_refusal(layout, "m", "m").map(|x| x.what), r.refusal("m", "m", level).map(|x| x.what), "{} {level}", r.name);
+                assert_eq!(r.pack_refusal(layout, "m", "m").is_none(), r.allows(level), "{} {level}", r.name);
+            }
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// Every save the packer writes is the one recorded (tests/fixtures/pack_saves.json): each of `saved_models` packed by `run_with` at each of its layouts, every

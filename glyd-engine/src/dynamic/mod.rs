@@ -21,12 +21,16 @@ mod kvpages;
 pub use kvpages::check as kvpages_check;
 #[cfg(feature = "dev")]
 pub(crate) use kvpages::room_of as kv12_room;
+#[cfg(feature = "dev")]
+pub(crate) use rows::batch_prefill;
 #[cfg(all(test, feature = "dev"))]
 pub(crate) use rows::pool_blocks;
 pub(crate) use rows::seq_blocks;
 pub use rows::size_by_free_memory;
 #[cfg(all(test, feature = "dev"))]
 pub(crate) use rows::Hold;
+#[cfg(test)]
+pub(crate) use rows::BATCH_PREFILL_ASKED;
 pub(crate) use rows::{free_sized, layer_rooms, marks_kept, stage_holds, twelve_bit_rings, unplanned, SeqRoom};
 pub mod lower;
 pub mod lower_comp;

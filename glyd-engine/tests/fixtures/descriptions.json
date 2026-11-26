@@ -187,7 +187,7 @@
     "blocks": 186,
     "tensors": 497172,
     "kinds": "e5e05b3675a90e1c",
-    "weights": "4905b338d6b3d683",
+    "weights": "5592132287361062",
     "plan": "1948d8c04addd58c",
     "family": "Kimi"
   },
@@ -195,7 +195,7 @@
     "blocks": 186,
     "tensors": 497052,
     "kinds": "6b7fa0b40641a878",
-    "weights": "4ffb8ef9faf1cfe1",
+    "weights": "a3da0b1d8d0d3966",
     "plan": "68b0d4fcd7227af7",
     "family": "Kimi"
   },

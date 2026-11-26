@@ -842,8 +842,9 @@ fn kimi_k31s_sparse_attention_is_the_gated_indexer_with_its_key_norm() {
 
 /// Kimi-K3's matrices' shapes as the builder makes them from the config are the released checkpoint's (the header fixture's index): each layer's delta
 /// attention's (q, k, v, the full-rank gate, the forget gate's two, beta, o), its latent attention's (q_a, q_b, the gate, kv_a, kv_b, o), the dense MLP's,
-/// the router's, the latent's two projections and the shared experts' three, the embedding and the head: every matrix of the text model but the experts'.
-/// The lowering to the executor sizes every product by them and names its tensors with them.
+/// the router's, the latent's two projections and the shared experts' three, the embedding and the head, and every routed expert's three, whose codes as
+/// released are two to a byte (a matrix of `[rows, cols]` is stored `[rows, cols / 2]`, its scales beside it): every matrix of the text model. The lowering
+/// to the executor sizes every product by them and names its tensors with them; the planner sizes an expert by them (src/plan.rs `MoeShape`).
 #[test]
 fn kimi_k3s_matrices_shapes_are_the_released_checkpoints() {
     let h = fixture("headers/Kimi-K3.json");
@@ -852,16 +853,32 @@ fn kimi_k3s_matrices_shapes_are_the_released_checkpoints() {
     for g in h["groups"].as_array().unwrap() {
         let (mask, shape) = (g["mask"].as_str().unwrap(), g["shape"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect::<Vec<_>>());
         let layers: Vec<u64> = g["layers"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect();
+        let experts = g["experts"].as_u64().unwrap() as usize;
         if layers.is_empty() {
             header.insert(mask.to_string(), shape);
         } else if !mask.contains("{E}") {
             header.extend(layers.iter().map(|l| (mask.replace("{L}", &l.to_string()), shape.clone())));
+        } else {
+            for l in &layers {
+                let m = mask.replace("{L}", &l.to_string());
+                header.extend((0..experts).map(|e| (m.replace("{E}", &e.to_string()), shape.clone())));
+            }
         }
     }
+    let mut packed = 0;
     for (n, sh) in &d.shapes {
-        assert_eq!(header.get(n), Some(sh), "{n}");
+        let stored = match d.scales.contains_key(n) {
+            true => {
+                packed += 1;
+                vec![sh[0], sh[1] / 2]
+            }
+            false => sh.clone(),
+        };
+        assert_eq!(header.get(n), Some(&stored), "{n}");
     }
-    let matrices = header.iter().filter(|(n, s)| s.len() == 2 && s[0] > 1 && n.starts_with("language_model."));
+    assert_eq!(packed, 92 * 896 * 3, "every routed expert's three matrices");
+    let scales: std::collections::BTreeSet<&String> = d.scales.values().collect();
+    let matrices = header.iter().filter(|(n, s)| s.len() == 2 && s[0] > 1 && n.starts_with("language_model.") && !scales.contains(n));
     let unsaid: Vec<&String> = matrices.filter(|(n, _)| !d.shapes.contains_key(*n)).map(|x| x.0).collect();
     assert!(unsaid.is_empty(), "matrices of the text model with no shape said: {unsaid:?}");
 }
@@ -1001,8 +1018,10 @@ fn kimi_k31_pros_weight_map_is_its_index() {
         let (dtype, shape, _) = &t[n];
         let want = kimi_tensor(&cfg, n).unwrap_or_else(|| panic!("{n}: no tensor of the layout has this name"));
         assert_eq!((dtype.as_str(), shape), (want.0, &want.1), "{n}");
+        // (a routed expert's matrix: its codes two to a byte, `[rows, cols / 2]`)
         if let Some(s) = d.shapes.get(n) {
-            assert_eq!(s, shape, "{n}: the description's shape");
+            let stored = if d.scales.contains_key(n) { vec![s[0], s[1] / 2] } else { s.clone() };
+            assert_eq!(&stored, shape, "{n}: the description's shape");
         }
     }
     // (against Kimi-K3: the tensors it adds, each of the 24 latent attention layers' indexer, and the rest the same at the same dtype and shape)

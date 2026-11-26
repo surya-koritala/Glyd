@@ -812,7 +812,7 @@ fn sched(a: &Args) -> Result<()> {
     let found = cached.load(std::sync::atomic::Ordering::Relaxed);
     let same = got == alone_second;
     // (GLYD_ENGINE_BATCH_PREFILL=0, where every reply is to be the reply alone: the step keeps no finished sequence, so nothing is found)
-    let keeps = std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_none_or(|v| v != "0");
+    let keeps = crate::dynamic::batch_prefill();
     ok &= (found > 0) == keeps;
     println!(
         "{} a second turn about the first image ({} ids): {found} of them found in the first's kept slot{}; its tokens {} the whole prompt's alone (not judged: the kept slot goes on from the first prompt's end, the prompt alone in chunks from its start){}",

@@ -389,116 +389,38 @@
     "glm mma": {
       "refused": "Glm5NextForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
     },
-    "glm i6": {
-      "files": {
-        "config.json": "1ccaf6b68623e90939e2310de9f5f87bb09e57cb4c3feea004086103c34272c6",
-        "generation_config.json": "230c30609ecbbb9e6583bedde8e7bdda0c6eb8fe5fad0eaeb3d1b293d751cb4f",
-        "glyd.json": "1ac03ed7f19e71c92cfe423868b0dac4ad7f160555d4e184f0855702e9a80fef",
-        "model.safetensors": "a16a05f429f83298968f0e0949c41bc2fcbf9a24b140c7422b812e47e65f16db"
-      },
-      "plan": "a29bc25dc8e91dfafc22c30cbc8636c67bcb4d7be483e741fe72234ae7df3d90"
-    },
-    "glm i5": {
-      "files": {
-        "config.json": "1ccaf6b68623e90939e2310de9f5f87bb09e57cb4c3feea004086103c34272c6",
-        "generation_config.json": "230c30609ecbbb9e6583bedde8e7bdda0c6eb8fe5fad0eaeb3d1b293d751cb4f",
-        "glyd.json": "e47e427c2f39f08c1b21172f10f19a8e47f146ac1e9d5baff46b6b4618c32e18",
-        "model.safetensors": "a04c5f333f11c5858e68808d486b95c9a3d29e748c6cfa5add91bbfe03b9bf3e"
-      },
-      "plan": "a29bc25dc8e91dfafc22c30cbc8636c67bcb4d7be483e741fe72234ae7df3d90"
-    },
-    "glm i4": {
-      "files": {
-        "config.json": "1ccaf6b68623e90939e2310de9f5f87bb09e57cb4c3feea004086103c34272c6",
-        "generation_config.json": "230c30609ecbbb9e6583bedde8e7bdda0c6eb8fe5fad0eaeb3d1b293d751cb4f",
-        "glyd.json": "0a89c1a77d709a9139ac4ecb62e327e408434ebdb8604dd37bd26eceae8aabe6",
-        "model.safetensors": "860eb3704480740368290f23ab5a715976077a0d825812c6e07361a8a5bb78b5"
-      },
-      "plan": "a29bc25dc8e91dfafc22c30cbc8636c67bcb4d7be483e741fe72234ae7df3d90"
-    },
-    "glm i4x": {
-      "refused": "model.language_model.layers.0.self_attn.q_proj + model.language_model.layers.0.self_attn.k_proj + model.language_model.layers.0.self_attn.v_proj: not a checkpoint trained to four bits (no codes times a scale give its weights bit for bit)"
-    },
-    "glm i3": {
-      "files": {
-        "config.json": "1ccaf6b68623e90939e2310de9f5f87bb09e57cb4c3feea004086103c34272c6",
-        "generation_config.json": "230c30609ecbbb9e6583bedde8e7bdda0c6eb8fe5fad0eaeb3d1b293d751cb4f",
-        "glyd.json": "fc5b300c3e2d1c8bd1bb98a608467f9f7287f59e9a2527c3992c5d215e35255a",
-        "model.safetensors": "6dea6b6867c0c26263eee087d17db4abd947d091b814d9e223f67a7ba46aa2fe"
-      },
-      "plan": "a29bc25dc8e91dfafc22c30cbc8636c67bcb4d7be483e741fe72234ae7df3d90"
-    },
     "glm-fp8 mma": {
       "refused": "Glm5NextForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
-    },
-    "glm-fp8 i6": {
-      "files": {
-        "config.json": "c82ca7d293467d3d9f316ca9a8077bafc2aff7d3ea3fce71ff2c31e7c397a2c3",
-        "generation_config.json": "230c30609ecbbb9e6583bedde8e7bdda0c6eb8fe5fad0eaeb3d1b293d751cb4f",
-        "glyd.json": "d85dad773f24f1d8fb0b867c677b7025a0d82557f8e9bedeaf9722b7dc4a446c",
-        "model.safetensors": "fd0534f1e233a475d99c8b0bf81be2f8abb03514afbca3745f9a22a5b0076246"
-      },
-      "plan": "a29bc25dc8e91dfafc22c30cbc8636c67bcb4d7be483e741fe72234ae7df3d90"
-    },
-    "glm-fp8 i5": {
-      "files": {
-        "config.json": "c82ca7d293467d3d9f316ca9a8077bafc2aff7d3ea3fce71ff2c31e7c397a2c3",
-        "generation_config.json": "230c30609ecbbb9e6583bedde8e7bdda0c6eb8fe5fad0eaeb3d1b293d751cb4f",
-        "glyd.json": "87239a32d6abe252e92b44e50b0fdf94e396223692a5d2d361366b3da88b6742",
-        "model.safetensors": "6942d6e90a01090fa154e6ea9bc90e02315b18e9d604d93caf59ea9165b97126"
-      },
-      "plan": "a29bc25dc8e91dfafc22c30cbc8636c67bcb4d7be483e741fe72234ae7df3d90"
-    },
-    "glm-fp8 i4": {
-      "files": {
-        "config.json": "c82ca7d293467d3d9f316ca9a8077bafc2aff7d3ea3fce71ff2c31e7c397a2c3",
-        "generation_config.json": "230c30609ecbbb9e6583bedde8e7bdda0c6eb8fe5fad0eaeb3d1b293d751cb4f",
-        "glyd.json": "251e1d90e467e73fd2471188d655c2adbd5a1ccf5901fbf54ab57edea6f47eee",
-        "model.safetensors": "c4ba95b9672c56c5a9a7c2916ec47af1b1414dd92fb12cd9846d76c22bd80e2b"
-      },
-      "plan": "a29bc25dc8e91dfafc22c30cbc8636c67bcb4d7be483e741fe72234ae7df3d90"
-    },
-    "glm-fp8 i4x": {
-      "refused": "model.language_model.layers.0.self_attn.q_proj + model.language_model.layers.0.self_attn.k_proj + model.language_model.layers.0.self_attn.v_proj: not a checkpoint trained to four bits (no codes times a scale give its weights bit for bit)"
-    },
-    "glm-fp8 i3": {
-      "files": {
-        "config.json": "c82ca7d293467d3d9f316ca9a8077bafc2aff7d3ea3fce71ff2c31e7c397a2c3",
-        "generation_config.json": "230c30609ecbbb9e6583bedde8e7bdda0c6eb8fe5fad0eaeb3d1b293d751cb4f",
-        "glyd.json": "6263a1db2d7d2b267e35dc1d3bfecf3f8f2d31e30d654afcd177d98f086cbdb8",
-        "model.safetensors": "0b180bc65705713733e35c1c0f707632c56c686e89ce05a4ea8f8163e4feef4c"
-      },
-      "plan": "a29bc25dc8e91dfafc22c30cbc8636c67bcb4d7be483e741fe72234ae7df3d90"
     },
     "glm-dsa mma": {
       "refused": "GlmMoeDsaForCausalLM: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
     },
     "glm-dsa i6": {
-      "refused": "GlmMoeDsaForCausalLM: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+      "refused": "glm-dsa (GLM-5.3) runs at the penguin level in this engine, not kestrel: Run it lossless: glyd run MODEL"
     },
     "kimi mma": {
       "refused": "KimiK3ForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
     },
     "kimi i6": {
-      "refused": "KimiK3ForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+      "refused": "kimi (Kimi-K3) runs at the penguin and hummingbird levels in this engine, not kestrel: Run it lossless: glyd run MODEL"
     },
     "muse mma": {
       "refused": "MuseSparkForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
     },
     "muse i6": {
-      "refused": "MuseSparkForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+      "refused": "muse (Muse Spark) runs at the penguin and hummingbird levels in this engine, not kestrel: Run it lossless: glyd run MODEL"
     },
     "deepseek-v4 mma": {
       "refused": "DeepseekV4ForCausalLM: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
     },
     "deepseek-v4 i6": {
-      "refused": "DeepseekV4ForCausalLM: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+      "refused": "deepseek-v4 (DeepSeek-V4) runs at the penguin and hummingbird levels in this engine, not kestrel: Run it lossless: glyd run MODEL"
     },
     "qwen4x mma": {
       "refused": "Qwen4ExpForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
     },
     "qwen4x i6": {
-      "refused": "Qwen4ExpForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+      "refused": "qwen4x (Qwen3.8-Flash-Next) runs at the penguin and hummingbird levels in this engine, not kestrel: Run it lossless: glyd run MODEL"
     }
   },
   "plans": {
