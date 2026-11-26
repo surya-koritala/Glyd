@@ -59,8 +59,8 @@ slots are lent to it, and they're given back for writing the answer. Reading tim
 
 ## Lossy vs lossless
 
-Everything above is the Hummingbird level, the most compact one, and it is lossy. Glyd also has a lossless level (Penguin) for other
-models, but not for this one.
+Everything above is the Hummingbird level, the most compact one, and it is lossy. Glyd also has a lossless level (Penguin), the release's weights exactly: `glyd run` takes this model at it
+where the GPUs hold every expert (about 327 GiB), so not on one card of 16 GB.
 
 ## Known limits
 

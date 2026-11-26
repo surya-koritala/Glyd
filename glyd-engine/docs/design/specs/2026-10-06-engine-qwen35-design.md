@@ -1,5 +1,7 @@
 # glyd-engine runs Qwen3.5 natively, then Gemma 4
 
+Status (2026-11-26): built. The forward pass this note describes (`model35.rs`) was deleted in R3b (#137): Qwen3.5 runs on the shared executor (`src/dynamic/qwen35.rs`; [docs/design/runtime.md](../../../../docs/design/runtime.md)). `src/qwen35.rs` and `kernels/qwen35.cu` still cite this note for the rounding points; the file names, the engine's 8 rows and the speed bar's state below are those of 2026-10-06.
+
 Design note. Owner's direction, 2026-10-06: Glyd's own engine replaces vLLM, vLLM is the fallback only; 2026 models only. This is objective 2 of `glyd-priorities`: the engine runs the 2026 models, first Qwen3.5 (and the models built on its architecture), then Gemma 4, then the MoE models.
 
 ## Goal

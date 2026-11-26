@@ -57,8 +57,8 @@ Not yet: macOS and CPU-only engines. Windows is a preview and aarch64 is built b
 ## The command is `glyd`
 
 Since v0.33.0 `glyd` is one program with the engine linked in: `run`, `serve`, `pull`, `ls`, `rm`, `service`, `ps`, `stop`, `fit`,
-`doctor`, `login`, `connect`, `supports`, `preflight` and the rest. `glyd-engine` is a link to it that keeps the engine's older
-command line. File compression is the same program: `glyd FILE -o FILE.glyd`.
+`doctor`, `login`, `connect`, `supports`, `preflight` and the rest. `glyd-engine` is the engine's own program (or a link to `glyd`) and takes the same
+model commands. File compression is the same program: `glyd FILE -o FILE.glyd`.
 
 ## Benchmarks
 
