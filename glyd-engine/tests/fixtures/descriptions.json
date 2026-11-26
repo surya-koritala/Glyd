@@ -2,7 +2,7 @@
   "deepseek_v41_config.json": {
     "blocks": 82,
     "tensors": 95776,
-    "kinds": "bc67f72ba993f3e0",
+    "kinds": "d841680dd40da30b",
     "weights": "6632c8ed94397f3f",
     "plan": "61cb47796162e731",
     "family": "DeepSeekV41"
@@ -10,7 +10,7 @@
   "deepseek_v41_tiny_config.json": {
     "blocks": 14,
     "tensors": 872,
-    "kinds": "60f0005f61c7710d",
+    "kinds": "11bc73ffae5e6355",
     "weights": "ca414623efe29891",
     "plan": "7992e2a378117ec5",
     "family": "DeepSeekV41"
@@ -178,7 +178,7 @@
   "headers/DeepSeek-V4.1-Flash-1017.json": {
     "blocks": 82,
     "tensors": 95776,
-    "kinds": "bc67f72ba993f3e0",
+    "kinds": "d841680dd40da30b",
     "weights": "6632c8ed94397f3f",
     "plan": "61cb47796162e731",
     "family": "DeepSeekV41"

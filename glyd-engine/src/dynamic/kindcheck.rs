@@ -285,9 +285,9 @@ impl Dyn {
         Ok(w.iter().map(|&b| f32::from_bits((b as u32) << 16)).collect())
     }
 
-    /// Lagged mHC's weights for the rows of the next pass (`hc_lag` [rows, 4] fp32, which the first lagged block of a layer reads).
+    /// Lagged mHC's weights for the rows of the next pass (`Slot::Lag` [rows, 4] fp32, which the first lagged block of a layer reads).
     fn kc_put_lag(&self, lag: &[f32]) -> Result<()> {
-        self.hc_lag.write(0, lag)
+        self.big.slots[Slot::Lag as usize].write(0, lag)
     }
 }
 
