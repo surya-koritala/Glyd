@@ -216,13 +216,10 @@ struct Staged {
 }
 
 impl Hosted {
-    /// The pinned rows of part `p`'s tables on the host for stage `layers` (and the embedding's where `first`), passes of up to `chunk` rows; None where it holds
-    /// none there.
-    pub(super) fn new(p: &Part, layers: (usize, usize), first: bool, chunk: usize) -> Result<Option<Hosted>> {
-        let embed = match p.host_table(p.d.embed) {
-            Some(t) if first => Some(Pinned::new(chunk * t.row_bytes)?),
-            _ => None,
-        };
+    /// The pinned rows of part `p`'s tables on the host for stage `layers` (and the embedding's where the part holds it: the first stage, and the last where it
+    /// drafts with a head of the model, which reads the next token's row), passes of up to `chunk` rows; None where it holds none there.
+    pub(super) fn new(p: &Part, layers: (usize, usize), chunk: usize) -> Result<Option<Hosted>> {
+        let embed = p.host_table(p.d.embed).map(|t| Pinned::new(chunk * t.row_bytes)).transpose()?;
         let mut ngram = Vec::new();
         for op in p.d.layers[layers.0..layers.1].iter().flatten() {
             let Op::NgramRows(x) = op else { continue };

@@ -2217,7 +2217,7 @@ impl Dyn {
         let moes = || d.layers.iter().flatten().filter_map(|op| if let Op::Moe(m) = op { Some(m) } else { None });
         let ngram = d.layers.iter().flatten().any(|op| matches!(op, Op::NgramRows(_)));
         let tok = if moes().any(|m| m.hash.is_some()) || ngram { Some(Buf::zeroed(ch * 4)?) } else { None };
-        let hosted = tables::Hosted::new(&big, stage.layers, stage.first, ch)?;
+        let hosted = tables::Hosted::new(&big, stage.layers, ch)?;
         let qx = d.layers.iter().flatten().any(|op| {
             matches!(
                 op,
