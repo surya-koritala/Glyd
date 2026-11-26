@@ -218,24 +218,12 @@ __device__ __forceinline__ unsigned bf16_key(unsigned short b) {
     return (b & 0x8000u) ? (~b & 0xFFFFu) : (b | 0x8000u);
 }
 
-// Eight logits of row at chunk c (16 bytes), those the row's mask `mrow` (V bits, a token's in word token / 32, bit token % 32; null: no mask) does not allow put at 0xFFFF, the bits whose key is the least (a grammar's mask, as the host puts -inf on them): they
-// are chosen last, and only where the row allows fewer than TOPK tokens, in the index order; the host drops what its mask does not allow.
-__device__ __forceinline__ uint4 load_chunk(const unsigned short* row, int c, const unsigned* mrow) {
-    uint4 q = *reinterpret_cast<const uint4*>(row + (size_t)c * 8);
-    if (mrow) {
-        const unsigned mb = (mrow[c >> 2] >> ((c & 3) * 8)) & 0xFFu;
-        if (mb != 0xFFu) {
-            unsigned short* p = reinterpret_cast<unsigned short*>(&q);
-#pragma unroll
-            for (int k = 0; k < 8; k++)
-                if (!((mb >> k) & 1u)) p[k] = 0xFFFFu;
-        }
-    }
-    return q;
+// Eight logits of row at chunk c (16 bytes).
+__device__ __forceinline__ uint4 load_chunk(const unsigned short* row, int c) {
+    return *reinterpret_cast<const uint4*>(row + (size_t)c * 8);
 }
 
-// `mask` (or null): per row `words` words, the first nonzero where the row is held to a mask (else the row is as if there were none), then the mask's bits (V / 32 rounded up words).
-__device__ __forceinline__ void topk64_impl(const bf16* logits, int V, int* tok, float* val, const unsigned* mask, int words) {
+__device__ __forceinline__ void topk64_impl(const bf16* logits, int V, int* tok, float* val) {
     __shared__ unsigned hist[256];
     __shared__ unsigned hist32[256 * 32];  // a lane's counters apart from the other lanes' (the values of a row crowd into a few bins: counters shared by a warp's lanes would be updated one lane at a time)
     __shared__ unsigned sel[5];  // the high byte, the numbers above its bin, then the low byte, how many equal ones to take, the numbers above the threshold
@@ -245,13 +233,12 @@ __device__ __forceinline__ void topk64_impl(const bf16* logits, int V, int* tok,
     __shared__ unsigned run[2];
     const unsigned short* row = reinterpret_cast<const unsigned short*>(logits) + (size_t)blockIdx.x * V;
     const int nch = V / 8;  // 16-byte loads
-    const unsigned* mrow = (mask && mask[(size_t)blockIdx.x * words] != 0u) ? mask + (size_t)blockIdx.x * words + 1 : nullptr;
     // pass 1: the high bytes
     const int lane0 = threadIdx.x & 31;
     for (int i = threadIdx.x; i < 256 * 32; i += blockDim.x) hist32[i] = 0;
     __syncthreads();
     for (int c = threadIdx.x; c < nch; c += blockDim.x) {
-        const uint4 q = load_chunk(row, c, mrow);
+        const uint4 q = load_chunk(row, c);
         const unsigned short* p = reinterpret_cast<const unsigned short*>(&q);
 #pragma unroll
         for (int k = 0; k < 8; k++) atomicAdd(&hist32[(bf16_key(p[k]) >> 8) * 32 + lane0], 1u);
@@ -279,7 +266,7 @@ __device__ __forceinline__ void topk64_impl(const bf16* logits, int V, int* tok,
     for (int i = threadIdx.x; i < 256 * 32; i += blockDim.x) hist32[i] = 0;
     __syncthreads();
     for (int c = threadIdx.x; c < nch; c += blockDim.x) {
-        const uint4 q = load_chunk(row, c, mrow);
+        const uint4 q = load_chunk(row, c);
         const unsigned short* p = reinterpret_cast<const unsigned short*>(&q);
 #pragma unroll
         for (int k = 0; k < 8; k++) {
@@ -317,7 +304,7 @@ __device__ __forceinline__ void topk64_impl(const bf16* logits, int V, int* tok,
         unsigned short bits[8];
         unsigned gm = 0, em = 0;  // bit k: element k is above the threshold, equal to it
         if (c < nch) {
-            const uint4 q = load_chunk(row, c, mrow);
+            const uint4 q = load_chunk(row, c);
             const unsigned short* p = reinterpret_cast<const unsigned short*>(&q);
 #pragma unroll
             for (int k = 0; k < 8; k++) {
@@ -392,11 +379,11 @@ __device__ __forceinline__ void topk64_impl(const bf16* logits, int V, int* tok,
 }
 
 extern "C" __global__ void __launch_bounds__(1024) topk64_bf16(const bf16* logits, int V, int* tok, float* val) {
-    topk64_impl(logits, V, tok, val, nullptr, 0);
+    topk64_impl(logits, V, tok, val);
 }
 
-// A row's logits at n tokens, as f32 (exact: a bf16 widened): out[i] = row[idx[i]], each idx below the row's length (the host checks). The sampler's draw from the
-// largest logits where penalties, a bias or suppressed tokens change some logits (src/sampler.rs `sample_adjusted`): those tokens' own logits, not the row.
+// A row's logits at n tokens, as f32 (exact: a bf16 widened): out[i] = row[idx[i]], each idx below the row's length (the host checks). A log-probability's token
+// where it is not among the row's largest (src/sched.rs `pick`): that token's own logit, not the row.
 extern "C" __global__ void __launch_bounds__(256) gather_bf16(const bf16* row, const int* idx, int n, float* out) {
     const int i = blockIdx.x * 256 + threadIdx.x;
     if (i < n) out[i] = __bfloat162float(row[idx[i]]);
@@ -461,11 +448,6 @@ extern "C" __global__ void __launch_bounds__(256) step_ids(const int* src, const
     if (ids32) ids32[i] = t;
 }
 
-// `topk64_bf16` with a mask per row (see `topk64_impl`): `words` is the row's words in `mask`, 1 + (V + 31) / 32.
-extern "C" __global__ void __launch_bounds__(1024) topk64_bf16_masked(const bf16* logits, int V, int* tok, float* val, const unsigned* mask, int words) {
-    topk64_impl(logits, V, tok, val, mask, words);
-}
-
 // The sum over each row of V bf16 logits [rows, V] of exp((x - max) / temp): the normalizer of the host's top-p cut over a row's largest logits (src/sampler.rs). The difference and the quotient in fp32 as the host forms them (the same
 // exponents), each exponential by expf (within 2 ulp), eight of them added in fp32 and the eights in fp64: out[row] (topkcheck holds it within 2e-6 of the sum in fp64). maxv[row]: the row's largest (argmax_bf16's value). V a multiple of 8.
 // One block of 1024 threads a row.
@@ -516,6 +498,268 @@ extern "C" __global__ void __launch_bounds__(1024) hist_bucket_bf16(const bf16* 
     const int w = want[blockIdx.x];
     for (int i = threadIdx.x; i < V; i += blockDim.x) {
         const float x = b2f(logits[i]);
+        const float q = __fdiv_rn(x - mx, temp);
+        const int b = max(0, (int)fminf((float)(B - 1), floorf(-q * per)));
+        if (b == w) {
+            const unsigned j = atomicAdd(&n[blockIdx.x], 1u);
+            if (j < (unsigned)cap) {
+                tok[(size_t)blockIdx.x * cap + j] = i;
+                val[(size_t)blockIdx.x * cap + j] = x;
+            }
+        }
+    }
+}
+
+// ---- The row a request's draw sees, made on the GPU (src/sampler.rs `Proc`, `Resolved`; src/kern/mod.rs `ProcGpu`): the penalties, a bias and the tokens taken out (an allowed list,
+// a grammar's mask, a least length) put on the model's row before its candidates, sums and buckets are made, so that the host draws from those of the row it would have made and
+// never reads the row. Row r of W (floats, V a row) is made from row src[r] of the step's bf16 logits; mask: `words` words a row (1 + (V + 31) / 32), the first nonzero where the row
+// has a mask, then token t's bit in word 1 + t / 32, bit t % 32.
+
+// Each token's logit where the row's mask allows it, -inf where it does not (as the host's sampler takes a token out). V a multiple of 8; grid (x, rows), 256 threads, eight tokens a thread
+// at a time.
+extern "C" __global__ void __launch_bounds__(256) proc_fill(const bf16* logits, int V, const int* src, const unsigned* mask, int words, float* W) {
+    const int r = blockIdx.y;
+    const bf16* row = logits + (size_t)src[r] * V;
+    const unsigned* m = mask + (size_t)r * words;
+    const bool held = m[0] != 0u;
+    float* out = W + (size_t)r * V;
+    for (int c = blockIdx.x * 256 + threadIdx.x; c * 8 < V; c += gridDim.x * 256) {
+        const uint4 q = *reinterpret_cast<const uint4*>(row + (size_t)c * 8);
+        const bf16* p = reinterpret_cast<const bf16*>(&q);
+        const unsigned mb = held ? (m[1 + (c >> 2)] >> ((c & 3) * 8)) & 0xFFu : 0xFFu;
+        float o[8];
+#pragma unroll
+        for (int k = 0; k < 8; k++) o[k] = ((mb >> k) & 1u) ? b2f(p[k]) : -INFINITY;
+        float4* d = reinterpret_cast<float4*>(out + (size_t)c * 8);
+        d[0] = make_float4(o[0], o[1], o[2], o[3]);
+        d[1] = make_float4(o[4], o[5], o[6], o[7]);
+    }
+}
+
+// The changed tokens' logits, after proc_fill on the same stream: entry i is (token, W's row, flags, said) at ent[i] and its bias at bias[i]; flags 1: a bias, 2: the repetition penalty,
+// 4: an end token put back at 0; said: the times the answer has said it (the presence and frequency penalties; 0: none); scal[row]: (repetition, presence, frequency, unused). Each made
+// from the model's logit as the host's sampler makes it, in its order and each operation rounded alone (no fused multiply-add): the bias added, -inf where the mask does not allow the
+// token, 0 where it is put back, divided by the repetition penalty where above 0 (else multiplied by it), the presence penalty plus the frequency penalty times said taken off. A token
+// is in a row's entries once.
+extern "C" __global__ void __launch_bounds__(256) proc_entries(const bf16* logits, int V, const int* src, const unsigned* mask, int words, const int4* ent, const float* bias, int n, const float4* scal, float* W) {
+    const int i = blockIdx.x * 256 + threadIdx.x;
+    if (i >= n) return;
+    const int4 e = ent[i];
+    const int t = e.x, r = e.y, flags = e.z;
+    const unsigned said = (unsigned)e.w;
+    const unsigned* m = mask + (size_t)r * words;
+    const bool ok = m[0] == 0u || ((m[1 + (t >> 5)] >> (t & 31)) & 1u) != 0u;
+    const float4 s = scal[r];
+    float x = b2f(logits[(size_t)src[r] * V + t]);
+    if (flags & 1) x = __fadd_rn(x, bias[i]);
+    if (!ok) x = -INFINITY;
+    if (flags & 4) x = 0.f;
+    if (flags & 2) x = x > 0.f ? __fdiv_rn(x, s.x) : __fmul_rn(x, s.x);
+    if (said) x = __fsub_rn(x, __fadd_rn(s.y, __fmul_rn(s.z, __uint2float_rn(said))));
+    W[(size_t)r * V + t] = x;
+}
+
+// A float's bits as an unsigned number that grows with the value (-0 and +0 the same).
+__device__ __forceinline__ unsigned f32_key(unsigned b) {
+    if (b == 0x80000000u) b = 0;
+    return (b & 0x80000000u) ? ~b : (b | 0x80000000u);
+}
+
+// `topk64_bf16` of rows of floats (W, V a row, a multiple of 8 and at least TOPK): row r's TOPK largest, largest first, equal values by the smaller index (-0 and +0 equal), into tok
+// and val at row dst[r] (null: r). Four histograms of 8 bits each find the TOPK-th largest key (the high byte over the row, each next byte over the values whose higher bytes are those
+// found); one pass in index order takes every value above it and the first of those equal to it, by block-wide counts; a last step ranks the TOPK. One block of 1024 threads a row.
+extern "C" __global__ void __launch_bounds__(1024) topk64_f32(const float* W, int V, const int* dst, int* tok, float* val) {
+    __shared__ unsigned hist[256];
+    __shared__ unsigned hist32[256 * 32];  // a lane's counters apart from the other lanes' (as topk64_impl's)
+    __shared__ unsigned sel[3];            // the key's bytes found so far, the values above them, how many equal ones to take
+    __shared__ int s_idx[TOPK];
+    __shared__ unsigned s_bits[TOPK];
+    __shared__ unsigned wg[32], we[32];
+    __shared__ unsigned run[2];
+    const uint4* row = reinterpret_cast<const uint4*>(W + (size_t)blockIdx.x * V);
+    const int nch = V / 8;  // eight floats: two 16-byte loads
+    const int lane0 = threadIdx.x & 31;
+    if (threadIdx.x == 0) {
+        sel[0] = 0;
+        sel[1] = 0;
+    }
+    for (int d = 0; d < 4; d++) {
+        const int shift = 24 - 8 * d;
+        for (int i = threadIdx.x; i < 256 * 32; i += blockDim.x) hist32[i] = 0;
+        __syncthreads();
+        const unsigned prefix = sel[0];
+        for (int c = threadIdx.x; c < nch; c += blockDim.x) {
+            const uint4 a = row[2 * c], b = row[2 * c + 1];
+            const unsigned u[8] = {a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w};
+#pragma unroll
+            for (int k = 0; k < 8; k++) {
+                const unsigned key = f32_key(u[k]);
+                if (d == 0 || (key >> (shift + 8)) == prefix) atomicAdd(&hist32[((key >> shift) & 0xFFu) * 32 + lane0], 1u);
+            }
+        }
+        __syncthreads();
+        for (int b = threadIdx.x; b < 256; b += blockDim.x) {
+            unsigned t = 0;
+            for (int l = 0; l < 32; l++) t += hist32[b * 32 + l];
+            hist[b] = t;
+        }
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            const unsigned want = TOPK - sel[1];
+            unsigned acc = 0;
+            int b = 255;
+            for (; b > 0; b--) {
+                if (acc + hist[b] >= want) break;
+                acc += hist[b];
+            }
+            sel[0] = (prefix << 8) | (unsigned)b;
+            sel[1] += acc;
+            sel[2] = want - acc;
+        }
+        __syncthreads();
+    }
+    const unsigned thr = sel[0], n_above = sel[1], need_eq = sel[2];
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, nwarps = blockDim.x >> 5;
+    if (threadIdx.x == 0) {
+        run[0] = 0;
+        run[1] = 0;
+    }
+    __syncthreads();
+    // the values above the threshold, and the first `need_eq` equal to it, in index order
+    for (int base = 0; base < nch; base += blockDim.x) {
+        const int c = base + threadIdx.x;
+        unsigned bits[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        unsigned gm = 0, em = 0;  // bit k: element k is above the threshold, equal to it
+        if (c < nch) {
+            const uint4 a = row[2 * c], b = row[2 * c + 1];
+            bits[0] = a.x;
+            bits[1] = a.y;
+            bits[2] = a.z;
+            bits[3] = a.w;
+            bits[4] = b.x;
+            bits[5] = b.y;
+            bits[6] = b.z;
+            bits[7] = b.w;
+#pragma unroll
+            for (int k = 0; k < 8; k++) {
+                const unsigned key = f32_key(bits[k]);
+                gm |= (key > thr ? 1u : 0u) << k;
+                em |= (key == thr ? 1u : 0u) << k;
+            }
+        }
+        const unsigned g = __popc(gm), e = __popc(em);
+        unsigned ig = g, ie = e;
+#pragma unroll
+        for (int o = 1; o < 32; o <<= 1) {
+            const unsigned tg = __shfl_up_sync(0xffffffffu, ig, o), te = __shfl_up_sync(0xffffffffu, ie, o);
+            if (lane >= o) {
+                ig += tg;
+                ie += te;
+            }
+        }
+        if (lane == 31) {
+            wg[warp] = ig;
+            we[warp] = ie;
+        }
+        __syncthreads();
+        unsigned wog = 0, woe = 0;
+        for (int w = 0; w < warp; w++) {
+            wog += wg[w];
+            woe += we[w];
+        }
+        unsigned tot_g = 0, tot_e = 0;
+        for (int w = 0; w < nwarps; w++) {
+            tot_g += wg[w];
+            tot_e += we[w];
+        }
+        unsigned og = run[0] + wog + ig - g, oe = run[1] + woe + ie - e;
+#pragma unroll
+        for (int k = 0; k < 8; k++) {
+            if ((gm >> k) & 1u) {
+                s_idx[og] = c * 8 + k;
+                s_bits[og] = bits[k];
+                og++;
+            }
+            if ((em >> k) & 1u) {
+                if (oe < need_eq) {
+                    s_idx[n_above + oe] = c * 8 + k;
+                    s_bits[n_above + oe] = bits[k];
+                }
+                oe++;
+            }
+        }
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            run[0] += tot_g;
+            run[1] += tot_e;
+        }
+        __syncthreads();
+    }
+    // the ranks: by key, largest first, the smaller index first among equal keys
+    if (threadIdx.x < TOPK) {
+        const int j = threadIdx.x;
+        const unsigned kj = f32_key(s_bits[j]);
+        const int ij = s_idx[j];
+        int rank = 0;
+        for (int m = 0; m < TOPK; m++) {
+            const unsigned km = f32_key(s_bits[m]);
+            rank += (km > kj || (km == kj && s_idx[m] < ij)) ? 1 : 0;
+        }
+        const size_t o = (size_t)(dst ? dst[blockIdx.x] : (int)blockIdx.x) * TOPK + rank;
+        tok[o] = ij;
+        val[o] = __uint_as_float(s_bits[j]);
+    }
+}
+
+// `expsum_bf16` of rows of floats (W): the sum over row r of exp((x - max) / temp) into out[r], maxv[r] its largest (the first of its candidates); a token taken out (-inf) adds 0. V a
+// multiple of 8; one block of 1024 threads a row.
+extern "C" __global__ void expsum_f32(const float* W, int V, const float* maxv, float temp, double* out) {
+    W += (size_t)blockIdx.x * V;
+    const float mx = maxv[blockIdx.x];
+    double acc = 0.0;
+    for (int c = threadIdx.x; c * 8 < V; c += blockDim.x) {
+        const float4 a = reinterpret_cast<const float4*>(W + (size_t)c * 8)[0], b = reinterpret_cast<const float4*>(W + (size_t)c * 8)[1];
+        const float x[8] = {a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w};
+        float s = 0.f;
+#pragma unroll
+        for (int k = 0; k < 8; k++) s += expf(__fdiv_rn(x[k] - mx, temp));
+        acc += (double)s;
+    }
+    __shared__ double sh[32];
+    for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, o);
+    if ((threadIdx.x & 31) == 0) sh[threadIdx.x >> 5] = acc;
+    __syncthreads();
+    if (threadIdx.x < 32) {
+        double t = threadIdx.x < (blockDim.x >> 5) ? sh[threadIdx.x] : 0.0;
+        for (int o = 16; o > 0; o >>= 1) t += __shfl_xor_sync(0xffffffffu, t, o);
+        if (threadIdx.x == 0) out[blockIdx.x] = t;
+    }
+}
+
+// `exp_hist_bf16` of a row of floats (W): a token taken out (-inf) is in no bucket and not counted (under a grammar the host's draw leaves those out; elsewhere their weight is 0).
+extern "C" __global__ void __launch_bounds__(1024) exp_hist_f32(const float* W, int V, const float* maxv, float temp, int B, float per, double* sums, unsigned* counts) {
+    W += (size_t)blockIdx.x * V;
+    sums += (size_t)blockIdx.x * B;
+    counts += (size_t)blockIdx.x * B;
+    const float mx = maxv[blockIdx.x];
+    for (int i = threadIdx.x; i < V; i += blockDim.x) {
+        const float x = W[i];
+        if (!(x > -INFINITY)) continue;
+        const float q = __fdiv_rn(x - mx, temp);
+        const int b = max(0, (int)fminf((float)(B - 1), floorf(-q * per)));
+        atomicAdd(&sums[b], exp((double)q));
+        atomicAdd(&counts[b], 1u);
+    }
+}
+
+// `hist_bucket_bf16` of a row of floats (W), the tokens taken out (-inf) in no bucket.
+extern "C" __global__ void __launch_bounds__(1024) hist_bucket_f32(const float* W, int V, const float* maxv, float temp, int B, float per, const int* want, int cap, unsigned* n, int* tok, float* val) {
+    W += (size_t)blockIdx.x * V;
+    const float mx = maxv[blockIdx.x];
+    const int w = want[blockIdx.x];
+    for (int i = threadIdx.x; i < V; i += blockDim.x) {
+        const float x = W[i];
+        if (!(x > -INFINITY)) continue;
         const float q = __fdiv_rn(x - mx, temp);
         const int b = max(0, (int)fminf((float)(B - 1), floorf(-q * per)));
         if (b == w) {

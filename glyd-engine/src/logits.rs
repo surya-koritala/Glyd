@@ -6283,6 +6283,305 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
+/// `samplecheck CASE [--users N] [--tokens T] [--level L] [--vocab V]` (development, R4a #138: sampling on the GPU): the case's random model served by the scheduler to N requests at
+/// once whose draws differ (greedy and drawn with nothing on the row; a JSON schema's grammar greedy and drawn; the repetition, presence and frequency penalties; a bias; an allowed list;
+/// a least length), the rows their draws see made on the GPU (`sampler::Proc`): every request's tokens and log-probabilities against the host's draws from the whole rows of the same
+/// steps (GLYD_ENGINE_HOST_SAMPLING's), a grammar's document against its schema, the rows each request's draws read alone (none, but where a top-p or a min-p over the whole row cuts
+/// past the 64 largest), and each request at once against its run alone: token for token where a step's rows are each their own pass's bits (prompts one a pass,
+/// GLYD_ENGINE_BATCH_PREFILL=0, as `usercheck` holds them, and 16 users or fewer: the rows a pass keeps the bits of; more are counted here), else counted (a prompt run beside others
+/// rounds its rows' values otherwise, #528, and a drawn token may then differ). Then the host's time a step both ways, on this model and for 8 and 64 rows of a vocabulary of V (262,144 by default: the rows of
+/// requests with the penalties, a bias and a top-k, half of them an allowed list of half the tokens) read and drawn on the host, or made on the GPU and drawn from their candidates.
+pub fn sample_check(a: &crate::args::Args) -> Result<()> {
+    use crate::conv::Gen;
+    use crate::sampler::{Lp, Params};
+    use crate::sched::{Ev, Finish, Reply, Sched, Submit};
+    let case = a.need(1, "CASE")?;
+    let level = a.flag("level").unwrap_or("penguin");
+    let users: usize = a.num("users", 8usize)?;
+    let tokens: usize = a.num("tokens", 24usize)?;
+    let (mut e, _) = random_dyn_routed(case, level, None, "samplecheck", None)?;
+    let v = e.desc().vocab;
+    // (the end tokens: the model's, else its last token, which every request then takes as a stop token)
+    let ends: Vec<u32> = e.desc().eos.iter().filter(|&&t| t >= 0 && (t as usize) < v).map(|&t| t as u32).collect();
+    let (ends, stop) = if ends.is_empty() { (vec![v as u32 - 1], vec![v as u32 - 1]) } else { (ends, Vec::new()) };
+    // (a vocabulary for the grammar: the 256 bytes, then words of their own, the end tokens special)
+    let mut bytes: Vec<Vec<u8>> = (0..v).map(|t| if t < 256 { vec![t as u8] } else { format!("w{t}").into_bytes() }).collect();
+    for &t in &ends {
+        bytes[t as usize] = [&[toktrie::TokTrie::SPECIAL_TOKEN_MARKER][..], b"<|end|>"].concat();
+    }
+    let g = crate::constrain::Grammars::new(bytes.clone(), &ends, v).map_err(Error)?;
+    let schema = r#"{"type":"object","properties":{"city":{"enum":["Paris","Rome","Oslo"]},"days":{"type":"integer","minimum":1,"maximum":9},"sunny":{"type":"boolean"}},"required":["city","days","sunny"],"additionalProperties":false}"#;
+    let c = g.compile(&crate::constrain::Spec::JsonSchema(schema.into())).map_err(Error)?;
+    let allowed: Vec<u32> = (0..v as u32).step_by(5).chain(ends.iter().copied()).collect();
+    let d = Params::default();
+    let kinds: Vec<(&str, Params, Option<usize>)> = vec![
+        ("greedy", Params { temperature: 0.0, ..d.clone() }, None),
+        ("top-k 20", Params { temperature: 0.9, top_k: 20, seed: 1, ..d.clone() }, None),
+        ("a JSON schema, greedy, log-probabilities", Params { temperature: 0.0, constraint: Some(c.clone()), ..d.clone() }, Some(3)),
+        (
+            "a JSON schema, top-p 0.95, repetition 1.1",
+            Params { temperature: 0.8, top_p: 0.95, repetition_penalty: 1.1, constraint: Some(c.clone()), seed: 2, ..d.clone() },
+            None,
+        ),
+        (
+            "repetition 1.3, presence 0.5, top-p 0.9",
+            Params { temperature: 1.0, top_p: 0.9, repetition_penalty: 1.3, presence_penalty: 0.5, seed: 3, ..d.clone() },
+            None,
+        ),
+        (
+            "a bias, frequency 0.4, greedy, log-probabilities",
+            Params { temperature: 0.0, logit_bias: vec![(5, 4.0), (100, -100.0), (v as u32 - 9, 2.5)], frequency_penalty: 0.4, ..d.clone() },
+            Some(2),
+        ),
+        ("an allowed list, min-p 0.1", Params { temperature: 1.0, min_p: 0.1, allowed: allowed.clone(), seed: 4, ..d.clone() }, None),
+        ("a least length, repetition 1.05, the whole row", Params { temperature: 1.0, min_tokens: 10, repetition_penalty: 1.05, seed: 5, ..d.clone() }, None),
+    ];
+    let prompts: Vec<Vec<u32>> =
+        (0..users).map(|k| (0..(5 + 7 * (k % 9)) as u32).map(|i| 3 + (i * 7919 + k as u32 * 104_729) % (v as u32 - 3)).collect()).collect();
+    let reply = |u: usize| Reply {
+        params: kinds[u % kinds.len()].1.clone(),
+        max_new: tokens,
+        ignore_eos: false,
+        logprobs: kinds[u % kinds.len()].2,
+        stop_ids: stop.clone(),
+    };
+    type Got = (Vec<u32>, Vec<Lp>, Finish);
+    // the requests `which` through the scheduler at once: each one's tokens, log-probabilities and end, with the scheduler's figures
+    let run = |e: &mut Dyn, which: &[usize]| -> Result<(Vec<Got>, crate::sched::Stats)> {
+        let Some((k, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
+        let mut s = Sched::new(step, k).keeping(false);
+        let rxs: Vec<_> = which
+            .iter()
+            .map(|&u| {
+                let (tx, rx) = std::sync::mpsc::channel();
+                s.submit(Submit {
+                    prompt: prompts[u].clone(),
+                    reply: reply(u),
+                    out: tx,
+                    abort: Default::default(),
+                    resumed: Default::default(),
+                    cached: Default::default(),
+                    created: Default::default(),
+                    salt: 0,
+                    pin: 0,
+                    images: Vec::new(),
+                });
+                rx
+            })
+            .collect();
+        while !s.idle() {
+            s.tick()?;
+        }
+        let got = rxs
+            .iter()
+            .map(|r| {
+                let (mut toks, mut lps) = (Vec::new(), Vec::new());
+                loop {
+                    match r.recv().map_err(|_| Error("the scheduler dropped a sequence".into()))? {
+                        Ev::Token(t) => toks.push(t),
+                        Ev::Lp(l) => lps.push(l),
+                        Ev::End(f) => return f.map(|f| (toks, lps, f)).map_err(|e| Error(e.msg)),
+                    }
+                }
+            })
+            .collect::<Result<Vec<Got>>>()?;
+        Ok((got, s.stats))
+    };
+    let all: Vec<usize> = (0..users).collect();
+    e.top.off = false;
+    let (gpu, st_gpu) = run(&mut e, &all)?;
+    e.top.off = true;
+    let (host, st_host) = run(&mut e, &all)?;
+    e.top.off = false;
+    let mut fails = 0;
+    let strict = std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "0") && users <= 16;
+    // (the draws that never need their row: the largest, a top-k within the candidates, a draw over the whole row from its buckets)
+    let never = |p: &Params| p.temperature <= 0.0 || (1..=crate::kern::TOPK).contains(&p.top_k) || (p.top_k == 0 && p.top_p >= 1.0 && p.min_p == 0.0);
+    let (mut like_alone, mut read_alone) = (0, 0);
+    let lp_off = |a: &Lp, b: &Lp| {
+        let tops = a.top.iter().zip(&b.top).map(|(x, y)| if x.0 == y.0 { (x.1 - y.1).abs() } else { f64::INFINITY }).fold(0f64, f64::max);
+        if a.token != b.token || a.top.len() != b.top.len() {
+            f64::INFINITY
+        } else {
+            (a.logprob - b.logprob).abs().max(tops)
+        }
+    };
+    for u in 0..users {
+        let (alone, st_alone) = run(&mut e, &[u])?;
+        let (name, g_, h_, a_) = (kinds[u % kinds.len()].0, &gpu[u], &host[u], &alone[0]);
+        let worst = g_.1.iter().zip(&h_.1).map(|(x, y)| lp_off(x, y)).fold(0f64, f64::max);
+        let mut why = Vec::new();
+        like_alone += (g_.0 == a_.0) as usize;
+        read_alone += st_alone.row_reads;
+        if g_.0 != a_.0 && strict {
+            why.push(format!("at once {:?} against alone {:?}", g_.0, a_.0));
+        }
+        if st_alone.row_reads > 0 && never(&kinds[u % kinds.len()].1) {
+            why.push(format!("alone, {} of its draws read the row", st_alone.row_reads));
+        }
+        if g_.0 != h_.0 {
+            why.push(format!("on the GPU {:?} against the host's {:?}", g_.0, h_.0));
+        }
+        if g_.1.len() != h_.1.len() || worst >= 1e-5 {
+            why.push(format!("log-probabilities {} against {} of the host's, {worst:.2e} apart at most", g_.1.len(), h_.1.len()));
+        }
+        // (a grammar's reply that ended: its text is a document of the schema)
+        if kinds[u % kinds.len()].1.constraint.is_some() && g_.2 == Finish::Stop {
+            let text: Vec<u8> = g_.0.iter().flat_map(|&t| bytes[t as usize].clone()).collect();
+            let ok = serde_json::from_slice::<serde_json::Value>(&text).ok().is_some_and(|j| {
+                j["city"].as_str().is_some_and(|c| ["Paris", "Rome", "Oslo"].contains(&c))
+                    && j["days"].as_i64().is_some_and(|d| (1..=9).contains(&d))
+                    && j["sunny"].is_boolean()
+                    && j.as_object().is_some_and(|o| o.len() == 3)
+            });
+            if !ok {
+                why.push(format!("the grammar's text {:?} is no document of its schema", String::from_utf8_lossy(&text)));
+            }
+        }
+        fails += !why.is_empty() as usize;
+        println!(
+            "{} request {u} ({name}; {} tokens, {:?}{}; alone {} rows read): {}",
+            if why.is_empty() { "PASS" } else { "FAIL" },
+            g_.0.len(),
+            g_.2,
+            if g_.1.is_empty() { String::new() } else { format!(", log-probabilities {worst:.1e} from the host's") },
+            st_alone.row_reads,
+            match (why.is_empty(), g_.0 == a_.0) {
+                (true, true) => "at once the host's draws and the run alone".to_string(),
+                (true, false) => "at once the host's draws; alone another reply (a step's rows rounded otherwise: counted)".to_string(),
+                _ => why.join("; "),
+            }
+        );
+    }
+    println!(
+        "{like_alone} of {users} replies at once the reply alone ({}); the requests alone read {read_alone} rows",
+        if strict {
+            "prompts one a pass and 16 users or fewer: each required"
+        } else {
+            "a prompt beside others or a step of more than 16 rows rounds the rows' values: counted"
+        }
+    );
+    let per = |st: &crate::sched::Stats| (st.before_ns + st.after_ns) as f64 / 1e3 / st.steps.max(1) as f64;
+    println!(
+        "{users} requests at once on the random {case} model (a vocabulary of {v}): rows read {} with the rows made on the GPU, {} on the host; the host's time a step {:.1} us and {:.1} us ({} and {} steps)",
+        st_gpu.row_reads,
+        st_host.row_reads,
+        per(&st_gpu),
+        per(&st_host),
+        st_gpu.steps,
+        st_host.steps
+    );
+    if st_host.row_reads == 0 {
+        println!("FAIL the host's run read no row (GLYD_ENGINE_HOST_SAMPLING's draws were not the host's)");
+        fails += 1;
+    }
+    // the host's time a step for rows of a vocabulary's size (--vocab 0: none)
+    let tv: usize = a.num("vocab", 262_144usize)?;
+    for rows in [8usize, 64].into_iter().filter(|_| tv > 0) {
+        let (host_ms, gpu_ms) = time_rows(&e, rows, tv)?;
+        println!(
+            "the host's time a step for {rows} rows of {tv} (the penalties over a prompt of 2,000, a bias, a top-k of 40; every other one an allowed list of half the tokens): {host_ms:.3} ms reading the rows and drawing on the host, {gpu_ms:.3} ms with the rows made on the GPU ({:.3} ms less)",
+            host_ms - gpu_ms
+        );
+    }
+    if fails > 0 {
+        return err(format!("{fails} checks failed"));
+    }
+    println!("PASS samplecheck {case}: {users} requests");
+    Ok(())
+}
+
+/// `samplecheck`'s time: for `rows` requests of a vocabulary of `v` on `e`'s GPU, each with the repetition, presence and frequency penalties over a prompt of 2,000 tokens, a bias and a
+/// top-k of 40 (every other one an allowed list of half the tokens too, as a grammar's mask), the host's time a step (ms, the mean of 20 after 3): every row read from the GPU and drawn
+/// on the host (`Sampler::sample`, as a step's rows are read with GLYD_ENGINE_HOST_SAMPLING=1), and the rows made on the GPU (`ProcGpu`, the model's candidates first as a step's) and
+/// drawn from their candidates. The same random logits every step; the same tokens both ways.
+fn time_rows(e: &Dyn, rows: usize, v: usize) -> Result<(f64, f64)> {
+    use crate::dev::Buf;
+    use crate::sampler::{Params, Sampler};
+    let dev = &e.dev;
+    let kern = &crate::kern::Kern::load(dev)?;
+    let mut x = 0x2545_F491_4F6C_DD1Du64;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let bits: Vec<u16> = (0..rows * v).map(|_| ((((rnd() % 2000) as f32 / 100.0) - 10.0).to_bits() >> 16) as u16).collect();
+    let logits = Buf::new(2 * rows * v)?;
+    logits.write(0, &bits)?;
+    let samplers = || -> Vec<Sampler> {
+        (0..rows)
+            .map(|r| {
+                let prompt: Vec<u32> = (0..2000u32).map(|i| (i * 7919 + r as u32 * 104_729) % v as u32).collect();
+                let p = Params {
+                    temperature: 0.8,
+                    top_k: 40,
+                    repetition_penalty: 1.1,
+                    presence_penalty: 0.3,
+                    frequency_penalty: 0.2,
+                    logit_bias: vec![(7, 3.0), (v as u32 / 2, -100.0)],
+                    allowed: if r % 2 == 1 { (0..v as u32).step_by(2).collect() } else { Vec::new() },
+                    seed: r as u64,
+                    ..Params::default()
+                };
+                Sampler::new(p, &prompt)
+            })
+            .collect()
+    };
+    let (steps, warm) = (20usize, 3usize);
+    // the host's: each row read and drawn
+    let (mut host_s, mut host_toks) = (samplers(), Vec::new());
+    let mut host_t = 0.0;
+    for step in 0..steps + warm {
+        let t = std::time::Instant::now();
+        dev.sync()?;
+        let mut toks = Vec::new();
+        for (r, s) in host_s.iter_mut().enumerate() {
+            let mut w = vec![0u16; v];
+            logits.read(2 * r * v, &mut w)?;
+            let row: Vec<f32> = w.into_iter().map(|b| f32::from_bits((b as u32) << 16)).collect();
+            toks.push(s.sample(&row));
+        }
+        if step >= warm {
+            host_t += t.elapsed().as_secs_f64();
+        }
+        host_toks.push(toks);
+    }
+    // the GPU's: the rows made there, their candidates read, drawn from them
+    let (tok, val) = (Buf::zeroed(4 * rows * crate::kern::TOPK)?, Buf::zeroed(4 * rows * crate::kern::TOPK)?);
+    let mut host = vec![0u8; 8 * rows * crate::kern::TOPK];
+    let mut g = crate::kern::ProcGpu::new(v);
+    let (mut gpu_s, mut gpu_t) = (samplers(), 0.0);
+    for (step, want) in host_toks.iter().enumerate() {
+        let t = std::time::Instant::now();
+        let res: Vec<crate::sampler::Resolved> =
+            gpu_s.iter_mut().map(|s| s.proc().map(|p| p.resolve(v))).collect::<Option<_>>().ok_or_else(|| Error("a request with no changes".into()))?;
+        let list: Vec<(usize, &crate::sampler::Resolved)> = res.iter().enumerate().collect();
+        // SAFETY: `rows` rows of v bf16 logits and TOPK candidates' room for each; the stream is synchronized before the candidates are read and before the next step's queue
+        unsafe {
+            kern.topk_rows(dev.stream, logits.ptr, v as i32, rows as u32, tok.ptr, val.ptr)?;
+            g.queue(kern, dev, &list, logits.ptr, tok.ptr, val.ptr)?;
+            crate::dev::copy_d2h_async(host.as_mut_ptr() as *mut _, tok.ptr, 4 * rows * crate::kern::TOPK, dev.stream)?;
+            crate::dev::copy_d2h_async(host.as_mut_ptr().add(4 * rows * crate::kern::TOPK) as *mut _, val.ptr, 4 * rows * crate::kern::TOPK, dev.stream)?;
+        }
+        dev.sync()?;
+        let mut toks = Vec::new();
+        for (r, s) in gpu_s.iter_mut().enumerate() {
+            // SAFETY: the candidates were copied above, the stream synchronized since
+            let cands = unsafe { crate::kern::read_candidates(host.as_ptr(), 0, 4 * rows * crate::kern::TOPK, r) };
+            toks.push(s.sample_proc(&cands, None).ok_or_else(|| Error("a draw from the candidates was not shown".into()))?);
+        }
+        if step >= warm {
+            gpu_t += t.elapsed().as_secs_f64();
+        }
+        if &toks != want {
+            return err(format!("step {step}: the tokens drawn from the GPU's candidates {toks:?}, the host's {want:?}"));
+        }
+    }
+    Ok((host_t * 1e3 / steps as f64, gpu_t * 1e3 / steps as f64))
+}
+
 /// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device-plan]] | --ctx C] [--prompt-tokens P] [--stagger D] [--pack P [--precise]]` (gemma4, qwen35, muse, kimi, glm, qwen4x, qwen4x-s2): the case's random model on the
 /// description executor (or the model in DIR, with `--places` its experts in the expert cache, with `--pack` Condor's from its pack of codebook experts; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
