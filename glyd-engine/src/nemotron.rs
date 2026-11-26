@@ -132,6 +132,21 @@ struct Keys {
     chunk_size: Option<usize>,
 }
 
+/// What a sequence of the Nemotron-H layout takes besides its weights, as the costs' sums read it (src/costs.rs; the planner reads the description: src/plan.rs
+/// `sizing::level_of`).
+impl ConfigNemotronH {
+    /// What one sequence holds besides its KV: every Mamba-2 layer's fp32 state and bf16 convolution state.
+    pub fn state_bytes(&self) -> u64 {
+        let per = self.m_heads * self.m_head_dim * self.m_state * 4 + self.conv_dim() * (self.conv_kernel - 1) * 2;
+        (self.layers_of(NhKind::Mamba) * per) as u64
+    }
+
+    /// A token's keys and values in bf16, over the attention layers.
+    pub fn kv_bytes_per_token(&self) -> u64 {
+        (self.layers_of(NhKind::Attention) * 2 * self.kv_heads * self.head_dim * 2) as u64
+    }
+}
+
 impl ConfigNemotronH {
     pub fn load(dir: &Path) -> Result<ConfigNemotronH> {
         ModelConfig::read(dir, ConfigNemotronH::of)
@@ -526,7 +541,7 @@ pub(crate) mod tests {
     use super::*;
     use glyd_gpu::json::{self, Value};
 
-    fn text() -> &'static str {
+    pub(crate) fn text() -> &'static str {
         include_str!("../tests/fixtures/nemotron_h_config.json")
     }
 
@@ -954,7 +969,8 @@ pub(crate) mod tests {
     /// of 512 by them: at swift 14.95, 22.99 and 34 GiB are 106, 163 and 241; fewer than the choices of a step (22) are none.
     #[test]
     fn an_expert_is_a_few_megabytes_and_a_budget_buys_places() {
-        use crate::plan::sizing::nemotron_cache as cache_plan;
+        let cache_plan =
+            |_: &ConfigNemotronH, l: Layout, b: u64, least: usize| crate::plan::sizing::budget_cache(&crate::runtime::config::mc(text()), l, b, least);
         let c = parse();
         assert_eq!(
             (c.expert_bytes(Layout::Int5).unwrap(), c.expert_bytes(Layout::Int6).unwrap(), c.expert_bytes(Layout::Int4).unwrap()),

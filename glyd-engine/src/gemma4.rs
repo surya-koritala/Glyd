@@ -55,6 +55,63 @@ pub struct ConfigG4 {
     pub prefix: String,
 }
 
+/// Gemma 4's bytes by its typed config, which the tests hold the planner's reading of its description to (src/plan.rs `sizing::level_of`).
+#[cfg(test)]
+impl ConfigG4 {
+    /// The bytes on the GPU of the weights at `layout` and of the bf16 model: the matrices and the small tensors (each layer's four norms, its q and k norms of
+    /// its kind's heads and its scalar; the final norm).
+    pub fn weight_bytes(&self, layout: Layout) -> (u64, u64) {
+        let (mut w, mut bf16) = (0u64, 0u64);
+        for it in self.items() {
+            let b = (it.rows * it.cols * 2) as u64;
+            bf16 += b;
+            w += (b as f64 * crate::plan::sizing::bits(layout) / 16.0) as u64;
+        }
+        let small = 2 * (self.kinds.iter().map(|&k| 4 * self.hidden + 2 * self.attn_of(k).0 + 1).sum::<usize>() + self.hidden) as u64;
+        (w + small, bf16 + small)
+    }
+
+    /// The keys and values: (the sliding layers' rings, fixed: the window and a chunk each, or the context where it is shorter; a position's bytes in the global
+    /// layers). `twelve`: in the executor's 12-bit lossless pages where they take a layer's ring, else bf16.
+    pub fn kv_bytes(&self, chunk: usize, ctx: usize, twelve: bool) -> (u64, u64) {
+        let cap_s = (crate::dynamic::seq_blocks(Some(self.window + chunk), ctx, 16) * 16) as u64;
+        let (mut fixed, mut per) = (0u64, 0u64);
+        for &k in &self.kinds {
+            let (d, nk, _) = self.attn_of(k);
+            let b = match self.ring12(k).filter(|_| twelve) {
+                Some(s) => crate::plan::sizing::kv12_token_bytes(s.heads, s.channels, s.one),
+                None => (nk * d * 2 * 2) as u64,
+            };
+            match k {
+                KindG4::Sliding => fixed += cap_s * b,
+                KindG4::Global => per += b,
+            }
+        }
+        (fixed, per)
+    }
+
+    /// A layer kind's ring as the executor's 12-bit pages take it, None where they do not.
+    fn ring12(&self, k: KindG4) -> Option<crate::dynamic::kv12::KvShape> {
+        let (d, nk, _) = self.attn_of(k);
+        let window = if k == KindG4::Sliding { self.window } else { 0 };
+        crate::dynamic::kv12::ring_shape(nk, d, self.heads, window, false)
+    }
+
+    /// Its layers' rings in the executor's 12-bit pages.
+    pub fn rings12(&self) -> Vec<crate::dynamic::kv12::KvShape> {
+        self.kinds.iter().filter_map(|&k| self.ring12(k)).collect()
+    }
+
+    /// A token's keys and values in bf16 in each of its pools' groups, the sliding layers' and the global ones'.
+    pub fn group_token_bytes(&self) -> [u64; 2] {
+        let of = |kind: KindG4| -> u64 {
+            let (d, nk, _) = self.attn_of(kind);
+            self.kinds.iter().filter(|&&k| k == kind).count() as u64 * (nk * d * 2 * 2) as u64
+        };
+        [of(KindG4::Sliding), of(KindG4::Global)]
+    }
+}
+
 impl ConfigG4 {
     pub fn load(dir: &Path) -> Result<ConfigG4> {
         ConfigG4::load_for(dir, false)

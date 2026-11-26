@@ -82,21 +82,13 @@ pub(crate) fn level(model: &str, lossy: bool) -> Done<(&str, Option<Layout>)> {
     levels::parse(model, lossy).map_err(|e| Refusal::new(e.what, e.fix))
 }
 
-/// Whether MODEL is a Gemma 4 model: a directory whose config says so, or a Hub name of one (google/gemma-4-..., glyd/gemma-4-...).
-fn is_gemma4_model(model: &str) -> bool {
-    match Path::new(model).join("config.json").exists() {
-        true => model_config(model).is_ok_and(|c| c.family() == Some(crate::support::Family::Gemma4)),
-        false => short_name(model).to_ascii_lowercase().starts_with("gemma-4"),
-    }
-}
-
 /// A level's name from its layout.
 pub(crate) fn level_name(layout: Layout) -> &'static str {
     levels::name_of(layout)
 }
 
-/// The wren repo of a Gemma 4 model that has one (the instruction-tuned 12B and 31B, packed exact from Google's QAT checkpoint), from its Hub name or its penguin repo's.
-pub(crate) fn gemma_wren(model: &str) -> Option<String> {
+/// The wren repo of a model packed exact from its publisher's QAT checkpoint (src/levels.rs `QAT_WREN`), from its Hub name or its penguin repo's.
+pub(crate) fn qat_wren(model: &str) -> Option<String> {
     let repo = match model.strip_prefix("glyd/").and_then(|n| n.strip_suffix("-penguin")) {
         Some(n) => format!("glyd/{n}-wren"),
         None if is_qat(model) => packed_repo(model, "wren"),
@@ -123,15 +115,23 @@ fn v7_level(model: &str, have: Option<Layout>, asked: Option<Layout>) -> Done<Op
 
 /// Whether MODEL is a plain dense decoder (the dense kind on the executor: src/dynamic/dense.rs), by its config.json alone (`config_text`: the directory's, the
 /// cache's, else the Hub's). A name says nothing of the kind: where the config is not to be had the model has no level here, and the path that reads it says why.
+#[cfg(test)]
 fn is_dense_model(model: &str) -> bool {
     model_config(model).is_ok_and(|c| c.is_dense())
 }
 
-/// The level run, serve and preflight take MODEL at: a glyd-v7 directory's own, else the one asked; a Gemma 4 model, a plain dense decoder or a family of the dynamic route
-/// without one is penguin (each runs on the description executor, its packs lossless: the levels' route with the lossless layout).
+/// The level run, serve and preflight take MODEL at: a glyd-v7 directory's own, else the one asked, else its row's first (`row_level`).
 fn run_level(model: &str, asked: Option<Layout>) -> Done<Option<Layout>> {
-    Ok(v7_level(model, v7_layout(model)?, asked)?
-        .or_else(|| (is_gemma4_model(model) || dynamic_family(model).is_some() || is_dense_model(model)).then_some(Layout::Tiered)))
+    Ok(v7_level(model, v7_layout(model)?, asked)?.or_else(|| row_level(model)))
+}
+
+/// The first level of MODEL's row in the table (src/support.rs; penguin for every row: each runs on the description executor or the dynamic route, its packs
+/// lossless), as a layout (penguin's the lossless one). The row is its config.json's (`model_config`: the directory's, the cache's, else the Hub's, the one parse
+/// every later step reads), never its name's: no level needs choosing before the config can be read, since every step after this one reads it too. Where the
+/// config is not to be had, or names no family, it has no level here, and the path that reads it says why (`unrun`: the Hub's refusal of a gated repo, ...).
+fn row_level(model: &str) -> Option<Layout> {
+    let row = crate::support::row(model_config(model).ok()?.family()?);
+    levels::by_name(row.levels.first()?).map(|l| l.layout.unwrap_or(Layout::Tiered))
 }
 
 /// The refusal of MODEL where no engine of this build takes it (`run_level` gives it no level): what `supported` says of its config, in the words the program that hands
@@ -1281,8 +1281,9 @@ fn chat_loop(tx: mpsc::Sender<Job>, defaults: Params, mut thinking: Option<bool>
 
 // (the lossy paths' work, context bounds, host margin and Gemma's draft and chunk are src/plan.rs's constants, with the one reserve)
 
-/// The Gemma 4 draft model ("-assistant") to draft with: `--draft DIR`, else the model directory's `draft/` where it has a config.json; none with `--no-draft`.
-pub(crate) fn gemma_draft(a: &Args, dir: Option<&Path>) -> Option<PathBuf> {
+/// The draft model to draft with (a row's own draft model, src/support.rs `Lossy::draft`: Gemma 4's "-assistant"): `--draft DIR`, else the model directory's `draft/`
+/// where it has a config.json; none with `--no-draft`.
+pub(crate) fn draft_dir(a: &Args, dir: Option<&Path>) -> Option<PathBuf> {
     if a.has("no-draft") {
         return None;
     }
@@ -1392,8 +1393,9 @@ fn load_lossy(
         Some(sp) => gpus.iter().filter(|g| sp.devices.contains(&g.ordinal)).collect(),
         None => vec![&gpu],
     };
-    // (a Nemotron-H model's layouts differ by pack: the bits a weight are what its bytes come to)
-    let bits = if plan.kind == Kind::NemotronH { plan.weights as f64 * 16.0 / plan.bf16 as f64 } else { bits(layout) };
+    // (a row whose loader packs some matrices in another layout than the level's: the bits a weight are what its bytes come to)
+    let own = crate::support::row_named(plan.family).and_then(|r| r.lossy).is_some_and(|l| l.pack.is_some());
+    let bits = if own { plan.weights as f64 * 16.0 / plan.bf16 as f64 } else { bits(layout) };
     let on_gpu = plan.weights_on_gpu();
     let exact = match layout {
         Layout::Tiered => "lossless: every weight is the original's",
@@ -1490,20 +1492,12 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, m: &ModelConfig, gpu: &Gpu,
     }
     let (mut e, bytes, vocab): (Box<dyn Gen>, usize, usize) = if plan.kind == Kind::Gemma4 {
         // (drafted where a draft model is found: the big model checks every draft token, so the tokens are its own; greedy replies draft, sampled ones step)
-        let draft = gemma_draft(a, Some(dir)).filter(|_| plan.draft > 0).map(|d| (d, a.num("draft-tokens", 8usize).unwrap_or(8).clamp(1, plan.chunk - 1)));
+        let draft = draft_dir(a, Some(dir)).filter(|_| plan.draft > 0).map(|d| (d, a.num("draft-tokens", 8usize).unwrap_or(8).clamp(1, plan.chunk - 1)));
         if let Some((d, k)) = &draft {
             ui.borrow_mut().line(&format!("Drafting with {} ({k} tokens a round; --no-draft runs without it).", d.display()));
         }
         // the dynamic engine (GLY-326): Gemma 4's description and, where one is found, its draft model's
-        let c = crate::gemma4::ConfigG4::load_for_of(dir, m, false).map_err(cannot)?;
-        let spec = match &draft {
-            Some((d, k)) => {
-                let dc = crate::gemma4::ConfigG4::load_for(d, true).map_err(cannot)?;
-                Some(crate::dynamic::DraftSpec { dir: d, desc: crate::dynamic::gemma4::describe_draft(&dc, &c), k: *k, experts: None })
-            }
-            None => None,
-        };
-        let mut e = crate::dynamic::Dyn::new(dir, m, crate::dynamic::gemma4::lowered_of(dir, m, &c).map_err(cannot)?, spec, &o).map_err(oom)?;
+        let mut e = crate::dynamic::gemma4::load_of(dir, m, draft.as_ref().map(|(d, k)| (d.as_path(), *k)), &o).map_err(oom)?;
         if draft.is_none() {
             twelve_bit_pages(&mut e, plan, dir, m, name, ui)?;
         }
@@ -1545,9 +1539,8 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, m: &ModelConfig, gpu: &Gpu,
         }
         store.set_offload(offload);
         // the executor (GLY-354): Nemotron-H's description, its blocks of experts the Moe kind's, in the expert cache of the plan's places where it has one
-        let layers = m.read_with(dir, crate::nemotron::ConfigNemotronH::of).map_err(cannot)?.layers;
         let cache = plan.experts.map(|c| (c.slots, &store));
-        let mut e = crate::dynamic::nemotron::load_cached_of(dir, m, &o, plan.layout, cache, crate::dynamic::Stage::whole(layers)).map_err(oom)?;
+        let mut e = crate::dynamic::nemotron::load_whole_of(dir, m, &o, plan.layout, cache).map_err(oom)?;
         twelve_bit_pages(&mut e, plan, dir, m, name, ui)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
@@ -1744,16 +1737,21 @@ fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCe
             }
             // (headers not to be had: a bf16 release at penguin's 72% at most; an FP8 or FP4 one as it is; the cut is made once it is here)
             let bytes = if text.contains("\"quantization_config\"") { need } else { need * 72 / 100 };
-            // ponytail: Kimi-K3 not yet here, its experts (about 93% of it) in the computer's memory and the rest on the GPUs; the exact plan is made once it is here
-            if family == "Kimi-K3" && bytes > all {
+            // ponytail: a model not yet here whose row keeps its experts in the computer's memory at this level, larger than its GPUs: its experts (their share of
+            // its release by its config's shape) there and the rest on the GPUs; the exact plan is made once it is here
+            let row = crate::support::row_named(family).filter(|r| r.experts_in_ram_levels.contains(&level));
+            let share =
+                crate::plan::Shape::from_model(&c).ok().filter(|s| s.routed > 0.0).map(|s| s.routed * s.expert_bits_released() / 8.0 / s.release_bytes());
+            if let (Some(_), Some(share), true) = (row, share, bytes > all) {
+                let (experts, rest) = ((bytes as f64 * share) as u64, (bytes as f64 * (1.0 - share)) as u64);
                 let host = crate::offload::host_memory().unwrap_or(0);
-                if bytes * 93 / 100 + HOST_MARGIN > host || bytes * 7 / 100 > all {
-                    return Err(Refusal::unsupported(format!("{name} keeps the experts its GPUs do not hold in the computer's memory: about {} of experts, {} free, and about {} for the GPUs, {} free", gib(bytes * 93 / 100), gib(host), gib(bytes * 7 / 100), gib(all)), "A machine with that much memory runs it"));
+                if experts + HOST_MARGIN > host || rest > all {
+                    return Err(Refusal::unsupported(format!("{name} keeps the experts its GPUs do not hold in the computer's memory: about {} of experts, {} free, and about {} for the GPUs, {} free", gib(experts), gib(host), gib(rest), gib(all)), "A machine with that much memory runs it"));
                 }
                 return Ok(format!(
-                    "{name} ({family}): about {} on the GPUs at the penguin level, about {} of experts in the computer's memory",
-                    gib(bytes * 7 / 100),
-                    gib(bytes * 93 / 100)
+                    "{name} ({family}): about {} on the GPUs at the {level} level, about {} of experts in the computer's memory",
+                    gib(rest),
+                    gib(experts)
                 ));
             }
             (bytes, (bytes <= all).then_some(gpus.len()))
@@ -2227,9 +2225,9 @@ pub fn fetch(a: &Args) -> i32 {
             hub::HubError::Denied(_) => store::hub_refusal(model),
             e => Refusal::new(format!("cannot read {model} from the Hugging Face Hub ({e})"), "Check the network connection and run this again"),
         })?;
-        // (a pre-packed level's model is one the levels' engines run, which the run checks; so is a Gemma 4 model, its draft model too, which runs penguin without a tag)
+        // (a pre-packed level's model is one the levels' engines run, which the run checks; any other is held to the table here, as `table_check` held its name)
         let c = model_config_of(&text, &short_name(model))?;
-        if packed.is_none() && dynamic.is_none() && c.family() != Some(crate::support::Family::Gemma4) {
+        if packed.is_none() && dynamic.is_none() {
             supported_in(&short_name(model), &c)?;
         }
         store::download(&hub, &remote, &wanted, model, &ui)
@@ -2695,6 +2693,11 @@ mod tests {
         }
         assert!(!is_dense_model("/nonexistent/qwen3-8b"));
         assert_eq!(run_level("/nonexistent/qwen3-8b", None).unwrap(), None);
+        // (nor does any family's name: a Gemma 4 name with no config to read has no level, where it was penguin by its name; its config gives its row's first)
+        assert_eq!(run_level("/nonexistent/gemma-4-12B-it", None).unwrap(), None);
+        let g = dir_with("by-config", include_str!("../tests/fixtures/gemma4_12b_config.json"));
+        assert_eq!(run_level(g.to_str().unwrap(), None).unwrap(), Some(Layout::Tiered));
+        std::fs::remove_dir_all(&g).unwrap();
         std::fs::remove_dir_all(named.parent().unwrap()).unwrap();
     }
 
@@ -3001,9 +3004,10 @@ mod tests {
             let r = plan(layout, 8).err().unwrap();
             assert!(r.code == CANNOT && r.what.starts_with(&format!("Qwen3.8-27B at the {level} level takes about ")), "{r}");
             let r = lossy_plan(&a, "org/dense-36l", layout, &mc(DENSE), None, 80 << 30, "NVIDIA A100", None).err().unwrap();
+            // (the plain dense kind's lossy levels are its own sizer's, `dense_fit`: this path takes the rows sized on one GPU, by the table)
             assert!(
                 r.code == CANNOT
-                    && r.what.starts_with(&format!("dense-36l: the {level} level on this path takes the Qwen3.5 and Nemotron-H layouts"))
+                    && r.what == format!("dense-36l: the {level} level on this path takes the Qwen3.5, Nemotron-H, Gemma 4 rows, not the plain dense one")
                     && r.fix == "Run it lossless: glyd run org/dense-36l",
                 "{r}"
             );
@@ -3025,7 +3029,7 @@ mod tests {
         assert!((0.66..0.69).contains(&ratio), "penguin at {ratio} of bf16");
         assert!(penguin.weights > kestrel.weights && penguin.context >= LOSSY_MIN_CTX);
         let r = plan(Layout::Int3).err().unwrap();
-        assert!(r.code == CANNOT && r.what.contains("the i3 level is not built for Gemma 4"), "{r}");
+        assert!(r.code == CANNOT && r.what.ends_with("(Gemma 4) runs at the penguin, kestrel, swift and wren levels in this engine, not i3"), "{r}");
         // (penguin short of room on a 16 GB card: the wren repo, which fits, is named first; at 6 GiB nothing fits and the fix is the plain one; the base model has no wren)
         let small = |m: &str, free_gib: u64| {
             lossy_plan_with(&args(&["run", m]), m, Layout::Tiered, &mc(text), None, free_gib << 30, "NVIDIA GeForce RTX 4080 SUPER", None, None).err().unwrap()
@@ -3039,10 +3043,10 @@ mod tests {
         }
         assert!(small(model, 6).fix.starts_with("Close programs") && small("google/gemma-4-12B", 15).fix.starts_with("Close programs"));
         assert_eq!(
-            (gemma_wren("google/gemma-4-31B-it").as_deref(), gemma_wren("glyd/gemma-4-31B-penguin").as_deref()),
+            (qat_wren("google/gemma-4-31B-it").as_deref(), qat_wren("glyd/gemma-4-31B-penguin").as_deref()),
             (Some("glyd/gemma-4-31B-wren"), Some("glyd/gemma-4-31B-wren"))
         );
-        assert_eq!((gemma_wren("glyd/gemma-4-12B-base-penguin"), gemma_wren("Qwen/Qwen3.8-27B")), (None, None));
+        assert_eq!((qat_wren("glyd/gemma-4-12B-base-penguin"), qat_wren("Qwen/Qwen3.8-27B")), (None, None));
         // (served to --users at once with no draft model: each user's room and context fit beside the others'; run, and a context asked for, keep one user's)
         let free = 14u64 << 30;
         let at = |argv: &[&str]| lossy_plan_with(&args(argv), model, Layout::Int4, &mc(text), None, free, "NVIDIA GeForce RTX 4080 SUPER", None, None).unwrap();
@@ -3189,10 +3193,40 @@ mod tests {
         assert!(asked("262144").is_err());
         // the three-bit layout is no level of it
         let r = plan(Layout::Int3, 140).err().unwrap();
-        assert!(r.code == CANNOT && r.what.contains("the i3 level is not built for the Nemotron-H layout") && r.fix.ends_with(&format!("{model}:wren")), "{r}");
+        assert!(
+            r.code == CANNOT && r.what.ends_with("(Nemotron-H) runs at the penguin, kestrel, swift, wren and hummingbird levels in this engine, not i3"),
+            "{r}"
+        );
+        // and penguin, the dynamic route's, is no level of its experts on this path
+        let r = plan(Layout::Tiered, 140).err().unwrap();
+        assert!(
+            r.code == CANNOT
+                && r.what.contains("its experts are held at the kestrel, swift and wren levels on this path")
+                && r.fix.ends_with(&format!("{model}:kestrel")),
+            "{r}"
+        );
         // a config the engine does not run (here one with a convolution without its bias) is said in the config's own words
         let r = plan_of(&a, model, text.replace("\"use_conv_bias\": true", "\"use_conv_bias\": false")).err().unwrap();
         assert!(r.code == CANNOT && r.what.contains("a convolution without its bias"), "{r}");
+    }
+
+    /// The one level reader reads Nemotron-H's description: its weights at each level are its typed reader's packs and kept tensors (`ConfigNemotronH::packs`,
+    /// `kept`) at the layouts its loader packs them in (`pack_layout`), to the byte, and its states and keys and values a token its typed reader's.
+    #[test]
+    fn the_level_reader_reads_nemotron_from_its_description() {
+        let text = include_str!("../tests/fixtures/nemotron_h_config.json");
+        let cfg = crate::nemotron::ConfigNemotronH::parse(text, "n", None).unwrap();
+        let a = args(&["run", "nvidia/N"]);
+        for layout in [Layout::Int6, Layout::Int5, Layout::Int4, Layout::Hummingbird] {
+            let lv = crate::plan::sizing::level_of(&a, "nvidia/N", "N", layout, &mc(text), None, None, None).unwrap();
+            let at = |p: &crate::qwen35::Pack35| {
+                let b = (p.rows() * p.cols * 2) as u64;
+                (b as f64 * bits(crate::nemotron::pack_layout(layout, &p.key)) / 16.0) as u64
+            };
+            let kept: u64 = cfg.kept().iter().map(|t| t.shape.iter().product::<u64>() * if t.dtype == "F32" { 4 } else { 2 }).sum();
+            assert_eq!(lv.weights, cfg.packs().iter().map(at).sum::<u64>() + kept, "{layout:?}");
+            assert_eq!((lv.state, lv.per[0]), (cfg.state_bytes(), cfg.kv_bytes_per_token()), "{layout:?}");
+        }
     }
 
     /// Nemotron 3 Super at swift on a GPU that cannot hold it whole runs with its experts in the computer's memory (77.5 GB of them pinned, and a margin) and a cache of them on the GPU: the cache is what the GPU has left

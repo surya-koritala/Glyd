@@ -1,0 +1,6 @@
+- Internal: the lossy levels of Gemma 4, the Qwen3.5 layout and the Nemotron-H layout are read by one reader of the model's description, not three readers of their typed configs. It reads the weights by kind at the level, the sequence's rings and states, and the experts and their cache. Each family's row in the support table gives what the description does not: its prompt chunk, its page, its draft model, the layouts its loader packs in, and its config's own checks. The planner and the command line name no family outside a short list that a test holds, each line with its reason.
+- Gemma 4's planned weights at its lossy levels count the q and k norms of its sliding layers at their own head width, 40 KB less for gemma-4-12B than before.
+- The Nemotron-H layout's description now records its tensors' shapes, as the other families' do.
+- `glyd run`, `serve` and `preflight` take the default level of a model from its config's row, never from its name. A Gemma 4 name whose config cannot be read now gets the refusal that says why (the Hub's, for a gated repo), before anything is downloaded.
+- `glyd preflight` of a model not yet downloaded, larger than its GPUs, whose row keeps its experts in the computer's memory: the experts' share comes from its config's shape for every such family. Before, a fixed 93% applied to Kimi-K3 alone.
+- Part of #239.

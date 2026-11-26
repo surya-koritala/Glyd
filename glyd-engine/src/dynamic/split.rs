@@ -1068,19 +1068,27 @@ pub fn loader(d: &crate::runtime::describe::Described) -> Result<Loader> {
 /// config alone: the rings and states its sequences take on the executor, which a plan counts before a file is here (src/plan.rs `sizing::size_dynamic_row`).
 /// The end tokens and the checkpoint's dtypes are not read (none of them changes a ring or a state).
 pub fn lowered_of(c: &crate::runtime::config::ModelConfig, max_pos: usize) -> Result<ModelDesc> {
+    lowered_described(&crate::runtime::describe::describe_config(c)?, c.num("num_hidden_layers").unwrap_or(0), max_pos)
+}
+
+/// `lowered_of` of the description `d` of a model of `nl` layers, and of the kinds whose loader is the one-GPU route's alone: attention whose layers each end in a
+/// scalar after their residual's add (`Residual::AddThenScale`: `lower::gemma4`, src/cli.rs `open_lossy`). What a lossy level's plan counts (src/plan.rs
+/// `sizing::level_of`).
+pub fn lowered_described(d: &crate::runtime::describe::Described, nl: usize, max_pos: usize) -> Result<ModelDesc> {
     use super::lower;
-    let d = crate::runtime::describe::describe_config(c)?;
-    let nl = c.num("num_hidden_layers").unwrap_or(0);
+    if d.desc.blocks.iter().any(|b| matches!(b.residual, crate::runtime::kinds::Residual::AddThenScale)) {
+        return lower::gemma4(d, &|n: &str| d.shapes.get(n).cloned(), Vec::new(), max_pos);
+    }
     let st = Stage::whole(nl);
-    match lowering(&d)? {
-        Lowering::Compressed => lower::deepseek_v4(&d, Vec::new(), max_pos, &st, &super::deepseek_v4::V4Opts::of(crate::weights::Layout::Tiered, max_pos)),
-        Lowering::Mamba2 => lower::nemotron(&d, Vec::new(), max_pos, &st),
-        Lowering::DeltaStreams => lower::glm(&d, Vec::new(), max_pos, &st),
-        Lowering::DeltaDepth => lower::kimi(&d, Vec::new(), max_pos, &st, &vec![(true, true); nl], false),
-        Lowering::GatedResidual => lower::muse(&d, Vec::new(), max_pos, &st),
-        Lowering::GatedStreams => lower::qwen4x(&d, Vec::new(), max_pos),
-        Lowering::GatedDelta => lower::qwen35(&d, Vec::new(), max_pos, &st),
-        Lowering::LatentPlain => lower::latent_moe(&d, Vec::new(), max_pos, &st),
+    match lowering(d)? {
+        Lowering::Compressed => lower::deepseek_v4(d, Vec::new(), max_pos, &st, &super::deepseek_v4::V4Opts::of(crate::weights::Layout::Tiered, max_pos)),
+        Lowering::Mamba2 => lower::nemotron(d, Vec::new(), max_pos, &st),
+        Lowering::DeltaStreams => lower::glm(d, Vec::new(), max_pos, &st),
+        Lowering::DeltaDepth => lower::kimi(d, Vec::new(), max_pos, &st, &vec![(true, true); nl], false),
+        Lowering::GatedResidual => lower::muse(d, Vec::new(), max_pos, &st),
+        Lowering::GatedStreams => lower::qwen4x(d, Vec::new(), max_pos),
+        Lowering::GatedDelta => lower::qwen35(d, Vec::new(), max_pos, &st),
+        Lowering::LatentPlain => lower::latent_moe(d, Vec::new(), max_pos, &st),
     }
 }
 

@@ -51,6 +51,22 @@ pub fn lowered_of(dir: &std::path::Path, m: &crate::runtime::config::ModelConfig
     super::lower::gemma4(&kinds, &|n: &str| kinds.shapes.get(n).cloned(), c.eos.clone(), c.max_pos).map_err(|e| e.context(&label))
 }
 
+/// The model in `dir` on the executor as the one-GPU route's plan loads it (src/cli.rs `open_lossy`): its description (`lowered_of`), drafted by the draft model in
+/// `draft` (its directory and the tokens a round) where one is given, its layers reading the big model's rings (`describe_draft`).
+pub fn load_of(
+    dir: &std::path::Path,
+    m: &crate::runtime::config::ModelConfig,
+    draft: Option<(&std::path::Path, usize)>,
+    o: &super::Opts,
+) -> crate::ffi::Result<super::Dyn> {
+    let c = ConfigG4::load_for_of(dir, m, false)?;
+    let spec = match draft {
+        Some((d, k)) => Some(super::DraftSpec { dir: d, desc: describe_draft(&ConfigG4::load_for(d, true)?, &c), k, experts: None }),
+        None => None,
+    };
+    super::Dyn::new(dir, m, lowered_of(dir, m, &c)?, spec, o)
+}
+
 #[cfg(test)]
 pub fn describe(c: &ConfigG4) -> ModelDesc {
     let p = &c.prefix;
