@@ -8115,6 +8115,13 @@ mod tests {
         let twice = serve(&words(&["--split", "24"]), &[free_gpu(0, 22, host), free_gpu(0, 22, host)], crate::weights::Layout::Int4).unwrap();
         let t = twice.spread.as_ref().unwrap();
         assert!(t.cuts == [24] && t.devices == [0, 0] && twice.users == 1 && twice.free == 22 << 30 && twice.gpu_total() <= twice.free, "{twice:?}");
+        // (two GPUs with none named, as `http` plans with none named: the model whole on the one with the most room, GPU 1 here, as `fit` and `serve` plan the
+        // pack; on a machine of two RTX A6000s `qwenserve` planned on GPU 0 and `fit` on GPU 1, 2026-11-26)
+        let two = [free_gpu(0, 22, host), free_gpu(1, 40, host)];
+        let both = serve(&words(&[]), &two, crate::weights::Layout::Int4).unwrap();
+        let b = both.spread.as_ref().unwrap();
+        assert!(b.cuts.is_empty() && b.devices == [1] && both.free == 40 << 30, "{both:?}");
+        assert_eq!(serve(&words(&["--gpus", "0,1"]), &two, crate::weights::Layout::Int4).unwrap().spread.unwrap().devices.len(), 2, "named: cut over both");
         // (too small a GPU, and a cut of no layer for the second GPU: refused in words)
         let r = serve(&words(&[]), &[free_gpu(0, 2, host)], crate::weights::Layout::Int4).unwrap_err().msg;
         assert!(r.contains("no room for a place a layer for its experts") && r.contains("Ask for less context"), "{r}");
