@@ -162,7 +162,7 @@
   "qwen4x_config.json": {
     "blocks": 97,
     "tensors": 1658,
-    "kinds": "166d19d7c98de187",
+    "kinds": "4fead01fb123df08",
     "weights": "752d76fa3cdc0164",
     "plan": "486b4bb7ea65514b",
     "family": "FlashNext"

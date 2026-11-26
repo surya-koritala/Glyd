@@ -288,6 +288,7 @@ mod tests {
             dilation: 3,
             norm: Norm::rms_plus_one(1e-6),
             form: NgramForm::Segmented,
+            table: Default::default(),
         }
     }
 
@@ -364,6 +365,7 @@ mod tests {
             dilation: 1,
             norm: Norm::rms(1e-6),
             form: NgramForm::Engram,
+            table: Default::default(),
         };
         let m = multipliers(&n).unwrap();
         assert!(m.iter().all(|&x| x % 2 == 1 && (x as u128) * 10 < (1u128 << 63)), "{m:?}");
@@ -419,6 +421,7 @@ mod tests {
             dilation: 3,
             norm: Norm::rms_plus_one(1e-6),
             form: NgramForm::Segmented,
+            table: Default::default(),
         };
         let (sizes, _) = tables(&n);
         let rows = rows(&n, 4);

@@ -17,9 +17,10 @@ use std::sync::Arc;
 /// The most rotary angles the kernels' map takes (two bits an angle in a u64).
 const MOST_ANGLES: usize = 32;
 
-/// The images of a model with a vision tower: the tower, how images are read, the M-RoPE map, each sequence's positions and images, and the pass's rows' positions.
+/// The images of a model with a vision tower: the tower (on the stage that stages the rows: a model's first, where it is split across GPUs; the stages after it
+/// turn their rows by the same positions), how images are read, the M-RoPE map, each sequence's positions and images, and the pass's rows' positions.
 pub struct Images {
-    pub tower: Tower,
+    pub tower: Option<Tower>,
     pub prep: Prep,
     /// Two bits an angle of the rotary: the position (0 t, 1 h, 2 w) its section turns by.
     axes: u64,
@@ -28,7 +29,7 @@ pub struct Images {
     /// The pass's rows' positions and their pools' first tokens' ([rows, 6] i32), and the rows it holds.
     rpos: Buf,
     rows: usize,
-    /// GPU bytes the tower takes for an image of the most pixels (kept free beside the sequences' memory).
+    /// GPU bytes the tower takes for an image of the most pixels (kept free beside the sequences' memory; none where the stage has no tower).
     pub reserve: usize,
     /// Each sequence's (by slot): its prompt's positions and the position after them, and its images not yet read whole: the row each begins at, the image, and
     /// its rows once the tower has run (bf16 [tokens, out]).
@@ -50,9 +51,10 @@ struct SeqImages {
 pub static MAX_PIXELS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
 impl Images {
-    /// The images of the model in `dir` whose executor's description is `d` (its rotary tables and operations), for passes of up to `rows` rows: None where its
-    /// description has no vision tower. A tower this engine cannot run, or a model whose rows the M-RoPE map does not reach, is refused in words.
-    pub fn open(dir: &std::path::Path, d: &ModelDesc, rows: usize, dev: &crate::dev::Dev) -> Result<Option<Images>> {
+    /// The images of the model in `dir` whose executor's description is `d` (its rotary tables and operations), for passes of up to `rows` rows, its tower on
+    /// `dev` where `tower` (the stage that stages the image rows): None where its description has no vision tower. A tower this engine cannot run, or a model
+    /// whose rows the M-RoPE map does not reach, is refused in words.
+    pub fn open(dir: &std::path::Path, d: &ModelDesc, rows: usize, dev: &crate::dev::Dev, tower: bool) -> Result<Option<Images>> {
         // (a directory whose config.json names no tower: nothing more read)
         let has = std::fs::read_to_string(dir.join("config.json")).is_ok_and(|t| t.contains("\"vision_config\""));
         if !has {
@@ -78,8 +80,8 @@ impl Images {
             return err(format!("{label}: indexers of pools of {blocks:?} tokens"));
         }
         let prep = Prep::load(dir, v, Some(MAX_PIXELS.get().copied().unwrap_or(1 << 20)))?;
-        let tower = Tower::open(dir, v, roles, dev).map_err(|e| e.context(&label))?;
-        let reserve = Tower::bytes(v, prep.max_pixels / (v.patch * v.patch));
+        let tower = if tower { Some(Tower::open(dir, v, roles, dev).map_err(|e| e.context(&label))?) } else { None };
+        let reserve = if tower.is_some() { Tower::bytes(v, prep.max_pixels / (v.patch * v.patch)) } else { 0 };
         Ok(Some(Images {
             tower,
             prep,
@@ -222,7 +224,7 @@ impl Dyn {
                 }
                 if rows.is_none() {
                     let t0 = std::time::Instant::now();
-                    let r = v.tower.run(dev, kern, img)?;
+                    let r = v.tower.as_ref().ok_or_else(|| Error("an image's rows on a stage with no vision tower".into()))?.run(dev, kern, img)?;
                     if r.len() != img.tokens() * hid {
                         return err(format!("the vision tower made {} rows of {hid} for an image of {} tokens", r.len() / hid, img.tokens()));
                     }

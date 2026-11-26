@@ -49,6 +49,8 @@ enum Cmd {
     Logits,
     Logprob(f32),
     Describe,
+    /// The sequence's prompt and its images (`Dyn::set_images`): the first stage runs the tower over them, each stage turns its rows by their positions.
+    Images(Vec<u32>, Vec<std::sync::Arc<crate::vision::Image>>),
 }
 
 enum Out {
@@ -81,6 +83,8 @@ pub struct Split {
     eos: Vec<i64>,
     /// The last stage drafts with a head of the model (`spec_round`).
     drafting: bool,
+    /// The images of the next reply's prompt (`Gen::see`).
+    next: Vec<std::sync::Arc<crate::vision::Image>>,
 }
 
 fn gone() -> Error {
@@ -137,6 +141,7 @@ impl Split {
                             Cmd::Logits => Out::Logits(e.logits()),
                             Cmd::Logprob(l) => Out::Logprob(e.logprob(l)),
                             Cmd::Describe => Out::Text(e.describe()),
+                            Cmd::Images(prompt, images) => Out::Done(e.set_images(&prompt, &images)),
                         };
                         if otx.send(out).is_err() {
                             break;
@@ -153,7 +158,7 @@ impl Split {
                 _ => return Err(gone()),
             }
         }
-        let mut s = Split { w, n: 0, ctx: o.ctx.div_ceil(16) * 16, chunk: o.chunk.max(1), eos, drafting: false };
+        let mut s = Split { w, n: 0, ctx: o.ctx.div_ceil(16) * 16, chunk: o.chunk.max(1), eos, drafting: false, next: Vec::new() };
         let last = s.w.len() - 1;
         s.drafting = matches!(s.ask(last, Cmd::Drafting)?, Out::Flag(true));
         Ok(s)
@@ -191,6 +196,12 @@ impl Split {
         self.each(&|| Cmd::Reset)?;
         self.n = 0;
         Ok(())
+    }
+
+    /// The sequence begins with `prompt`, whose images are `images` in order (none: a text): every stage told before its first chunk, the first running the
+    /// tower as the chunks reach their rows (src/dynamic/images.rs). A model with no vision tower refuses images in words.
+    pub fn set_images(&self, prompt: &[u32], images: &[std::sync::Arc<crate::vision::Image>]) -> Result<()> {
+        self.each(&|| Cmd::Images(prompt.to_vec(), images.to_vec()))
     }
 
     /// Whether the last stage drafts with a head of the model (`spec_round`).
@@ -379,6 +390,15 @@ impl Run {
             Run::Tp(e) => e.reset(),
         }
     }
+    /// The next prompt's images, after `reset` (`Dyn::set_images`; a split's every stage, `Split::set_images`); every layer across GPUs reads none yet.
+    pub fn set_images(&mut self, prompt: &[u32], images: &[std::sync::Arc<crate::vision::Image>]) -> Result<()> {
+        match self {
+            Run::One(e) => e.set_images(prompt, images),
+            Run::Split(e) => e.set_images(prompt, images),
+            Run::Tp(_) if images.is_empty() => Ok(()),
+            Run::Tp(_) => err("a model with every layer across GPUs reads no images yet"),
+        }
+    }
 }
 
 /// `--tp GPU,..` of a command line: every layer across those GPUs (a GPU may repeat: places on one GPU check the gathers), or none.
@@ -410,6 +430,9 @@ impl Split {
             return err(format!("{} prompt tokens, where the context holds {}", prompt.len(), self.ctx));
         }
         self.reset()?;
+        // (the prompt's images, where `see` gave them for this reply: none for a reply it did not)
+        let images = std::mem::take(&mut self.next);
+        self.set_images(prompt, &images)?;
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
         let mut s = self.prefill(prompt)?;
@@ -478,12 +501,17 @@ impl crate::conv::Gen for Run {
             e.take_plan(users, kv);
         }
     }
-    /// One GPU: the engine's own images (src/dynamic/images.rs); stages and layers across GPUs read none yet.
+    /// The engine's own images (src/dynamic/images.rs), on one GPU or cut into stages (the next reply's: `Split::reply` tells every stage); every layer across
+    /// GPUs reads none yet.
     fn see(&mut self, images: Vec<std::sync::Arc<crate::vision::Image>>) -> Result<()> {
         match self {
             Run::One(e) => crate::conv::Gen::see(e, images),
-            Run::Split(_) | Run::Tp(_) if images.is_empty() => Ok(()),
-            Run::Split(_) | Run::Tp(_) => err("a model across GPUs reads no images yet"),
+            Run::Split(e) => {
+                e.next = images;
+                Ok(())
+            }
+            Run::Tp(_) if images.is_empty() => Ok(()),
+            Run::Tp(_) => err("a model with every layer across GPUs reads no images yet"),
         }
     }
     /// One GPU: the engine's own step (src/dynamic/rows.rs); stages and layers across GPUs: a step of one sequence at a time (`ModelStep for Run`), its slot empty (what a
@@ -531,6 +559,15 @@ impl crate::sched::ModelStep for Run {
             Run::One(e) => e.desc().eos.clone(),
             Run::Split(e) => e.eos().to_vec(),
             Run::Tp(e) => e.eos().to_vec(),
+        }
+    }
+    /// The sequence's images: every stage of a split told (`Split::set_images`); every layer across GPUs refuses them.
+    fn images(&mut self, slot: i32, prompt: &[u32], images: &[std::sync::Arc<crate::vision::Image>]) -> Result<()> {
+        match self {
+            Run::One(e) => crate::sched::ModelStep::images(e, slot, prompt, images),
+            Run::Split(e) => e.set_images(prompt, images),
+            Run::Tp(_) if images.is_empty() => Ok(()),
+            Run::Tp(_) => err("a model with every layer across GPUs reads no images yet"),
         }
     }
     fn prefill(&mut self, _pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>> {

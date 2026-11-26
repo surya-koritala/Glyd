@@ -5,8 +5,9 @@
 //! `QxMoeCb`, the misses on the host). The MTP layer is a draft head of the model (`load_drafting`: `lower::draft_head`, src/dynamic/head.rs). Across GPUs
 //! the layers are cut by the generic split (src/dynamic/split.rs): a stage's experts all on its GPU (`load_stage`, `open_split`; the head on the last), or in
 //! an expert cache of its own (`load_cached_stage`, `open_cached`; `qwenserve --gpus 0,1`). The vision tower is the description's (src/dynamic/images.rs: every
-//! loader of the executor opens it on a model on one GPU; a model across GPUs reads no images yet). Not on the executor yet: the table of n-grams read from
-//! the disk in place of the GPU (the family's own engine did it; R3d deleted it).
+//! loader of the executor opens it, on the first stage of a model cut across GPUs, whose every stage turns its rows by the images' positions). The table of
+//! n-grams and the embedding are read on the host
+//! from the checkpoint's files mapped, their rows copied up with each pass, as the description holds them (`kinds::TableAt::Host`: src/dynamic/tables.rs).
 
 use super::{Dyn, ModelDesc, Op, Opts, ResidentMoe, Stage};
 use crate::cb_pack::CbPack;
@@ -88,8 +89,8 @@ pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: impl Into<Option<Stag
     let c = crate::qwen4x::ConfigQx::load(dir)?;
     let st = st.into().unwrap_or(Stage::whole(c.layers));
     let d = lowered(dir, o.ctx + o.chunk + 16)?.staged(&st);
-    // (what the GPU would hold of the stage: its layers' experts at the level (lossless: two bytes a weight at most) and their table of n-grams as saved; past
-    // that, `load_cached`)
+    // (what the GPU would hold of the stage: its layers' experts at the level (lossless: two bytes a weight at most) and their table of n-grams as saved where
+    // it is on the GPU (`ModelDesc::host`: the release's is on the host); past that, `load_cached`)
     let per = match level {
         Layout::Int6 => 6,
         Layout::Int5 => 5,
@@ -97,7 +98,7 @@ pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: impl Into<Option<Stag
         _ => 16,
     };
     let experts = ((st.layers.1 - st.layers.0) * c.experts * 3 * c.inter * c.hidden) as u64 * per / 8;
-    let table: u64 = held_as_saved(&d, &st).iter().map(|&k| (d.mats[k].rows * d.mats[k].cols * 2) as u64).sum();
+    let table: u64 = held_as_saved(&d, &st).iter().filter(|k| !d.host.contains(k)).map(|&k| (d.mats[k].rows * d.mats[k].cols * 2) as u64).sum();
     let free = Dev::new(o.device)?.mem_info()?.0 as u64;
     if !crate::plan::sizing::resident_fits(experts + table, free) {
         return err(format!(
@@ -270,10 +271,12 @@ fn parts(snap: &Path, k: &Caching, o: &Opts, gpus: &[i32], a: &crate::args::Args
     let kept = (0..c.layers).filter_map(|l| pack.kept(l).map(<[usize]>::len)).min().unwrap_or(1);
     let d = lowered(snap, o.ctx + o.chunk + 16)?;
     let whole = Stage::whole(c.layers);
-    // (the tables of n-grams are held as saved, at their bf16 bytes; the routed experts are the pack's)
-    let saved: std::collections::HashSet<&str> = held_as_saved(&d, &whole).into_iter().flat_map(|k| d.mats[k].members.iter().map(String::as_str)).collect();
+    // (the tables of n-grams on the GPU are held as saved, at their bf16 bytes; the tables on the host (`ModelDesc::host`: the embedding's, the n-grams') take
+    // none of it; the routed experts are the pack's)
+    let names = |ks: Vec<usize>| -> std::collections::HashSet<&str> { ks.into_iter().flat_map(|k| d.mats[k].members.iter().map(String::as_str)).collect() };
+    let (saved, host) = (names(held_as_saved(&d, &whole).into_iter().filter(|k| !d.host.contains(k)).collect()), names(d.host.clone()));
     let bytes = |pct: u64, keep: &dyn Fn(&str) -> bool| super::split::layer_bytes_where(snap, c.layers, 100, pct, keep);
-    let (packed, base) = bytes(bf16_pct(o.layout), &|n| !n.contains(".mlp.experts.") && !saved.contains(n))?;
+    let (packed, base) = bytes(bf16_pct(o.layout), &|n| !n.contains(".mlp.experts.") && !saved.contains(n) && !host.contains(n))?;
     let dense: Vec<u64> = packed.iter().zip(bytes(100, &|n| saved.contains(n))?.0).map(|(a, b)| a + b).collect();
     let free = gpus.iter().map(|&g| Ok((g, Dev::probe(g)?.free))).collect::<Result<Vec<_>>>()?;
     let room = crate::plan::sizing::part_rooms(&free, reserve_for(&d, k.users, &whole));
@@ -304,7 +307,7 @@ fn bf16_pct(layout: Option<Layout>) -> u64 {
 /// the model's, at a temperature of 0.5 at most with min-p 0.1. `--gpus 0,1`: the layers cut over those GPUs through the generic split (`open_cached`: each
 /// part's experts in a cache of its own, the cut `parts`' rule), one request at a time (each part would hold its share of every sequence). Images (PNG, JPEG)
 /// come as OpenAI image_url parts (a data: URL or an http(s) one) and Anthropic image blocks, read by the model's vision tower on one GPU (src/dynamic/images.rs),
-/// `--image-pixels N` the most pixels each is resized to (1,048,576 by default); across GPUs a request with images is refused in words. Not on the executor yet:
+/// `--image-pixels N` the most pixels each is resized to (1,048,576 by default); across GPUs the first part's GPU runs the tower. Not on the executor yet:
 /// the draft head over the expert cache (its verify pass takes experts held whole on the GPU: src/dynamic/head.rs).
 pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     use crate::server;
@@ -666,6 +669,8 @@ mod tests {
         let saved: Vec<usize> = (0..m.mats.len()).filter(|&k| super::super::held_as_saved(&m, k, &rows_of)).collect();
         let table = super::held_as_saved(&m, &super::super::Stage::whole(m.layers.len()));
         assert!(!table.is_empty() && table.iter().all(|k| saved.contains(k)), "{table:?} of {saved:?}");
+        // (the family's description holds its tables on the host, the n-gram table and the embedding, which is not its head: neither is on the GPU)
+        assert!(m.embed != m.lm && m.host.contains(&m.embed) && table.iter().all(|k| m.host.contains(k)) && m.host.len() == table.len() + 1, "{:?}", m.host);
         // (the table is the n-gram layer's: a stage without that layer holds none)
         assert!(super::held_as_saved(&m, &super::super::Stage { layers: (2, 8), first: false, last: true }).is_empty());
         for &k in &saved {

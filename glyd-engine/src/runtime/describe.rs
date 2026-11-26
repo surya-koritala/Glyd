@@ -563,7 +563,7 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: Norm::rms(eps),
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32 },
@@ -751,7 +751,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: pn,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32 },
@@ -903,6 +903,7 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             dilation: order,
             norm: pn,
             form: NgramForm::Segmented,
+            table: TableAt::Host,
         })
     };
     for &l in &ple {
@@ -1082,7 +1083,7 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: hc, per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: hc, per_layer: None, table: if tied { TableAt::Gpu } else { TableAt::Host } },
         blocks,
         final_norm: pn,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::GatedMix, rounding: Rounding::F32 },
@@ -1382,7 +1383,7 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: (d as f32).sqrt(), norm: None, streams: 1, per_layer },
+        embed: Embed { scale: (d as f32).sqrt(), norm: None, streams: 1, per_layer, table: TableAt::Gpu },
         blocks,
         final_norm: n,
         // (the release's head is bf16: transformers soft-caps `lm_head`'s bf16 logits by three bf16 operations)
@@ -1788,7 +1789,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: streams.map_or(1, |s| s.streams), per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: streams.map_or(1, |s| s.streams), per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: n,
         // (the logits in bf16: the release's lm_head is a bf16 product, its output the logits (modeling_glm5_next.py, modeling_glm_moe_dsa.py))
@@ -2097,7 +2098,7 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: n,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::DepthMix, rounding: Rounding::F32 },
@@ -2252,7 +2253,7 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: Some(bare), streams: 1, per_layer: None },
+        embed: Embed { scale: 1.0, norm: Some(bare), streams: 1, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: Norm::rms(eps),
         // (the release's head is bf16: its product, the output multiplier's product and the soft-cap's three operations each rounded, as muse_ref.rs and the
@@ -2475,7 +2476,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: streams.streams, per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: streams.streams, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: Norm::rms(eps),
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::Weighted { eps: streams.eps, norm_eps: eps }, rounding: Rounding::F32 },
@@ -2703,6 +2704,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
             dilation: 1,
             norm: Norm::rms(eps),
             form: NgramForm::Engram,
+            table: TableAt::Gpu,
         };
         let rows = list("engram_num_embeddings")?;
         let want = super::reference::ngram::tables(&n).0.iter().sum::<u64>();
@@ -2829,7 +2831,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: streams.streams, per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: streams.streams, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: rn,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::LastPre, rounding: Rounding::F32 },
@@ -3111,7 +3113,7 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None },
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: n,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32 },

@@ -43,7 +43,8 @@ pub fn run(a: &Args) -> Result<()> {
         "compare" => compare(a),
         "sched" => sched(a),
         "rope" => rope(a),
-        x => err(format!("visioncheck {x}: make, tower, logits, compare, sched or rope")),
+        "split" => split(a),
+        x => err(format!("visioncheck {x}: make, tower, logits, compare, sched, rope or split")),
     }
 }
 
@@ -364,6 +365,60 @@ fn scored(e: &mut crate::dynamic::Dyn, ids: &[u32], images: &[Arc<Image>], from:
         rows.push(e.logits()?);
     }
     Ok(rows)
+}
+
+/// `split DIR IMAGE [--split CUT,..] [--devices GPU,..]`: the image prompt's teacher-forced logits (`scored`'s rows) and the text's, the model on one GPU and
+/// with its layers cut into stages (`--split`, by default before its middle layer; both stages on GPU 0 unless `--devices` names two), the expert cache a
+/// stage (`qwen4x::open_cached`): the first stage runs the tower, every stage turns its rows by the image's positions, and every row is the one GPU's, bit for bit.
+fn split(a: &Args) -> Result<()> {
+    use crate::dynamic::qwen4x::{open_cached, Caching, PackMode};
+    let dir = Path::new(a.need(2, "DIR")?);
+    let image = a.need(3, "IMAGE")?;
+    let o = crate::dynamic::Opts { ctx: 4096, chunk: 128, graph: true, device: 0, layout: None };
+    let k = Caching::new(&dir.join("pack"), PackMode::Best, 1);
+    let nl = crate::qwen4x::ConfigQx::load(dir)?.layers;
+    let (cuts, devices) = match crate::dynamic::split::split_args(a)? {
+        (c, d) if c.is_empty() => (vec![nl / 2], if d.len() == 2 { d } else { vec![0, 0] }),
+        x => x,
+    };
+    let rows = |cuts: &[usize], devices: &[i32]| -> Result<(Vec<Vec<f32>>, Vec<Vec<f32>>, usize)> {
+        let mut e = open_cached(dir, &o, &k, cuts, devices)?;
+        let prep = crate::vision::PREP.get().cloned().ok_or_else(|| Error(format!("{}: the executor opened no vision tower", dir.display())))?;
+        let img = Arc::new(prep.image(&io(std::fs::read(image), Path::new(image))?)?);
+        let (ids, from) = prompt_ids(dir, true)?;
+        let expanded = crate::vision::expand(&ids, prep.image_token, std::slice::from_ref(&img))?;
+        let (text, from_t) = prompt_ids(dir, false)?;
+        let mut scored = |ids: &[u32], images: &[Arc<Image>], from: usize| -> Result<Vec<Vec<f32>>> {
+            e.reset()?;
+            e.set_images(ids, images)?;
+            let mut rows = vec![{
+                e.prefill(&ids[..from])?;
+                e.logits()?
+            }];
+            for &t in &ids[from..ids.len() - 1] {
+                e.step(t)?;
+                rows.push(e.logits()?);
+            }
+            Ok(rows)
+        };
+        Ok((scored(&expanded, std::slice::from_ref(&img), from - 1 + img.tokens())?, scored(&text, &[], from_t)?, img.tokens()))
+    };
+    let (one, one_t, tokens) = rows(&[], &devices[..1])?;
+    let (cut, cut_t, _) = rows(&cuts, &devices)?;
+    let differ = |a: &[Vec<f32>], b: &[Vec<f32>]| {
+        (0..a.len()).filter(|&i| b.get(i).is_none_or(|r| a[i].iter().map(|x| x.to_bits()).ne(r.iter().map(|x| x.to_bits())))).count()
+    };
+    let (di, dt) = (differ(&one, &cut), differ(&one_t, &cut_t));
+    println!(
+        "the image prompt ({tokens} rows of the image's) cut before {cuts:?} on GPUs {devices:?}: {} rows, {di} with logits that differ from one GPU's; the text: {} rows, {dt}",
+        one.len(),
+        one_t.len()
+    );
+    if di + dt > 0 || one.is_empty() {
+        return err("the stages' logits are not one GPU's");
+    }
+    println!("PASS visioncheck split");
+    Ok(())
 }
 
 fn write_rows(path: &Path, rows: &[Vec<f32>]) -> Result<()> {

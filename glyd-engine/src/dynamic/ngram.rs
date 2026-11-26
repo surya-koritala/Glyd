@@ -3,8 +3,8 @@
 //! each token its compressed vocabulary's id first where the form has one), into In; then the product of In by the key and value matrices stacked (an
 //! `Op::Linear` into Gu); then `NgramAdd`, the per-stream gate of the value and its sum into the streams S: with the segmented form's norm of the gated value and
 //! its dilated convolution (its inputs a state) between, or the gated value alone (Engram's). The kernels are kernels/qwen4x.cu's (`qx_ngram_rows`, `qx_ple_gate`,
-//! `qx_ple_conv`): four streams, orders 2 to 4, a convolution reaching up to 32 rows back. The table is held on the GPU as saved (a model whose table does not
-//! fit is not loaded here: src/dynamic/qwen4x.rs).
+//! `qx_ple_conv`): four streams, orders 2 to 4, a convolution reaching up to 32 rows back. The table is held on the GPU as saved, or on the host where its kind
+//! says (`kinds::TableAt`: the pass's rows gathered by the host, the same ids, and copied in: src/dynamic/tables.rs).
 
 use super::{Dyn, Part, Slot};
 use crate::ffi::{Error, Result};
@@ -55,9 +55,14 @@ impl Dyn {
         let k = self.kqx.as_ref().ok_or_else(|| Error("an n-gram embedding in a model loaded without its kernels".into()))?;
         let tok = self.tok.as_ref().ok_or_else(|| Error("an n-gram embedding without the tokens' buffer".into()))?;
         let e = p.slot(Slot::In) + self.rows_before(p.d.width(Slot::In));
+        let map = x.map.map_or(0, |m| p.small[m].ptr);
+        // (a table on the host: the rows staged with the pass's tokens copied in, src/dynamic/tables.rs; then the sequence's last ids moved on, as the GPU's hash does)
+        if std::ptr::eq(p, &self.big) && self.ngram_rows_host(x, e, n)? {
+            k.ngram_hist(self.dev.stream, tok.ptr + self.rows_before(2), self.state(x.hist), n, x.order, map)?;
+            return self.mark("n-gram embedding: rows");
+        }
         let crate::kern35::Mat::Dense(table, ..) = &p.mats[x.table] else { return Err(Error("the n-gram table is not held as saved".into())) };
         let hash = x.hash.map(|i| p.small[i].ptr);
-        let map = x.map.map_or(0, |m| p.small[m].ptr);
         let h = (x.order - 1) * x.per;
         k.ngram_rows(
             self.dev.stream,
