@@ -1847,7 +1847,8 @@ impl Dyn {
     /// `trace_row_routes`' record of an indexer's pick of pools of `ratio` tokens (`Op::IdxPick` with `IdxKeys::Pools`) of layer `l` on n rows of one sequence,
     /// the first at `row0` of the pass (`picked::PickRun`'s room): each row's pools picked (its picked tokens' whole pools, not the open one) and the scores of
     /// the whole pools it could pick.
-    fn trace_row_picks(&self, p: &Part, l: usize, ratio: usize, n: usize, row0: usize) -> Result<()> {
+    fn trace_row_picks(&self, p: &Part, l: usize, x: &mla::IdxPick, n: usize, row0: usize) -> Result<()> {
+        let ratio = x.ratio;
         if !std::ptr::eq(p, &self.big) || self.row_routes.borrow().is_none() {
             return Ok(());
         }
@@ -1857,7 +1858,9 @@ impl Dyn {
         r.cnt.read(row0 * 4, &mut cnt)?;
         let tags = self.row_tags(n);
         // (a row's picks and scores read as far as its pick wrote them: its `cnt` picks and the scores of its whole pools. The rooms past them hold nothing a
-        // pick wrote, and are not read)
+        // pick wrote, and are not read. A row with no more whole pools than a pick takes has every one of them and no scores: kernels/mla.cu `idx_score`
+        // computes none there (the release's arithmetic, `idx_score_bf16`, writes every row's), so its record says so, and a choice apart there is no near tie)
+        let scored = |whole: usize| !matches!(x.score, mla::IdxScore::F32 { .. }) || whole > x.top_k;
         let mut rows = Vec::with_capacity(n);
         for (i, &(_, pos)) in tags.iter().enumerate() {
             let whole = ((pos + 1) / ratio.max(1)).min(r.emax);
@@ -1866,8 +1869,10 @@ impl Dyn {
             if taken > 0 {
                 r.sel.read((row0 + i) * r.sk * 4, &mut sel)?;
             }
-            if whole > 0 {
+            if whole > 0 && scored(whole) {
                 r.scores.read(i * r.emax * 4, &mut sc)?;
+            } else {
+                sc.fill(f32::NAN);
             }
             rows.push((whole, sel, sc));
         }
