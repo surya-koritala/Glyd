@@ -7609,6 +7609,12 @@ mod tests {
         let qx = fixture("qwen4x_config.json");
         let names = crate::dynamic::tables::ngram_names(&mc(&qx));
         assert!(!names.is_empty() && names.iter().all(|n| n.contains("ngram")), "{names:?}");
+        let (dir, ..) = qx_release("tables-active-qx");
+        let f = planned(&args(&["fit", dir.to_str().unwrap(), "--machine", "l4"])).unwrap();
+        let l = super::text("Qwen3.8-Flash-Next", &f.shape, &f.machine, &f.plan).lines().next().unwrap().to_string();
+        eprintln!("{l}");
+        assert!(f.shape.tables > 0.0 && l.contains(&format!("{:.1}B active", f.shape.active() / 1e9)), "{l}");
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
     /// A plan never holds silently less than asked: `fit --users 4` of DeepSeek-V4.1 on eight H100s (its layers in stages over GPUs) plans one sequence, and
