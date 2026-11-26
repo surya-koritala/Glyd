@@ -6182,6 +6182,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // (what a server says of its keys and values, /v1/glyd/info's `precision.kv`, is read from the engine at load, before the pools are made: the format asked for, which the pools then hold)
     let kv_said = crate::conv::Gen::held(&e).map_or("", |h| h.kv_type);
     let (batchable, exact, host) = (e.batchable(), e.rows_exact(), host_experts(&e));
+    // (the one-row steps that replayed their sequence's graph so far: the replies above, which are no scheduler's; the check below counts the scheduler's alone)
+    let ones_before = e.one_replays.get();
     let Some((k, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step")) };
     let chunk = crate::sched::ModelStep::chunk(step);
     // (no finished sequence kept: the same prompts come again below, and each is to run from its first token, in passes with the others; where the engine computes experts
@@ -6512,12 +6514,15 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     }
     // (the sampler's candidates the step makes on the GPU (src/dynamic/rows.rs `Cands`), against its rows' logits)
     let swapped = s.stats.swapped;
+    // (the scheduler's decode steps of one row in every run above)
+    let one_steps = s.context().sched[19].load(std::sync::atomic::Ordering::Relaxed);
     s.stop_rows();
     drop(s);
     // (decode steps of several rows replay a CUDA graph of their padded rows where the description takes one (src/dynamic/rows.rs `rows_bucket`), every kind's (`capturable`),
-    // up to the ladder's top (`rows_top`: the head's rows, or the expert cache's plan on the GPU's, 8); with prompts one a pass, a description with experts decodes a
+    // up to the ladder's top (`rows_top`: the head's rows, or the expert cache's plan on the GPU's, 64, each row count its own); with prompts one a pass, a description with experts decodes a
     // sequence a step. A step of one row replays its sequence's own graph)
-    let (replays, late, eager, top, ones) = (e.rows_replays.get(), e.rows_late.get(), e.rows_eager.get(), e.rows_graph_top(), e.one_replays.get());
+    let (replays, late, eager, top, ones) =
+        (e.rows_replays.get(), e.rows_late.get(), e.rows_eager.get(), e.rows_graph_top(), e.one_replays.get() - ones_before);
     // (steps launched ahead, GLYD_ENGINE_OVERLAP=1, run as passes of parts: no graph of rows and no pieces there yet)
     let ahead = crate::sched::ModelStep::overlaps(&e);
     if crate::sched::overlap_asked() {
@@ -6527,7 +6532,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let by: Vec<String> = e.rows_replays_by_size().iter().map(|(r, n)| format!("{r}:{n}")).collect();
     println!(
         "decode steps of several rows replayed from a CUDA graph: {replays}, run eager: {eager} (graphs up to {top} rows; replays by the graph's rows {}), graphs captured \
-         in a request's step: {late}{}; decode steps of one row replayed from their sequence's graph: {ones}",
+         in a request's step: {late}{}; decode steps of one row replayed from their sequence's graph: {ones} of {one_steps}",
         by.join(" "),
         if graphs || k < 2 { "" } else { " (this description's steps of several rows run eager)" }
     );
