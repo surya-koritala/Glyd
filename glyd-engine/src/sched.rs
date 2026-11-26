@@ -1025,6 +1025,13 @@ impl<B: ModelStep> Sched<B> {
         self
     }
 
+    /// The routers' choices traced (`ModelStep::trace_choices`) or not, whatever `recording_rows` asked: rows recorded without them run as a server's do (a
+    /// traced pass runs eager).
+    pub fn tracing_choices(mut self, on: bool) -> Sched<B> {
+        self.be.trace_choices(on);
+        self
+    }
+
     /// The rows no longer recorded, nor the routers' choices traced.
     pub fn stop_rows(&mut self) {
         if self.rows.take().is_some() {
