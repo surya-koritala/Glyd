@@ -264,7 +264,7 @@ impl WeightsG4 {
         let p = cfg.prefix.clone();
         let items = cfg.items();
         let matrix_bytes: u64 = items.iter().map(|it| (it.rows * it.cols * 2) as u64).sum();
-        // a glyd-v7 directory (`glyd-engine pack MODEL OUT --layout i4x|i6|...`, src/pack.rs gemma4_plan): its packs read as saved (each fused under its first member's name), in its layout
+        // a glyd-v7 directory (`glyd-engine pack MODEL OUT --layout i4x|i6|...`, src/pack.rs `plan`, from its description): its packs read as saved (each fused under its first member's name), in its layout
         let v7 = crate::weights::v7_manifest(dir)?;
         let layout = match &v7 {
             Some((l, _)) => *l,

@@ -40,7 +40,7 @@ pub fn ends(dir: &Path, m: &ModelConfig) -> Result<(usize, Vec<i64>)> {
     }
 }
 
-/// The model of the config `c` as the lossy route packs and sizes it (src/pack.rs `qwen35_plan`, src/plan.rs `lossy_plan_inner`), dense or with experts alike:
+/// The model of the config `c` as the lossy route packs and sizes it (src/pack.rs `plan`, src/plan.rs `lossy_plan_inner`), dense or with experts alike:
 /// its description lowered whole (`lower::qwen35`: what the loader runs, its states and rings, its longest context), the matrices a level's save packs and the
 /// tensors it keeps, in load order (`pack::described`: a layer's blocks of experts' too).
 pub fn saved(c: &crate::runtime::config::ModelConfig) -> Result<(ModelDesc, Vec<crate::qwen35::Pack35>, Vec<crate::qwen35::Tensor35>)> {

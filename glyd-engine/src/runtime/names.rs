@@ -323,34 +323,34 @@ pub mod part {
         ("indexer_pool_ape", "self_attn.indexer.index_kpool_compress_ape"),
         ("indexer_pool_gate", "self_attn.indexer.index_kpool_compress_gate"),
     ];
-    /// Sigmoid-routed experts with a choice bias and shared experts.
+    /// Sigmoid-routed experts with a choice bias and shared experts (the shared experts before the routed ones, as a lossy save packs them: src/pack.rs `walk`).
     pub const MOE: Roles = &[
         ("router", "mlp.gate.weight"),
         ("choice_bias", "mlp.gate.e_score_correction_bias"),
-        ("experts_gate_up", "mlp.experts.{E}.gate_proj.weight|mlp.experts.{E}.up_proj.weight"),
-        ("experts_down", "mlp.experts.{E}.down_proj.weight"),
         ("shared_gate", "mlp.shared_experts.gate_proj.weight"),
         ("shared_up", "mlp.shared_experts.up_proj.weight"),
         ("shared_down", "mlp.shared_experts.down_proj.weight"),
+        ("experts_gate_up", "mlp.experts.{E}.gate_proj.weight|mlp.experts.{E}.up_proj.weight"),
+        ("experts_down", "mlp.experts.{E}.down_proj.weight"),
     ];
     /// The mHC streams around a block (GLM-5.3-Flash, DeepSeek-V4).
     pub const HC_ATTN: Roles = &[("hc_fn", "hc_attn_fn"), ("hc_base", "hc_attn_base"), ("hc_scale", "hc_attn_scale")];
     pub const HC_FFN: Roles = &[("hc_fn", "hc_ffn_fn"), ("hc_base", "hc_ffn_base"), ("hc_scale", "hc_ffn_scale")];
 
     // ---- Kimi linear (Kimi-K3, GLM-5.3-Flash): Kimi delta attention, the depth mix, the latent experts
-    /// Kimi delta attention: q, k, v, beta, the forget gate's low rank, the output gate (full rank, or GLM's low rank), o, the three convolutions, A_log,
-    /// dt_bias and the gated norm.
+    /// Kimi delta attention: q, k, v, o, the forget gate's low rank, the output gate (full rank, or GLM's low rank), beta, the three convolutions, A_log,
+    /// dt_bias and the gated norm (its matrices in the order a lossy save packs them: src/pack.rs `walk`).
     pub const KDA: Roles = &[
         ("q", "self_attn.q_proj.weight"),
         ("k", "self_attn.k_proj.weight"),
         ("v", "self_attn.v_proj.weight"),
-        ("beta", "self_attn.b_proj.weight"),
+        ("o", "self_attn.o_proj.weight"),
         ("decay_a", "self_attn.f_a_proj.weight"),
         ("decay_b", "self_attn.f_b_proj.weight"),
         ("gate", "self_attn.g_proj.weight"),
         ("gate_a", "self_attn.g_a_proj.weight"),
         ("gate_b", "self_attn.g_b_proj.weight"),
-        ("o", "self_attn.o_proj.weight"),
+        ("beta", "self_attn.b_proj.weight"),
         ("conv", "self_attn.q_conv1d.weight|self_attn.k_conv1d.weight|self_attn.v_conv1d.weight"),
         ("a_log", "self_attn.A_log"),
         ("dt_bias", "self_attn.dt_bias"),

@@ -7,7 +7,7 @@
 #   1b. moecheck  glyd-engine moecheck relu2-22of512 relu2-rows-22of512: the library's grouped products (the experts' second matrices in the block layout: the dense product) and the sparse product (in the row layout:
 #                 src/moe_rows.rs) over experts in each layout (Int6, Int5, Int4) against the CPU reference, on Nemotron's layer: about two minutes, before the pack
 #   1c. topkcheck glyd-engine topkcheck: the sampling kernels (a row's 64 largest logits, the sum of its exponentials) against the host's, on rows of every shape and at the two vocabularies' sizes: seconds, before the pack (GLY-139)
-#   2. pack       glyd-engine pack MODEL ~/v/packed --layout $LAYOUT (src/pack.rs: nemotron_plan, the packs and the tensors kept; the experts' down matrices in the row layout, so that every step below
+#   2. pack       glyd-engine pack MODEL ~/v/packed --layout $LAYOUT (src/pack.rs: plan, from its description: the packs and the tensors kept; the experts' down matrices in the row layout, so that every step below
 #                 but 9 runs the sparse product): time, bytes, shards, the layouts of the packs
 #   3. verify     glyd-gpu verify --device cuda:0: every pack decoded by the GPU library, in its own layout, to the sha256 glyd.json holds
 #   4. generate   glyd-engine generate: 128 tokens by greedy steps (the decode graph): the engine's own speed, and the memory it reports

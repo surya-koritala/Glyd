@@ -681,6 +681,27 @@ pub enum Body {
     PerLayer(PerLayer),
 }
 
+impl Body {
+    /// The products a block of this kind multiplies by, each the roles whose matrices it stacks by rows into one (q, k and v; gate and up; Gated DeltaNet's
+    /// queries, keys and values with its output gate z, and its b with its a), as the executor's lowerings read them: a role in none is no matrix of the
+    /// kind (a norm, a convolution, a router, an indexer's tensors). A block has the roles of its own (a layer that reads another's keys and values has no
+    /// k or v; a shared expert without a gate no `shared_gate`): a product is those of its roles it has. A block of experts' routed experts (its
+    /// `experts_*` roles) are each expert's matrices besides these. None for a kind with no products of this form (the compressed attention, the n-gram
+    /// embedding, the per-layer inputs). What a lossy save packs (src/pack.rs `walk`).
+    pub fn products(&self) -> Option<&'static [&'static [&'static str]]> {
+        Some(match self {
+            Body::Mixer(Mixer::Attention(_)) => &[&["q", "k", "v"], &["o"]],
+            Body::Mixer(Mixer::Linear(l)) if l.kind == LinearKind::GatedDeltaNet => &[&["qkv", "gate"], &["beta", "decay"], &["o"]],
+            Body::Mixer(Mixer::Linear(_)) => &[&["q", "k", "v"], &["o"], &["decay_a"], &["decay_b"], &["gate"], &["gate_a"], &["gate_b"], &["beta"]],
+            Body::Mixer(Mixer::Mla(_)) => &[&["q_a"], &["q_b"], &["q"], &["kv_a"], &["kv_b"], &["g"], &["o"]],
+            Body::Mixer(Mixer::Mamba2(_)) => &[&["in"], &["o"]],
+            Body::Ffn(Ffn::Mlp(_)) => &[&["gate", "up"], &["down"]],
+            Body::Ffn(Ffn::Moe(_)) => &[&["latent_down"], &["latent_up"], &["shared_gate", "shared_up"], &["shared_down"]],
+            Body::Mixer(Mixer::Compressed(_)) | Body::Ngram(_) | Body::PerLayer(_) => return None,
+        })
+    }
+}
+
 /// Muse's gated residual X = a X + b O, the factors from role `res_gate` [hidden] and the temperature.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GateP {
