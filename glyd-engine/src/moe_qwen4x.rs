@@ -467,12 +467,22 @@ impl QxMoeCb {
         cs.kern.rot_in(s, h, H, self.signs.ptr, cs.xr.ptr, cs.xrb.ptr, n)?;
         cs.kern.local(s, sc.ids.ptr, self.local_of.ptr, cs.gids.ptr, pairs, self.experts)?;
         if n >= STREAM_MIN && self.common.stream.get() {
-            // a long chunk: every expert with pairs streamed through the GPU once and multiplied by all its tokens, the sums in the rotated basis into xr, then R^T and the shared expert
+            // a long chunk: every expert with pairs streamed through the GPU once and multiplied by all its tokens, each pair's row (rotated basis, not weighted) into the per-pair products' buffer, then
+            // each token's sum in the router's order, the host's sums first (`qx_cb_sum_rot`: the per-pair products' own sum, an order the layer's shape fixes), R^T and the shared expert. A call of more pairs
+            // than the buffer holds goes in runs of the tokens it holds, each streaming the experts again.
             self.shared_out(e, cs, h, n, cs.sh.ptr)?;
             crate::tmark!(s, "stream: shared expert");
-            self.stream_experts(e, cs, n, cs.xrb.ptr, cs.gids.ptr, sc.wts.ptr, cs.xr.ptr)?;
+            let per = (cs.part.bytes / (H * 4) / k).max(1);
+            let mut r0 = 0;
+            while r0 < n {
+                let m = per.min(n - r0);
+                let (xrb, gids, wts) = (cs.xrb.ptr + (r0 * H * 2) as u64, cs.gids.ptr + (r0 * k * 8) as u64, sc.wts.ptr + (r0 * k * 4) as u64);
+                let sums = self.stream_experts(e, cs, m, k, xrb, gids, wts, cs.part.ptr)?;
+                let (extra, skip) = sums.map_or((0, 0), |x| (x.extra, x.skip));
+                cs.kern.sum_rot(s, cs.part.ptr, wts, extra, skip, self.signs.ptr, out + (r0 * H * 2) as u64, k, 1, m)?;
+                r0 += m;
+            }
             crate::tmark!(s, "stream: experts");
-            cs.kern.sum_rot(s, 0, 0, cs.xr.ptr, 0, self.signs.ptr, out, 0, 1, n)?;
             self.shared_add(e, cs, out, n, cs.sh.ptr)?;
             crate::tmark!(s, "stream: sum");
             return Ok(());
@@ -507,13 +517,24 @@ impl QxMoeCb {
         self.shared_add(e, cs, out, n, cs.sh.ptr)
     }
 
-    /// The routed experts' sum (fp32 [n, H], rotated basis, written into `y`) of n rows with x' at `xrb` and their choices (`gids`: the layer's numbers, `wts`), every expert with pairs streamed through the GPU once and
-    /// multiplied by all its rows on the tensor cores (`cb2_prefill_experts`; the experts in places read where they are).
+    /// The routed experts' rows (fp32 [n k, H], rotated basis, not weighted, the router's order: written into `prow`) of n rows with x' at `xrb` and their k choices each (`gids`: the layer's numbers, `wts`), every
+    /// expert with pairs streamed through the GPU once and multiplied by all its rows on the tensor cores (`cb2_prefill_experts`; the experts in places read where they are); the host's share's sums by
+    /// token and its pairs where it took some.
     ///
     /// # Safety
-    /// As `MoeBlock::forward`; the buffers hold n rows.
+    /// As `MoeBlock::forward`; the buffers hold n rows, `prow` n k.
     #[allow(clippy::too_many_arguments)]
-    unsafe fn stream_experts(&self, e: &dyn QcHost, cs: &QcScratch, n: usize, xrb: u64, gids: u64, wts: u64, y: u64) -> Result<()> {
+    unsafe fn stream_experts(
+        &self,
+        e: &dyn QcHost,
+        cs: &QcScratch,
+        n: usize,
+        k: usize,
+        xrb: u64,
+        gids: u64,
+        wts: u64,
+        prow: u64,
+    ) -> Result<Option<crate::cb2_prefill::HostSums>> {
         let s = e.dev().stream;
         if cs.pre.get().is_none() {
             let _ = cs.pre.set(crate::cb2_prefill::Cb2Kern::load_dims(e.dev(), H, I, NO_CLAMP)?);
@@ -534,19 +555,18 @@ impl QxMoeCb {
                 d
             })
             .collect();
-        // the host's share (experts of few pairs computed by the CPU while the GPU streams the rest) for calls of up to HOST_ROWS rows, where the copies bound the call: balanced by the calls' times from 12 rows on 12
-        // threads (a longer call's GPU loop is bound by its products, and its rows' trips to the host and back cost more than the copies it saves); a development build's GLYD_CB2_HOST=R[:T] fixes it (0: none)
-        let share = kern.host.get();
+        // the host's share (experts of few pairs computed by the CPU while the GPU streams the rest) for calls of up to HOST_ROWS rows, where the copies bound the call: experts of up to 12 pairs on 12 threads
+        // (a longer call's GPU loop is bound by its products, and its rows' trips to the host and back cost more than the copies it saves); a development build's GLYD_CB2_HOST=R[:T] sets it (0: none)
         match crate::tune!("GLYD_CB2_HOST") {
             Some(v) => {
                 let mut it = v.split(':').map(|x| x.parse::<usize>().unwrap_or(0));
                 let (r, t) = (it.next().unwrap_or(0), it.next().unwrap_or(12));
-                kern.host.set((r > 0).then_some(crate::cb2_prefill::HostShare { max_rows: r, threads: t.max(1), auto: false }));
+                kern.host.set((r > 0).then_some(crate::cb2_prefill::HostShare { max_rows: r, threads: t.max(1) }));
             }
             None if n > HOST_ROWS => kern.host.set(None),
-            None => kern.host.set(Some(share.filter(|h| h.auto).unwrap_or(crate::cb2_prefill::HostShare { max_rows: 12, threads: 12, auto: true }))),
+            None => kern.host.set(Some(crate::cb2_prefill::HostShare { max_rows: 12, threads: 12 })),
         }
-        crate::cb2_prefill::cb2_prefill_experts(e.dev(), kern, &descs, n, self.cfg.router.top_k, xrb, gids, wts, y, s)?;
+        let sums = crate::cb2_prefill::cb2_prefill_experts(e.dev(), kern, &descs, n, k, xrb, gids, wts, prow, s)?;
         if crate::tune!("GLYD_CB2_HOSTLOG").is_some() && kern.host.get().is_some() {
             let t = kern.took.get();
             eprintln!(
@@ -554,7 +574,7 @@ impl QxMoeCb {
                 self.layer, t.experts, t.pairs, t.host_ms, t.gpu_ms
             );
         }
-        Ok(())
+        Ok(sums)
     }
 
     /// Whether a call of n rows takes the tensor-core second products (`KernQc::down_t`): `tc` to 8 rows of a layer whose formats they take.
