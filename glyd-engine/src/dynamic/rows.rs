@@ -214,7 +214,7 @@ pub(super) struct Cands {
 
 impl Cands {
     /// A step that wrote `rows` head rows ran: its candidates are not made yet.
-    fn fresh(&mut self, rows: usize) {
+    pub(super) fn fresh(&mut self, rows: usize) {
         (self.rows, self.made, self.raw_rows) = (rows, false, 0);
         self.sums.clear();
         self.procd.clear();
