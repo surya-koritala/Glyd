@@ -504,7 +504,7 @@ fn deepseek_v4_release_described() {
 }
 
 /// Nemotron 3's description on the reference (Mamba-2, attention with no position embedding, the mixture of experts with a shared expert on the full vector, a layer a block)
-/// against the logits the engine recorded for the same random model on an RTX 4080 SUPER at the lossless level (tests/logits/nemotron-h.sm89.json.gz; no other implementation
+/// against the logits the engine recorded for the same random model on an RTX 4080 SUPER at the lossless level (tests/logits/nemotron-h.sm89-geforce-80sm.json.gz; no other implementation
 /// made them). The weight map names the checkpoint's tensors but the draft head's, and every row (the prompt's, each decode step's, the long prompt's) is the engine's within
 /// what its bf16 values explain: the same best token wherever it has a clear lead.
 ///
@@ -523,7 +523,7 @@ fn nemotron_model_described_against_the_engines_logits() {
     let ck = Checkpoint::open(&dir).unwrap();
     let names: BTreeSet<String> = ck.names().filter(|n| !n.starts_with("mtp.")).map(String::from).collect();
     assert_eq!(d.names(), names, "the weight map");
-    let fx = Fixture::read(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/logits/nemotron-h.sm89.json.gz")).unwrap();
+    let fx = Fixture::read(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/logits/nemotron-h.sm89-geforce-80sm.json.gz")).unwrap();
     let src = checkpoint_source(&ck);
     let t0 = std::time::Instant::now();
     let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg));
