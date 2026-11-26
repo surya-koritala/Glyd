@@ -1,22 +1,24 @@
-//! Qwen3.8-Flash-Next's mixture-of-experts layers on the description executor (`kern_nh::MoeBlock`): every expert of a layer on the GPU (`QxMoe`, a model
-//! whose experts fit it), or its routed experts in the expert cache (`QxMoeCb`): the router (softmax over the 512 experts, the top 10 renormalised;
-//! a pruned expert never chosen), the rotation of the layer's input, the experts' two products over the cache's places (kernels/qwen4x.cu `qx_cb_*`), the weighted sum and the rotation back, the shared expert times
-//! its gate. The experts are glyd-hbr-codes/2 rows at 2,560 x 640 (cb2, cb3, cb4 or ternary, an expert's own format; ~/glyd-scratch/qwen/qwen_pack.py writes them), every layer's file mapped as the cache's host tier
-//! (src/offload.rs): the GPU holds `slots` experts of a layer in places, copied in as the router asks for them, and the host computes a miss from its memory (src/cpu_cb.rs) or copies it, as the store plans.
+//! The Moe kind's block at the hummingbird level of a codes pack (glyd-hbr-codes/2, src/cb_pack.rs: each routed expert rows of codebook codes in the basis of its
+//! layer's rotation, of two, three or four bits, ternary, or format q's trellis rows of two, three or four bits, an expert's own format), made from the layer's kind
+//! and its roles' tensors (src/dynamic/experts.rs `block`, `Held::codes`): the router (the kind's softmax over the layer's experts, the top k renormalised; an expert
+//! the pack prunes never chosen), the rotation of the layer's input, the experts' two products over the expert cache's places (kernels/qwen4x.cu `qx_cb_*`: the
+//! kernels of every format), the weighted sum and the rotation back, the shared expert times its gate. Every layer's file is mapped as the cache's host tier
+//! (src/offload.rs): the GPU holds `places` experts of a layer, copied in as the router asks for them (as many places as the layer's experts: every expert on the
+//! GPU), and the host computes a miss from its memory (src/cpu_cb.rs) or copies it, as the store plans. The shared expert is held as int8 rows with a scale each, its
+//! kernels' form (`SharedRows`).
 
 use crate::cb_pack::{CbPack, LayerMap};
 use crate::dev::{Buf, Dev};
+use crate::dynamic::experts::{Ix, MoeBlock, NhHost};
 use crate::ffi::{err, Error, Result, Stream};
-use crate::kern_nh::{MoeBlock, NhHost};
 use crate::launch;
-use crate::moe::{route_with, Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Shared};
-use crate::moe_rows::Down;
+use crate::moe::{route_with, Act, MoeCfg, MoeScratch, Scoring};
 use crate::offload::{Call, ExpertStore, HostMem, Stage};
-use crate::qwen4x::ConfigQx;
-use crate::weights::{ordered, read_pack, upload_bytes, upload_packed, Layout};
-use glyd_gpu::safetensors::{Checkpoint, TensorInfo};
+use crate::runtime::describe::Source;
+use crate::runtime::kinds;
+use crate::weights::upload_bytes;
+use glyd_gpu::safetensors::Checkpoint;
 use std::cell::{Cell, OnceCell};
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -38,7 +40,7 @@ pub fn takes(hidden: usize, inter: usize) -> Result<()> {
 /// The most pair-runs (pairs times runs of neurons) the partial sums of a call hold, and the most tokens a pass of the per-pair products takes (the host's pairs' limit: a longer call streams its experts).
 const PART_ROWS: usize = 4096;
 const PAIR_TOKENS: usize = 1024;
-/// Qwen's SwiGLU has no clamp (the host's kernels take a finite one).
+/// The SwiGLU the block takes has no clamp (`cfg_of`); the host's kernels take a finite one.
 const NO_CLAMP: f32 = f32::MAX;
 /// Rows a streamed call has at most for the host to take a share of its experts (`stream_experts`).
 const HOST_ROWS: usize = 4096;
@@ -46,7 +48,7 @@ const HOST_ROWS: usize = 4096;
 pub(crate) const STREAM_MIN: usize = crate::offload::CPU_TOKENS + 1;
 
 /// The kernels of kernels/qwen4x.cu's codebook rows with typed launches.
-pub struct KernQc {
+pub struct KernCb {
     rot_in: crate::kt::qx_cb_rot_in,
     local: crate::kt::glm_cb_local,
     up: crate::kt::qx_cb_up,
@@ -64,9 +66,9 @@ pub struct KernQc {
     small: crate::kt::small_linear,
 }
 
-impl KernQc {
-    pub fn load(dev: &Dev) -> Result<KernQc> {
-        Ok(KernQc {
+impl KernCb {
+    pub fn load(dev: &Dev) -> Result<KernCb> {
+        Ok(KernCb {
             rot_in: dev.typed()?,
             local: dev.typed()?,
             up: dev.typed()?,
@@ -171,8 +173,8 @@ pub(crate) fn runs_for(pairs: usize) -> usize {
 }
 
 /// What every layer's block shares: its scratch (the first call makes it), the experts a token takes now (0: the model's), the bytes of the pack loading may still ask the system to read ahead.
-pub struct QxCbShared {
-    scratch: OnceCell<QcScratch>,
+pub struct CbShared {
+    scratch: OnceCell<CbScratch>,
     pub topk: Cell<usize>,
     pub read_ahead: Cell<u64>,
     /// Whether a prompt chunk of more than `CPU_TOKENS` tokens goes through the streaming prefill (src/cb2_prefill.rs: the experts with pairs streamed through a ring on the GPU, each multiplied by all its tokens on the
@@ -184,9 +186,9 @@ pub struct QxCbShared {
     pub pin_pack: Cell<bool>,
 }
 
-impl QxCbShared {
-    pub fn new() -> Rc<QxCbShared> {
-        Rc::new(QxCbShared {
+impl CbShared {
+    pub fn new() -> Rc<CbShared> {
+        Rc::new(CbShared {
             scratch: OnceCell::new(),
             topk: Cell::new(0),
             read_ahead: Cell::new(u64::MAX),
@@ -239,8 +241,8 @@ fn used_ranges(p: &crate::offload::Placement, map: &crate::mapped::Mapping) -> V
     out
 }
 
-struct QcScratch {
-    kern: KernQc,
+struct CbScratch {
+    kern: KernCb,
     xr: Buf,
     xrb: Buf,
     gids: Buf,
@@ -258,7 +260,7 @@ struct QcScratch {
 }
 
 /// The shared expert as int8 rows with an fp32 scale each (`max |w| / 127`): gate and up [2 I, H], down [H, I]; its gate [H] bf16.
-pub struct QxShared {
+pub struct SharedRows {
     gu_q: Buf,
     gu_s: Buf,
     dn_q: Buf,
@@ -267,25 +269,32 @@ pub struct QxShared {
     inter: usize,
 }
 
-impl QxShared {
-    fn load(ck: &Checkpoint, p: &str, h: usize, inter: usize) -> Result<QxShared> {
+impl SharedRows {
+    /// The shared expert of `gate`, `up` and `down` (bf16 [inter, h], [inter, h], [h, inter]: their names) made int8 rows, its gate `router` ([1, h] bf16) as
+    /// released.
+    fn load(ck: &Checkpoint, [gate, up, down, router]: [&str; 4], h: usize) -> Result<SharedRows> {
+        let (_, t) = ck.get(gate).ok_or_else(|| Error(format!("no tensor {gate}")))?;
+        let inter = match t.shape[..] {
+            [r, c] if c as usize == h => r as usize,
+            _ => return err(format!("{gate}: {:?}, where a shared expert's gate of {h} columns is read", t.shape)),
+        };
         let read = |name: &str, n: usize| -> Result<Vec<u16>> {
             let mut v = vec![0u16; n];
             ck.read_bf16(name, &mut v).map_err(|e| Error(format!("{name}: {e}")))?;
             Ok(v)
         };
-        let mut gu = read(&format!("{p}.shared_expert.gate_proj.weight"), inter * h)?;
-        gu.extend(read(&format!("{p}.shared_expert.up_proj.weight"), inter * h)?);
-        let dn = read(&format!("{p}.shared_expert.down_proj.weight"), h * inter)?;
+        let mut gu = read(gate, inter * h)?;
+        gu.extend(read(up, inter * h)?);
+        let dn = read(down, h * inter)?;
         let (gq, gs) = quant_rows(&gu, 2 * inter, h, 2 * inter, h);
         let (dq, ds) = quant_rows(&dn, h, inter, h, inter);
         let bytes = |v: &[i8]| v.iter().map(|&x| x as u8).collect::<Vec<u8>>();
-        Ok(QxShared {
+        Ok(SharedRows {
             gu_q: upload_bytes(&bytes(&gq))?,
             gu_s: upload_bytes(crate::weights::as_bytes(&gs))?,
             dn_q: upload_bytes(&bytes(&dq))?,
             dn_s: upload_bytes(crate::weights::as_bytes(&ds))?,
-            gate: upload_bytes(&ck.read(&format!("{p}.shared_expert_gate.weight")).map_err(|e| Error(format!("{p}.shared_expert_gate.weight: {e}")))?)?,
+            gate: upload_bytes(&ck.read(router).map_err(|e| Error(format!("{router}: {e}")))?)?,
             inter,
         })
     }
@@ -296,12 +305,12 @@ impl QxShared {
 }
 
 /// A mixture-of-experts layer with its routed experts in the expert cache.
-pub struct QxMoeCb {
+pub struct CbMoe {
     cfg: MoeCfg,
     router: Buf,
     /// -1e30 for an expert the pack left out (none where it keeps them all)
     bias: Option<Buf>,
-    shared: QxShared,
+    shared: SharedRows,
     signs: Buf,
     local_of: Buf,
     experts: usize,
@@ -317,41 +326,67 @@ pub struct QxMoeCb {
     tc_ok: bool,
     store: Rc<ExpertStore>,
     layer: usize,
-    common: Rc<QxCbShared>,
+    common: Rc<CbShared>,
 }
 
-impl QxMoeCb {
-    /// Layer `l` (`l` = layers: the MTP head's): the router and the shared expert's gate (bf16), the shared expert at `level`, the layer's rotation, and the experts: `pack`'s file mapped as the cache's host tier, with
-    /// `slots` places on the GPU.
-    #[allow(clippy::too_many_arguments)]
-    pub fn load(
-        l: usize,
-        c: &ConfigQx,
-        ck: &Checkpoint,
-        level: Layout,
-        pack: &CbPack,
-        store: &Rc<ExpertStore>,
-        slots: usize,
-        common: &Rc<QxCbShared>,
-    ) -> Result<QxMoeCb> {
-        takes(c.hidden, c.inter)?;
+/// How a stage holds its blocks' routed experts at the hummingbird level of a codes pack (src/dynamic/experts.rs `Held::codes`): the pack (its sidecars laid
+/// over it), the places a layer on the GPU (as many as a layer keeps: every expert there), the expert cache's store they are in and the blocks' shared settings.
+#[derive(Clone, Copy)]
+pub struct Codes<'a> {
+    pub pack: &'a CbPack,
+    pub places: usize,
+    pub store: &'a Rc<ExpertStore>,
+    pub common: &'a Rc<CbShared>,
+}
+
+/// What the codes block takes of the kind `m` over a model `hidden` wide, experts of `inter` neurons: the core's shape (src/dynamic/experts.rs `cfg`), or the
+/// refusal in words of what its kernels do not run: another width or count of neurons (`takes`), experts in a latent, a router other than a softmax one or one
+/// with a choice bias (the mask of the experts a pack prunes is the bias the block's router takes), an activation other than SwiGLU without a clamp, no shared
+/// expert or one without its gate.
+pub fn cfg_of(m: &kinds::Moe, hidden: usize, inter: usize) -> Result<MoeCfg> {
+    takes(hidden, inter)?;
+    let c = crate::dynamic::experts::cfg(m, hidden, inter)?;
+    if m.latent.is_some() || c.router.scoring != Scoring::Softmax || m.router.bias {
+        return err(format!("experts of {:?} routed by {:?}: the codes block takes a softmax router with no choice bias, no latent", m.expert, m.router));
+    }
+    if c.act != (Act::SwiGlu { limit: None }) || m.shared.is_none() || !m.shared_gate {
+        return err(format!(
+            "experts of {:?} beside a shared expert of {:?} (gated: {}): the codes block takes SwiGLU without a clamp and a gated shared expert",
+            m.expert, m.shared, m.shared_gate
+        ));
+    }
+    Ok(c)
+}
+
+impl CbMoe {
+    /// The block of the kind `m` whose tensors `roles` names over a model `hidden` wide (`cfg_of`), at `ix` (`ix.layer` the pack's layer, `ix.moe` the expert cache's):
+    /// the router and the shared expert's gate as released (bf16), the shared expert as int8 rows (`SharedRows`), the layer's rotation, and the experts of
+    /// `codes.pack`, its layer's file mapped as the cache's host tier, with `codes.places` places on the GPU.
+    pub fn load(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Checkpoint, ix: Ix, codes: Codes) -> Result<CbMoe> {
+        let (pack, store, common, l) = (codes.pack, codes.store, codes.common, ix.layer);
+        let cfg = cfg_of(m, hidden, pack.inter).map_err(|e| e.context(&format!("layer {l}'s experts")))?;
         takes(pack.hidden, pack.inter).map_err(|e| e.context("the pack's"))?;
+        let one = |r: &str| match roles.iter().find(|(n, _)| n == r).map(|(_, s)| s) {
+            Some(Source::Tensor(n)) => Ok(n.as_str()),
+            other => err(format!("layer {l}'s experts' role {r} is {other:?}, where one tensor is")),
+        };
         let kept = pack.kept(l).ok_or_else(|| Error(format!("{}: no experts of layer {l}", pack.dir.display())))?.to_vec();
-        let p = format!("{}.mlp", c.layer_name(l));
-        let tensor = |name: &str| -> Result<Buf> { upload_bytes(&ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?) };
-        let router = tensor(&format!("{p}.gate.weight"))?;
-        let mut local = vec![-1i32; c.experts];
+        if let Some(e) = kept.iter().find(|&&e| e >= m.experts) {
+            return err(format!("{}: layer {l} keeps expert {e}, where the layer has {}", pack.dir.display(), m.experts));
+        }
+        let router = one("router")?;
+        let router = upload_bytes(&ck.read(router).map_err(|e| Error(format!("{router}: {e}")))?)?;
+        let mut local = vec![-1i32; m.experts];
         for (i, &e) in kept.iter().enumerate() {
             local[e] = i as i32;
         }
-        let bias = if kept.len() < c.experts {
+        let bias = if kept.len() < m.experts {
             Some(upload_bytes(&local.iter().flat_map(|&x| if x < 0 { -1e30f32 } else { 0.0 }.to_le_bytes()).collect::<Vec<u8>>())?)
         } else {
             None
         };
-        let _ = level; // (the shared expert is held as int8 rows whatever the engine's layout)
-        let shared = QxShared::load(ck, &p, c.hidden, c.shared_inter)?;
-        let slots = slots.clamp(1, kept.len());
+        let shared = SharedRows::load(ck, [one("shared_gate")?, one("shared_up")?, one("shared_down")?, one("shared_router")?], hidden)?;
+        let slots = codes.places.clamp(1, kept.len());
         let lm = pack.map_layer(l)?;
         // (pinned: the experts copied into pinned host memory now, the files' pages given back)
         let lm = if common.pin_pack.get() { pack.pin_layer(l, lm)? } else { lm };
@@ -383,7 +418,7 @@ impl QxMoeCb {
         }
         let host = if side { [HostMem::none(), HostMem::none()] } else { [HostMem::mapped(&map, starts.0), HostMem::mapped(&map, starts.1)] };
         store.add_layer_mapped(
-            l,
+            ix.moe,
             kept.len(),
             slots,
             host,
@@ -394,14 +429,14 @@ impl QxMoeCb {
         )?;
         let signs = pack.signs(l).ok_or_else(|| Error(format!("no signs of layer {l}")))?;
         let tc_ok = descs.iter().all(|d| [d.up, d.down].iter().all(|f| matches!(f, crate::cpu_cb::Fmt::Cb2 | crate::cpu_cb::Fmt::Tq)));
-        Ok(QxMoeCb {
-            cfg: moe_cfg(c),
+        Ok(CbMoe {
+            cfg,
             router,
             bias,
             shared,
             signs: upload_bytes(&signs.iter().map(|&s| s as u8).collect::<Vec<u8>>())?,
             local_of: upload_bytes(&local.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())?,
-            experts: c.experts,
+            experts: m.experts,
             places: std::cell::RefCell::new(places),
             map,
             descs,
@@ -409,13 +444,13 @@ impl QxMoeCb {
             mixed,
             tc_ok,
             store: store.clone(),
-            layer: l,
+            layer: ix.moe,
             common: common.clone(),
         })
     }
 
     /// The MoE scratch every layer shares, and this module's beside it, made by the first call.
-    fn scratch<'a>(&'a self, e: &'a dyn QcHost) -> Result<(&'a MoeScratch, &'a QcScratch)> {
+    fn scratch<'a>(&'a self, e: &'a dyn CbHost) -> Result<(&'a MoeScratch, &'a CbScratch)> {
         if e.moe_scratch().get().is_none() {
             let _ = e.moe_scratch().set(MoeScratch::routing(e.dev(), self.cfg.experts, self.cfg.router.top_k, H, e.front_rows())?);
         }
@@ -425,8 +460,8 @@ impl QxMoeCb {
             let (n, k) = (e.front_rows(), self.cfg.router.top_k);
             let pass = e.chunk().min(PAIR_TOKENS) * k;
             let si = self.shared.inter;
-            let made = QcScratch {
-                kern: KernQc::load(e.dev())?,
+            let made = CbScratch {
+                kern: KernCb::load(e.dev())?,
                 xr: Buf::new(n * H * 4)?,
                 xrb: Buf::new(n * H * 2)?,
                 gids: Buf::new(n * k * 8)?,
@@ -450,7 +485,7 @@ impl QxMoeCb {
     ///
     /// # Safety
     /// As `MoeBlock::forward`.
-    unsafe fn run_rows(&self, e: &dyn QcHost, h: u64, n: usize, out: u64) -> Result<()> {
+    unsafe fn run_rows(&self, e: &dyn CbHost, h: u64, n: usize, out: u64) -> Result<()> {
         let s = e.dev().stream;
         let mut c = self.cfg;
         if self.common.topk.get() != 0 {
@@ -467,12 +502,22 @@ impl QxMoeCb {
         cs.kern.rot_in(s, h, H, self.signs.ptr, cs.xr.ptr, cs.xrb.ptr, n)?;
         cs.kern.local(s, sc.ids.ptr, self.local_of.ptr, cs.gids.ptr, pairs, self.experts)?;
         if n >= STREAM_MIN && self.common.stream.get() {
-            // a long chunk: every expert with pairs streamed through the GPU once and multiplied by all its tokens, the sums in the rotated basis into xr, then R^T and the shared expert
+            // a long chunk: every expert with pairs streamed through the GPU once and multiplied by all its tokens, each pair's row (rotated basis, not weighted) into the per-pair products' buffer, then
+            // each token's sum in the router's order, the host's sums first (`qx_cb_sum_rot`: the per-pair products' own sum, an order the layer's shape fixes), R^T and the shared expert. A call of more pairs
+            // than the buffer holds goes in runs of the tokens it holds, each streaming the experts again.
             self.shared_out(e, cs, h, n, cs.sh.ptr)?;
             crate::tmark!(s, "stream: shared expert");
-            self.stream_experts(e, cs, n, cs.xrb.ptr, cs.gids.ptr, sc.wts.ptr, cs.xr.ptr)?;
+            let per = (cs.part.bytes / (H * 4) / k).max(1);
+            let mut r0 = 0;
+            while r0 < n {
+                let m = per.min(n - r0);
+                let (xrb, gids, wts) = (cs.xrb.ptr + (r0 * H * 2) as u64, cs.gids.ptr + (r0 * k * 8) as u64, sc.wts.ptr + (r0 * k * 4) as u64);
+                let sums = self.stream_experts(e, cs, m, k, xrb, gids, wts, cs.part.ptr)?;
+                let (extra, skip) = sums.map_or((0, 0), |x| (x.extra, x.skip));
+                cs.kern.sum_rot(s, cs.part.ptr, wts, extra, skip, self.signs.ptr, out + (r0 * H * 2) as u64, k, 1, m)?;
+                r0 += m;
+            }
             crate::tmark!(s, "stream: experts");
-            cs.kern.sum_rot(s, 0, 0, cs.xr.ptr, 0, self.signs.ptr, out, 0, 1, n)?;
             self.shared_add(e, cs, out, n, cs.sh.ptr)?;
             crate::tmark!(s, "stream: sum");
             return Ok(());
@@ -507,13 +552,24 @@ impl QxMoeCb {
         self.shared_add(e, cs, out, n, cs.sh.ptr)
     }
 
-    /// The routed experts' sum (fp32 [n, H], rotated basis, written into `y`) of n rows with x' at `xrb` and their choices (`gids`: the layer's numbers, `wts`), every expert with pairs streamed through the GPU once and
-    /// multiplied by all its rows on the tensor cores (`cb2_prefill_experts`; the experts in places read where they are).
+    /// The routed experts' rows (fp32 [n k, H], rotated basis, not weighted, the router's order: written into `prow`) of n rows with x' at `xrb` and their k choices each (`gids`: the layer's numbers, `wts`), every
+    /// expert with pairs streamed through the GPU once and multiplied by all its rows on the tensor cores (`cb2_prefill_experts`; the experts in places read where they are); the host's share's sums by
+    /// token and its pairs where it took some.
     ///
     /// # Safety
-    /// As `MoeBlock::forward`; the buffers hold n rows.
+    /// As `MoeBlock::forward`; the buffers hold n rows, `prow` n k.
     #[allow(clippy::too_many_arguments)]
-    unsafe fn stream_experts(&self, e: &dyn QcHost, cs: &QcScratch, n: usize, xrb: u64, gids: u64, wts: u64, y: u64) -> Result<()> {
+    unsafe fn stream_experts(
+        &self,
+        e: &dyn CbHost,
+        cs: &CbScratch,
+        n: usize,
+        k: usize,
+        xrb: u64,
+        gids: u64,
+        wts: u64,
+        prow: u64,
+    ) -> Result<Option<crate::cb2_prefill::HostSums>> {
         let s = e.dev().stream;
         if cs.pre.get().is_none() {
             let _ = cs.pre.set(crate::cb2_prefill::Cb2Kern::load_dims(e.dev(), H, I, NO_CLAMP)?);
@@ -534,19 +590,18 @@ impl QxMoeCb {
                 d
             })
             .collect();
-        // the host's share (experts of few pairs computed by the CPU while the GPU streams the rest) for calls of up to HOST_ROWS rows, where the copies bound the call: balanced by the calls' times from 12 rows on 12
-        // threads (a longer call's GPU loop is bound by its products, and its rows' trips to the host and back cost more than the copies it saves); a development build's GLYD_CB2_HOST=R[:T] fixes it (0: none)
-        let share = kern.host.get();
+        // the host's share (experts of few pairs computed by the CPU while the GPU streams the rest) for calls of up to HOST_ROWS rows, where the copies bound the call: experts of up to 12 pairs on 12 threads
+        // (a longer call's GPU loop is bound by its products, and its rows' trips to the host and back cost more than the copies it saves); a development build's GLYD_CB2_HOST=R[:T] sets it (0: none)
         match crate::tune!("GLYD_CB2_HOST") {
             Some(v) => {
                 let mut it = v.split(':').map(|x| x.parse::<usize>().unwrap_or(0));
                 let (r, t) = (it.next().unwrap_or(0), it.next().unwrap_or(12));
-                kern.host.set((r > 0).then_some(crate::cb2_prefill::HostShare { max_rows: r, threads: t.max(1), auto: false }));
+                kern.host.set((r > 0).then_some(crate::cb2_prefill::HostShare { max_rows: r, threads: t.max(1) }));
             }
             None if n > HOST_ROWS => kern.host.set(None),
-            None => kern.host.set(Some(share.filter(|h| h.auto).unwrap_or(crate::cb2_prefill::HostShare { max_rows: 12, threads: 12, auto: true }))),
+            None => kern.host.set(Some(crate::cb2_prefill::HostShare { max_rows: 12, threads: 12 })),
         }
-        crate::cb2_prefill::cb2_prefill_experts(e.dev(), kern, &descs, n, self.cfg.router.top_k, xrb, gids, wts, y, s)?;
+        let sums = crate::cb2_prefill::cb2_prefill_experts(e.dev(), kern, &descs, n, k, xrb, gids, wts, prow, s)?;
         if crate::tune!("GLYD_CB2_HOSTLOG").is_some() && kern.host.get().is_some() {
             let t = kern.took.get();
             eprintln!(
@@ -554,11 +609,11 @@ impl QxMoeCb {
                 self.layer, t.experts, t.pairs, t.host_ms, t.gpu_ms
             );
         }
-        Ok(())
+        Ok(sums)
     }
 
-    /// Whether a call of n rows takes the tensor-core second products (`KernQc::down_t`): `tc` to 8 rows of a layer whose formats they take.
-    fn tc(&self, cs: &QcScratch, n: usize) -> bool {
+    /// Whether a call of n rows takes the tensor-core second products (`KernCb::down_t`): `tc` to 8 rows of a layer whose formats they take.
+    fn tc(&self, cs: &CbScratch, n: usize) -> bool {
         self.tc_ok && cs.kern.tc > 0 && (cs.kern.tc..=8).contains(&n)
     }
 
@@ -569,12 +624,12 @@ impl QxMoeCb {
     }
 }
 
-impl QxMoeCb {
+impl CbMoe {
     /// The shared expert on the n rows at `h` into the scratch's `sh` (gated): two fused launches for a few rows, else the int8 rows made bf16 and the engine's dense products.
     ///
     /// # Safety
     /// As `MoeBlock::forward`.
-    unsafe fn shared_out(&self, e: &dyn QcHost, cs: &QcScratch, h: u64, n: usize, dst: u64) -> Result<()> {
+    unsafe fn shared_out(&self, e: &dyn CbHost, cs: &CbScratch, h: u64, n: usize, dst: u64) -> Result<()> {
         let (s, k, sh, si) = (e.dev().stream, &cs.kern, &self.shared, self.shared.inter);
         if n <= 8 {
             // (H a multiple of 512, I of 128: the kernels' loads)
@@ -595,17 +650,17 @@ impl QxMoeCb {
     ///
     /// # Safety
     /// As `MoeBlock::forward`.
-    unsafe fn shared_add(&self, e: &dyn QcHost, cs: &QcScratch, out: u64, n: usize, src: u64) -> Result<()> {
+    unsafe fn shared_add(&self, e: &dyn CbHost, cs: &CbScratch, out: u64, n: usize, src: u64) -> Result<()> {
         launch!(cs.kern.add, [((n * H) as u32).div_ceil(256), 1, 1], [256, 1, 1], e.dev().stream; out, src, (n * H) as i32)
     }
 }
 
-impl QxMoeCb {
+impl CbMoe {
     /// The block on n rows at `h` into `out`, whichever engine runs it: a long call streamed, else passes of at most `PAIR_TOKENS` rows over the cache's places.
     ///
     /// # Safety
     /// As `MoeBlock::forward`.
-    unsafe fn rows(&self, e: &dyn QcHost, h: u64, n: usize, out: u64) -> Result<()> {
+    unsafe fn rows(&self, e: &dyn CbHost, h: u64, n: usize, out: u64) -> Result<()> {
         if n >= STREAM_MIN && self.common.stream.get() {
             return self.run_rows(e, h, n, out);
         }
@@ -621,7 +676,7 @@ impl QxMoeCb {
 }
 
 /// What a block's own calls read of the engine that runs them: the executor's (src/dynamic, through `NhHost`).
-pub trait QcHost {
+pub trait CbHost {
     fn dev(&self) -> &Dev;
     fn moe_scratch(&self) -> &OnceCell<MoeScratch>;
     fn chunk(&self) -> usize;
@@ -637,7 +692,7 @@ pub trait QcHost {
 /// The executor as the block's host.
 struct OnNh<'a>(&'a dyn NhHost);
 
-impl QcHost for OnNh<'_> {
+impl CbHost for OnNh<'_> {
     fn dev(&self) -> &Dev {
         self.0.dev()
     }
@@ -658,7 +713,7 @@ impl QcHost for OnNh<'_> {
 /// The block on the executor (`Op::Moe` of a block whose experts are not all on the GPU runs the block's own launches over the executor's buffers): the router,
 /// the routed experts from the shared expert store (src/offload.rs: places on the GPU, the host's memory behind them), the shared expert. A call reads the
 /// router's choices on the host, so no graph captures it; the executor ends each step's statistics in its store.
-impl MoeBlock for QxMoeCb {
+impl MoeBlock for CbMoe {
     unsafe fn forward(&self, e: &dyn NhHost, h: u64, n: usize, out: u64) -> Result<()> {
         self.rows(&OnNh(e), h, n, out)
     }
@@ -681,114 +736,6 @@ impl MoeBlock for QxMoeCb {
     fn store(&self) -> Option<Rc<ExpertStore>> {
         Some(self.store.clone())
     }
-}
-
-// ---- every expert of a layer on the GPU (`QxMoe`: a model whose experts fit it) ---------------------------------------------------------------------------------
-
-/// The core's layer for the model's mixture-of-experts layers: softmax over bf16 logits, the top k renormalised, SwiGLU without a clamp.
-pub fn moe_cfg(c: &ConfigQx) -> MoeCfg {
-    MoeCfg {
-        experts: c.experts,
-        router_hidden: c.hidden,
-        hidden: c.hidden,
-        inter: c.inter,
-        router: Router { renorm: c.norm_topk, ..Router::softmax(c.top_k) },
-        act: Act::SwiGlu { limit: None },
-    }
-}
-
-/// Expert `e`'s slice of a 3-D expert tensor [experts, rows, cols] (bf16) of `ck`: (the file's tensor, rows, cols).
-fn expert_slice(ck: &Checkpoint, name: &str, e: usize) -> Result<(PathBuf, TensorInfo, usize, usize)> {
-    let (f, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
-    if t.dtype != "BF16" || t.shape.len() != 3 || e as u64 >= t.shape[0] {
-        return err(format!("{name}: {} {:?}, where bf16 [experts, rows, cols] with expert {e} is wanted", t.dtype, t.shape));
-    }
-    let (rows, cols) = (t.shape[1] as usize, t.shape[2] as usize);
-    let bytes = (rows * cols * 2) as u64;
-    Ok((f.path.clone(), TensorInfo { dtype: "BF16".into(), shape: vec![rows as u64, cols as u64], offset: t.offset + e as u64 * bytes, bytes }, rows, cols))
-}
-
-/// Expert `e`'s matrix of a 3-D tensor as bf16 words.
-pub fn read_expert(ck: &Checkpoint, name: &str, e: usize) -> Result<Vec<u16>> {
-    let (path, t, rows, cols) = expert_slice(ck, name, e)?;
-    let f = glyd_gpu::safetensors::File { path: path.clone(), tensors: Vec::new(), metadata: Vec::new() };
-    let mut b = vec![0u8; t.bytes as usize];
-    f.read_into(&t, &mut b).map_err(|x| Error(format!("{name}[{e}]: {x}")))?;
-    let _ = (rows, cols);
-    Ok(b.as_chunks::<2>().0.iter().map(|x| u16::from_le_bytes(*x)).collect())
-}
-
-/// A mixture-of-experts layer with every expert on the GPU in a block layout.
-pub struct QxMoe {
-    layer: MoeLayer,
-}
-
-impl QxMoe {
-    /// Layer `l`'s block (`l` = layers: the MTP head's): the router and the shared expert's gate bf16, the shared expert and the experts packed at `level`: Int6, Int5
-    /// or Int4 (each expert's block codes), or a lossless layout (Tiered, Twelve: every expert's rows of a matrix stacked as one pack, decoded to the checkpoint's bits).
-    pub fn load(l: usize, c: &ConfigQx, ck: &Checkpoint, level: Layout) -> Result<QxMoe> {
-        let lossless = matches!(level, Layout::Tiered | Layout::Twelve);
-        if !lossless && !matches!(level, Layout::Int6 | Layout::Int5 | Layout::Int4) {
-            return err(format!("the experts are held at the penguin, kestrel, swift and wren levels: {level:?} is asked"));
-        }
-        let p = format!("{}.mlp", c.layer_name(l));
-        let router = tensor(ck, &format!("{p}.gate.weight"))?;
-        let gate = tensor(ck, &format!("{p}.shared_expert_gate.weight"))?;
-        let packs = c.layer_packs(l);
-        let [s_up, s_down] = &packs[packs.len() - 2..] else { return err("a layer without its shared expert") };
-        let shared = Shared {
-            inter: c.shared_inter,
-            up: upload_packed(read_pack(ck, None, s_up, level)?)?,
-            down: upload_packed(read_pack(ck, None, s_down, level)?)?,
-            gate: Some(gate),
-        };
-        let (gu, dn) = (format!("{p}.experts.gate_up_proj"), format!("{p}.experts.down_proj"));
-        if lossless {
-            let stack = |name: &str, rows: usize, cols: usize| -> Result<ExpertStack> {
-                let mut w = Vec::with_capacity(c.experts * rows * cols);
-                for e in 0..c.experts {
-                    w.extend(read_expert(ck, name, e)?);
-                }
-                ExpertStack::lossless(upload_packed(crate::weights::pack_words(&w, c.experts * rows, cols, level, name)?)?, c.experts)
-            };
-            let w = MoeWeights { router, bias: None, escale: None, up: stack(&gu, 2 * c.inter, c.hidden)?, down: Down::Block(stack(&dn, c.hidden, c.inter)?) };
-            return Ok(QxMoe { layer: MoeLayer::new(moe_cfg(c), w, Some(shared))? });
-        }
-        let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
-        let (mut up, mut down): (Vec<glyd_gpu::pack::Tiered>, Vec<glyd_gpu::pack::Tiered>) = (Vec::new(), Vec::new());
-        ordered(
-            2 * c.experts,
-            threads,
-            2 * threads,
-            &|k| {
-                let (name, rows, cols) = if k % 2 == 0 { (&gu, 2 * c.inter, c.hidden) } else { (&dn, c.hidden, c.inter) };
-                let w = read_expert(ck, name, k / 2)?;
-                let packed = match level {
-                    Layout::Int6 => glyd_gpu::pack::pack_int6(&w, rows, cols),
-                    Layout::Int5 => glyd_gpu::pack::pack_int5(&w, rows, cols),
-                    _ => glyd_gpu::pack::pack_int4(&w, rows, cols),
-                };
-                packed.ok_or_else(|| Error(format!("{name}[{}]: not packable at {level:?}", k / 2)))
-            },
-            |k, t| {
-                (if k % 2 == 0 { &mut up } else { &mut down }).push(t);
-                Ok(())
-            },
-        )?;
-        let (ju, jd) = (Joined::of(&up.iter().collect::<Vec<_>>())?, Joined::of(&down.iter().collect::<Vec<_>>())?);
-        let w = MoeWeights { router, bias: None, escale: None, up: ExpertStack::upload(&ju)?, down: Down::Block(ExpertStack::upload(&jd)?) };
-        Ok(QxMoe { layer: MoeLayer::new(moe_cfg(c), w, Some(shared))? })
-    }
-
-    /// The block's layer, for the description executor (`dynamic::ResidentMoe`).
-    pub fn into_layer(self) -> MoeLayer {
-        self.layer
-    }
-}
-
-/// A tensor's bf16 bytes uploaded (a norm's weight, a small matrix).
-fn tensor(ck: &Checkpoint, name: &str) -> Result<Buf> {
-    upload_bytes(&ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?)
 }
 
 /// A matrix's rows as int8 with an fp32 scale each (a row of zeros: scale 1), `rows_pad` rows and `cols_pad` columns (the padding zeros).
@@ -820,6 +767,37 @@ pub(crate) fn rows_kernel<A>(k: &[crate::dev::ByArgs<A>; 4], n: usize) -> &crate
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The codes block takes the kind of the newest Qwen family's experts (a softmax over its experts, the top k renormalised, SwiGLU without a clamp, a gated
+    /// shared expert) at its kernels' widths; what its kernels do not run is refused in words.
+    #[test]
+    fn the_kind_the_codes_block_takes() {
+        use crate::runtime::kinds::{Latent, Mlp, Moe, Router, RouterScore};
+        let mlp = Mlp { act: kinds::Act::Silu, gated: true, bias: false, clamp: None };
+        let router = Router { score: RouterScore::Softmax, logit_scale: 1.0, bias: false, groups: None, top_k: 10, renorm: true, scale: 1.0, hash: false };
+        let m = Moe { router, experts: 512, expert: mlp, shared: Some(mlp), shared_gate: true, latent: None };
+        let c = cfg_of(&m, 2560, 640).unwrap();
+        assert_eq!((c.experts, c.hidden, c.inter, c.router.top_k, c.act), (512, 2560, 640, 10, Act::SwiGlu { limit: None }));
+        let refused = |edit: &dyn Fn(&mut Moe), (h, i): (usize, usize), word: &str| {
+            let mut x = m.clone();
+            edit(&mut x);
+            let e = cfg_of(&x, h, i).unwrap_err().msg;
+            assert!(e.contains(word), "{e}");
+        };
+        refused(&|_| {}, (4096, 2048), "exactly 640 neurons over a width of 2560");
+        refused(&|x| x.router.score = RouterScore::Sigmoid, (2560, 640), "softmax router");
+        refused(&|x| x.router.bias = true, (2560, 640), "choice bias");
+        refused(
+            &|x| {
+                x.expert.clamp = Some(7.0);
+                x.shared = Some(x.expert);
+            },
+            (2560, 640),
+            "SwiGLU without a clamp",
+        );
+        refused(&|x| x.shared_gate = false, (2560, 640), "gated shared expert");
+        refused(&|x| x.latent = Some(Latent { dim: 512, norm_in: None, expert_norm: None, norm_out: None }), (2560, 640), "no latent");
+    }
 
     /// Every call's runs divide the neurons into runs of a multiple of 4 (the kernel's groups), and the partial sums fit `PART_ROWS` (or the pairs alone).
     #[test]

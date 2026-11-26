@@ -22,6 +22,8 @@
 //!   glyd-engine cb2prefill [--n 1024] [--k 8] [--experts 216] [--check 16] [--reps 3] [--skew 0] [--pack DIR --layer L]   a prompt chunk through GLM-5.3-Flash's codebook experts on the tensor cores (src/cb2_prefill.rs)
 //!   glyd-engine glmfmtcheck FIXTURE_DIR   the four formats of the pack (tern, cb2, cb3, cb4) against fixtures the pack writer made (tools/fmtfix.py)
 //!   glyd-engine cb2check PACK_DIR [--layer L] [--expert E]   one expert of a glyd-hbr-codes/2 pack (src/cpu_cb.rs) against the pack's testvec.safetensors
+//!   glyd-engine codescheck [FORM...] [--places N] [--tokens N]   the Moe kind's codes block in each form of a codes pack (src/logits.rs `codes_check`): resident = through the expert cache bit for bit,
+//!                                                             the host's misses within the kind's bound
 //!   glyd-engine hbcheck [CASE...] [--speed] [--no-check]      the Hummingbird layer's kernels (src/moe_hb.rs, kernels/moe_hb.cu) against the CPU reference on random experts at 3 and 2 bits, all there and through places, and their speed (src/kcheck_hb.rs)
 //!   glyd-engine visioncheck make|tower|logits|compare|sched ...   the vision tower kind on the executor (src/vision_check.rs): a random model of the release's shape with its tower, the
 //!                                                             tower against its CPU reference stage by stage, an image prompt's logits for the release's engine to be held to, prompts with
@@ -174,6 +176,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "fp4bench" => glyd_engine::cpu_fp4::bench(&a),
         "actcheck" => glyd_engine::cpu_fp4::act_check(&a),
         "rangecheck" => glyd_engine::dynamic::range::rangecheck(a),
+        "codescheck" => glyd_engine::logits::codes_check(a),
         "cb2check" => glyd_engine::cpu_cb::check_pack(Path::new(a.need(1, "PACK_DIR")?), a.num("layer", 3usize)?, a.num("expert", 0usize)?),
         "nhkernels" => glyd_engine::kcheck_nh::kernels(Path::new(a.need(1, "IN_DIR")?), Path::new(a.need(2, "OUT_DIR")?)),
         "nhlayers" => glyd_engine::kcheck_nh::layers(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "IO_DIR")?)),
@@ -855,7 +858,7 @@ fn cmd_check_nh(a: &Args, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The dynamic engine on one GPU or split across several, as check35 --dynamic runs it.
+/// The dynamic engine on one GPU or split across several, as check35 runs it.
 trait Q35Run {
     fn reset(&mut self) -> Result<()>;
     fn prefill(&mut self, t: &[u32]) -> Result<glyd_engine::sched::Sample>;
@@ -914,7 +917,7 @@ impl Q35Run for glyd_engine::dynamic::split::Split {
     }
 }
 
-/// `check35 --dynamic`: the same OUT.json from the dynamic engine (to compare with the old engine's to the digit), and its decode step's time.
+/// `check35`: the same OUT.json from the dynamic engine (to compare with the old engine's to the digit), and its decode step's time.
 fn cmd_check35_dyn(a: &Args, dir: &Path) -> Result<()> {
     let pf = a.need(2, "PROMPTS.json")?;
     let of = a.need(3, "OUT.json")?;

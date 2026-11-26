@@ -87,7 +87,7 @@ When the design was written a model ran on one of two kinds of code:
 - **Hand-written engines.** `model.rs` (Qwen3 dense), `model35.rs` (Qwen3.5/3.8), `model_gemma4.rs`,
   `model_qwen4x.rs` (Condor's Qwen3.8-Flash-Next) and the GLM development engine (`model_glm.rs`, `mla_glm.rs`, `mtp_glm.rs`). Each has
   its own step, cache and sampling. **As built (R3d, #140):** `model_qwen4x.rs` is deleted with its development checks; the family's loader is
-  the executor's (`dynamic/qwen4x.rs`: `Dyn::new_with`, its experts the block of codebook rows `QxMoe` / `QxMoeCb`). **As built (R13, #234):** the GLM development engine is gone (`model_glm.rs`, `mla_glm.rs`, `mtp_glm.rs`,
+  the executor's (`dynamic/qwen4x.rs`: `Dyn::new_with`, its experts the Moe kind's block, `dynamic/experts.rs`, at the hummingbird level of a codes pack `moe_cb.rs` `CbMoe`). **As built (R13, #234):** the GLM development engine is gone (`model_glm.rs`, `mla_glm.rs`, `mtp_glm.rs`,
   `kcheck_glm.rs`, `glm_serve.rs`, `glm_cb.rs`, `draft_loop.rs`, the codes block of `moe_glm_cb.rs`): GLM-5.3-Flash runs on the executor
   alone; what the executor and Condor load GLM by is `kern/glm.rs` (the kernel table); since R3a (#136) its weights load by the executor's own
   loader from its lowered description and its experts are the layer kind's block (`dynamic/experts.rs`: FP8 as released, the block levels,

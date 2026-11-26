@@ -1,20 +1,21 @@
 //! Qwen3.8-Flash-Next (`Qwen4ExpForConditionalGeneration`, Condor's model) on the executor (R3d, #140): its config's layer kinds lowered to the shared operations
 //! (`lower::qwen4x`) and loaded here: the matrices packed at the level asked (penguin's lossless packs where none is), the ones the library does not pack and the table of n-grams
-//! held as saved (bf16), the small tensors as saved but A_log in fp32 (the delta rule reads it so). The experts either all on the GPU at the level asked (`load`:
-//! `moe_qwen4x::QxMoe`, handed over as a `ResidentMoe`), or from a pack of codebook rows in the shared expert store (`load_cached`: the codebook block,
-//! `QxMoeCb`, the misses on the host). The MTP layer is a draft head of the model (`load_drafting`: `lower::draft_head`, src/dynamic/head.rs). Across GPUs
+//! held as saved (bf16), the small tensors as saved but A_log in fp32 (the delta rule reads it so). Each layer's experts are the Moe kind's block of its roles
+//! (src/dynamic/experts.rs `block`): either all on the GPU at the level asked (`load`), or at the hummingbird level of a codes pack (src/cb_pack.rs: each expert
+//! codebook rows or format q's rows of its own width) in the expert cache (`load_cached`: src/moe_cb.rs, the places on the GPU, the pack's files mapped as their host
+//! tier, the misses copied in or computed by the host). The MTP layer is a draft head of the model (`load_drafting`: `lower::draft_head`, src/dynamic/head.rs). Across GPUs
 //! the layers are cut by the generic split (src/dynamic/split.rs): a stage's experts all on its GPU (`load_stage`, `open_split`; the head on the last), or in
 //! an expert cache of its own (`load_cached_stage`, `open_cached`; `qwenserve --gpus 0,1`). The vision tower is the description's (src/dynamic/images.rs: every
 //! loader of the executor opens it, on the first stage of a model cut across GPUs, whose every stage turns its rows by the images' positions). The table of
 //! n-grams and the embedding are read on the host
 //! from the checkpoint's files mapped, their rows copied up with each pass, as the description holds them (`kinds::TableAt::Host`: src/dynamic/tables.rs).
 
-use super::{Dyn, ModelDesc, Op, Opts, ResidentMoe, Stage};
+use super::{Dyn, ModelDesc, Op, Opts, Stage};
 use crate::cb_pack::CbPack;
 use crate::dev::Dev;
+use crate::dynamic::experts::MoeBlock;
 use crate::ffi::{err, Result};
-use crate::kern_nh::MoeBlock;
-use crate::moe_qwen4x::{QxCbShared, QxMoeCb};
+use crate::moe_cb::{CbShared, Codes};
 use crate::offload::{ExpertStore, Offload};
 pub use crate::qwen4x::PackMode;
 use crate::weights::Layout;
@@ -33,8 +34,8 @@ pub fn lowered(dir: &Path, ctx: usize) -> Result<ModelDesc> {
 }
 
 /// The model in `dir` on the executor's loader (`Dyn::new_with`: its matrices at the level asked or this GPU's, the table of n-grams and the shapes the library
-/// does not pack as saved, A_log in fp32), its experts all on the GPU (`QxMoe`'s block, handed over as a `ResidentMoe`) at the level asked: a lossy level's codes
-/// where `o.layout` is one, else lossless (penguin), as every family's.
+/// does not pack as saved, A_log in fp32), its experts all on the GPU (the Moe kind's block, `experts::block`) at the level asked: a lossy level's codes where
+/// `o.layout` is one, else lossless (penguin), as every family's.
 pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
     load_level(dir, o, experts_at(o.layout))
 }
@@ -48,16 +49,24 @@ pub fn experts_at(layout: Option<Layout>) -> Layout {
 }
 
 /// The dynamic route's stage loader of the family (`split::loader`: the gated residuals' streams): stage `st` (the whole model on one GPU, or its layers
-/// `st.layers` of a model split across GPUs: src/dynamic/split.rs), its experts all on its GPU at the level `o.layout` names (`load_stage`). Its experts in the
-/// expert cache as a hummingbird directory's caching says are refused in words: the family's cache is its pack of codebook rows (`load_cached_stage`,
-/// `open_cached`, `qwenserve CKPT PACK`).
+/// `st.layers` of a model split across GPUs: src/dynamic/split.rs), its experts all on its GPU at the level `o.layout` names (`load_stage`); with `caching`
+/// (the hummingbird level's plan, `plan::sizing::codes_plan`), the codes pack beside its weights (`DIR/pack`, `codes_beside`) in the expert cache's places,
+/// `caching.places` a layer, its misses as `caching.offload` says (`load_cached_stage`). A caching that asks for layers' matrices in the computer's memory is
+/// refused in words: the family's stay on the GPU.
 pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
-    if caching.is_some() {
+    let Some(c) = caching else { return load_stage(dir, o, experts_at(o.layout), st, None) };
+    if c.dense > 0 {
         return err(format!(
-            "{FAMILY}: its experts in the expert cache are a pack of codebook rows (qwenserve CKPT PACK), not a hummingbird directory's places"
+            "{FAMILY}: its layers' matrices stay on the GPU beside its expert cache ({} layers of them in the computer's memory are asked)",
+            c.dense
         ));
     }
-    load_stage(dir, o, experts_at(o.layout), st, None)
+    let pack = crate::plan::sizing::codes_beside(dir).ok_or_else(|| {
+        crate::ffi::Error(format!("{FAMILY}: its experts in the expert cache are a codes pack beside its weights ({}/pack), and there is none", dir.display()))
+    })?;
+    // (the pack's experts exact: none of a call's pairs skipped unless `caching.offload` says so)
+    let k = Caching { pack: pack.clone(), mode: PackMode::of(&pack, false), places: Some(c.places), offload: c.offload, users: 1 };
+    load_cached_stage(dir, o, &k, st)
 }
 
 /// The draft head of the model in `dir` (its MTP layers: `lower::draft_head` of the family's lowering) for sequences of up to `ctx` positions; None where its
@@ -110,12 +119,23 @@ pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: impl Into<Option<Stag
             free as f64 / 1e9
         ));
     }
-    // (layer l's experts, the MTP layers' after the model's)
-    let resident = |ck: &Checkpoint, ls: std::ops::Range<usize>| -> Result<Vec<Box<dyn MoeBlock>>> {
-        ls.map(|l| Ok(Box::new(ResidentMoe(crate::moe_qwen4x::QxMoe::load(l, &c, ck, level)?.into_layer())) as Box<dyn MoeBlock>)).collect()
+    // (each layer's experts the Moe kind's block of its roles, every expert on the GPU at the level; the MTP layers' after the model's, each the expert cache's
+    // next layer)
+    let (kinds, _) = crate::runtime::describe::describe_dir(dir)?;
+    let held = super::experts::Held { hb: None, cache: None, ordinal: o.device, f8: None, dense: None, codebooks: None, codes: None };
+    let hidden = kinds.desc.hidden;
+    let blocks = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
+        super::experts::of_ffn_layers(&kinds, st.layers).map(|(ix, m, roles)| super::experts::block(m, roles, hidden, ck, level, (ix, &held))).collect()
     };
-    let blocks = |ck: &Checkpoint, _: Layout| resident(ck, st.layers.0..st.layers.1);
-    let head = |ck: &Checkpoint, _: Layout| resident(ck, c.layers..c.layers + c.mtp_layers);
+    let model_moe = super::experts::of_ffn_layers(&kinds, (0, c.layers)).count();
+    let head = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
+        super::experts::of_head(&kinds, 0)
+            .map(|(b, m, roles)| {
+                let ix = super::experts::Ix { layer: c.layers + b / 2, moe: model_moe + b / 2 };
+                super::experts::block(m, roles, hidden, ck, level, (ix, &held))
+            })
+            .collect()
+    };
     let spec = match draft.filter(|_| st.last) {
         None => None,
         Some(k) => {
@@ -136,7 +156,7 @@ pub fn open_split(dir: &Path, o: &Opts, level: Layout, cuts: &[usize], devices: 
     super::split::Run::new(c.layers, c.eos, cuts, devices, o, std::sync::Arc::new(move |st, o: &Opts| load_stage(&owned, o, level, st, draft)))
 }
 
-/// Condor's routed experts from a pack of codebook rows (glyd-hbr-codes/2: each expert cb2, cb3, cb4 or ternary, the pack's mode's sidecar over them) in the
+/// The routed experts from a codes pack (glyd-hbr-codes/2: each expert cb2, cb3, cb4, ternary, q, q3 or q4, the pack's mode's sidecar over them) in the
 /// shared expert store (src/offload.rs): a layer's places on the GPU, the pack's file mapped as their host tier, the misses computed by the host or copied in as
 /// `offload` says. A model split across GPUs has an expert cache a stage, each of these settings (`open_cached`).
 #[derive(Clone, Debug)]
@@ -165,7 +185,7 @@ pub fn reserve_for(d: &ModelDesc, users: usize, st: &Stage) -> u64 {
 }
 
 /// The model in `dir` on the executor's loader with its routed experts in the expert cache (`Caching`): the always-on matrices as `load` loads them, each layer's
-/// block Condor's codebook block (`QxMoeCb`) over one store shared by the layers.
+/// experts the Moe kind's block at the codes pack's hummingbird level (src/moe_cb.rs `CbMoe`) over one store shared by the layers.
 pub fn load_cached(dir: &Path, o: &Opts, k: &Caching) -> Result<Dyn> {
     load_cached_stage(dir, o, k, None)
 }
@@ -176,7 +196,7 @@ pub fn load_cached(dir: &Path, o: &Opts, k: &Caching) -> Result<Dyn> {
 pub fn load_cached_stage(dir: &Path, o: &Opts, k: &Caching, st: impl Into<Option<Stage>>) -> Result<Dyn> {
     let c = crate::qwen4x::ConfigQx::load(dir)?;
     // (a width the codebook kernels do not take is refused before anything is read or put on the GPU)
-    crate::moe_qwen4x::takes(c.hidden, c.inter).map_err(|e| e.context(FAMILY))?;
+    crate::moe_cb::takes(c.hidden, c.inter).map_err(|e| e.context(FAMILY))?;
     let st = st.into().unwrap_or(Stage::whole(c.layers));
     let d = lowered(dir, o.ctx + o.chunk + 16)?.staged(&st);
     let mut pack = CbPack::open_dims(&k.pack, c.hidden, c.inter)?;
@@ -187,23 +207,27 @@ pub fn load_cached_stage(dir: &Path, o: &Opts, k: &Caching, st: impl Into<Option
     if let Some(l) = layers.clone().find(|&l| !pack.has(l)) {
         return err(format!("{}: no experts of layer {l} of the model's {}", k.pack.display(), c.layers));
     }
-    let (store, common) = (ExpertStore::new(), QxCbShared::new());
+    let (store, common) = (ExpertStore::new(), CbShared::new());
     store.set_offload(k.offload);
     common.stream.set(true);
     let place = layers.clone().map(|l| pack.place_bytes(l)).max().unwrap_or(1);
     let kept = layers.clone().filter_map(|l| pack.kept(l).map(<[usize]>::len)).min().unwrap_or(1);
     let (dev, reserve) = (o.device, reserve_for(&d, k.users, &st));
-    let blocks = |ck: &Checkpoint, layout: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
+    let (kinds, _) = crate::runtime::describe::describe_dir(dir)?;
+    let hidden = kinds.desc.hidden;
+    let blocks = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         // (read after the always-on matrices are on the GPU: what is free now, less the reserve, is the places')
-        let slots = match k.places {
+        let places = match k.places {
             Some(p) => p,
             None => crate::plan::sizing::cache_places(Dev::new(dev)?.mem_info()?.0 as u64, reserve, layers.len(), place, kept),
         };
-        layers
-            .clone()
-            .map(|l| {
+        // (each layer's experts the Moe kind's block at the codes pack's hummingbird level: its places in the stage's one store)
+        let codes = Codes { pack: &pack, places, store: &store, common: &common };
+        let held = super::experts::Held { hb: None, cache: None, ordinal: dev, f8: None, dense: None, codebooks: None, codes: Some(codes) };
+        super::experts::of_ffn_layers(&kinds, st.layers)
+            .map(|(ix, m, roles)| {
                 crate::status::STATUS.beat();
-                Ok(Box::new(QxMoeCb::load(l, &c, ck, layout, &pack, &store, slots, &common)?) as Box<dyn MoeBlock>)
+                super::experts::block(m, roles, hidden, ck, Layout::Hummingbird, (ix, &held))
             })
             .collect()
     };
@@ -907,7 +931,7 @@ mod tests {
         let e = super::load_cached(&dir, &o, &k).err().map(|e| e.msg).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(e.contains("128 neurons over a width of 256") && e.contains("exactly 640 neurons over a width of 2560"), "{e}");
-        assert!(crate::moe_qwen4x::takes(2560, 640).is_ok() && crate::moe_qwen4x::takes(2560, 1280).is_err());
+        assert!(crate::moe_cb::takes(2560, 640).is_ok() && crate::moe_cb::takes(2560, 1280).is_err());
     }
 
     /// What the shared operations do not take is refused in words: a linear attention's silu gate, gated residuals over more streams than the kernels take.

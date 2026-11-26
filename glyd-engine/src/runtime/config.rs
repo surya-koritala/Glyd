@@ -18,12 +18,14 @@ pub enum Width {
     PerLayer(Vec<usize>),
 }
 
-/// What a release says of its stored format (`quantization_config`): the method and, for compressed-tensors, its format.
+/// What a release says of its stored format (`quantization_config`): the method and, for compressed-tensors, its format, and the routed experts' dtype where the
+/// release names it here (DeepSeek-V4.1's) and not at the top (DeepSeek-V4's).
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Quant {
     pub quant_method: Option<String>,
     pub format: Option<String>,
+    pub expert_dtype: Option<String>,
 }
 
 /// The keys the families share, typed: the text model's, else the top level's (and `quantization_config` the top level's first, where releases put it).

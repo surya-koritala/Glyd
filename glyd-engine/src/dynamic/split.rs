@@ -394,7 +394,6 @@ impl Run {
     pub fn set_images(&mut self, prompt: &[u32], images: &[std::sync::Arc<crate::vision::Image>]) -> Result<()> {
         match self {
             Run::One(e) => e.set_images(prompt, images),
-            Run::Split(_) if !images.is_empty() => err("a model across GPUs reads no images yet: its image passes do not yet give one GPU's bits every run"),
             Run::Split(e) => e.set_images(prompt, images),
             Run::Tp(_) if images.is_empty() => Ok(()),
             Run::Tp(_) => err("a model with every layer across GPUs reads no images yet"),
@@ -507,7 +506,6 @@ impl crate::conv::Gen for Run {
     fn see(&mut self, images: Vec<std::sync::Arc<crate::vision::Image>>) -> Result<()> {
         match self {
             Run::One(e) => crate::conv::Gen::see(e, images),
-            Run::Split(_) if !images.is_empty() => err("a model across GPUs reads no images yet: its image passes do not yet give one GPU's bits every run"),
             Run::Split(e) => {
                 e.next = images;
                 Ok(())
@@ -567,7 +565,6 @@ impl crate::sched::ModelStep for Run {
     fn images(&mut self, slot: i32, prompt: &[u32], images: &[std::sync::Arc<crate::vision::Image>]) -> Result<()> {
         match self {
             Run::One(e) => crate::sched::ModelStep::images(e, slot, prompt, images),
-            Run::Split(_) if !images.is_empty() => err("a model across GPUs reads no images yet: its image passes do not yet give one GPU's bits every run"),
             Run::Split(e) => e.set_images(prompt, images),
             Run::Tp(_) if images.is_empty() => Ok(()),
             Run::Tp(_) => err("a model with every layer across GPUs reads no images yet"),

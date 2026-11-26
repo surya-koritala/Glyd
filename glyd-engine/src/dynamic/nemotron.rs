@@ -8,9 +8,9 @@
 
 use super::attn::{AttnOp, QkNorm};
 use super::{Dyn, ModelDesc, MoeOp, NormW, Op, Opts, Placing, Ring, Slot, Stage};
+use crate::dynamic::experts::MoeBlock;
 use crate::ffi::{err, Result};
 use crate::kern::{MAMBA2_HEAD, MAMBA2_STATE};
-use crate::kern_nh::MoeBlock;
 use crate::nemotron::NhKind;
 use crate::offload::ExpertStore;
 use crate::runtime::describe::Described;
@@ -63,6 +63,7 @@ pub fn load_cached(dir: &Path, o: &Opts, level: Layout, cache: Option<(usize, &R
         f8: None,
         dense: Some(crate::nemotron::dense_layout(level)),
         codebooks: Some(&codebooks),
+        codes: None,
     };
     let hidden = kinds.desc.hidden;
     let experts = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {

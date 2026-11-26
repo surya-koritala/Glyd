@@ -25,10 +25,10 @@
 use crate::cpu_hb::{CbView, HbExpert};
 use crate::dev::{Buf, Dev};
 use crate::disk::{Aligned, DirectFile};
+use crate::dynamic::experts::{MoeBlock, NhHost};
 use crate::ffi::{err, Error, Lib, Result, Stream};
 use crate::gpu_ops::GpuOps;
 use crate::kern35::Mat;
-use crate::kern_nh::{MoeBlock, NhHost};
 use crate::launch;
 use crate::moe::{add_shared_with, route_with, shared_add_with, shared_mlp_with, MoeCfg, MoeScratch, Shape, Shared};
 use crate::moe_rows::{split_for, ROWS_MAX_INTER};

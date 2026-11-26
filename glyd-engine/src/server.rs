@@ -3740,29 +3740,63 @@ pub(crate) mod tests {
         assert!(st == 200 && out.contains("{\"status\":\"ok\"}"), "{out}");
     }
 
-    /// There is no cap on connections: a thousand that send nothing are held (a task each, and no thread), the server answers a request from another meanwhile, and each of them is answered 408 and
-    /// let go by its time.
+    /// `n` connections to `addr` that send nothing, made in waves the system's listen queue holds (macOS keeps 128), each wave followed by a request that is answered: the server takes
+    /// connections in the order they arrived, so every one of the wave has been taken before the next comes. A burst longer than the queue is reset by the system where the thread
+    /// that accepts is not running, which a loaded machine does, and is no concern of the server's. A connection is made again where the system had no room for it.
+    fn idle_connections(addr: std::net::SocketAddr, n: usize) -> Vec<TcpStream> {
+        let connect = || {
+            for _ in 0..3000 {
+                if let Ok(c) = TcpStream::connect(addr) {
+                    return c;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            TcpStream::connect(addr).unwrap()
+        };
+        let mut idle = Vec::with_capacity(n);
+        while idle.len() < n {
+            idle.extend((0..(n - idle.len()).min(64)).map(|_| connect()));
+            let mut c = connect();
+            c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+            assert_eq!(raw_status(&mut c).0, 200, "answered beside {} idle connections", idle.len());
+        }
+        idle
+    }
+
+    /// There is no cap on connections: a thousand that send nothing are held (a task each, and no thread), the server answers a request from another meanwhile, and a connection that sends
+    /// nothing is let go by its time. The two are two servers, and neither stands on how fast the machine runs the test: the first gives its connections a time far above the test's steps
+    /// (it ends them by dropping them), the second a short one, and the test ends only when each of its hundred has been let go.
     #[test]
     fn idle_connections_are_held_without_a_cap_and_closed_by_their_time() {
         raise_fd_limit(8192);
         let (tx, _rx) = std::sync::mpsc::channel();
-        let addr = listen_timed(Times { head: Duration::from_secs(2), body: Duration::from_secs(2), idle: Duration::from_secs(2) }, tx);
-        let idle: Vec<TcpStream> = (0..1000).map(|_| TcpStream::connect(addr).unwrap()).collect();
+        let long = Duration::from_secs(600);
+        let addr = listen_timed(Times { head: long, body: long, idle: long }, tx.clone());
+        let idle = idle_connections(addr, 1000);
         let mut c = TcpStream::connect(addr).unwrap();
-        c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
         assert_eq!(raw_status(&mut c).0, 200, "answered beside a thousand idle connections");
-        // none of them was refused: the time ends them (a connection that sent nothing is let go without an answer)
+        // (every one is open, not refused and not answered)
+        for i in &idle {
+            i.set_nonblocking(true).unwrap();
+            let got = (&*i).read(&mut [0u8; 1]);
+            assert!(got.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::WouldBlock), "a connection that sent nothing is held open: {got:?}");
+        }
+        drop(idle);
+        // a connection that sent nothing is let go by its time, answered 408 or with no word
+        let addr = listen_timed(Times { head: Duration::from_secs(1), body: Duration::from_secs(1), idle: Duration::from_secs(1) }, tx);
         let mut closed = 0;
-        for mut i in idle {
-            i.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        for mut i in idle_connections(addr, 100) {
+            i.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
             let mut out = Vec::new();
-            let _ = i.read_to_end(&mut out);
-            // (answered 408 and let go, as a connection that sent a part of a request is; one that was kept after an answer and sent nothing is let go with no word)
-            if out.is_empty() || out.starts_with(b"HTTP/1.1 408") {
-                closed += 1;
+            // (a read that timed out is a connection still open)
+            match i.read_to_end(&mut out) {
+                Ok(_) if out.is_empty() || out.starts_with(b"HTTP/1.1 408") => closed += 1,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => closed += 1,
+                other => eprintln!("a connection not let go by its time: {other:?} {:?}", String::from_utf8_lossy(&out)),
             }
         }
-        assert_eq!(closed, 1000);
+        assert_eq!(closed, 100);
     }
 
     /// R11's load test: a thousand streaming connections at once, on a scheduler over a CPU fake model, and every one of them is answered 200 with its events and its `[DONE]`, none refused, none

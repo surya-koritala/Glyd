@@ -447,7 +447,7 @@ fn prepare(a: &Args, ui: &RefCell<Ui>) -> Done<PathBuf> {
             return Err(penguin_only(&name, family, &model));
         }
         let dir = dynamic_dir(&model, &name, family, layout == Layout::Hummingbird, ui)?;
-        dynamic_plan(&a, &name, family, &dir)?;
+        dynamic_plan(&a, &name, family, &dir, layout == Layout::Hummingbird)?;
         return Ok(dir);
     }
     let gpu = gpu_pick()?;
@@ -1565,6 +1565,11 @@ fn penguin_only(name: &str, family: &str, model: &str) -> Refusal {
 /// The hummingbird directory of a model on the dynamic route (src/hb_pack.rs): MODEL itself where it is one, else its pre-packed repo
 /// (`glyd/NAME-hummingbird`) where it is here, else downloaded where `ui` is given and the Hub has it; or the refusal that says how to pack it.
 fn hb_dir_for(model: &str, name: &str, family: &str, ui: Option<&RefCell<Ui>>) -> Done<PathBuf> {
+    // (a family whose experts come from a codes pack at the hummingbird level: the model's own directory, its pack beside its weights)
+    if codes_row(family) {
+        let dir = if Path::new(model).join("config.json").exists() { Some(PathBuf::from(model)) } else { Source::find(model).ok().map(|s| s.dir) };
+        return dir.filter(|d| crate::plan::sizing::codes_beside(d).is_some()).ok_or_else(|| crate::plan::sizing::no_codes_pack(name, family, model));
+    }
     let is_hb = |d: &Path| matches!(crate::hb_pack::HbDir::open(d), Ok(Some(_)));
     if Path::new(model).join("glyd.json").exists() && is_hb(Path::new(model)) {
         return Ok(PathBuf::from(model));
@@ -1602,7 +1607,7 @@ fn hb_level(model: &str, layout: Layout) -> Layout {
 /// The words a dynamic-route plan says its level in.
 fn dynamic_level_words(layout: Layout) -> &'static str {
     if layout == Layout::Hummingbird {
-        "the hummingbird level (the routed experts at 3 and 2 bits by use, the rest the release's weights exactly)"
+        "the hummingbird level (the routed experts a few bits each, packed by their use, the rest the release's weights exactly)"
     } else {
         "the penguin level (lossless: the release's weights exactly)"
     }
@@ -1664,9 +1669,7 @@ fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCe
             let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| cannot(format!("{}: {e}", dir.display())))?;
             let targets: Vec<Target> = gpus.iter().map(target).collect();
             // (the plan `run` loads, or the refusal it gives, with Kimi-K3's expert cache where the GPUs do not hold its experts)
-            let table = crate::sizes::Table::from_dir(dir).map_err(cannot)?;
-            let p =
-                size_dynamic(a, &name, &table, Some(dir), &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
+            let p = plan_in(a, &name, family, dir, &text, hb, &targets)?;
             return Ok(dynamic_line(&name, family, &p));
         }
         None => {
@@ -1742,15 +1745,33 @@ fn dynamic_dir(model: &str, name: &str, family: &str, hb: bool, ui: &RefCell<Ui>
     }
 }
 
-/// The plan of the dynamic route's model in `dir` over this machine's GPUs (`size_dynamic` on its files' headers), or its refusal: the directory's config.json, the
-/// GPUs, the first of them and the plan.
-fn dynamic_plan(a: &Args, name: &str, family: &str, dir: &Path) -> Done<(String, Vec<Gpu>, Gpu, LoadPlan)> {
+/// Whether the family's experts come from a codes pack at the hummingbird level (`ExpertCache::Codes`: src/moe_cb.rs).
+fn codes_row(family: &str) -> bool {
+    crate::support::row_named(family).is_some_and(|r| r.route.expert_cache == crate::support::ExpertCache::Codes)
+}
+
+/// The plan of the dynamic route's model in `dir` over this machine's GPUs (`size_dynamic` on its files' headers; at the hummingbird level (`hb`) of a family
+/// whose experts come from a codes pack, that pack's beside its weights: `codes_plan`), or its refusal: the directory's config.json, the GPUs, the first of
+/// them and the plan.
+fn dynamic_plan(a: &Args, name: &str, family: &str, dir: &Path, hb: bool) -> Done<(String, Vec<Gpu>, Gpu, LoadPlan)> {
     let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| cannot(format!("{}: {e}", dir.display())))?;
     let (gpus, first) = dynamic_gpus()?;
     let targets: Vec<Target> = gpus.iter().map(target).collect();
-    let table = crate::sizes::Table::from_dir(dir).map_err(cannot)?;
-    let plan = size_dynamic(a, name, &table, Some(dir), &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
+    let plan = plan_in(a, name, family, dir, &text, hb, &targets)?;
     Ok((text, gpus, first, plan))
+}
+
+/// `dynamic_plan`'s plan of the model in `dir` (its config.json `text`) on the GPUs `targets`.
+fn plan_in(a: &Args, name: &str, family: &str, dir: &Path, text: &str, hb: bool, targets: &[Target]) -> Done<LoadPlan> {
+    let table = crate::sizes::Table::from_dir(dir).map_err(cannot)?;
+    let host = crate::offload::host_memory();
+    match crate::plan::sizing::codes_beside(dir).filter(|_| hb && codes_row(family)) {
+        Some(pack) => {
+            let row = crate::support::row_named(family).ok_or_else(|| cannot(format!("no family named {family}")))?;
+            crate::plan::sizing::codes_plan(a, name, &table, text, row, &pack, targets, host)
+        }
+        None => size_dynamic(a, name, &table, Some(dir), text, static_family(family), targets, host, &crate::dynamic::tp::reach),
+    }
 }
 
 /// `run`/`serve` of a model the dynamic engine runs from its release's directory (`dynamic_family`), at penguin: the release's weights exactly (an FP8 or
@@ -1771,7 +1792,7 @@ fn load_dynamic(
     }
     let hb = layout == Layout::Hummingbird;
     let dir = dynamic_dir(model, &name, family, hb, ui)?;
-    let (text, gpus, first, plan) = dynamic_plan(a, &name, family, &dir)?;
+    let (text, gpus, first, plan) = dynamic_plan(a, &name, family, &dir, hb)?;
     let nl = crate::dynamic::split::config_num(&text, "num_hidden_layers").unwrap_or(0);
     let sp = plan.spread.clone().expect("the dynamic route's plan spreads the model");
     let (total, coded, across) = (plan.weights_on_gpu(), sp.coded, sp.across);
@@ -1859,7 +1880,7 @@ fn load_dynamic(
         let held = e.held();
         let gpu = gpus.iter().find(|g| g.ordinal == devices[0]).unwrap_or(&first);
         let (level, exact, words) = if hb {
-            ("hummingbird", false, "hummingbird level: the routed experts at 3 and 2 bits by use, the rest the release's weights exactly")
+            ("hummingbird", false, "hummingbird level: the routed experts a few bits each, packed by their use, the rest the release's weights exactly")
         } else {
             ("penguin", true, "penguin level: the release's weights exactly")
         };
