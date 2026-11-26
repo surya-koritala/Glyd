@@ -9,7 +9,7 @@ tokens, with an OpenAI and Anthropic compatible server and a chat page.
 
 ## Features
 
-- Lossless weights, bit for bit, decoded in the kernels; the KV cache in bf16 pages, or in 12-bit lossless pages where `GLYD_KV=lossless` asks for them (Gemma 4 with `--no-draft`; the plain dense kind under `serve`) and the plan finds that they reserve no more than bf16: `fit` and `run` say which.
+- Lossless weights, bit for bit, decoded in the kernels; the KV cache in bf16 pages, or in 12-bit lossless pages where `GLYD_KV=lossless` asks for them (where the model's attention has heads of 128, 256 or 512 channels or is a latent attention, and no draft model runs beside it) and the plan finds that they reserve no more than bf16: `fit` and `run` say which.
 - Four lossy levels (kestrel, swift, wren, hummingbird) for when a model still does not fit.
 - Mixture-of-experts models with their experts in RAM or on the SSD.
 - One model across the GPUs of a machine, and across machines with Starlings (beta).

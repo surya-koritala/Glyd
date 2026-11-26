@@ -13,7 +13,7 @@ glyd run MODEL          # the goal: works on any supported machine, with no flag
 What holds today:
 
 - `glyd-engine fit MODEL` prints the plan (level, placement, context, predicted tokens/s) before any download.
-  `glyd-engine run` and `serve` do not yet load by that plan (P2a).
+  `glyd-engine run` and `serve` load by that plan: every loader takes the plan `fit` printed (P2a).
 - `glyd-engine run` refuses with one line and a fix where it cannot run a model (`machine.rs`, `support.rs`).
 - Every choice can be overridden: `MODEL:level`, `--context`, `--split`, `--devices`, `--users`.
 - At run time the engine needs only the GPU driver, which it opens itself (`glyd-engine/src/ffi.rs`); building it needs
@@ -56,7 +56,7 @@ Decision order (`glyd fit MODEL` prints every step; today `glyd-engine fit`):
 4. **Context and users**: the KV cache takes what is left, sized for the asked context, else the largest that fits.
 5. **Speed**: the cost profile against measured rates gives tokens/s; if below a floor, the next level down is offered.
 
-The flowchart is the target. Today `fit` prints a plan like it, and `run` follows `support.rs`'s table, not the plan.
+The flowchart is the target. Today `fit` prints a plan like it, and `run` and `serve` load by it, within the levels and placements `support.rs`'s table allows the family.
 
 ```mermaid
 flowchart TD
@@ -78,13 +78,13 @@ speed above a floor.
 
 The pieces exist today: `glyd-engine/src/plan.rs` (the planner behind `glyd-engine fit`), `costs.rs` (cost profile and
 rates), `machine.rs` and `preflight` (probe), `offload.rs` (expert cache), `dynamic/split.rs` (layer split), `starlings/`
-(other machines). `run` and `serve` do not load by the plan yet, and `fit` can plan runs that `run` refuses: one
-capability table shared by `fit`, `run` and refusals (P16) and loading by the plan (P2a) close that gap. Machines whose GPU
+(other machines). `run` and `serve` load by the plan, and `fit`, `run` and the refusals read one
+capability table (`support.rs`, P16), so `fit` plans no run that `run` refuses (P2a, P16). Machines whose GPU
 shares the computer's memory (Apple, DGX Spark, Jetson, Strix Halo) count that memory once.
 
 ## Runtime layers
 
-The target; today most families have their own pipeline, and batching exists on the Qwen3 path only (M2 replaces them).
+The target; today every family runs on the description executor through one scheduler, with batching and paged KV (M2).
 
 ```
 APIs            OpenAI (chat, completions, responses, embeddings) · Anthropic · Ollama · MCP · C ABI · Rust crate
@@ -159,7 +159,7 @@ compute-bound standard dense/FP8/NVFP4 ops to proven vendor libraries.
 | FP8 / FP4 / MXFP4 releases | as released | yes | kept as the release's codes; FP8 also in a ~7-bit lossless coding |
 | kestrel / swift / wren | 6.5 / 5.5 / 4.5 | no | Int6 / Int5 / Int4; wren keeps QAT 4-bit releases exactly |
 | hummingbird | ~2-3.4 on experts | no | experts' bits by use; attention 4-6 bits |
-| KV cache | 12 (bf16 16) | yes | per-model tables; the executor's pages are bf16, or 12-bit where `GLYD_KV=lossless` asks for them (Gemma 4 with `--no-draft`; the plain dense kind under `serve`) and they reserve no more than bf16 for the plan: the plan chooses and says which (`kv_format`), and the loader follows it. `kv12check` and `usercheck --kv12` hold the Qwen3.5 layout's too |
+| KV cache | 12 (bf16 16) | yes | per-model tables; the executor's pages are bf16, or 12-bit where `GLYD_KV=lossless` asks for them (where the model's attention has heads of 128, 256 or 512 channels or is a latent attention, and no draft model runs beside it) and they reserve no more than bf16 for the plan: the plan chooses and says which (`kv_format`), and the loader follows it. `kv12check` and `usercheck --kv12` hold the Qwen3.5 layout's too |
 
 `glyd verify` checks a lossless pack tensor by tensor against the source's sha256.
 
@@ -196,7 +196,7 @@ sequenceDiagram
   A-->>C: stream
 ```
 
-- In one machine: layer split today (`--split`, `--devices`) for Nemotron-H, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark at their lossless level, and not for Qwen3, Qwen3.5 or Gemma 4 (`support.rs`); tensor and expert parallel over P2P, NVLink or NCCL
+- In one machine: layer split today (`--split`, `--devices`) for the Qwen3.5 layout at every level (the lossy levels in stages), Nemotron-H, GLM-5.3, DeepSeek-V4.1 and Qwen3.8-Flash-Next at penguin, and Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark at penguin and hummingbird, and not for the plain dense kind or Gemma 4 (`support.rs`, `split_levels`); tensor and expert parallel over P2P, NVLink or NCCL
   in M4 (RCCL in M5b).
 - Across machines (`starlings/`): enrollment with fingerprints, mutual TLS over TCP, the engine's `rangeworker` per
   stage (`docs/range-worker.md`); RDMA transports for datacenters.

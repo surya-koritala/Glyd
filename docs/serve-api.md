@@ -33,7 +33,7 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
   without it, what fits, up to 32,768 at a level (served to several users, what fits each of them, at least 4,096). `--users N`
   (4 if not given) is how many requests run at once: 1 to 64 for a model on one GPU, as many as the GPU's memory holds (the server says how many); a model
   with a draft model, a model split across GPUs, or one with an operation that takes one sequence, runs one request at a time (the others wait in order).
-- The keys and values are in bf16 pages, or in the lossless 12-bit pages where `GLYD_KV=lossless` asks for them (Gemma 4 with `--no-draft`; the plain dense kind) and the plan finds that
+- The keys and values are in bf16 pages, or in the lossless 12-bit pages where `GLYD_KV=lossless` asks for them (where the model's attention has heads of 128, 256 or 512 channels or is a latent attention, and no draft model runs beside it) and the plan finds that
   they reserve no more than bf16 pages for the context and users asked: both formats are lossless, so the plan never takes a lower level for the 12-bit pages. The plan chooses and the loader
   follows it. The start's `Plan:` line says which (`keys and values in bf16` / `in 12-bit pages`) and `fit --json` has it as `kv_format` (`bf16` or `12-bit`); `/v1/glyd/info`'s `precision.kv` says what was loaded.
 - `--with MODEL2` serves a second model from the same process, on the same GPU: MODEL on its port and MODEL2 on `--with-port N`, else the next
@@ -46,7 +46,7 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
   each GPU holds a slice of every big matrix and the slices are gathered GPU to GPU, so every GPU works on every token.
   The start checks two gathers of known values and refuses (exit 3) where the GPUs' writes to each other arrive wrong.
   Elsewhere, or with `--split CUTS --devices GPUS`, the layers are split between the GPUs (one at work at a time). The
-  numbers: [research/tp-8xa100-2026-10-22](../research/tp-8xa100-2026-10-22/README.md). The Qwen3.5 layout and Nemotron-H are cut over the GPUs at penguin too.
+  numbers: [research/tp-8xa100-2026-10-22](../research/tp-8xa100-2026-10-22/README.md). The Qwen3.5 layout is cut over the GPUs at every level (the lossy levels in stages, one sequence at a time) and Nemotron-H at penguin.
   Qwen3.8-Flash-Next (penguin, `glyd run`, `serve` and `fit`) is cut over the GPUs too, the same way: one GPU where one holds it, its layers split where
   not (`--split CUTS --devices GPUS` chooses); Condor's `qwenserve CKPT PACK --gpus 0,1` cuts the layers over those cards with each part's experts in a cache
   of its own (one request at a time across GPUs, as the release did).
@@ -148,7 +148,7 @@ goes after the others' for that long; it is a preference among what is kept and 
 3600 with `ttl: "1h"`). A request that begins as an earlier one did has that start without running it, where the model allows: on the models whose keys and values are paged (Gemma 4 and Muse Spark)
 the server finds the blocks of 16 tokens a prompt begins with by what they hold, whether the request that ran them is still running, is kept, has grown far past them or has ended,
 for as long as their memory has not been needed for something else; the Qwen3.5 layout (its Gated DeltaNet layers beside paged attention) finds the start any earlier request ran by the
-states it keeps at every chunk of a prompt, in a pool of fixed size made at load (512 MB by default, boundaries every chunk; a development build's `GLYD_ENGINE_STATE_SNAP_MB` and `GLYD_ENGINE_STATE_EVERY` set them); Nemotron-H does not yet.
+states it keeps at every chunk of a prompt, in a pool of fixed size made at load (512 MB by default, boundaries every chunk; a development build's `GLYD_ENGINE_STATE_SNAP_MB` and `GLYD_ENGINE_STATE_EVERY` set them), and so does Nemotron-H with its Mamba-2 states.
 A request that comes while another still runs the start waits for it rather than running the same tokens beside it. `GLYD_ENGINE_KEEP=0` empties a finished request's slot at once, so
 nothing is kept for a conversation's next turn.
 
@@ -298,7 +298,7 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
 ## Requests
 
 - A field a request sets that `fields.refused` lists is refused, 400, in words. So are: `response_format` of a type other than
-  text, json_object and json_schema, `echo` of a chat, `best_of` over `n`, `n` over 8, prompts times `n` over 64, `n` over 1 at temperature 0,
+  text, json_object and json_schema, `echo` of a chat, `best_of` over `n`, `n` over 64, prompts times `n` over 64, `n` over 1 at temperature 0,
   `stream_options` without `stream`, `continuous_usage_stats`, tools where the template has none.
 - A reply can be held to a grammar, on every model the server runs: `response_format` (`json_object`, `json_schema`; the schema holds
   whether or not `strict` is set), vLLM's `structured_outputs` (`json`, `regex`, `choice`, `grammar`, `json_object`) and its
