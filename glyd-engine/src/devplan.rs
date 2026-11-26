@@ -13,7 +13,7 @@
 //! - Enable: `Offload::device` set on the store before its layers are added (`HbCaching::offload`; a development build's `--device-plan`); `ExpertStore::device_on(layer)` says which layers took
 //!   it (a host half of FP4 experts, every expert in the computer's memory), and `MoeLayer::reads_host` is false for a layer that did.
 //! - A call: `MoeLayer::via_store` (the MoE kind's; `MoeLayer::cached` and Kimi-K3's block call it), which asks `ExpertStore::device_args(layer, tokens, pairs)` and, where it gives `DevArgs`
-//!   (1 to `DEV_ROWS` rows), queues on the engine's stream alone: xp_plan, xp_fill (the copies), `early`, the products (`products(1)`), xp_fill (the promotions), xp_wait, xp_take, the
+//!   (1 to `DEV_ROWS` rows, a decode step's of rows to `DEV_STEP_ROWS`), queues on the engine's stream alone: xp_plan, xp_fill (the copies), `early`, the products (`products(1)`), xp_fill (the promotions), xp_wait, xp_take, the
 //!   experts' sum. It reads the router's choices and weights (the scratch's `ids`, int64 [t k], and `wts`, fp32 [t k]) and z (bf16 [t, hidden]) on the device; it writes the pairs' places
 //!   (`way`, int64 [t k]), the layer's table and counters (`DevArgs::place_of` .. `meta`), the request (mapped host memory) and the host's sums (the scratch's `cpu`, fp32 [t, hidden]), and y.
 //!   No host call waits inside it and none reads the routing: the host's thread (`DevMail`) answers the request as the GPU posts it.
@@ -21,7 +21,7 @@
 //!   before the last one has run. There is no event to wait on: the step's own end (the engine's synchronize before it reads the sample) is the only wait.
 //! - After a step has run (after that synchronize, never while a step is queued): `ExpertStore::end_step` reads the GPU's counters into the layers' `LayerStats` and writes the plan's next
 //!   settings (`Params`, from the costs measured so far; a synchronous write a queued step would race).
-//! - A call the host plans (more than `DEV_ROWS` rows: a prompt's chunk) synchronizes the stream itself first (`run_early_at`: the GPU's table read into the host's plan, written back after).
+//! - A call the host plans (more than `DEV_ROWS` rows, a prompt's chunk, or a decode step's of more than `DEV_STEP_ROWS`) synchronizes the stream itself first (`run_early_at`: the GPU's table read into the host's plan, written back after).
 
 use crate::dev::{Buf, Pinned};
 use crate::ffi::{err, Error, Result};
@@ -38,9 +38,12 @@ pub const XP_WIDTH: usize = 8192;
 /// The GPU's clock cycles `xp_wait` waits for the host's answer before it traps (10 s at 4 GHz).
 pub const XP_LIMIT: i64 = 40_000_000_000;
 
-/// The most rows a call the GPU plans has: a decode step of up to eight sequences (the one-row step is the graph). A call of more rows is the store's plan on the host, whose waves copy every miss where the
-/// misses outnumber the places (`waves_quicker`), which the plan on the GPU does not do.
+/// The most rows a call the GPU plans has (a one-row step, a verify pass, a prompt's chunk of a few tokens), where it is not a decode step's of rows (`DEV_STEP_ROWS`). A call of more rows is the
+/// store's plan on the host, whose waves copy every miss where the misses outnumber the places (`waves_quicker`), which the plan on the GPU does not do: the misses its places cannot take are the host's.
 pub const DEV_ROWS: usize = 8;
+/// The most rows of a decode step of rows (rows that decode and nothing else, `ExpertStore::set_step_rows`) whose calls the GPU plans: `CPU_TOKENS`, the most rows a request to the host's half carries,
+/// so that a decode step of up to 64 users is one graph (#329).
+pub const DEV_STEP_ROWS: usize = crate::offload::CPU_TOKENS;
 
 /// What `xp_plan` decides a call's misses by (kernels/moe.cu's params): the store's times (`Costs`: a copy, the host call's fixed part, a miss's first row and each further row, microseconds) and mode, as its
 /// `plan` decides them (the misses with the most pairs copied, as many as make the longer of the copies and the host's pairs shortest in auto, the two the same in split; all that find a place in copy, none in

@@ -21,6 +21,10 @@ pub struct KernGlm {
     conv: crate::kt::conv_silu,
     conv_w32: crate::kt::conv_silu_w32,
     rec: crate::kt::glm_kda_rec,
+    /// (the convolution and the recurrence of a step's rows that decode, each through its own sequence's state)
+    conv_rows: crate::kt::conv_silu_rows,
+    conv_w32_rows: crate::kt::conv_silu_w32_rows,
+    rec_rows: crate::kt::glm_kda_rec_rows,
     chunk: crate::kt::glm_kda_chunk,
     out: crate::kt::glm_kda_out,
     out_w32: crate::kt::glm_kda_out_w32,
@@ -50,6 +54,9 @@ impl KernGlm {
             conv: dev.typed()?,
             conv_w32: dev.typed()?,
             rec: dev.typed()?,
+            conv_rows: dev.typed()?,
+            conv_w32_rows: dev.typed()?,
+            rec_rows: dev.typed()?,
             chunk,
             out: dev.typed()?,
             out_w32: dev.typed()?,
@@ -74,6 +81,39 @@ impl KernGlm {
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn conv(&self, s: Stream, x: u64, xs: i32, w: u64, w32: bool, st: u64, y: u64, n: i32, c: i32) -> Result<()> {
         launch!(if w32 { self.conv_w32.sig() } else { self.conv.sig() }, [(c as u32).div_ceil(256), 1, 1], [256, 1, 1], s; x, xs, w, st, y, n, c)
+    }
+
+    /// `conv` of a step's `rows` rows that decode, a token of a sequence each: row r's state at the address `sts` holds at entry r ss (0: a padding row, its output zeroed).
+    ///
+    /// # Safety
+    /// As `streams`; `sts` holds `rows` entries `ss` apart, each 0 or a live state of the convolution's.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn conv_rows(&self, s: Stream, x: u64, xs: i32, w: u64, w32: bool, (sts, ss): (u64, usize), y: u64, rows: u32, c: i32) -> Result<()> {
+        let k = if w32 { self.conv_w32_rows.sig() } else { self.conv_rows.sig() };
+        launch!(k, [(c as u32).div_ceil(256), rows, 1], [256, 1, 1], s; x, xs, w, sts, ss as i32, y, c)
+    }
+
+    /// The delta rule's recurrence (`delta`'s, a token) of a step's `rows` rows that decode, a token of a sequence each: row r's state at the address `sts` holds at entry
+    /// r ss (0: a padding row, its output zeroed), its rows of xc, fg, bb and core r rows on.
+    ///
+    /// # Safety
+    /// As `conv_rows`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn delta_rows(
+        &self,
+        s: Stream,
+        xc: u64,
+        fg: u64,
+        dtb: u64,
+        alog: u64,
+        bb: u64,
+        (sts, ss): (u64, usize),
+        core: u64,
+        rows: u32,
+        heads: i32,
+        bound: f32,
+    ) -> Result<()> {
+        launch!(self.rec_rows, [heads as u32, rows, 1], [128, 1, 1], s; xc, fg, dtb, alog, bb, sts, ss as i32, core, heads, bound)
     }
 
     /// The delta rule of n rows for `heads` heads: token by token (a decode step: n = 1) or, `chunked`, in chunks of GM_L tokens. xc [n, 3 heads 128] the convolution's output, fg [n, heads 128] and bb [n, heads] the gates'
@@ -138,7 +178,7 @@ impl KernGlm {
         n: u32,
     ) -> Result<()> {
         let smem = ((ih * (d + 1) + ih + 8 * d) * 4) as u32;
-        launch!(self.idx_score, [(pmax as u32).div_ceil(8), n, 1], [256, 1, 1], smem smem, s; iq, iqs, wts, wsr, pk, d, 1i32, 0i32, 0u64, pos, scores, pmax, ih, d, kp, ksel, scale, wscale)
+        launch!(self.idx_score, [(pmax as u32).div_ceil(8), n, 1], [256, 1, 1], smem smem, s; iq, iqs, wts, wsr, pk, d, 1i32, 0i32, 0u64, 0i64, pos, scores, pmax, ih, d, kp, ksel, scale, wscale)
     }
 
     /// The tokens each of n rows attends to: sel [n, tmax] int32 (the first cnt[i] of a row), from the scores.

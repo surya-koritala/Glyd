@@ -95,7 +95,8 @@ extern "C" __global__ void conv_silu_w32(const bf16* x, int xs, const float* w, 
 // conv_silu of a step's rows that decode, a token of a sequence each (grid C / 256 by rows): row r's state at sts[r ss] (a table of addresses, as vLLM's conv_state_indices
 // pick a request's slot; 0: a padding row, whose output is zeroed and which reads and writes no state), its input row r of x, its output row r of y. Each row's arithmetic
 // is conv_silu's on that sequence's one token.
-extern "C" __global__ void conv_silu_rows(const bf16* x, int xs, const bf16* w, const unsigned long long* sts, int ss, bf16* y, int C) {
+template <typename W>
+__device__ __forceinline__ void conv_silu_rows_of(const bf16* x, int xs, const W* w, const unsigned long long* sts, int ss, bf16* y, int C) {
     const int r = blockIdx.y;
     bf16* st = reinterpret_cast<bf16*>(sts[(size_t)r * ss]);
     if (!st) {
@@ -105,6 +106,11 @@ extern "C" __global__ void conv_silu_rows(const bf16* x, int xs, const bf16* w, 
     }
     conv_silu_of(x + (size_t)r * xs, xs, w, st, y + (size_t)r * C, 1, C);
 }
+
+extern "C" __global__ void conv_silu_rows(const bf16* x, int xs, const bf16* w, const unsigned long long* sts, int ss, bf16* y, int C) { conv_silu_rows_of(x, xs, w, sts, ss, y, C); }
+
+// conv_silu_rows with fp32 weights (conv_silu_w32's: Kimi delta attention's convolution).
+extern "C" __global__ void conv_silu_w32_rows(const bf16* x, int xs, const float* w, const unsigned long long* sts, int ss, bf16* y, int C) { conv_silu_rows_of(x, xs, w, sts, ss, y, C); }
 
 __device__ __forceinline__ float softplus_f(float x) { return x > 20.f ? x : log1pf(expf(x)); }
 
