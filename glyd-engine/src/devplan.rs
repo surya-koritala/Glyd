@@ -38,9 +38,10 @@ pub const XP_WIDTH: usize = 8192;
 /// The GPU's clock cycles `xp_wait` waits for the host's answer before it traps (10 s at 4 GHz).
 pub const XP_LIMIT: i64 = 40_000_000_000;
 
-/// The most rows a call the GPU plans has: a decode step of up to eight sequences (the one-row step is the graph). A call of more rows is the store's plan on the host, whose waves copy every miss where the
-/// misses outnumber the places (`waves_quicker`), which the plan on the GPU does not do.
-pub const DEV_ROWS: usize = 8;
+/// The most rows a call the GPU plans has: a decode step of up to `CPU_TOKENS` sequences, the most rows a request to the host's half carries, so that a decode step of up to 64 rows is one graph (#329).
+/// A call of more rows is the store's plan on the host, whose waves copy every miss where the misses outnumber the places (`waves_quicker`); the plan on the GPU has no waves: the misses its places
+/// cannot take are the host's.
+pub const DEV_ROWS: usize = crate::offload::CPU_TOKENS;
 
 /// What `xp_plan` decides a call's misses by (kernels/moe.cu's params): the store's times (`Costs`: a copy, the host call's fixed part, a miss's first row and each further row, microseconds) and mode, as its
 /// `plan` decides them (the misses with the most pairs copied, as many as make the longer of the copies and the host's pairs shortest in auto, the two the same in split; all that find a place in copy, none in
