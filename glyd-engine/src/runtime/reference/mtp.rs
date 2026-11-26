@@ -147,7 +147,7 @@ impl RefDSpark {
                         let (pre, po, comb) = hc_weights(&s, &l.p, x)?;
                         let w = if s.lagged { std::mem::replace(&mut lag[j], pre) } else { pre };
                         post.push(Some((po, comb)));
-                        (0..d).map(|i| (0..n).map(|k| w[k] * x[k * d + i]).sum()).collect()
+                        super::collapse(&s, &w, x, d)
                     }
                     _ => {
                         post.push(None);
@@ -181,15 +181,21 @@ impl RefDSpark {
         let (rank, mut prev) = (ds.markov_rank, anchor);
         let (w1, w2) = (self.p.vec("markov_embed")?, self.p.vec("markov_head")?);
         let mut out = Drafted { base: Vec::new(), logits: Vec::new(), tokens: Vec::new(), confidence: Vec::new() };
+        // (the head's collapse rounds as its blocks' streams do)
+        let sp = self.blocks.iter().find_map(|b| if let Residual::Streams(s) = b.block.residual { Some(s) } else { None });
+        let fold = |w: &[f32], x: &[f32]| match &sp {
+            Some(s) => super::collapse(s, w, x, d),
+            None => (0..d).map(|i| (0..n).map(|k| w[k] * x[k * d + i]).sum()).collect(),
+        };
         for (j, x) in xs.iter().enumerate() {
             let h: Vec<f32> = match self.collapse {
-                Collapse::LastPre => (0..d).map(|i| (0..n).map(|k| lag[j][k] * x[k * d + i]).sum()).collect(),
+                Collapse::LastPre => fold(&lag[j], x),
                 Collapse::Weighted { eps, norm_eps } => {
                     let (f, base, sc) = (self.p.vec("out_hc_fn")?, self.p.vec("out_hc_base")?, self.p.vec("out_hc_scale")?[0]);
                     let r = 1.0 / (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32 + norm_eps).sqrt();
                     let mixes = matvec(f, x.len(), &x.iter().map(|v| v * r).collect::<Vec<_>>());
                     let w: Vec<f32> = (0..n).map(|k| sigmoid(mixes[k] * sc + base[k]) + eps).collect();
-                    (0..d).map(|i| (0..n).map(|k| w[k] * x[k * d + i]).sum()).collect()
+                    fold(&w, x)
                 }
                 Collapse::None if n == 1 => x.clone(),
                 c => return err(format!("a DSpark head's collapse {c:?}")),

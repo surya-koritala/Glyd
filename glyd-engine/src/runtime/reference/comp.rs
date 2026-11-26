@@ -18,6 +18,9 @@ pub struct Pool {
 
 /// A sequence's state in one layer: the window's keys by position, the compressor's and the indexer's pools; and V4.1's shared parts (`kinds::CompShare`):
 /// the indexer's keys of the entries, each query position's picks and published candidate blocks, which a layer that reads another's has from it.
+/// `take`: a check's picks for the queries to come, each in turn (another engine's), in the place of this layer's own indexer's choice (an empty one: its
+/// own); `picked`, where Some, each query's choice as the kinds' reference records them (`mla::Picked`, an entry a pool of its own): the indexer's own
+/// beside the one taken, the visible entries' scores (those its candidate blocks leave out, -inf). A layer that reads another's picks has none of either.
 #[derive(Default)]
 pub struct CompState {
     pub win: Vec<(u32, Vec<f32>)>,
@@ -28,6 +31,28 @@ pub struct CompState {
     pub ikeys: Vec<Vec<f32>>,
     pub picks: BTreeMap<u32, Vec<usize>>,
     pub cands: BTreeMap<u32, (usize, Vec<usize>)>,
+    pub take: std::collections::VecDeque<Vec<usize>>,
+    pub picked: Option<Vec<super::mla::Picked>>,
+}
+
+impl CompState {
+    /// The query at `pos`'s choice among its `n` visible entries: the indexer's own (`own`, by `score`) or a check's in its place (`take`'s next, entries the
+    /// query sees, each once, in order); recorded where `picked` is kept.
+    fn choose(&mut self, own: Vec<usize>, score: Vec<f32>, top_k: usize, pos: u32, n: usize) -> Result<Vec<usize>> {
+        let gap = super::ffn::margin(&score, top_k);
+        self.margin = gap;
+        let picks = match self.take.pop_front().filter(|t| !t.is_empty()) {
+            Some(t) if t.windows(2).any(|w| w[0] >= w[1]) || t.iter().any(|&e| e >= n) => {
+                return err(format!("a compressed attention's picks to take of {t:?}: entries the query at {pos} sees ({n}), each once, in order"))
+            }
+            Some(t) => t,
+            None => own.clone(),
+        };
+        if let Some(v) = self.picked.as_mut() {
+            v.push(super::mla::Picked { picks: picks.clone(), own, gap, score, block: 1 });
+        }
+        Ok(picks)
+    }
 }
 
 /// `x` rotated by `pos` (or back by it) on its trailing `r.dim` values.
@@ -100,8 +125,9 @@ fn shared_picks(c: &Comp, ix: &Indexer, sh: &CompShare, p: &Params, st: &mut Com
     }
     // (before the first window closes there is nothing to pick, or to publish)
     if n == 0 {
-        st.picks.insert(pos, Vec::new());
-        return Ok(Vec::new());
+        let none = st.choose(Vec::new(), Vec::new(), ix.top_k, pos, 0)?;
+        st.picks.insert(pos, none.clone());
+        return Ok(none);
     }
     let mut qi = p.prod("idx_q_b", qr)?;
     for h in qi.chunks_mut(ix.head_dim) {
@@ -134,10 +160,12 @@ fn shared_picks(c: &Comp, ix: &Indexer, sh: &CompShare, p: &Params, st: &mut Com
     let mut ord: Vec<usize> = (0..n).filter(|&j| inside(j)).collect();
     ord.sort_by(|&a, &b| score[b].total_cmp(&score[a]).then(a.cmp(&b)));
     ord.truncate(ix.top_k);
-    st.margin = super::ffn::margin(&score, ix.top_k);
     ord.sort();
-    st.picks.insert(pos, ord.clone());
-    Ok(ord)
+    // (the entries the candidate blocks leave out scored -inf: no choice of the indexer's)
+    let score: Vec<f32> = score.iter().enumerate().map(|(j, &v)| if inside(j) { v } else { f32::NEG_INFINITY }).collect();
+    let chosen = st.choose(ord, score, ix.top_k, pos, n)?;
+    st.picks.insert(pos, chosen.clone());
+    Ok(chosen)
 }
 
 /// The q latent of `x` (the block's normed input) and its query heads at `pos`, each normed (where the kind says) and rotated.
@@ -237,9 +265,9 @@ pub fn step(c: &Comp, p: &Params, st: &mut CompState, x: &[f32], pos: u32) -> Re
                 let mut ord: Vec<usize> = (0..score.len()).collect();
                 ord.sort_by(|&a, &b| score[b].total_cmp(&score[a]).then(a.cmp(&b)));
                 ord.truncate(ix.top_k);
-                st.margin = super::ffn::margin(&score, ix.top_k);
                 ord.sort();
-                ord
+                let n = score.len();
+                st.choose(ord, score, ix.top_k, pos, n)?
             }
         };
     }

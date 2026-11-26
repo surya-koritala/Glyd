@@ -56,6 +56,9 @@ pub struct Described {
     /// Matrices stored quantized (FP8 blocks as released, FP4 experts), each with the tensor of its scales. The weight map names them;
     /// decoding a stored format is the tensor source's job.
     pub scales: std::collections::BTreeMap<String, String>,
+    /// The FP8 matrices' blocks (the quantization_config's weight_block_size, square), where the config says the release's matrices are FP8 and the
+    /// builder reads it: the format a release's inference quantizes its activations to as well (DeepSeek-V4's 128, V4.1's 32).
+    pub fp8_block: Option<usize>,
     /// Each tensor's shape as the config makes it, where the builder says it (Gemma 4's: its matrices, norms and scalars; empty for the builders that do not yet):
     /// what a lowering to the executor sizes its matrices by, for a packed directory too, whose tensors are not stored at their shapes.
     pub shapes: std::collections::BTreeMap<String, Vec<usize>>,
@@ -455,6 +458,7 @@ fn finish(k: &Keys, desc: ModelDesc, cv: &Convention, prefix: &str, blocks: Vec<
         extra: cv.extra(prefix),
         mtp_layers,
         scales: Default::default(),
+        fp8_block: None,
         shapes: Default::default(),
         convention: cv.name,
         unread: cv.unread(),
@@ -2263,7 +2267,8 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     k.raw("architectures");
     let released = k.m.contains_key("compress_ratios");
     let fp4 = k.str("expert_dtype")? == Some("fp4");
-    let fp8 = Fp8::parse(k.raw("quantization_config"), mt)?.is_some();
+    let fp8_block = Fp8::parse(k.raw("quantization_config"), mt)?.map(|f| f.block);
+    let fp8 = fp8_block.is_some();
     let (heads, hd, rd) = (k.usize("num_attention_heads")?, k.usize("head_dim")?, k.usize("qk_rope_head_dim")?);
     k.opt_f64("partial_rotary_factor")?;
     let (q_lora, o_lora, o_groups, window) =
@@ -2443,7 +2448,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         (Some(c), Some(mut m)) => {
             let window = Comp { ratio: 0, overlap: false, rope: main_rope.clone(), indexer: None, ..c };
             (m.router.hash, m.router.bias) = (false, true);
-            dspark_head(&k, k.opt_usize("n_mtp_layers")?.unwrap_or(DSPARK_LAYERS), window, m, Residual::Streams(streams), eps)?
+            dspark_head(&k, k.opt_usize("n_mtp_layers")?.unwrap_or(DSPARK_LAYERS), window, m, Residual::Streams(streams), Norm::rms(eps))?
         }
         _ => None,
     };
@@ -2468,6 +2473,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         out.mtp = vec![(blocks, own)];
     }
     out.scales = scales;
+    out.fp8_block = fp8_block;
     Ok(out)
 }
 
@@ -2479,7 +2485,7 @@ const DSPARK_LAYERS: usize = 3;
 /// A DeepSeek release's DSpark drafter (`dspark_*` keys; `kinds::DSpark`), where the config has one: `layers` draft layers, each the model's
 /// decoder layer with the window alone (the attention `window` with the model's own form, the feed-forward `moe`) on the model's residual rule,
 /// drafting `dspark_block_size` tokens from main_x of `dspark_target_layer_ids`; a Markov head of `dspark_markov_rank` and a confidence head.
-fn dspark_head(k: &Keys, layers: usize, window: Comp, moe: Moe, residual: Residual, eps: f32) -> Result<Option<MtpHead>> {
+fn dspark_head(k: &Keys, layers: usize, window: Comp, moe: Moe, residual: Residual, norm: Norm) -> Result<Option<MtpHead>> {
     let Some(block) = k.opt_usize("dspark_block_size")? else { return Ok(None) };
     let targets: Vec<usize> = k
         .raw("dspark_target_layer_ids")
@@ -2487,16 +2493,9 @@ fn dspark_head(k: &Keys, layers: usize, window: Comp, moe: Moe, residual: Residu
         .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect())
         .ok_or_else(|| Error("dspark_target_layer_ids: a list of layers".into()))?;
     let dspark = DSpark { block, noise: k.usize("dspark_noise_token_id")? as u32, targets, markov_rank: k.usize("dspark_markov_rank")?, confidence: true };
-    let b = |body: Body| Block { norm_in: Norm::rms(eps), body, norm_out: None, residual: residual.clone() };
+    let b = |body: Body| Block { norm_in: norm, body, norm_out: None, residual: residual.clone() };
     let blocks = (0..layers).flat_map(|_| [b(Body::Mixer(Mixer::Compressed(window.clone()))), b(Body::Ffn(Ffn::Moe(moe.clone())))]).collect();
-    Ok(Some(MtpHead {
-        blocks,
-        norm_embed: Norm::rms(eps),
-        norm_hidden: Norm::rms(eps),
-        final_norm: Norm::rms(eps),
-        dspark: Some(dspark),
-        input: MtpInput::Joined,
-    }))
+    Ok(Some(MtpHead { blocks, norm_embed: norm, norm_hidden: norm, final_norm: norm, dspark: Some(dspark), input: MtpInput::Joined }))
 }
 
 /// A DSpark drafter's tensors as DeepSeek releases name them (`mtp.{i}.`): each draft layer's attention (the window's: no compressor) and its
@@ -2544,11 +2543,13 @@ fn dspark_roles(layers: usize, experts: usize, v41: bool) -> (Vec<Vec<(String, S
 /// layers (counted), the vision tower, the routers' image-token bias.
 fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     let (mt, tc) = ("deepseek_v41", &c.text);
-    top_keys(&c.top, mt, &["text_config", "vision_config", "quantization_config", "architectures", "tie_word_embeddings"])?;
+    // (the image token beside the vision tower's config: the tower is not read)
+    top_keys(&c.top, mt, &["text_config", "vision_config", "quantization_config", "architectures", "tie_word_embeddings", "image_token_id"])?;
     let k = Keys::new(tc, mt);
     let (d, layers, vocab, eps, tied) = common(&k, c.top.get("tie_word_embeddings").and_then(|v| v.as_bool()))?;
     let max_pos = k.opt_usize("max_position_embeddings")?;
     k.expect("hidden_act", &Value::from("silu"))?;
+    k.expect("attention_bias", &Value::Bool(false))?;
     k.expect("scoring_func", &Value::from("sqrtsoftplus"))?;
     k.expect("topk_method", &Value::from("noaux_tc"))?;
     k.expect("num_key_value_heads", &Value::from(1))?;
@@ -2566,7 +2567,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     k.expect("engram_block_size", &Value::from(32))?;
     k.expect("num_hash_layers", &Value::from(0))?;
     let q = c.top.get("quantization_config").or(k.raw("quantization_config"));
-    let fp8 = Fp8::parse(
+    let fp8_block = Fp8::parse(
         q.map(|v| {
             let mut o = v.as_object().cloned().unwrap_or_default();
             // (the experts' and the Engram tables' formats, said beside the dense matrices' FP8)
@@ -2576,7 +2577,8 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         .as_ref(),
         mt,
     )?
-    .is_some();
+    .map(|f| f.block);
+    let fp8 = fp8_block.is_some();
     let fp4 = q.and_then(|v| v.get("expert_dtype")).or(k.raw("expert_dtype")).and_then(|v| v.as_str()) == Some("fp4");
     let (heads, hd, rd) = (k.usize("num_attention_heads")?, k.usize("head_dim")?, k.usize("qk_rope_head_dim")?);
     let (q_lora, o_lora, o_groups, window) =
@@ -2594,6 +2596,8 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         rounding: Rounding::Once,
         lagged: true,
     };
+    // (the release's RMSNorm: fp32, the weight times the normed value cast to bf16 once; Engram's gate normalises in fp32 and keeps it)
+    let rn = Norm { rounding: Rounding::Once, ..Norm::rms(eps) };
     let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
     // (a list of counts: one that is not a list, or holds an entry that is not a count, is refused by name, never read as the entries that are)
     let list = |x: &str| -> Result<Vec<usize>> {
@@ -2755,7 +2759,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
             share,
         };
         comp_template = Some(comp.clone());
-        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(comp)), norm_out: None, residual: Residual::Streams(streams) });
+        blocks.push(Block { norm_in: rn, body: Body::Mixer(Mixer::Compressed(comp)), norm_out: None, residual: Residual::Streams(streams) });
         roles.push(r);
         let mut r = names::roles(part::V4_MOE, &p, ne, |x| x != "hash");
         r.extend(names::roles(part::HC_FFN, &p, 0, all));
@@ -2778,7 +2782,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
             latent: None,
         };
         moe_template = Some(moe.clone());
-        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Moe(moe)), norm_out: None, residual: Residual::Streams(streams) });
+        blocks.push(Block { norm_in: rn, body: Body::Ffn(Ffn::Moe(moe)), norm_out: None, residual: Residual::Streams(streams) });
         roles.push(r);
     }
     for x in ["rope_scaling", "rope_theta", "compress_rope_theta", "candidate_source_layer_id", "candidate_block_size", "candidate_topk_blocks", "expert_dtype"]
@@ -2802,13 +2806,13 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     dmoe.router.top_k = k.opt_usize("dspark_num_experts_per_tok")?.unwrap_or(top_k);
     dmoe.experts = k.opt_usize("dspark_n_routed_experts")?.unwrap_or(ne);
     let n_draft = k.opt_usize("n_mtp_layers")?.unwrap_or(mtp_layers);
-    let draft = dspark_head(&k, n_draft, window_attn, dmoe, Residual::Streams(streams), eps)?;
+    let draft = dspark_head(&k, n_draft, window_attn, dmoe, Residual::Streams(streams), rn)?;
     let desc = ModelDesc {
         hidden: d,
         vocab,
         embed: Embed { scale: 1.0, norm: None, streams: streams.streams, per_layer: None, table: TableAt::Gpu },
         blocks,
-        final_norm: Norm::rms(eps),
+        final_norm: rn,
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::LastPre, rounding: Rounding::F32 },
         mtp: draft.into_iter().collect(),
         vision: None,
@@ -2824,6 +2828,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         out.mtp = vec![(blocks, own)];
     }
     out.scales = scales;
+    out.fp8_block = fp8_block;
     out.shapes = v41_shapes(&out, k.usize("moe_intermediate_size")?);
     Ok(out)
 }

@@ -478,13 +478,15 @@ pub trait Run {
 
 /// One row of an engine's indexer in a traced pass (`dynamic::PickTrace`): its position, its picks (the positions its query attends to, in order), and the
 /// inputs they were made from as the engine held them: its queries [heads dim], its head weights' product [heads], and the keys of the complete entries
-/// its pass's last row sees (its own the first (position + 1) / block of them).
+/// its pass's last row sees (its own the first (position + 1) / block of them); where it picks inside a candidate source's published blocks, the entries
+/// they hold (`inside`).
 pub struct PickRow {
     pub pos: usize,
     pub picks: Vec<usize>,
     pub q: Vec<f32>,
     pub w: Vec<f32>,
     pub keys: std::rc::Rc<Vec<Vec<f32>>>,
+    pub inside: Option<Vec<usize>>,
 }
 
 /// An engine's picks: for each latent attention with an indexer, in the model's order, its rows in the order they ran.
@@ -495,8 +497,8 @@ fn picks_of(traces: Vec<crate::dynamic::PickTrace>) -> Picks {
     let mut by: BTreeMap<usize, Vec<PickRow>> = BTreeMap::new();
     for t in traces {
         let keys = std::rc::Rc::new(t.keys);
-        let rows = t.pos.into_iter().zip(t.picks).zip(t.q.into_iter().zip(t.w));
-        by.entry(t.layer).or_default().extend(rows.map(|((pos, picks), (q, w))| PickRow { pos, picks, q, w, keys: keys.clone() }));
+        let rows = t.pos.into_iter().zip(t.picks).zip(t.q.into_iter().zip(t.w)).zip(t.inside);
+        by.entry(t.layer).or_default().extend(rows.map(|(((pos, picks), (q, w)), inside)| PickRow { pos, picks, q, w, keys: keys.clone(), inside }));
     }
     by.into_values().collect()
 }
@@ -517,7 +519,7 @@ pub struct PickApart {
 /// Where the engine's `picks` are not the reference's own choices `picked` (each layer's records, a token at a time, of the reference run that took the
 /// engine's picks), each judged by the reference's indexer on the engine's own inputs (`PickApart`); `kinds` the layers' indexers.
 pub fn picks_apart(picked: &[Vec<crate::runtime::reference::mla::Picked>], picks: &Picks, kinds: &[crate::runtime::kinds::Indexer]) -> Vec<PickApart> {
-    use crate::runtime::reference::mla::choose;
+    use crate::runtime::reference::mla::choose_among;
     let mut v = Vec::new();
     for (l, ((r, e), ix)) in picked.iter().zip(picks).zip(kinds).enumerate() {
         let b = ix.block.max(1);
@@ -525,7 +527,7 @@ pub fn picks_apart(picked: &[Vec<crate::runtime::reference::mla::Picked>], picks
             if r.own == e.picks {
                 continue;
             }
-            let on = choose(ix, &e.q, &e.w, &e.keys[..((e.pos + 1) / b).min(e.keys.len())], &(0..=e.pos).collect::<Vec<usize>>());
+            let on = choose_among(ix, &e.q, &e.w, &e.keys[..((e.pos + 1) / b).min(e.keys.len())], &(0..=e.pos).collect::<Vec<usize>>(), e.inside.as_deref());
             let pools = |a: &[usize], z: &[usize]| {
                 let n = r.score.len().max(on.score.len());
                 let mut p: Vec<usize> = a.iter().filter(|x| !z.contains(x) && **x < n * b).map(|x| x / b).collect();
@@ -830,15 +832,20 @@ fn ref_model_with(d: &Path, edit: fn(&mut crate::runtime::describe::Described)) 
     edit(&mut desc);
     let ck = io(glyd_gpu::safetensors::Checkpoint::open(d))?;
     let mut m = RefModel::load(&desc, &|n: &str| checkpoint_tensor(&ck, n))?;
-    // (Engram's compressed vocabulary, where the model has Engram layers)
-    if let Some(map) = engram_token_map(d)? {
+    put_token_map(&mut m, d)?;
+    Ok(m)
+}
+
+/// Engram's compressed vocabulary (`engram_token_map`) into the reference's Engram blocks (role `ngram_map`), where the model in `dir` has them.
+pub(crate) fn put_token_map(m: &mut crate::runtime::reference::model::RefModel, dir: &Path) -> Result<()> {
+    if let Some(map) = engram_token_map(dir)? {
         for l in
             m.layers.iter_mut().filter(|l| matches!(l.block.body, crate::runtime::kinds::Body::Ngram(g) if g.form == crate::runtime::kinds::NgramForm::Engram))
         {
             l.p.put("ngram_map", &[map.len()], map.clone());
         }
     }
-    Ok(m)
+    Ok(())
 }
 
 /// `ref_model` a token at a time: the reference of every case with no hand-written one.
@@ -887,8 +894,8 @@ fn ref_drive_with(
     picks: Option<&Picks>,
     edit: fn(&mut crate::runtime::describe::Described),
 ) -> Result<RefRun> {
-    use crate::runtime::kinds::{Body, Ffn, Mixer};
-    use crate::runtime::reference::{mla::LatentCache, SeqState};
+    use crate::runtime::kinds::{Body, Ffn, Indexer, Mixer};
+    use crate::runtime::reference::{comp::CompState, mla::LatentCache, SeqState};
     let first: Vec<u32> = fx.prompt.iter().chain(&fx.decode).copied().collect();
     let mut out = RefRun { rows: Vec::new(), routed: Vec::new(), picked: Vec::new(), indexers: Vec::new() };
     let mut at = 0usize;
@@ -916,10 +923,15 @@ fn ref_drive_with(
                 m.layers[b].take = t[i][at..at + tokens.len()].iter().cloned().collect();
             }
         }
-        // (each latent attention with an indexer of its own: its cache of the sequence records every query's choice, and takes the engine's picks)
-        let mla: Vec<(usize, crate::runtime::kinds::Indexer)> = (0..m.layers.len())
+        // (each latent attention with an indexer of its own, and each compressed attention that picks for itself (an index source: DeepSeek-V4.1's, V4's
+        // own indexers): its state of the sequence records every query's choice, and takes the engine's picks; a compressed attention's indexer as the
+        // picks' judge takes it, each entry a pool of its own)
+        let mla: Vec<(usize, Indexer)> = (0..m.layers.len())
             .filter_map(|b| match &m.layers[b].block.body {
                 Body::Mixer(Mixer::Mla(x)) => x.indexer.clone().filter(|ix| !ix.shared).map(|ix| (b, ix)),
+                Body::Mixer(Mixer::Compressed(c)) if c.ratio > 0 && c.share.is_none_or(|s| s.picks.is_none()) => {
+                    c.indexer.clone().map(|ix| (b, Indexer { block: 1, ..ix }))
+                }
                 _ => None,
             })
             .collect();
@@ -938,7 +950,11 @@ fn ref_drive_with(
         out.indexers = mla.iter().map(|(_, ix)| ix.clone()).collect();
         for (i, &(b, _)) in mla.iter().enumerate() {
             let take = picks.map(|p| p[i][at..at + tokens.len()].iter().map(|r| r.picks.clone()).collect()).unwrap_or_default();
-            m.layers[b].seqs.insert(0, SeqState::Mla(LatentCache { take, picked: Some(Vec::new()), ..Default::default() }));
+            let st = match m.layers[b].block.body {
+                Body::Mixer(Mixer::Compressed(_)) => SeqState::Comp(CompState { take, picked: Some(Vec::new()), ..Default::default() }),
+                _ => SeqState::Mla(LatentCache { take, picked: Some(Vec::new()), ..Default::default() }),
+            };
+            m.layers[b].seqs.insert(0, st);
         }
         for (i, &t) in tokens.iter().enumerate() {
             let l = m.forward(&[t], i as u32)?.pop().ok_or_else(|| Error("a token without logits".into()))?;
@@ -950,8 +966,10 @@ fn ref_drive_with(
             out.routed[i].extend(m.layers[b].routed.take().unwrap_or_default());
         }
         for (i, &(b, _)) in mla.iter().enumerate() {
-            if let Some(SeqState::Mla(c)) = m.layers[b].seqs.get_mut(&0) {
-                out.picked[i].extend(c.picked.take().unwrap_or_default());
+            match m.layers[b].seqs.get_mut(&0) {
+                Some(SeqState::Mla(c)) => out.picked[i].extend(c.picked.take().unwrap_or_default()),
+                Some(SeqState::Comp(c)) => out.picked[i].extend(c.picked.take().unwrap_or_default()),
+                _ => {}
             }
         }
         at += tokens.len();
@@ -1917,14 +1935,26 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
 }
 
 /// A small DeepSeek-V4.1 (tests/fixtures/deepseek_v41_tiny_config.json: six layers at DeepSeek-V4's kernels' widths, ratios 0, 2, 2, 1, 1, 1 sharing their
-/// compressors, indexers and candidate blocks, Engram before layers 1 and 4, lagged mHC over four streams, one DSpark layer): every tensor of its description at
-/// its shape, at random from a fixed seed (the matrices about U(-a, a), a = sqrt(3 / cols); the norms' weights about 1; the mixing projections small), bf16 but
-/// the mixers' and the sinks' and choice biases' fp32 as released; and the compressed vocabulary Engram hashes (`engram_token_map.json`: a token's id mod its size).
+/// compressors, indexers and candidate blocks, Engram of orders 2 to 4 before layers 1 and 4, lagged mHC over four streams, one DSpark layer; the release's
+/// norm eps of 1e-20 and its formats): every tensor of its description at its shape, at random from a fixed seed, stored as the release stores it. The values: the
+/// matrices about U(-a, a), a = sqrt(3 / cols); the norms' weights about 1; the mixing projections small. The formats (DeepSeek-V4.1-Flash's headers): the
+/// matrices its config names FP8 E4M3 with an E8M0 scale a block of 32 x 32 (each block's scale its largest magnitude over 448 rounded up to a power of two;
+/// the Engram tables a scale a row's run of 32), the routed experts FP4 (two E2M1 codes a byte, the low first, an E8M0 scale a run of 32 near sqrt(3 / cols) / 6,
+/// one exponent either way: `dsv4_ref::random`'s draw), the mixers, sinks and choice biases fp32, the rest bf16; and the compressed vocabulary Engram hashes
+/// (`engram_token_map.json`: a token's id mod its size).
 pub fn deepseek_v41_random(out: &Path) -> Result<()> {
+    deepseek_v41_draw(out, DEEPSEEK_V41_SEED)
+}
+
+/// The seed of `deepseek_v41_random`'s draw.
+pub const DEEPSEEK_V41_SEED: u64 = 0x2026_1124_0000_0041;
+
+/// `deepseek_v41_random` drawn from `seed` (not 0).
+pub fn deepseek_v41_draw(out: &Path, seed: u64) -> Result<()> {
     let text = include_str!("../tests/fixtures/deepseek_v41_tiny_config.json");
     let cfg: Value = serde_json::from_str(text).map_err(|e| Error(e.to_string()))?;
     let d = crate::runtime::describe::describe(&cfg)?;
-    let mut r = 0x2026_1124_0000_0041u64;
+    let mut r = seed;
     let mut uni = move |a: f32, b: f32| {
         r ^= r << 13;
         r ^= r >> 7;
@@ -1935,12 +1965,16 @@ pub fn deepseek_v41_random(out: &Path) -> Result<()> {
         let b = x.to_bits();
         ((b.wrapping_add(0x7fff + ((b >> 16) & 1))) >> 16) as u16
     };
+    let scale_names: std::collections::BTreeSet<&String> = d.scales.values().collect();
     let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
     for name in d.names() {
+        // (a quantized matrix's scales are written with it)
+        if scale_names.contains(&name) {
+            continue;
+        }
         let shape = d.shapes.get(&name).cloned().ok_or_else(|| Error(format!("DeepSeek-V4.1's description has no shape for {name}")))?;
         let n: usize = shape.iter().product();
-        let cols = *shape.last().unwrap_or(&1) as f32;
-        let leaf = name.rsplit('.').next().unwrap_or("");
+        let cols = *shape.last().unwrap_or(&1);
         let (lo, hi) = if name.contains("hc_") && name.ends_with("_fn") {
             (-0.02, 0.02)
         } else if name.contains("hc_") && name.ends_with("_scale") {
@@ -1952,13 +1986,48 @@ pub fn deepseek_v41_random(out: &Path) -> Result<()> {
         } else if name == d.embed || name.ends_with("engram.embed.weight") {
             (-1.0, 1.0)
         } else {
-            let a = (3.0 / cols).sqrt();
+            let a = (3.0 / cols as f32).sqrt();
             (-a, a)
         };
-        let vals: Vec<f32> = (0..n).map(|_| uni(lo, hi)).collect();
-        let f32s = name.contains("hc_") || name.ends_with("attn_sink") || name.ends_with("gate.bias") || leaf == "q_weight" || leaf == "k_weight";
-        let bytes = if f32s { vals.iter().flat_map(|x| x.to_le_bytes()).collect() } else { vals.iter().flat_map(|&x| bf(x).to_le_bytes()).collect() };
-        tensors.push((name, if f32s { "F32" } else { "BF16" }, shape.iter().map(|&x| x as u64).collect(), bytes));
+        let dims: Vec<u64> = shape.iter().map(|&x| x as u64).collect();
+        match d.scales.get(&name) {
+            // (the routed experts as released: FP4)
+            Some(sn) if name.contains(".experts.") => {
+                let rows = shape[0];
+                let q: Vec<u8> = (0..rows * cols / 2).map(|_| uni(0.0, 256.0) as u8).collect();
+                let e0 = (((3.0 / cols as f32).sqrt() / 3.0).log2().round() as i32 + 126) as f32;
+                let s: Vec<u8> = (0..rows * cols / 32).map(|_| (e0 + uni(-1.0, 1.0).round()) as u8).collect();
+                tensors.push((name.clone(), "I8", vec![rows as u64, cols as u64 / 2], q));
+                tensors.push((sn.clone(), "F8_E8M0", vec![rows as u64, cols as u64 / 32], s));
+            }
+            // (an FP8 matrix as released: E4M3 with E8M0 block scales)
+            Some(sn) => {
+                let rows = shape[0];
+                let (br, bc) = if name.ends_with("engram.embed.weight") { (1, 32) } else { (32, 32) };
+                let w: Vec<f32> = (0..n).map(|_| uni(lo, hi)).collect();
+                let (gr, gc) = (rows.div_ceil(br), cols.div_ceil(bc));
+                let (mut q, mut sc) = (vec![0u8; n], vec![0u8; gr * gc]);
+                for bi in 0..gr {
+                    for bj in 0..gc {
+                        let at = || (bi * br..((bi + 1) * br).min(rows)).flat_map(move |i| (bj * bc..((bj + 1) * bc).min(cols)).map(move |j| i * cols + j));
+                        let amax = at().fold(0f32, |m, k| m.max(w[k].abs()));
+                        let s = crate::cpu_fp4::pow2_scale(amax.max(1e-4), 1.0 / 448.0);
+                        sc[bi * gc + bj] = (s.to_bits() >> 23) as u8;
+                        for k in at() {
+                            q[k] = crate::dsv4_ref::e4m3_byte(crate::cpu_fp4::e4m3_round((w[k] / s).clamp(-448.0, 448.0)));
+                        }
+                    }
+                }
+                tensors.push((name.clone(), "F8_E4M3", dims, q));
+                tensors.push((sn.clone(), "F8_E8M0", vec![gr as u64, gc as u64], sc));
+            }
+            None => {
+                let vals: Vec<f32> = (0..n).map(|_| uni(lo, hi)).collect();
+                let f32s = name.contains("hc_") || name.ends_with("attn_sink") || name.ends_with("gate.bias");
+                let bytes = if f32s { vals.iter().flat_map(|x| x.to_le_bytes()).collect() } else { vals.iter().flat_map(|&x| bf(x).to_le_bytes()).collect() };
+                tensors.push((name, if f32s { "F32" } else { "BF16" }, dims, bytes));
+            }
+        }
     }
     io(std::fs::create_dir_all(out))?;
     io(std::fs::write(out.join("config.json"), text))?;
@@ -2159,10 +2228,13 @@ pub fn cases() -> Vec<Case> {
             id: "deepseek-v41",
             family: "DeepSeek-V4.1 (CSA2's shared compressed attention, lagged mHC, Engram, mixture of experts)",
             weights: Weights::Random(deepseek_v41_random),
-            engine: |_, _| err(format!("DeepSeek-V4.1 is {NOT_ON_EXECUTOR}: its CPU reference alone (logitscheck --cpu-ref)")),
+            // (the compressed attention's executor, held to the kinds' reference on its own routers' and indexers' choices at the kind's bound. Without
+            // simulated quantizations: the kernels simulate DeepSeek-V4's release's (FP8 in blocks of 128), and V4.1's release quantizes otherwise
+            // (`lower_comp::lower`), so its engine runs its weights' arithmetic, which is what is held)
+            engine: dsv4_engine,
             cpu: Some(described_cpu),
             vocab: 4096,
-            on_choices: None,
+            on_choices: Some(ref_drive),
             also: None,
         },
         Case {
@@ -2897,15 +2969,17 @@ pub fn make_model(a: &crate::args::Args) -> Result<()> {
             let dir = Path::new(a.need(2, "DIR")?);
             make(dir)?;
             // (`--servable`: the files a server needs besides the weights, for a client to talk to it: a tokenizer, the chat template and the end token; the
-            // family's chat template where one is made: Qwen's for the Qwen3.5 layout's and Qwen3.8-Flash-Next's cases, GLM-5.3's for its layout's)
+            // family's chat template where one is made: Qwen's for the Qwen3.5 layout's and Qwen3.8-Flash-Next's cases, GLM-5.3's for its layout's, DeepSeek-V4.1's
+            // release's own (tests/fixtures/chat_deepseek_v41.jinja, its chat_template.jinja) for its case)
             if a.has("servable") {
                 let template = match c.id {
                     "qwen35" | "qwen35moe" | "qwen4x" | "qwen4x-s2" => include_str!("../tests/fixtures/chat_qwen38_tools.jinja"),
                     "glm-dsa" | "glm-dsa-f8" => include_str!("../tests/fixtures/chat_glm53_tools.jinja"),
+                    "deepseek-v41" => include_str!("../tests/fixtures/chat_deepseek_v41.jinja"),
                     id => {
                         return err(format!(
-                        "--servable: only the cases whose family's chat template is made (qwen35, qwen35moe, qwen4x, qwen4x-s2, glm-dsa, glm-dsa-f8; not {id})"
-                    ))
+                            "--servable: only the cases whose family's chat template is made (qwen35, qwen35moe, qwen4x, qwen4x-s2, glm-dsa, glm-dsa-f8, deepseek-v41; not {id})"
+                        ))
                     }
                 };
                 write_serving_files(dir, template)?;
@@ -3185,7 +3259,9 @@ mod tests {
         let picks: Option<Picks> = on_choices.then(|| {
             base.picked
                 .iter()
-                .map(|l| l.iter().map(|r| PickRow { pos: 0, picks: r.picks.clone(), q: Vec::new(), w: Vec::new(), keys: Default::default() }).collect())
+                .map(|l| {
+                    l.iter().map(|r| PickRow { pos: 0, picks: r.picks.clone(), q: Vec::new(), w: Vec::new(), keys: Default::default(), inside: None }).collect()
+                })
                 .collect()
         });
         let rounded = ref_drive_with(dir, fx, take.as_ref(), picks.as_ref(), edit)?;
@@ -3314,13 +3390,12 @@ mod tests {
     /// Each case's reference is its description's on the layer kinds (DeepSeek-V4's case is held to src/dsv4_ref.rs, without its simulated
     /// quantizations: that reference's floor is `deepseek_v4_noise_floor`). Where a description already rounds every norm (Kimi-K3's, GLM-5.3-Flash's) and
     /// scales no embedding, `stored` moves nothing: its floor is 0 and says nothing of its draw (theirs are the reference in fp32 against all its
-    /// rounding points, `noise_floor_against_fp32`, `glm_noise_floor`). Not here: deepseek-v41 (no engine: its fixture's bound is the reference's own
-    /// across machines), nemotron-h (an older family).
+    /// rounding points, `noise_floor_against_fp32`, `glm_noise_floor`). Not here: nemotron-h (an older family).
     #[cfg(feature = "dev")]
     #[test]
     fn every_case_held_to_a_reference_is_well_conditioned() {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits");
-        let all: Vec<Case> = cases().into_iter().filter(|c| c.cpu.is_some() && !["deepseek-v41", "nemotron-h"].contains(&c.id)).collect();
+        let all: Vec<Case> = cases().into_iter().filter(|c| c.cpu.is_some() && c.id != "nemotron-h").collect();
         let floors: Vec<(&str, Result<(Verdict, Bound)>)> = std::thread::scope(|s| {
             let fixtures = &fixtures;
             let runs: Vec<_> = all
@@ -3523,6 +3598,42 @@ mod tests {
         assert!(wrong.is_empty(), "past a tenth of the kind's bound: {wrong:?}");
     }
 
+    /// DeepSeek-V4.1's noise floor against fp32, on the reference its case is held to (the layer kinds'): the reference with the rounding points its description
+    /// names as the release's (each RMSNorm's output and the streams' collapse and update rounded once: model.py's `.to(dtype)`) against itself with every one in
+    /// fp32 (`ModelDesc::f32_arithmetic`), the fp32 run on the rounded run's experts and indexer picks: at most a tenth of the kind's bound (KL mean 1e-5, max
+    /// 2.5e-5, every best token with a lead), on the case's draw and three others of its shape (`deepseek_v41_draw`), so that the draw is well conditioned and not
+    /// a lucky one. Minutes: cargo test --profile ci -p glyd-engine --lib -- --ignored deepseek_v41_noise_floor.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn deepseek_v41_noise_floor() {
+        let fx = Fixture::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits/deepseek-v41.json.gz")).unwrap();
+        let mut wrong = Vec::new();
+        for k in 0..4u64 {
+            let dir = std::env::temp_dir().join(format!("glyd-fp32floor-v41-{k}-{}", std::process::id()));
+            deepseek_v41_draw(&dir, DEEPSEEK_V41_SEED ^ (k << 32)).unwrap();
+            let v = noise_floor_with(&dir, &fx, true, &TENTH, |d| d.desc.f32_arithmetic()).unwrap_or_else(|e| panic!("{}", e.msg));
+            let base = ref_drive(&dir, &fx, None, None).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            let near = base.routed.iter().flatten().map(|r| r.gap).fold(f32::INFINITY, f32::min);
+            let near_pick = base.picked.iter().flatten().map(|r| r.gap).fold(f32::INFINITY, f32::min);
+            println!(
+                "{} deepseek-v41 seed {k}{}: the noise floor against fp32 KL mean {:.2e} max {:.2e}, best token {}/{}, largest logit difference {:.4}; the nearest router choice {near:.1e}, indexer {near_pick:.1e}",
+                if v.ok { "PASS" } else { "FAIL" },
+                if k == 0 { " (the case's draw)" } else { "" },
+                v.mean_kl,
+                v.max_kl,
+                v.top1.0,
+                v.top1.1,
+                v.max_dlogit
+            );
+            if !v.ok {
+                wrong.push(format!("seed {k}"));
+            }
+        }
+        assert!(wrong.is_empty(), "past a tenth of the kind's bound: {wrong:?}");
+    }
+
     /// DeepSeek-V4's noise floor on the reference its case is held to (src/dsv4_ref.rs): the reference with the release's bf16 rounding points against itself
     /// with every one of them in fp32 (`dsv4_ref::PLAIN`), on the same expert choices and indexer picks, without its simulated quantizations (the case's held
     /// part: at most a tenth of the kind's bound, as the other cases' floors) and with them (`dsv4_also`'s third part, printed there and not held: it is past the
@@ -3544,7 +3655,9 @@ mod tests {
             let picks: Picks = base
                 .picked
                 .iter()
-                .map(|l| l.iter().map(|r| PickRow { pos: 0, picks: r.picks.clone(), q: Vec::new(), w: Vec::new(), keys: Default::default() }).collect())
+                .map(|l| {
+                    l.iter().map(|r| PickRow { pos: 0, picks: r.picks.clone(), q: Vec::new(), w: Vec::new(), keys: Default::default(), inside: None }).collect()
+                })
                 .collect();
             crate::dsv4_ref::PLAIN.with(|p| p.set(true));
             let plain = dsv4_drive_with(&dir, &fx, Some(&take), Some(&picks), sim);
@@ -3857,7 +3970,10 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(l, v)| {
-                    v.iter().enumerate().map(|(t, r)| PickRow { pos: 0, picks: f(l, t, r), q: Vec::new(), w: Vec::new(), keys: Default::default() }).collect()
+                    v.iter()
+                        .enumerate()
+                        .map(|(t, r)| PickRow { pos: 0, picks: f(l, t, r), q: Vec::new(), w: Vec::new(), keys: Default::default(), inside: None })
+                        .collect()
                 })
                 .collect()
         };
@@ -3896,7 +4012,7 @@ mod tests {
         let row = |near: bool, picks: Vec<usize>| {
             let s = [0.1f32, 0.2, if near { 0.6999 } else { 0.3 }, 0.7, 0.9];
             let keys: Vec<Vec<f32>> = s.iter().map(|&x| vec![x, 0.0, 0.0, 0.0]).collect();
-            PickRow { pos: 4, picks, q: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], w: vec![1.0, 1.0], keys: std::rc::Rc::new(keys) }
+            PickRow { pos: 4, picks, q: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], w: vec![1.0, 1.0], keys: std::rc::Rc::new(keys), inside: None }
         };
         let seen: Vec<usize> = (0..5).collect();
         let own = |keys: &[Vec<f32>]| choose(&ix, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], &[1.0, 1.0], keys, &seen);
@@ -4024,11 +4140,11 @@ mod tests {
         // a case whose fixtures are another generation's bits, one whose engine is not built, one with no fixture at this level
         let line = t.case("glm", 0, 0, false, &["sm89".to_string()]).unwrap();
         assert!(line.starts_with("FAIL glm") && line.contains("nothing compared") && line.contains("sm89"), "{line}");
-        assert!(t.case("deepseek-v41", 0, 0, true, &[]).is_none() && t.case("dense", 0, 0, false, &[]).is_none());
+        assert!(t.case("a-later-family", 0, 0, true, &[]).is_none() && t.case("dense", 0, 0, false, &[]).is_none());
         assert_eq!(t.failed(), vec!["glm: nothing compared (its fixtures are the bits of sm89)".to_string()]);
         assert_eq!(
             t.summary(),
-            "2 held to a reference, 2 pinned, 2 not held; pinned only (no reference): gemma4; not held: glm; not held, no engine yet: deepseek-v41"
+            "2 held to a reference, 2 pinned, 2 not held; pinned only (no reference): gemma4; not held: glm; not held, no engine yet: a-later-family"
         );
         assert_eq!(Tally::default().summary(), "0 held to a reference, 0 pinned, 0 not held");
     }
@@ -4415,12 +4531,13 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "glm" => crate::dynamic::glm::load(dir, &DynOpts { layout: Some(Layout::Tiered), ..o.clone() }, level_layout(level)?.unwrap_or(Layout::Int6))?,
         // (its experts at the level asked: the lossless one where none is)
         "nemotron" => crate::dynamic::nemotron::load(dir, o, level_layout(level)?.unwrap_or(Layout::Tiered))?,
-        "deepseek-v4" => crate::dynamic::deepseek_v4::load(dir, o)?,
+        // (DeepSeek-V4 and V4.1: one loader of the compressed attention's lowering)
+        "deepseek-v4" | "deepseek-v41" => crate::dynamic::deepseek_v4::load(dir, o)?,
         "qwen4x" | "qwen4x-s2" => crate::dynamic::qwen4x::load(dir, o)?,
         "qwen4x-cb" => qwen4x_cb_load(dir, o)?,
         other => {
             return err(format!(
-                "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, glm-dsa-f8, nemotron, deepseek-v4, qwen4x, qwen4x-s2 or qwen4x-cb"
+                "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, glm-dsa-f8, nemotron, deepseek-v4, deepseek-v41, qwen4x, qwen4x-s2 or qwen4x-cb"
             ))
         }
     })
@@ -4482,11 +4599,12 @@ fn random_model(case: &str, dir: &Path) -> Result<()> {
         "glm-dsa-f8" => glm_dsa_f8_random(dir),
         "nemotron" => crate::kcheck_nh::random(dir, 0, 16),
         "deepseek-v4" => crate::dsv4_ref::random(dir, None),
+        "deepseek-v41" => deepseek_v41_random(dir),
         "qwen4x" => qwen4x_random(dir),
         "qwen4x-s2" => qwen4x_s2_random(dir),
         "qwen4x-cb" => qwen4x_cb_random(dir),
         other => err(format!(
-            "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, glm-dsa-f8, nemotron, deepseek-v4, qwen4x, qwen4x-s2 or qwen4x-cb"
+            "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, glm-dsa-f8, nemotron, deepseek-v4, deepseek-v41, qwen4x, qwen4x-s2 or qwen4x-cb"
         )),
     }
 }

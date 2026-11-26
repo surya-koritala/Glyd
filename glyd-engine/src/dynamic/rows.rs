@@ -379,7 +379,17 @@ pub(super) fn row_wise(op: &Op) -> bool {
 pub(super) fn pages_all(d: &super::ModelDesc) -> bool {
     std::iter::once(&d.first).chain(d.layers.iter().flatten()).all(|op| {
         op.rings().is_empty()
-            || matches!(op, Op::Attn(_) | Op::Mla(_) | Op::CompKv { .. } | Op::Compress { .. } | Op::IdxPick(_) | Op::CompAttn { .. } | Op::IdxMean { .. })
+            || matches!(
+                op,
+                Op::Attn(_)
+                    | Op::Mla(_)
+                    | Op::CompKv { .. }
+                    | Op::Compress { .. }
+                    | Op::IdxKeys { .. }
+                    | Op::IdxPick(_)
+                    | Op::CompAttn { .. }
+                    | Op::IdxMean { .. }
+            )
     }) && d.layers.iter().flatten().any(|op| !op.rings().is_empty())
 }
 

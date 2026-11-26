@@ -168,23 +168,31 @@ fn fill(out: &mut [u8], size: usize, f: impl Fn(usize, &mut [u8]) + Sync) {
     });
 }
 
-/// The table rows of `tokens`, n rows of one sequence, as kernels/qwen4x.cu's `qx_ngram_rows` reads them: row t's token, the one before it and the one before
-/// that (the pass's, else the sequence's last two before the pass, `hist`: each token + 1, oldest first, 0 none: the end token), the third cut to the end token
-/// where the second is the end token; the bigram's hash for the first `per` tables, the trigram's for the others, each mod its table's size at its offset.
-pub(super) fn ngram_ids(tokens: &[u32], hist: [i32; 2], mult: [u64; 3], sizes: &[u64], offsets: &[u64], per: usize, eos: u32) -> Vec<u64> {
-    let before = |h: i32| if h > 0 { (h - 1) as u32 } else { eos };
+/// The table rows of `tokens`, n rows of one sequence, as kernels/qwen4x.cu's `qx_ngram_rows` reads them (`x`'s order, segments and end token): each row's
+/// order positions p the token p places back (each its compressed vocabulary's id where `map` is given), the pass's or, before its first row, the sequence's
+/// last ids (`hist`: each + 1, oldest first, 0 none: the pad, the end token's id); past an end token inside a segment the end token; each order's hash the
+/// multipliers' XOR of them, mod each of its `per` tables' sizes at their offsets.
+pub(super) fn ngram_ids(x: &NgramRows, tokens: &[u32], hist: &[i32], mult: &[u64], sizes: &[u64], offsets: &[u64], map: Option<&[i32]>) -> Vec<u64> {
+    let id = |t: u32| map.map_or(t, |m| m[t as usize] as u32);
+    let (eos, pad) = (x.eos, id(x.eos));
     let mut out = Vec::with_capacity(tokens.len() * sizes.len());
     for t in 0..tokens.len() {
-        let h1 = if t >= 1 { tokens[t - 1] } else { before(hist[1]) };
-        let h2 = match t {
-            0 => before(hist[0]),
-            1 => before(hist[1]),
-            _ => tokens[t - 2],
-        };
-        let c2 = if h1 == eos { eos } else { h2 };
-        let bi = (tokens[t] as u64).wrapping_mul(mult[0]) ^ (h1 as u64).wrapping_mul(mult[1]);
-        let tri = bi ^ (c2 as u64).wrapping_mul(mult[2]);
-        out.extend((0..sizes.len()).map(|h| (if h < per { bi } else { tri }) % sizes[h] + offsets[h]));
+        let (mut cut, mut m, mut mixed) = (false, 0u64, [0u64; 4]);
+        for p in 0..x.order {
+            let v = if cut {
+                eos
+            } else if p <= t {
+                id(tokens[t - p])
+            } else {
+                // (hist[order - 2] is one back from the pass's first row)
+                let k = (x.order - 1).checked_sub(p - t);
+                k.and_then(|k| hist.get(k).copied()).filter(|&h| h > 0).map_or(pad, |h| (h - 1) as u32)
+            };
+            cut |= p > 0 && x.segments && v == eos;
+            m ^= (v as u64).wrapping_mul(mult[p]);
+            mixed[p] = m;
+        }
+        out.extend((0..sizes.len()).map(|h| mixed[h / x.per + 1] % sizes[h] + offsets[h]));
     }
     out
 }
@@ -196,12 +204,14 @@ pub(super) struct Hosted {
     ngram: Vec<Staged>,
 }
 
-/// An n-gram block's rows from its table on the host: its operation, the hash's numbers (the checkpoint's int64 tensors), and the pass's rows (a chunk's, pinned).
+/// An n-gram block's rows from its table on the host: its operation, the hash's numbers (the checkpoint's int64 tensors), its compressed vocabulary where it has
+/// one, and the pass's rows (a chunk's, pinned).
 struct Staged {
     op: NgramRows,
-    mult: [u64; 3],
+    mult: Vec<u64>,
     sizes: Vec<u64>,
     offsets: Vec<u64>,
+    map: Option<Vec<i32>>,
     rows: Pinned,
 }
 
@@ -224,23 +234,27 @@ impl Hosted {
                 Ok(v)
             };
             let (mult, sizes, offsets) = (read(0)?, read(1)?, read(2)?);
-            let heads = 2 * x.per;
-            if mult.len() < 3 || sizes.len() < heads || offsets.len() < heads || sizes[..heads].contains(&0) {
+            let heads = (x.order - 1) * x.per;
+            if !(2..=4).contains(&x.order) || mult.len() < x.order || sizes.len() < heads || offsets.len() < heads || sizes[..heads].contains(&0) {
                 return err(format!(
-                    "an n-gram block's hash of {} multipliers, {} sizes and {} offsets, where {heads} tables are read",
+                    "an n-gram block of order {}'s hash of {} multipliers, {} sizes and {} offsets, where {heads} tables are read",
+                    x.order,
                     mult.len(),
                     sizes.len(),
                     offsets.len()
                 ));
             }
-            let row = heads * t.row_bytes;
-            ngram.push(Staged {
-                op: *x,
-                mult: [mult[0], mult[1], mult[2]],
-                sizes: sizes[..heads].to_vec(),
-                offsets: offsets[..heads].to_vec(),
-                rows: Pinned::new(chunk * row)?,
-            });
+            let map = match x.map {
+                Some(m) => {
+                    let b = &p.small[m];
+                    let mut v = vec![0i32; b.bytes / 4];
+                    b.read(0, &mut v)?;
+                    Some(v)
+                }
+                None => None,
+            };
+            let (row, offsets) = (heads * t.row_bytes, offsets[..heads].to_vec());
+            ngram.push(Staged { op: *x, mult, sizes: sizes[..heads].to_vec(), offsets, map, rows: Pinned::new(chunk * row)? });
         }
         Ok((embed.is_some() || !ngram.is_empty()).then_some(Hosted { embed, ngram }))
     }
@@ -289,12 +303,15 @@ impl Dyn {
                 if row0 + n > tokens.len() || (row0 + n) * rb > g.rows.bytes {
                     return err(format!("rows {row0}..{} of a pass of {} tokens, where a pass stages {}", row0 + n, tokens.len(), g.rows.bytes / rb));
                 }
-                let mut hist = [0i32; 2];
+                let mut hist = vec![0i32; g.op.order - 1];
                 let at = states.map_or(self.states[g.op.hist].ptr, |s| s[g.op.hist]);
-                // SAFETY: the state's two ints, read after the passes before it (synchronized above; this copy waited for below).
-                unsafe { copy_d2h_async(hist.as_mut_ptr() as *mut _, at, 8, self.dev.stream)? };
+                // SAFETY: the state's `order` - 1 ints, read after the passes before it (synchronized above; this copy waited for below).
+                unsafe { copy_d2h_async(hist.as_mut_ptr() as *mut _, at, hist.len() * 4, self.dev.stream)? };
                 self.dev.sync()?;
-                let ids = ngram_ids(&tokens[row0..row0 + n], hist, g.mult, &g.sizes, &g.offsets, g.op.per, g.op.eos);
+                if let Some(&t) = g.map.as_ref().and_then(|m| tokens[row0..row0 + n].iter().find(|&&t| t as usize >= m.len())) {
+                    return err(format!("token {t}: the n-gram block's vocabulary map holds {}", g.map.as_ref().map_or(0, Vec::len)));
+                }
+                let ids = ngram_ids(&g.op, &tokens[row0..row0 + n], &hist, &g.mult, &g.sizes, &g.offsets, g.map.as_deref());
                 // SAFETY: the pinned rows hold a chunk's (checked above); no copy reads them now (the stream is synchronized).
                 t.gather(&ids, unsafe { std::slice::from_raw_parts_mut((g.rows.ptr as *mut u8).add(row0 * rb), n * rb) })?;
             }
@@ -320,13 +337,14 @@ pub(super) fn on_host(d: &ModelDesc, k: usize) -> bool {
 mod tests {
     use super::*;
 
-    /// The host's ids are the CPU reference's (`reference::ngram::context`, `ids`) for every row of passes cut anywhere in a sequence, the end token inside it
-    /// cutting the trigrams after it: the GPU's hash, which the reference holds the kernel to, read on the host.
+    /// The host's ids are the CPU reference's (`reference::ngram::context`, `ids`) for every row of passes cut anywhere in a sequence, read as the GPU's hash
+    /// reads them (the sequence's last ids its state, + 1): Condor's trigrams, the end token inside the sequence cutting the n-grams after it, and Engram's
+    /// order 4 over its compressed vocabulary with no segments (the pad's own id before the sequence).
     #[test]
     fn the_hosts_ids_are_the_references() {
         use crate::runtime::kinds::{Ngram, NgramForm, Norm};
         use crate::runtime::reference::ngram as r;
-        let n = Ngram {
+        let seg = Ngram {
             order: 3,
             heads: 8,
             dim: 256,
@@ -342,14 +360,31 @@ mod tests {
             form: NgramForm::Segmented,
             table: TableAt::Host,
         };
-        let mult = r::multipliers(&n).unwrap();
-        let (sizes, offsets) = r::tables(&n);
+        let engram = Ngram { order: 4, heads: 2, dim: 48, base: 50, vocab: 600, seed: 10007 * 3, conv: 0, dilation: 1, form: NgramForm::Engram, ..seg };
+        let map: Vec<i32> = (0..2048).map(|t| (t * 7 % 600) as i32).collect();
         let seq: Vec<u32> = [3, 1900, 7, 7, 12, 7, 5, 2047, 0, 7, 9, 44].to_vec();
-        let want: Vec<u64> = (0..seq.len()).flat_map(|i| r::ids(&n, &mult, &sizes, &offsets, &r::context(&n, &seq[..i], seq[i]))).collect();
-        for cut in 0..seq.len() {
-            let hist = |k: usize| if cut >= k { seq[cut - k] as i32 + 1 } else { 0 };
-            let got = ngram_ids(&seq[cut..], [hist(2), hist(1)], [mult[0], mult[1], mult[2]], &sizes, &offsets, n.heads, n.eos);
-            assert_eq!(got, want[cut * 16..], "a pass from token {cut}");
+        for (n, m) in [(seg, None), (engram, Some(&map[..]))] {
+            let (mult, (sizes, offsets)) = (r::multipliers(&n).unwrap(), r::tables(&n));
+            let id = |t: u32| m.map_or(t, |m| m[t as usize] as u32);
+            let ids: Vec<u32> = seq.iter().map(|&t| id(t)).collect();
+            let want: Vec<u64> = (0..seq.len()).flat_map(|i| r::ids(&n, &mult, &sizes, &offsets, &r::context(&n, &ids[..i], ids[i], id(n.eos)))).collect();
+            let x = NgramRows {
+                table: 0,
+                hash: [0; 3],
+                hist: 0,
+                per: n.heads,
+                row: 1,
+                eos: n.eos,
+                order: n.order,
+                map: m.map(|_| 0),
+                segments: n.form == NgramForm::Segmented,
+            };
+            let h = sizes.len();
+            for cut in 0..seq.len() {
+                let hist: Vec<i32> = (0..n.order - 1).map(|k| cut.checked_sub(n.order - 1 - k).map_or(0, |i| ids[i] as i32 + 1)).collect();
+                let got = ngram_ids(&x, &seq[cut..], &hist, &mult, &sizes, &offsets, m);
+                assert_eq!(got, want[cut * h..], "{:?}: a pass from token {cut}", n.form);
+            }
         }
     }
 }

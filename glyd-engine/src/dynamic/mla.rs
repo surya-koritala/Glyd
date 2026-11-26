@@ -578,8 +578,9 @@ pub(crate) struct PickAt {
 
 /// One latent attention's indexer in a pass `Dyn::trace_picks` traced: its layer, each row's position and picks (the positions its query attends to, in order),
 /// and the indexer's inputs as the GPU held them (bf16): each row's queries [heads dim] and head weights' product [heads] (before heads^-0.5), and the key of
-/// each complete entry the pass's last row sees, in order (a pool's as pooled; a token's own where an entry is a token). What a check runs the reference's
-/// choice on (`runtime::reference::mla::choose`) where the engine's picks are not the reference's own.
+/// each complete entry the pass's last row sees, in order (a pool's as pooled; a token's own where an entry is a token); and where a row picks inside a
+/// candidate source's published blocks (`Cand::Inside`), the entries those blocks hold (`inside`, None: every entry it sees). What a check runs the reference's
+/// choice on (`runtime::reference::mla::choose_among`) where the engine's picks are not the reference's own.
 #[derive(Clone, Debug)]
 pub struct PickTrace {
     pub layer: usize,
@@ -588,6 +589,7 @@ pub struct PickTrace {
     pub q: Vec<Vec<f32>>,
     pub w: Vec<Vec<f32>>,
     pub keys: Vec<Vec<f32>>,
+    pub inside: Vec<Option<Vec<usize>>>,
 }
 
 /// Where a pick's candidate blocks are (`IdxPick::cand`; all 0 without them).
@@ -668,6 +670,7 @@ impl Dyn {
         let rec = PickTrace {
             layer: l,
             pos: at.iter().map(|&x| x as usize).collect(),
+            inside: vec![None; picks.len()],
             picks,
             q: q.chunks(ih * id).map(f).collect(),
             w: w.chunks(ih).map(f).collect(),
