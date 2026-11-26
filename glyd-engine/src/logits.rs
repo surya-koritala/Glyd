@@ -6590,8 +6590,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         let (eager_on, ones_on, one_steps_on) = (e.rows_eager.get() - eager_before, e.one_replays.get() - ones_on_before, run_ones.get());
         e.pieces_for_check(false, false);
         let (same_t, same_l) = same(&on, &eager);
-        // (pieces are of a full pass's rows, a step's chunk's: prompts of fewer tokens than that together make no such pass)
-        let no_full = prompts.iter().map(Vec::len).sum::<usize>() < chunk;
+        // (pieces are of a full pass's rows, a step's chunk's: prompts that fit one chunk together make one pass of prompt tokens at most, which need take none (one-token
+        // prompts are rows that decode: their pass is the decode steps' graph))
+        let no_full = prompts.iter().map(Vec::len).sum::<usize>() <= chunk;
         let ok = same_t == prompts.len() && same_l == prompts.len() && (played > 0 || !pieces_on || ahead || no_full);
         println!(
             "{} graphs on against off: {same_t} of {} replies at once the eager passes', token for token, {same_l} logit for logit; {played} passes replayed their pieces, \
@@ -6599,7 +6600,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             if ok { "PASS" } else { "FAIL" },
             prompts.len(),
             if pieces_on && no_full {
-                " (the prompts together are fewer tokens than a step's chunk: no pass of the pieces' rows)"
+                " (the prompts fit one step's chunk together: no pass need replay pieces)"
             } else if pieces_on {
                 ""
             } else if !e.stores().is_empty() {
