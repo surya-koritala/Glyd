@@ -1493,8 +1493,9 @@ pub struct Dyn {
     pub(crate) rows_replays: std::cell::Cell<u64>,
     pub(crate) rows_late: std::cell::Cell<u64>,
     pub(crate) rows_eager: std::cell::Cell<u64>,
-    /// The steps of one row that replayed their sequence's own graph (`usercheck` counts them).
+    /// The steps of one row that replayed their sequence's own graph, and the graphs of steps of several rows that could not be captured (`usercheck` counts them).
     pub(crate) one_replays: std::cell::Cell<u64>,
+    pub(crate) rows_lost: std::cell::Cell<u64>,
     /// Piecewise graphs of the passes no whole graph takes (src/dynamic/pieces.rs): the sets captured, how `forward` runs the pass being made, the pieces a capture makes,
     /// whether a piece's capture is open (to end it on an error), the set the last pass replayed and where its pieces' events go among the eager ones (`prof_take`), the
     /// pieces the last pass replayed, and the passes replayed so (`usercheck` counts them).
@@ -1607,12 +1608,13 @@ fn handed_over(d: &ModelDesc) -> Vec<(Slot, usize)> {
 /// tiered layout's step kernel to 8 rows), so each row's sums are a step's. Checked bit for bit on swift only; the range worker refuses verify on other levels.
 pub const VERIFY_ROWS: usize = 8;
 
-/// A step of rows that decode as a graph: its rows (padded), the graph, the events in it (`--prof`) and its attention's decode calls.
+/// A step of rows that decode as a graph: its rows (padded), the graph, the events in it (`--prof`), its attention's decode calls and its replays (`usercheck` counts them).
 struct RowsGraph {
     rows: usize,
     graph: Graph,
     marks: Vec<(&'static str, Ev)>,
     calls: usize,
+    played: std::cell::Cell<u64>,
 }
 
 /// The library's routes (glyd_gpu.h GLYD_GPU_ROUTE_*) `Dyn::decodes` reads: W decoded for the caller's dense product, the prompt kernel, W decoded ahead.
@@ -2315,6 +2317,7 @@ impl Dyn {
             rows_replays: std::cell::Cell::new(0),
             rows_eager: std::cell::Cell::new(0),
             one_replays: std::cell::Cell::new(0),
+            rows_lost: std::cell::Cell::new(0),
             pieces: Default::default(),
             pmode: std::cell::Cell::new(pieces::Mode::Eager),
             pcap: Default::default(),
@@ -3876,6 +3879,7 @@ impl Dyn {
                 Some(g) if !self.graphs_off.get() && !self.tracing() => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
+                    self.one_replays.set(self.one_replays.get() + 1);
                     self.rplayed.set(None);
                     self.dcalls.set(self.gcalls);
                     self.gap_end()?;

@@ -6524,10 +6524,12 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         println!("steps launched before the step before lands (GLYD_ENGINE_OVERLAP=1): {}", if ahead { "yes" } else { "no, this model's steps land first" });
     }
     let graphs = e.rows_graphs() && !(one_a_pass && !e.rows_exact()) && !ahead;
+    let by: Vec<String> = e.rows_replays_by_size().iter().map(|(r, n)| format!("{r}:{n}")).collect();
     println!(
-        "decode steps of several rows replayed from a CUDA graph: {replays}, run eager: {eager} (graphs up to {top} rows), graphs captured in a request's step: {late}{}; \
-         decode steps of one row replayed from their sequence's graph: {ones}",
-        if graphs { "" } else { " (this description's steps of several rows run eager)" }
+        "decode steps of several rows replayed from a CUDA graph: {replays}, run eager: {eager} (graphs up to {top} rows; replays by the graph's rows {}), graphs captured \
+         in a request's step: {late}{}; decode steps of one row replayed from their sequence's graph: {ones}",
+        by.join(" "),
+        if graphs || k < 2 { "" } else { " (this description's steps of several rows run eager)" }
     );
     if graphs && batchable && k > 1 && steps[2..].iter().any(|&x| x > 0) && replays == 0 {
         println!("FAIL no decode step of several rows replayed a graph");
@@ -6536,6 +6538,11 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // (every step of several rows that decode within the ladder replays its graph: where the users fit it, none runs eager)
     if graphs && k <= top && eager > 0 {
         println!("FAIL {eager} decode steps of several rows ran eager, where the graphs of up to {top} rows hold them");
+        fails += 1;
+    }
+    // (a graph that could not be captured turns the description's graphs of several rows off: not a pass)
+    if e.rows_lost.get() > 0 {
+        println!("FAIL {} graphs of decode steps of several rows could not be captured (such steps then ran eager)", e.rows_lost.get());
         fails += 1;
     }
     if e.graphs_taken() && !ahead && steps[1] > 0 && ones == 0 {

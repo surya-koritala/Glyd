@@ -1054,6 +1054,14 @@ impl Dyn {
         self.rows_top().unwrap_or(0)
     }
 
+    /// The graphs of steps of rows that decode captured, by their rows, and how many times each was replayed.
+    #[cfg(feature = "dev")]
+    pub(crate) fn rows_replays_by_size(&self) -> Vec<(usize, u64)> {
+        let mut v: Vec<(usize, u64)> = self.rgraphs.iter().map(|g| (g.rows, g.played.get())).collect();
+        v.sort_unstable();
+        v
+    }
+
     /// The graphs of steps of rows that decode, every size of `rows_bucket`'s ladder, captured before the first request (as vLLM captures its at start), so that no
     /// step waits on a capture: each after a warm-up pass of padding rows alone (position -1: no key read or written, no sequence's state touched).
     fn capture_rows(&mut self) -> Result<()> {
@@ -1090,6 +1098,7 @@ impl Dyn {
     unsafe fn rows_replay(&mut self, k: usize, start: bool) -> Result<()> {
         if let Some(i) = self.rgraphs.iter().position(|g| g.rows == k) {
             self.rgraphs[i].graph.launch(self.dev.stream)?;
+            self.rgraphs[i].played.set(self.rgraphs[i].played.get() + 1);
             self.replayed.set(true);
             self.rplayed.set(Some(i));
             self.dcalls.set(self.rgraphs[i].calls);
@@ -1117,10 +1126,11 @@ impl Dyn {
             _ => Vec::new(),
         };
         match g {
-            Ok(graph) => self.rgraphs.push(super::RowsGraph { rows: k, graph, marks, calls: self.dcalls.get() }),
+            Ok(graph) => self.rgraphs.push(super::RowsGraph { rows: k, graph, marks, calls: self.dcalls.get(), played: std::cell::Cell::new(0) }),
             Err(e) => {
                 // (the step ran; a capture that fails leaves such steps eager from here, as they were)
                 eprintln!("glyd: a decode step of {k} rows could not be captured as a CUDA graph ({e}): such steps run eager");
+                self.rows_lost.set(self.rows_lost.get() + 1);
                 if let Some(rt) = self.paged.as_mut().and_then(|pg| pg.rows.as_mut()) {
                     rt.graphs = false;
                 }
