@@ -125,6 +125,7 @@ const BY_COMMAND: &[(&str, &str, bool)] = &[
     ("ceiling", "fp8", true),
     ("quality", "bar", true),
     ("dsv4gen", "score", true),
+    ("stackcheck", "load", true),
 ];
 
 #[derive(Clone)]
