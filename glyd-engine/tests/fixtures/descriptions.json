@@ -175,6 +175,14 @@
     "plan": "5549ab30d8b60545",
     "family": "DeepSeekV4"
   },
+  "headers/DeepSeek-V4-Flash-DSpark.json": {
+    "blocks": 86,
+    "tensors": 72317,
+    "kinds": "cf796315f77d38a2",
+    "weights": "dcc4ccb3b29d9720",
+    "plan": "5549ab30d8b60545",
+    "family": "DeepSeekV4"
+  },
   "headers/DeepSeek-V4.1-Flash-1017.json": {
     "blocks": 82,
     "tensors": 95776,
@@ -182,6 +190,14 @@
     "weights": "6632c8ed94397f3f",
     "plan": "66af95e594fd640a",
     "family": "DeepSeekV41"
+  },
+  "headers/GLM-5.3.json": {
+    "blocks": 156,
+    "tensors": 118629,
+    "kinds": "4c3bab0d5b848251",
+    "weights": "fd3ca5ddae0e7109",
+    "plan": "78a88e2091c277f7",
+    "family": "GlmDsa"
   },
   "headers/Kimi-K3.1-Pro.json": {
     "blocks": 186,
