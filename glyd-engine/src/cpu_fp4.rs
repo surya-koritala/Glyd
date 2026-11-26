@@ -462,6 +462,10 @@ impl Out {
 /// that expert (`by_expert`), so a call reads each expert's bytes from memory once whatever its pairs (the block stays in the core's cache between them); each pair's sums are
 /// the ones it has alone, to the bit.
 pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], act: Act, threads: usize, pin: bool) -> Result<()> {
+    #[cfg(feature = "dev")]
+    if let Some(gpu) = *SM86.lock().map_err(|_| crate::ffi::Error("the replay's lock".into()))? {
+        return experts_sm86(z, pairs, out, act, gpu);
+    }
     let Some(first) = pairs.first() else { return Ok(()) };
     let (two, latent) = (first.expert.up.rows, first.expert.up.cols);
     let inter = two / 2;
@@ -529,6 +533,137 @@ pub fn experts(kernel: Kernel, z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], ac
             }
         }
     });
+    Ok(())
+}
+
+/// (development) Where `Some`, `experts` computes each pair in the order of the GPU's step products on an A10's tensor cores (`experts_sm86`), the layer's
+/// experts and the GPU's slots given (glyd-gpu's moe_splits: its multiprocessors, twice on an HBM part): a check's (`moe::PAIRS`), never the product path's.
+#[cfg(feature = "dev")]
+pub(crate) static SM86: std::sync::Mutex<Option<Sm86>> = std::sync::Mutex::new(None);
+
+/// (development) What `experts_sm86` needs of the GPU beside it: the layer's experts and the library's slots (its K split: `splits`).
+#[cfg(feature = "dev")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Sm86 {
+    pub experts: usize,
+    pub slots: usize,
+}
+
+#[cfg(feature = "dev")]
+impl Sm86 {
+    /// The blocks glyd-gpu's step products split a product's K over (moe_splits: by the layer's shape, `rows` an expert, and the slots alone).
+    fn splits(&self, rows: usize, k: usize) -> usize {
+        let units = (rows / 64 * self.experts).max(1);
+        (self.slots / units).min(k / 256).max(1)
+    }
+}
+
+/// (development) The sum of a block of eight products with the accumulator `c` as mma.sync.m16n8k16 (bf16 inputs, fp32 accumulator) makes it on an A10's tensor
+/// cores (sm86; a probe of 2,560,000 random outputs, 2026-11-26, every one to the bit): each term aligned to the largest of their exponents (a product's the sum of
+/// its two factors' exponents, the accumulator's its own), 24 bits kept below that exponent and those under them dropped toward zero, the terms added exactly, and
+/// the sum rounded to fp32 toward zero. `p`: (the product, exact in fp32; its factors' exponents' sum), a zero one left out.
+#[cfg(feature = "dev")]
+fn mma8(c: f32, p: &[(f32, i32)]) -> f32 {
+    let ex = |v: f32| ((v.to_bits() >> 23) & 0xFF).max(1) as i32 - 127;
+    let terms = p.iter().filter(|t| t.0 != 0.0).copied().chain((c != 0.0).then(|| (c, ex(c))));
+    let Some(top) = terms.clone().map(|t| t.1).max() else { return 0.0 };
+    let sum: i64 = terms.map(|(v, _)| (v as f64 * 2f64.powi(24 - top)).trunc() as i64).sum();
+    let (sign, mut m) = (if sum < 0 { -1.0 } else { 1.0 }, sum.unsigned_abs());
+    let drop = (64 - m.leading_zeros() as i32 - 24).max(0);
+    m = m >> drop << drop;
+    (sign * m as f64 * 2f64.powi(top - 24)) as f32
+}
+
+/// (development) Rows of W x as glyd-gpu's step products make them (mma_moe_kernel, no activation, on an A10): K in `splits` blocks, each block's steps in eight runs
+/// (its warps), each run's steps one after another through the tensor cores (`mma8` twice a step: columns 0-7, then 8-15), the runs added as warp_sums adds them
+/// ((w0 + w4) + (w1 + w5)) + (w2 + w6)) + (w3 + w7), the blocks added in order from 0, and the bias's 0 added. `x`: the input row (bf16 values).
+#[cfg(feature = "dev")]
+fn rows_sm86(w: &Fp4View, x: &[f32], gpu: Sm86) -> Vec<f32> {
+    let (ks, rbs) = (w.cols / 16, w.rows / 64);
+    let ex = |v: f32| ((v.to_bits() >> 23) & 0xFF).max(1) as i32 - 127;
+    let splits = gpu.splits(w.rows, w.cols);
+    let mut y = vec![0f32; w.rows];
+    for rb in 0..rbs {
+        // (each step's weights [64 rows, 16 columns], as `block_scalar` reads them, times their run's scale: exact)
+        let steps: Vec<[[f32; 16]; 64]> = (0..ks)
+            .map(|k| {
+                let d = &w.data[(rb * ks + k) * INT4_STEP_BYTES..][..INT4_STEP_BYTES];
+                let mut t = [[0f32; 16]; 64];
+                for l in 0..32 {
+                    let (g, tt) = (l / 4, l % 4);
+                    for q in 0..4 {
+                        let at = 8 * (l + 32 * (q / 2)) + 4 * (q % 2);
+                        let word = u32::from_le_bytes([d[at], d[at + 1], d[at + 2], d[at + 3]]);
+                        for p4 in 0..4 {
+                            let (n, jh) = ((4 * q + p4) / 2, (4 * q + p4) % 2);
+                            for h in 0..2 {
+                                t[8 * n + g][8 * jh + 2 * tt + h] = E2M1[((word >> (4 * p4 + 16 * h)) & 15) as usize];
+                            }
+                        }
+                    }
+                }
+                for (r, row) in t.iter_mut().enumerate() {
+                    let sc = w.scale(rb * 64 + r, k);
+                    row.iter_mut().for_each(|v| *v *= sc);
+                }
+                t
+            })
+            .collect();
+        for r in 0..64 {
+            let mut a = 0f32;
+            for z in 0..splits {
+                let (k0, k1) = (z * ks / splits, (z + 1) * ks / splits);
+                let per = (k1 - k0).div_ceil(8);
+                let mut wsum = [0f32; 8];
+                for (c, ws) in wsum.iter_mut().enumerate() {
+                    let s0 = (k0 + c * per).min(k1);
+                    for s in s0..(s0 + per).min(k1) {
+                        for half in 0..2 {
+                            let p: Vec<(f32, i32)> = (8 * half..8 * half + 8)
+                                .map(|j| {
+                                    let (wv, xv) = (steps[s][r][j], x[16 * s + j]);
+                                    (wv * xv, if wv == 0.0 || xv == 0.0 { 0 } else { ex(wv) + ex(xv) })
+                                })
+                                .collect();
+                            *ws = mma8(*ws, &p);
+                        }
+                    }
+                }
+                let part = (((wsum[0] + wsum[4]) + (wsum[1] + wsum[5])) + (wsum[2] + wsum[6])) + (wsum[3] + wsum[7]);
+                a = if splits == 1 { part } else { a + part };
+            }
+            y[rb * 64 + r] = a + 0.0;
+        }
+    }
+    y
+}
+
+/// (development) `experts` with every product in the order of the GPU's step products on an A10 (`rows_sm86`), one thread: the first product's rows rounded to bf16,
+/// the activation as `experts` makes it, the second product's rows, times the weight where `act` puts it there.
+#[cfg(feature = "dev")]
+fn experts_sm86(z: &[u16], pairs: &[Fp4Pair], out: &mut [f32], act: Act, gpu: Sm86) -> Result<()> {
+    let Some(first) = pairs.first() else { return Ok(()) };
+    let (two, latent) = (first.expert.up.rows, first.expert.up.cols);
+    let inter = two / 2;
+    if out.len() != pairs.len() * latent {
+        return err(format!("{} values for the host's sums, where {} pairs of {latent} are wanted", out.len(), pairs.len()));
+    }
+    for (pair, o) in pairs.iter().zip(out.chunks_exact_mut(latent)) {
+        let zf: Vec<f32> = z[pair.token * latent..(pair.token + 1) * latent].iter().map(|&h| f32::from_bits((h as u32) << 16)).collect();
+        let gu = rows_sm86(&pair.expert.up, &zf, gpu);
+        let mut h: Vec<f32> = match act {
+            Act::Situ { beta, linear } => (0..inter).map(|i| situ(bf16(gu[i]), bf16(gu[inter + i]), (beta, linear))).collect(),
+            Act::Release { lim, .. } => (0..inter).map(|i| release(bf16(gu[i]), bf16(gu[inter + i]), pair.weight, lim)).collect(),
+        };
+        if let Act::Release { fp8: true, .. } = act {
+            fp8_sim(&mut h, 128);
+        }
+        let y = rows_sm86(&pair.expert.down, &h, gpu);
+        match act {
+            Act::Situ { .. } => o.iter_mut().zip(&y).for_each(|(v, &d)| *v = d * pair.weight),
+            Act::Release { .. } => o.copy_from_slice(&y),
+        }
+    }
     Ok(())
 }
 
@@ -681,6 +816,173 @@ mod tests {
                     assert!((got as f64 - w).abs() <= 1e-5 * w.abs().max(1.0), "{k:?} packed {packed} row {}: {got} against {w}", 64 + i);
                 }
             }
+        }
+    }
+
+    /// `mma8`, twice a step as the GPU's step products call it, makes an A10's tensor cores' outputs to the bit: 24 outputs of mma.sync.m16n8k16 (bf16, fp32) read
+    /// back from an A10 (handoff's probe, 2026-11-26), each one that a chain of fused multiply-adds in the columns' order does not make.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_a10s_tensor_core_sums_are_mma8s() {
+        const A10: [([u16; 16], [u16; 16], u32, u32); 24] = [
+            (
+                [0xbfb5, 0x4060, 0x3f8f, 0x40ec, 0xbfe9, 0x3e0e, 0xc05c, 0x0000, 0x4093, 0xbf69, 0xc0b6, 0x3e69, 0x3ec6, 0xc0bb, 0x3e54, 0x0000],
+                [0x3da1, 0xbc10, 0xbe80, 0xbe3a, 0xbeba, 0x3c0e, 0x3dd1, 0xbc47, 0xbc3b, 0x3d44, 0xbc70, 0x3de1, 0xbe2e, 0xbefc, 0xbc77, 0x8000],
+                0x3c8e5516,
+                0x3fb1a885,
+            ),
+            (
+                [0xbfb5, 0x4060, 0x3f8f, 0x40ec, 0xbfe9, 0x3e0e, 0xc05c, 0x0000, 0x4093, 0xbf69, 0xc0b6, 0x3e69, 0x3ec6, 0xc0bb, 0x3e54, 0x0000],
+                [0x3c18, 0xbca3, 0x8000, 0x3bea, 0xbe30, 0x3c3d, 0xbe43, 0x3e9b, 0x3eb5, 0x0000, 0xbcdd, 0x3e7f, 0xbd48, 0x3e16, 0xbc1d, 0x3e68],
+                0x00000000,
+                0x3ff2b501,
+            ),
+            (
+                [0xbfb5, 0x4060, 0x3f8f, 0x40ec, 0xbfe9, 0x3e0e, 0xc05c, 0x0000, 0x4093, 0xbf69, 0xc0b6, 0x3e69, 0x3ec6, 0xc0bb, 0x3e54, 0x0000],
+                [0xbd77, 0x3d76, 0xbbb0, 0xbc7d, 0x8000, 0xbec4, 0xbc77, 0x3ef6, 0x0000, 0x0000, 0xbe77, 0xbb8a, 0xbbef, 0x0000, 0x3ec0, 0x3e0e],
+                0x00000000,
+                0x3fcf5e9c,
+            ),
+            (
+                [0xbfb5, 0x4060, 0x3f8f, 0x40ec, 0xbfe9, 0x3e0e, 0xc05c, 0x0000, 0x4093, 0xbf69, 0xc0b6, 0x3e69, 0x3ec6, 0xc0bb, 0x3e54, 0x0000],
+                [0x3ebb, 0x3e96, 0xbe6e, 0x3e69, 0xbd67, 0xbe6b, 0x3e72, 0x3e36, 0xbd4c, 0xbcdb, 0x3b8d, 0xbece, 0x3da0, 0xbd1b, 0xbdc5, 0x3bc0],
+                0xbdae74a4,
+                0x3f817c01,
+            ),
+            (
+                [0x8000, 0xbe57, 0x3f43, 0x404f, 0xbebd, 0xbe7a, 0x8000, 0xc087, 0xc00a, 0xc074, 0xbe4a, 0xbea9, 0x3f96, 0x3eed, 0x3f43, 0xbec6],
+                [0x3da1, 0xbc10, 0xbe80, 0xbe3a, 0xbeba, 0x3c0e, 0x3dd1, 0xbc47, 0xbc3b, 0x3d44, 0xbc70, 0x3de1, 0xbe2e, 0xbefc, 0xbc77, 0x8000],
+                0x39b25440,
+                0xbf9c6f5a,
+            ),
+            (
+                [0x8000, 0xbe57, 0x3f43, 0x404f, 0xbebd, 0xbe7a, 0x8000, 0xc087, 0xc00a, 0xc074, 0xbe4a, 0xbea9, 0x3f96, 0x3eed, 0x3f43, 0xbec6],
+                [0x3ebb, 0x3e96, 0xbe6e, 0x3e69, 0xbd67, 0xbe6b, 0x3e72, 0x3e36, 0xbd4c, 0xbcdb, 0x3b8d, 0xbece, 0x3da0, 0xbd1b, 0xbdc5, 0x3bc0],
+                0x3d03ed17,
+                0x3e491d40,
+            ),
+            (
+                [0x3e2e, 0x3e3b, 0x4081, 0x0000, 0xbfa6, 0xbffc, 0xbfcd, 0xbf93, 0xbe07, 0x400e, 0x3fee, 0xbfa9, 0x3e34, 0x40cd, 0x3ff8, 0x3f8f],
+                [0x3e3a, 0x3c83, 0x3e3e, 0x3e3d, 0xbd03, 0x0000, 0xbcbf, 0x3e88, 0x3e03, 0xbe0e, 0xbc5d, 0xbc06, 0x3d20, 0x8000, 0xbe62, 0x3e5c],
+                0x3ec3a51b,
+                0x3ed6119e,
+            ),
+            (
+                [0x40e9, 0xbe16, 0x8000, 0xbf12, 0xc09c, 0xbe3a, 0x3f76, 0x3ff4, 0x3e1c, 0x3f40, 0x8000, 0xc03d, 0x3f87, 0xc0cf, 0x0000, 0x3fdb],
+                [0x3cf8, 0xbd57, 0xbe70, 0x3d1c, 0xbdbc, 0x3c81, 0xbef6, 0xbda0, 0x3c9e, 0xbdac, 0x3df6, 0x3deb, 0x3ce7, 0x3d56, 0xbcbe, 0x3c98],
+                0x3c5ed128,
+                0xbf1f1227,
+            ),
+            (
+                [0x40e9, 0xbe16, 0x8000, 0xbf12, 0xc09c, 0xbe3a, 0x3f76, 0x3ff4, 0x3e1c, 0x3f40, 0x8000, 0xc03d, 0x3f87, 0xc0cf, 0x0000, 0x3fdb],
+                [0x3e3a, 0x3c83, 0x3e3e, 0x3e3d, 0xbd03, 0x0000, 0xbcbf, 0x3e88, 0x3e03, 0xbe0e, 0xbc5d, 0xbc06, 0x3d20, 0x8000, 0xbe62, 0x3e5c],
+                0xbd24d94c,
+                0x400a6e8d,
+            ),
+            (
+                [0x40e9, 0xbe16, 0x8000, 0xbf12, 0xc09c, 0xbe3a, 0x3f76, 0x3ff4, 0x3e1c, 0x3f40, 0x8000, 0xc03d, 0x3f87, 0xc0cf, 0x0000, 0x3fdb],
+                [0x3ebb, 0x3e96, 0xbe6e, 0x3e69, 0xbd67, 0xbe6b, 0x3e72, 0x3e36, 0xbd4c, 0xbcdb, 0x3b8d, 0xbece, 0x3da0, 0xbd1b, 0xbdc5, 0x3bc0],
+                0xbd6bb722,
+                0x4099e695,
+            ),
+            (
+                [0x40e9, 0xbe16, 0x8000, 0xbf12, 0xc09c, 0xbe3a, 0x3f76, 0x3ff4, 0x3e1c, 0x3f40, 0x8000, 0xc03d, 0x3f87, 0xc0cf, 0x0000, 0x3fdb],
+                [0x3c4d, 0xbb83, 0x8000, 0x3edd, 0x3e9f, 0x3dc6, 0x8000, 0x3c12, 0x3d5a, 0x3eae, 0x3ce1, 0xbb81, 0xbdb9, 0xbdb7, 0x3e04, 0xbe59],
+                0x00000000,
+                0xbfa3184b,
+            ),
+            (
+                [0xbf3d, 0xc064, 0x3fee, 0x40f6, 0x3e59, 0x3faa, 0xbfc4, 0xbe92, 0xbe54, 0xc03e, 0xbe8a, 0xc00f, 0x3e67, 0xbe07, 0xbfa5, 0xbee8],
+                [0x3cf8, 0xbd57, 0xbe70, 0x3d1c, 0xbdbc, 0x3c81, 0xbef6, 0xbda0, 0x3c9e, 0xbdac, 0x3df6, 0x3deb, 0x3ce7, 0x3d56, 0xbcbe, 0x3c98],
+                0x3c2a2366,
+                0x3f44de77,
+            ),
+            (
+                [0xbf3d, 0xc064, 0x3fee, 0x40f6, 0x3e59, 0x3faa, 0xbfc4, 0xbe92, 0xbe54, 0xc03e, 0xbe8a, 0xc00f, 0x3e67, 0xbe07, 0xbfa5, 0xbee8],
+                [0x3ebb, 0x3e96, 0xbe6e, 0x3e69, 0xbd67, 0xbe6b, 0x3e72, 0x3e36, 0xbd4c, 0xbcdb, 0x3b8d, 0xbece, 0x3da0, 0xbd1b, 0xbdc5, 0x3bc0],
+                0xbd7226b3,
+                0x3eb18716,
+            ),
+            (
+                [0x0000, 0xc035, 0x40b2, 0xbe2d, 0xc079, 0xbeba, 0xbed2, 0x3f17, 0xbeff, 0x3e10, 0xbea0, 0xc0d6, 0x0000, 0xbf20, 0x408a, 0x3e8b],
+                [0x3da1, 0xbc10, 0xbe80, 0xbe3a, 0xbeba, 0x3c0e, 0x3dd1, 0xbc47, 0xbc3b, 0x3d44, 0xbc70, 0x3de1, 0xbe2e, 0xbefc, 0xbc77, 0x8000],
+                0xbc1587d8,
+                0xbeea8c62,
+            ),
+            (
+                [0x0000, 0xc035, 0x40b2, 0xbe2d, 0xc079, 0xbeba, 0xbed2, 0x3f17, 0xbeff, 0x3e10, 0xbea0, 0xc0d6, 0x0000, 0xbf20, 0x408a, 0x3e8b],
+                [0x3e3a, 0x3c83, 0x3e3e, 0x3e3d, 0xbd03, 0x0000, 0xbcbf, 0x3e88, 0x3e03, 0xbe0e, 0xbc5d, 0xbc06, 0x3d20, 0x8000, 0xbe62, 0x3e5c],
+                0x3c4a87b6,
+                0x3eae938c,
+            ),
+            (
+                [0x0000, 0xc035, 0x40b2, 0xbe2d, 0xc079, 0xbeba, 0xbed2, 0x3f17, 0xbeff, 0x3e10, 0xbea0, 0xc0d6, 0x0000, 0xbf20, 0x408a, 0x3e8b],
+                [0x3ebb, 0x3e96, 0xbe6e, 0x3e69, 0xbd67, 0xbe6b, 0x3e72, 0x3e36, 0xbd4c, 0xbcdb, 0x3b8d, 0xbece, 0x3da0, 0xbd1b, 0xbdc5, 0x3bc0],
+                0x3c451438,
+                0x3ef7a3c4,
+            ),
+            (
+                [0x3fde, 0xbf77, 0xc0f3, 0x0000, 0x0000, 0x3ff9, 0xbfd9, 0x3fba, 0xc0a1, 0x3f72, 0xbefd, 0xc05b, 0x3fcc, 0x3f37, 0x3fac, 0x3e16],
+                [0x3da1, 0xbc10, 0xbe80, 0xbe3a, 0xbeba, 0x3c0e, 0x3dd1, 0xbc47, 0xbc3b, 0x3d44, 0xbc70, 0x3de1, 0xbe2e, 0xbefc, 0xbc77, 0x8000],
+                0x3dcaa198,
+                0x3f879c49,
+            ),
+            (
+                [0x3fde, 0xbf77, 0xc0f3, 0x0000, 0x0000, 0x3ff9, 0xbfd9, 0x3fba, 0xc0a1, 0x3f72, 0xbefd, 0xc05b, 0x3fcc, 0x3f37, 0x3fac, 0x3e16],
+                [0x3ebb, 0x3e96, 0xbe6e, 0x3e69, 0xbd67, 0xbe6b, 0x3e72, 0x3e36, 0xbd4c, 0xbcdb, 0x3b8d, 0xbece, 0x3da0, 0xbd1b, 0xbdc5, 0x3bc0],
+                0x3e413e35,
+                0x405237bc,
+            ),
+            (
+                [0x0000, 0x3fdc, 0xbf98, 0x0000, 0x3f2c, 0xbf26, 0xbed2, 0x3fc6, 0x3f99, 0x40b8, 0xbe20, 0x3e4c, 0x8000, 0x4089, 0x3fd0, 0x40cc],
+                [0x3e3a, 0x3c83, 0x3e3e, 0x3e3d, 0xbd03, 0x0000, 0xbcbf, 0x3e88, 0x3e03, 0xbe0e, 0xbc5d, 0xbc06, 0x3d20, 0x8000, 0xbe62, 0x3e5c],
+                0xbe5ee576,
+                0x3eb5fe65,
+            ),
+            (
+                [0x0000, 0x3fdc, 0xbf98, 0x0000, 0x3f2c, 0xbf26, 0xbed2, 0x3fc6, 0x3f99, 0x40b8, 0xbe20, 0x3e4c, 0x8000, 0x4089, 0x3fd0, 0x40cc],
+                [0x3c4d, 0xbb83, 0x8000, 0x3edd, 0x3e9f, 0x3dc6, 0x8000, 0x3c12, 0x3d5a, 0x3eae, 0x3ce1, 0xbb81, 0xbdb9, 0xbdb7, 0x3e04, 0xbe59],
+                0x00000000,
+                0x3f24382a,
+            ),
+            (
+                [0xc0d4, 0xc016, 0xbeae, 0x3fa7, 0x406e, 0x0000, 0x8000, 0xbe3e, 0xbff0, 0xbf07, 0xbfac, 0xc0a6, 0x3f47, 0xc090, 0x4091, 0x3fbc],
+                [0x3da1, 0xbc10, 0xbe80, 0xbe3a, 0xbeba, 0x3c0e, 0x3dd1, 0xbc47, 0xbc3b, 0x3d44, 0xbc70, 0x3de1, 0xbe2e, 0xbefc, 0xbc77, 0x8000],
+                0xbcc0f5d8,
+                0xbf10699c,
+            ),
+            (
+                [0xc0d4, 0xc016, 0xbeae, 0x3fa7, 0x406e, 0x0000, 0x8000, 0xbe3e, 0xbff0, 0xbf07, 0xbfac, 0xc0a6, 0x3f47, 0xc090, 0x4091, 0x3fbc],
+                [0x3cf8, 0xbd57, 0xbe70, 0x3d1c, 0xbdbc, 0x3c81, 0xbef6, 0xbda0, 0x3c9e, 0xbdac, 0x3df6, 0x3deb, 0x3ce7, 0x3d56, 0xbcbe, 0x3c98],
+                0xbf25844b,
+                0xbffb07e1,
+            ),
+            (
+                [0xc0d4, 0xc016, 0xbeae, 0x3fa7, 0x406e, 0x0000, 0x8000, 0xbe3e, 0xbff0, 0xbf07, 0xbfac, 0xc0a6, 0x3f47, 0xc090, 0x4091, 0x3fbc],
+                [0xbd77, 0x3d76, 0xbbb0, 0xbc7d, 0x8000, 0xbec4, 0xbc77, 0x3ef6, 0x0000, 0x0000, 0xbe77, 0xbb8a, 0xbbef, 0x0000, 0x3ec0, 0x3e0e],
+                0x00000000,
+                0x40193efd,
+            ),
+            (
+                [0xc0d4, 0xc016, 0xbeae, 0x3fa7, 0x406e, 0x0000, 0x8000, 0xbe3e, 0xbff0, 0xbf07, 0xbfac, 0xc0a6, 0x3f47, 0xc090, 0x4091, 0x3fbc],
+                [0x3e3a, 0x3c83, 0x3e3e, 0x3e3d, 0xbd03, 0x0000, 0xbcbf, 0x3e88, 0x3e03, 0xbe0e, 0xbc5d, 0xbc06, 0x3d20, 0x8000, 0xbe62, 0x3e5c],
+                0xbbd115c0,
+                0xbfffbf85,
+            ),
+        ];
+        let f = |b: u16| f32::from_bits((b as u32) << 16);
+        let ex = |v: f32| ((v.to_bits() >> 23) & 0xFF).max(1) as i32 - 127;
+        for (i, (a, b, c, d)) in A10.iter().enumerate() {
+            let p = |k: usize| {
+                let (x, y) = (f(a[k]), f(b[k]));
+                (x * y, if x == 0.0 || y == 0.0 { 0 } else { ex(x) + ex(y) })
+            };
+            let lo: Vec<(f32, i32)> = (0..8).map(p).collect();
+            let hi: Vec<(f32, i32)> = (8..16).map(p).collect();
+            let got = mma8(mma8(f32::from_bits(*c), &lo), &hi);
+            let fma = (0..16).fold(f32::from_bits(*c), |v, k| f(a[k]).mul_add(f(b[k]), v));
+            assert_eq!(got.to_bits(), *d, "output {i}: {got:e} against the A10's {:e}", f32::from_bits(*d));
+            assert_ne!(fma.to_bits(), *d, "output {i}");
         }
     }
 

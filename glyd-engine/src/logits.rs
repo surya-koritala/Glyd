@@ -5678,6 +5678,8 @@ pub(crate) struct Judge {
     pub reported: usize,
     pub failed: usize,
     held_kl: f64,
+    /// The bound the rows with no choice apart are held to (KL mean, max): the kind's (`BESIDE_KL`), or a tenth of it for a draw's own floor.
+    bound: (f64, f64),
     /// Every row's figures, held or not (the line's words).
     pub all: Beside,
     /// A line for each row reported or failed.
@@ -5685,13 +5687,18 @@ pub(crate) struct Judge {
 }
 
 impl Judge {
-    /// The rows judged: `routers` measure a router's choice apart (None: such a choice is never a near tie).
+    /// The rows judged at the kind's bound: `routers` measure a router's choice apart (None: such a choice is never a near tie).
     pub(crate) fn of(rows: &[Judged], routers: Option<&Routers>) -> Result<Judge> {
+        Judge::of_at(rows, routers, BESIDE_KL)
+    }
+
+    /// `of` with the rows that show no choice apart held to `bound` (KL mean, max).
+    pub(crate) fn of_at(rows: &[Judged], routers: Option<&Routers>, bound: (f64, f64)) -> Result<Judge> {
         let pairs: Vec<(&[f32], &[f32])> = rows.iter().map(|r| (r.alone, r.beside)).collect();
-        let mut j = Judge { all: Beside::of(&pairs), ..Default::default() };
+        let mut j = Judge { all: Beside::of(&pairs), bound, ..Default::default() };
         for (i, r) in rows.iter().enumerate() {
             let b = Beside::of(&[(r.alone, r.beside)]);
-            let within = b.finite && b.kl_max <= BESIDE_KL.1 && b.top_same == b.clear;
+            let within = b.finite && b.kl_max <= bound.1 && b.top_same == b.clear;
             let (first, unseen) = match &r.choices {
                 (Some(a), Some(c)) => first_apart(routers, a, c)?,
                 _ => (None, usize::MAX),
@@ -5717,7 +5724,8 @@ impl Judge {
                 }
                 None => {
                     j.failed += 1;
-                    j.notes.push(format!("row {i}: FAILED, past the kind's bound with no choice apart in its history{seen}; {figures}"));
+                    let past = if bound == BESIDE_KL { "the kind's bound" } else { "a tenth of the kind's bound" };
+                    j.notes.push(format!("row {i}: FAILED, past {past} with no choice apart in its history{seen}; {figures}"));
                 }
             }
         }
@@ -5726,17 +5734,19 @@ impl Judge {
 
     /// Whether the rows hold: none failed, and the held rows' KL mean within the bound's.
     pub(crate) fn ok(&self) -> bool {
-        self.failed == 0 && self.held_kl / self.held.max(1) as f64 <= BESIDE_KL.0
+        self.failed == 0 && self.held_kl / self.held.max(1) as f64 <= self.bound.0
     }
 
     /// The counts in words, and the held rows' KL mean.
     pub(crate) fn words(&self) -> String {
         format!(
-            "experts computed on the host: bits not held; {} rows held to the kind's bound (KL mean {:.3e}, at most {:e}; max at most {:e}; the best token where the lead clears {CLEAR_LEAD}), {} reported: a near tie taken the other way, {} failed",
+            "{}: bits not held; {} rows held to {} (KL mean {:.3e}, at most {:e}; max at most {:e}; the best token where the lead clears {CLEAR_LEAD}), {} reported: a near tie taken the other way, {} failed",
+            if self.bound == BESIDE_KL { "experts computed on the host" } else { "the experts' sums in another order" },
             self.held,
+            if self.bound == BESIDE_KL { "the kind's bound" } else { "a tenth of the kind's bound" },
             self.held_kl / self.held.max(1) as f64,
-            BESIDE_KL.0,
-            BESIDE_KL.1,
+            self.bound.0,
+            self.bound.1,
             self.reported,
             self.failed
         )

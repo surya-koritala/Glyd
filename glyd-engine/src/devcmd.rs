@@ -13,7 +13,10 @@
 //!   glyd-engine storecheck MODEL [--places 16] [--rows 1,8,32] [--steps 6] [--prompt 16] [--modes copy,auto:device] [--against resident|copy]   batched decode through the expert cache
 //!                                                             against the same calls on the model with every expert on the GPU (or the cache in copy mode planned on the host, for a model
 //!                                                             larger than the GPU): the rows bit for bit where the host computed no pair, else on their own choices at the kind's bound; each
-//!                                                             step's bytes read for its misses within 2% of the distinct missed experts'; each step's graph where the plan is on the GPU (src/tiering.rs)
+//!                                                             step's bytes read for its misses within 2% of the distinct missed experts'; each step's graph where the plan is on the GPU (src/tiering.rs);
+//!                                                             --floor: the draw against itself with its experts' sums split over K, at a tenth of the kind's bound; --pairs: each host pair against the GPU's
+//!   glyd-engine floortrace MODEL [--tokens 16] [--ops L]   where a draw amplifies a reordering of its experts' sums: each layer's residual (and layer L's operations) against the same prompt with
+//!                                                             the sums split over K (src/tiering.rs)
 //!   glyd-engine pack MODEL OUT --layout hummingbird --usage FILE [--threads N]   a mixture of experts the description builder maps (Kimi-K3, DeepSeek-V4, GLM-5.3, Muse Spark, Qwen3.5/3.8 MoE) at the
 //!                                                             hummingbird level (src/hb_pack.rs): each expert's bits from FILE's counts (calibrate-experts), its rows coded in Rust, the rest copied
 //!   glyd-engine pack MODEL OUT --layout hummingbird --codes DIR [--threads N]   Nemotron 3 Super at the Hummingbird level (src/hbpack.rs): its routed experts' neuron rows from the export in DIR (nemotron_hbr.py --export) in codebook rows of 3 and 2 bits,
@@ -108,6 +111,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "tiercheck" => glyd_engine::tiering::check(a),
         "storebench" => glyd_engine::tiering::bench(&a),
         "storecheck" => glyd_engine::tiering::rows_check(&a),
+        "floortrace" => glyd_engine::tiering::floor_trace(&a),
         "chat" => std::process::exit(glyd_engine::cli::run(&Args::from(std::env::args().skip(1).chain(["--chat".to_string()])))),
         "generate" => cmd_run(a),
         "check" => cmd_check(a),
