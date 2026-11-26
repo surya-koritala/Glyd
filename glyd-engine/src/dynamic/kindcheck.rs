@@ -1,4 +1,4 @@
-//! `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain | --sequence]` (R2, #135): every layer kind the families' descriptions hold, run by the executor's CUDA
+//! `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR | --dir MODEL] [--chain | --sequence [--tokens T,T,...]]` (R2, #135): every layer kind the families' descriptions hold, run by the executor's CUDA
 //! kernels against its CPU f32 reference (`runtime::reference`), kind by kind, on each logits case's random model (Gemma 4, the Qwen3.5 layout,
 //! the plain dense block, the Mamba-2 layout, Muse Spark, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, DeepSeek-V4.1, Qwen3.8-Flash-Next) at the lossless level.
 //! With lagged mHC (DeepSeek-V4.1's) each layer's pass is given the weights its first block takes as well (the first layer's one-hot, another's at
@@ -32,7 +32,8 @@
 //! body is compared as above on the rows a run of the model gives it; and after each layer the executor's residual is compared with the
 //! reference's own run of the same tokens (a second copy of the model, alone): how far the two are apart there, with everything before it. That
 //! figure has no bound (it is where a difference of the logits first shows, layer by layer); the bodies' and the residual rule's keep theirs.
-//! Not for a depth mix or lagged mHC, whose residual is more than the rows a block is handed.
+//! Not for a depth mix or lagged mHC, whose residual is more than the rows a block is handed. `--tokens T,T,...`: the sequence's own tokens (the prompt
+//! the ones before the last `--steps`: a sequence `usercheck --ref` served, as its worst row's line gives them). `--dir MODEL`: the one case asked, on MODEL.
 //! GLYD_KINDCHECK_ROWS prints each body's rows one by one. DeepSeek-V4's simulated quantizations of the release (GLYD_V4_SIM) are turned
 //! off: no kind names them (GLYD_KINDCHECK_SIM=1 leaves them on, to see where they first take a body away from the reference).
 
@@ -568,7 +569,7 @@ fn pass(
         let e = &m.desc.embed;
         let mut er: Vec<Row> = Vec::with_capacity(n);
         for (t, &k) in tok.iter().enumerate() {
-            let mut row: Vec<f32> = m.embed[k as usize * d..][..d].iter().map(|&v| v * e.scale).collect();
+            let mut row: Vec<f32> = m.embed_row(k as usize).into_iter().map(|v| v * e.scale).collect();
             if let Some(nm) = e.norm {
                 row = crate::runtime::reference::norm::norm(&nm, &row, None, None);
             }
@@ -781,7 +782,8 @@ fn pass(
         dy.big.logits.read(0, &mut w)?;
         let logits: Vec<f32> = w.iter().map(|&b| f32::from_bits((b as u32) << 16)).collect();
         let h = &m.desc.head;
-        let want: Vec<f32> = crate::runtime::reference::matvec(&m.head, d, &hin).into_iter().map(|z| crate::runtime::reference::model::logit(h, z)).collect();
+        let want: Vec<f32> =
+            crate::runtime::reference::matvec_w(m.head_w(), d, &hin).into_iter().map(|z| crate::runtime::reference::model::logit(h, z)).collect();
         let kind = format!(
             "head: the LM head{}{}",
             if h.scale != 1.0 { format!(", times {}", h.scale) } else { String::new() },
@@ -810,7 +812,7 @@ enum Passes {
 
 /// A case's model made (its logits case's random one), loaded lossless, described and loaded on the reference; every layer through `pass`, a pass
 /// (the prompt's rows, then each step's) at a time, in a model's order.
-fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) -> Result<Vec<Line>> {
+fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes, given: Option<&[u32]>) -> Result<Vec<Line>> {
     let chain = how == Passes::Chain;
     let c = crate::logits::find_case(id)?;
     if !dir.join("config.json").exists() {
@@ -862,7 +864,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
         Passes::Sequence => {
             let mut alone = RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n))?;
             crate::logits::put_token_map(&mut alone, dir)?;
-            Some((alone, crate::logits::token_list(prompt + steps, m.desc.vocab, 0)))
+            Some((alone, given.map_or_else(|| crate::logits::token_list(prompt + steps, m.desc.vocab, 0), <[u32]>::to_vec)))
         }
     };
     let sw = dy.kc_width(dy.kc_state());
@@ -873,7 +875,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
     let mut lines: Vec<Vec<Line>> = (0..layers).map(|_| Vec::new()).collect();
     // (each layer's residual from the reference's own after it: the prompt's, the steps' worst)
     let mut apart = vec![(0f32, 0f32); layers];
-    let (hd, scale) = (m.desc.hidden, m.desc.embed.scale);
+    let scale = m.desc.embed.scale;
     for (at, n) in std::iter::once((0, prompt)).chain((0..steps).map(|s| (prompt + s, 1))) {
         let tok: Vec<u32> = match &alone {
             Some((_, t)) => t[at..at + n].to_vec(),
@@ -887,7 +889,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
         // (the picks a layer whose indexer is shared takes: the last latent attention's with one of its own, on this pass's rows)
         let mut lend = None;
         let mut x = match how {
-            Passes::Chain => Some(tok.iter().flat_map(|&t| m.embed[t as usize * hd..][..hd].iter().map(|&v| bf16(v * bf16(scale)))).collect::<Vec<f32>>()),
+            Passes::Chain => Some(tok.iter().flat_map(|&t| m.embed_row(t as usize).into_iter().map(|v| bf16(v * bf16(scale)))).collect::<Vec<f32>>()),
             _ => own.first().cloned(),
         };
         for l in 0..layers {
@@ -1000,7 +1002,22 @@ pub fn run(a: &crate::args::Args) -> Result<()> {
         return err(format!("no case {w}: {}", ALL.join(", ")));
     }
     let ids: Vec<&'static str> = ALL.iter().copied().filter(|c| want.is_empty() || want.contains(c)).collect();
-    let (prompt, steps) = (a.num("prompt", 48usize)?, a.num("steps", 4usize)?);
+    let (mut prompt, steps) = (a.num("prompt", 48usize)?, a.num("steps", 4usize)?);
+    // (--sequence --tokens T,T,...: the sequence's own tokens, the prompt the ones before the last `steps` (a sequence `usercheck --ref` served: its prompt, then the
+    // tokens the engine chose); --dir DIR: the model in DIR for the one case asked)
+    let given: Option<Vec<u32>> = a
+        .flag("tokens")
+        .map(|t| t.split(',').map(|x| x.trim().parse::<u32>().map_err(|_| Error(format!("--tokens {x}: a token")))).collect::<Result<Vec<u32>>>())
+        .transpose()?;
+    if let Some(t) = &given {
+        if !a.has("sequence") || t.len() <= steps {
+            return err(format!("--tokens: with --sequence, more than --steps ({steps}) of them"));
+        }
+        prompt = t.len() - steps;
+    }
+    if a.flag("dir").is_some() && want.len() != 1 {
+        return err("--dir: the model of the one case asked".to_string());
+    }
     let how = match (a.has("chain"), a.has("sequence")) {
         (true, true) => return err("--chain or --sequence, not both".to_string()),
         (true, false) => Passes::Chain,
@@ -1019,7 +1036,7 @@ pub fn run(a: &crate::args::Args) -> Result<()> {
     let mut all: Vec<Line> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
     for id in ids {
-        match case(id, &scratch.join(id), prompt, steps, how) {
+        match case(id, &a.flag("dir").map_or(scratch.join(id), PathBuf::from), prompt, steps, how, given.as_deref()) {
             Ok(l) => all.extend(l),
             Err(e) => {
                 println!("FAIL {id}: {}", e.msg);

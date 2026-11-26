@@ -253,6 +253,7 @@ mod tests {
     use super::*;
     use crate::runtime::kinds::{Act, Attn, Block, Comp, DSpark, Ffn, Mlp, Norm, Rope, RopeScaling, RopeStyle, Rounding, StreamsP};
     use crate::runtime::reference::testing::fill;
+    use crate::runtime::reference::Libm;
 
     const D: usize = 16;
     const V: usize = 24;
@@ -340,7 +341,7 @@ mod tests {
             gate: None,
             softcap: None,
             bias: false,
-            scale: 8f32.powf(-0.5),
+            scale: 8f32.lpowf(-0.5),
             k_eq_v: false,
             indexer: None,
             rounding: AttnRounding::F32,

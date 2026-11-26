@@ -4,6 +4,7 @@
 //! limit (vLLM's and the engine's; transformers' chunked path clamps it to `time_step_min`, its step does not), and a head reads the B and C of its group (heads / groups
 //! heads a group, in order). The gated norm: y silu(z), RMS over each group's channels (the inner width / groups), times the weight. Then the output product.
 
+use super::Libm;
 use super::{sigmoid, softplus, Params};
 use crate::ffi::{err, Result};
 use crate::runtime::kinds::Mamba2;
@@ -70,7 +71,7 @@ pub fn step(m: &Mamba2, p: &Params, st: &mut MambaState, h: &[f32]) -> Result<Ve
     for hh in 0..nh {
         let (bg, cg) = (&bb[(hh / rep) * ns..][..ns], &cc[(hh / rep) * ns..][..ns]);
         let dt = softplus(dtr[hh] + dt_bias[hh]);
-        let da = (-a_log[hh].exp() * dt).exp();
+        let da = (-a_log[hh].lexp() * dt).lexp();
         for i in 0..pd {
             let x = xs[hh * pd + i];
             let s = &mut st.s[(hh * pd + i) * ns..][..ns];
@@ -129,7 +130,7 @@ mod tests {
         // the definition, over the whole sequence
         let mixes: Vec<Vec<f32>> = xs.iter().map(|x| p.prod("in", x).unwrap()).collect();
         let (w, b) = (p.vec("conv").unwrap(), p.vec("conv_bias").unwrap());
-        let silu = |v: f32| v / (1.0 + (-v).exp());
+        let silu = |v: f32| v / (1.0 + (-v).lexp());
         let conv = |t: usize, c: usize| -> f32 {
             let mut acc = b[c];
             for j in 0..k {
@@ -141,7 +142,7 @@ mod tests {
             silu(acc)
         };
         let (a_log, d, dt_bias, nw) = (p.vec("a_log").unwrap(), p.vec("d").unwrap(), p.vec("dt_bias").unwrap(), p.vec("norm").unwrap());
-        let dt = |t: usize, h: usize| (1.0 + (mixes[t][inner + cd + h] + dt_bias[h]).exp()).ln();
+        let dt = |t: usize, h: usize| (1.0 + (mixes[t][inner + cd + h] + dt_bias[h]).lexp()).lln();
         for (t, want_from) in got.iter().enumerate() {
             let mut y = vec![0f32; inner];
             for h in 0..nh {
@@ -152,8 +153,8 @@ mod tests {
                         // the state's entry n: every token u <= t gave dt x B, decayed since
                         let mut s = 0f32;
                         for u in 0..=t {
-                            let decay: f32 = (u + 1..=t).map(|v| -a_log[h].exp() * dt(v, h)).sum();
-                            s += decay.exp() * dt(u, h) * conv(u, h * pd + i) * conv(u, inner + grp * ns + n);
+                            let decay: f32 = (u + 1..=t).map(|v| -a_log[h].lexp() * dt(v, h)).sum();
+                            s += decay.lexp() * dt(u, h) * conv(u, h * pd + i) * conv(u, inner + grp * ns + n);
                         }
                         acc += s * conv(t, inner + g * ns + grp * ns + n);
                     }

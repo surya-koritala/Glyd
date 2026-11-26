@@ -2,7 +2,7 @@
 //! a causal prompt of a few tokens, the same generated weights on both sides.
 
 use super::testing::{assert_close, Fixture};
-use super::{attention, ffn, linear, mla, Params, HF_TOL};
+use super::{attention, ffn, linear, mla, Libm, Params, HF_TOL};
 use crate::runtime::kinds::*;
 
 /// The fixture's tensors under their roles.
@@ -40,7 +40,7 @@ fn attn(heads: usize, kv_heads: usize, head_dim: usize, rope: Option<Rope>) -> A
         gate: None,
         softcap: None,
         bias: false,
-        scale: (head_dim as f32).powf(-0.5),
+        scale: (head_dim as f32).lpowf(-0.5),
         k_eq_v: false,
         indexer: None,
         rounding: AttnRounding::F32,
@@ -191,7 +191,7 @@ fn glm53_latent_attention() {
         q_norm: Norm::rms(1e-6),
         kv_norm: Norm::rms(1e-6),
         gate: None,
-        scale: 16f32.powf(-0.5),
+        scale: 16f32.lpowf(-0.5),
         absorbed: false,
         indexer: None,
     };
@@ -368,7 +368,7 @@ fn glm53_mtp_head() {
         q_norm: Norm::rms(1e-6),
         kv_norm: Norm::rms(1e-6),
         gate: None,
-        scale: 16f32.powf(-0.5),
+        scale: 16f32.lpowf(-0.5),
         absorbed: false,
         indexer: None,
     };
