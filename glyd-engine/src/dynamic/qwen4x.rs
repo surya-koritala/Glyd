@@ -815,6 +815,48 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
+/// `glyd-engine servescore CKPT PACK [--precise] [--layout L] [--hi L] [--side A,B | --no-side] --ids A,B,.. --from N --out FILE [--places N] [--ctx N] [--chunk N]`:
+/// the family's model as Condor's server loads it with those flags (`form_of`, `Caching::of_form`; its places `--places` a layer, else what the GPU has free),
+/// the ids before the N-th as a prompt, then each id after it a step: every scored position's whole row of logits (the prompt's last, then each step's) appended
+/// to FILE as little-endian f32, as v0.34.2's `qwenserve` wrote them for a request's `score_from` and `dump` (the rows a check holds the two engines to).
+#[cfg(feature = "dev")]
+pub fn serve_score(a: &crate::args::Args) -> Result<()> {
+    use crate::ffi::Error;
+    let (dir, pack) = (Path::new(a.need(1, "CKPT")?), Path::new(a.need(2, "PACK")?));
+    let form = form_of(a, pack)?;
+    let list = a.flag("ids").ok_or_else(|| Error("servescore: --ids A,B,.. the tokens".into()))?;
+    let ids: Vec<u32> =
+        list.split(',').map(|x| x.trim().parse()).collect::<std::result::Result<_, _>>().map_err(|_| Error(format!("--ids {list}: token ids")))?;
+    let from = a.num("from", 1usize)?;
+    if from == 0 || from >= ids.len() {
+        return err(format!("--from {from}: 1 to {} (a prompt of the ids before it, a step of each after)", ids.len().saturating_sub(1)));
+    }
+    let out = a.flag("out").ok_or_else(|| Error("servescore: --out FILE".into()))?;
+    let o = Opts { ctx: a.either("context", "ctx", 4096usize)?, chunk: a.num("chunk", 1024usize)?, graph: true, device: 0, layout: Some(form.layout) };
+    let mut k = Caching::of_form(pack, &form, 1);
+    k.places = a.flag("places").map(|p| p.parse::<usize>().map_err(|_| Error(format!("--places {p}: a number")))).transpose()?;
+    let mut e = load_cached(dir, &o, &k)?;
+    e.reset()?;
+    e.prefill(&ids[..from])?;
+    let mut rows = vec![e.logits()?];
+    for &t in &ids[from..ids.len() - 1] {
+        e.step(t)?;
+        rows.push(e.logits()?);
+    }
+    let bytes: Vec<u8> = rows.iter().flatten().flat_map(|x| x.to_le_bytes()).collect();
+    std::fs::write(out, bytes).map_err(|x| Error(format!("{out}: {x}")))?;
+    println!(
+        "servescore: {} rows of {} logits to {out} ({:?}, sidecars {:?}, the matrices at {:?}, the attention's and head's at {:?})",
+        rows.len(),
+        rows[0].len(),
+        form.mode,
+        form.sides,
+        form.layout,
+        form.hi
+    );
+    Ok(())
+}
+
 /// The matrices stage `st` holds as saved: its layers' tables of n-grams (`Op::NgramRows` reads their rows).
 fn held_as_saved(d: &ModelDesc, st: &Stage) -> Vec<usize> {
     d.layers[st.layers.0..st.layers.1].iter().flatten().filter_map(|op| if let Op::NgramRows(x) = op { Some(x.table) } else { None }).collect()
@@ -1177,7 +1219,8 @@ mod tests {
     fn a_width_the_codebook_kernels_do_not_take_is_refused() {
         let dir = std::env::temp_dir().join(format!("glyd-qwen4x-cb-width-{}", std::process::id()));
         crate::logits::qwen4x_random(&dir).unwrap();
-        let k = super::Caching { places: Some(1), offload: crate::offload::Offload::default(), ..super::Caching::new(&dir.join("pack"), super::PackMode::Fast, 1) };
+        let k =
+            super::Caching { places: Some(1), offload: crate::offload::Offload::default(), ..super::Caching::new(&dir.join("pack"), super::PackMode::Fast, 1) };
         let o = super::super::Opts { ctx: 256, chunk: 64, graph: false, device: 0, layout: None };
         let e = super::load_cached(&dir, &o, &k).err().map(|e| e.msg).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&dir);
