@@ -6235,9 +6235,9 @@ pub fn sample_check(a: &crate::args::Args) -> Result<()> {
         println!("FAIL the host's run read no row (GLYD_ENGINE_HOST_SAMPLING's draws were not the host's)");
         fails += 1;
     }
-    // the host's time a step for rows of a vocabulary's size
+    // the host's time a step for rows of a vocabulary's size (--vocab 0: none)
     let tv: usize = a.num("vocab", 262_144usize)?;
-    for rows in [8usize, 64] {
+    for rows in [8usize, 64].into_iter().filter(|_| tv > 0) {
         let (host_ms, gpu_ms) = time_rows(&e, rows, tv)?;
         println!(
             "the host's time a step for {rows} rows of {tv} (the penalties over a prompt of 2,000, a bias, a top-k of 40; every other one an allowed list of half the tokens): {host_ms:.3} ms reading the rows and drawing on the host, {gpu_ms:.3} ms with the rows made on the GPU ({:.3} ms less)",
