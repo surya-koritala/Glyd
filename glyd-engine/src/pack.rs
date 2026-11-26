@@ -1,6 +1,7 @@
 //! `glyd-engine pack MODEL OUT`: the checkpoint packed by `glyd-gpu`'s save: a glyd-v7 directory for a lossy level and for penguin of Gemma 4 and the plain dense kind, each
 //! matrix packed, the embedding too; otherwise glyd-v3 (the 12-bit layout) or glyd-v4 (each matrix in the smaller of the two layouts) with the embedding packed beside it in
-//! `engine.safetensors`, so that every matrix the engine holds is compressed.
+//! `engine.safetensors`, so that every matrix the engine holds is compressed. A glyd-v7 save's plan is made from the model's description for every family (`plan`: each
+//! block's products by its kind, the tensors it keeps by their roles), as the support table's row of its family says the family is saved (`support::Saves`).
 
 use crate::dynamic::ModelDesc;
 use crate::ffi::{err, Error, Result};
@@ -8,7 +9,7 @@ use crate::glm::ConfigGlm;
 use crate::qwen35::{Pack35, Tensor35};
 use crate::runtime::config::ModelConfig;
 use crate::runtime::describe::{Described, Source as Of};
-use crate::support::{Family, Saves};
+use crate::support::Saves;
 use glyd_gpu::pack::{pack_smallest_checked, pack_twelve_checked, Packed};
 use glyd_gpu::safetensors::Checkpoint;
 use glyd_gpu::save::{self, Layout, Source};
@@ -56,23 +57,6 @@ pub fn write_safetensors(path: &Path, metadata: &[(&str, String)], tensors: &[(&
     io(std::fs::rename(&tmp, path))
 }
 
-/// The puts of a save plan (glyd-gpu's `--plan` JSON) of the packs `packs` and the tensors `kept`: one linear for each pack (its parts fused under the first
-/// one's name, in the checkpoint's own names), one copy for each tensor kept (`f32` says which the checkpoint holds as F32: those are cast to bf16). `own`: the
-/// layout of a pack where the linear says one (`"layout"`).
-pub(crate) fn plan_puts(packs: &[Pack35], kept: &[Tensor35], f32: &dyn Fn(&str) -> bool, own: &dyn Fn(&Pack35) -> Option<Layout>) -> Vec<String> {
-    let q = |n: &str| format!("\"{n}\"");
-    let mut puts: Vec<String> = packs
-        .iter()
-        .map(|p| {
-            let names = p.parts.iter().map(|x| q(Pack35::saved(&x.0))).collect::<Vec<_>>().join(", ");
-            let layout = own(p).map_or(String::new(), |l| format!(", \"layout\": {}", q(l.name())));
-            format!("{{\"linear\": [{names}], \"from\": [{names}]{layout}}}")
-        })
-        .collect();
-    puts.extend(kept.iter().map(|t| format!("{{\"copy\": {}{}}}", q(&t.name), if f32(&t.name) { ", \"cast\": \"BF16\"" } else { "" })));
-    puts
-}
-
 /// Each matrix a checkpoint holds as rows of a tensor of experts stacked: its name, that tensor's and its rows there (`describe::stacked_rows`).
 type Rows = std::collections::BTreeMap<String, (String, usize, usize)>;
 
@@ -94,11 +78,11 @@ pub(crate) struct Group {
     pub kept: Vec<Tensor35>,
 }
 
-/// What a pack's layout at a level is chosen by (`Own::layout`): a routed expert's matrix (`down`: its second; `relu2`: the experts' activation is relu
-/// squared), or any other matrix.
+/// What a pack's layout at a level is chosen by (`Own::layout`): a routed expert's matrix (`moe`: its block's number among the model's blocks of experts;
+/// `expert`: its number there; `down`: its second matrix; `relu2`: the experts' activation is relu squared), or any other matrix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Own {
-    Expert { down: bool, relu2: bool },
+    Expert { moe: usize, expert: usize, down: bool, relu2: bool },
     Rest,
 }
 
@@ -109,7 +93,7 @@ impl Own {
     /// hummingbird where the family's row says one.
     fn layout(self, level: Layout, form: &Saves) -> Option<Layout> {
         let own = match self {
-            Own::Expert { down: true, relu2: true } if crate::tune!("GLYD_ENGINE_DENSE_DOWN").is_none() => level.row_of().unwrap_or(level),
+            Own::Expert { down: true, relu2: true, .. } if crate::tune!("GLYD_ENGINE_DENSE_DOWN").is_none() => level.row_of().unwrap_or(level),
             Own::Expert { .. } => level,
             Own::Rest => form.rest_at_wren.filter(|_| matches!(level, Layout::Int4 | Layout::Hummingbird)).unwrap_or(level),
         };
@@ -151,7 +135,7 @@ pub(crate) fn walk(
     let kept_of = |n: &str, role: &str| -> Result<Tensor35> {
         Ok(Tensor35 { name: n.to_string(), dtype: if f32(n, role) { "F32" } else { "BF16" }, shape: dims(n)?.iter().map(|&x| x as u64).collect() })
     };
-    let mut groups = Vec::with_capacity(layers + 1);
+    let (mut groups, mut moes) = (Vec::with_capacity(layers + 1), 0);
     for l in 0..layers {
         let (mut packs, mut norms, mut streams, mut own, mut parts) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for b in l * per..(l + 1) * per {
@@ -191,9 +175,10 @@ pub(crate) fn walk(
                             if !p.packable() {
                                 return err(format!("{}: {} rows of {} columns, which the library does not pack", p.key, p.rows(), p.cols));
                             }
-                            packs.push((p, Own::Expert { down: *r == "experts_down", relu2 }));
+                            packs.push((p, Own::Expert { moe: moes, expert: e, down: *r == "experts_down", relu2 }));
                         }
                     }
+                    moes += 1;
                     continue;
                 }
                 match product(r) {
@@ -263,6 +248,29 @@ pub(crate) fn plan(
     f32: &dyn Fn(&str) -> bool,
     shape: &dyn Fn(&str) -> Option<Vec<usize>>,
 ) -> Result<String> {
+    planned(c, level, form, held, f32, shape, false)
+}
+
+/// The save plan at the hummingbird level from a calibration export of the routed experts (glyd-gpu's `save_hummingbird`, src/hbpack.rs): `plan`'s at
+/// hummingbird of every matrix but the routed experts' (each in its own layout, the row's: `Own::layout`) and of the tensors kept, then each block of
+/// experts' matrices from the export, expert by expert (`{"codebook": PACK, "layer": K, "expert": E, "matrix": "up" | "downT"}`, K the block's number
+/// among the model's blocks of experts, `downT` the export's of the second matrix), and the signs of its rotation (`MODULE.glyd_rot_signs`, MODULE the
+/// experts' module path).
+#[cfg(feature = "dev")]
+pub(crate) fn hb_plan(c: &ModelConfig, form: &Saves, f32: &dyn Fn(&str) -> bool, shape: &dyn Fn(&str) -> Option<Vec<usize>>) -> Result<String> {
+    planned(c, Layout::Hummingbird, form, None, f32, shape, true)
+}
+
+/// `plan`, or (`export`) `hb_plan`.
+fn planned(
+    c: &ModelConfig,
+    level: Layout,
+    form: &Saves,
+    held: Option<&Described>,
+    f32: &dyn Fn(&str) -> bool,
+    shape: &dyn Fn(&str) -> Option<Vec<usize>>,
+    export: bool,
+) -> Result<String> {
     let d = crate::runtime::describe::describe_config(c)?;
     let rows = match held {
         Some(h) => crate::runtime::describe::stacked_rows(&d, h)?,
@@ -282,11 +290,31 @@ pub(crate) fn plan(
         format!("{{\"linear\": [{names}], \"from\": [{froms}]{layout}}}")
     };
     let copy = |t: &Tensor35| format!("{{\"copy\": {}{}}}", q(&t.name), if f32(&t.name) && !form.f32_kept { ", \"cast\": \"BF16\"" } else { "" });
-    let puts: Vec<String> = if form.by_layer {
-        groups.iter().flat_map(|g| g.packs.iter().map(linear).chain(g.kept.iter().map(copy))).collect()
+    // (from an export, the routed experts are its: after everything else, each block's experts then its rotation's signs)
+    let packs = |g: &Group| g.packs.iter().filter(|(_, own)| !export || *own == Own::Rest).map(linear).collect::<Vec<_>>();
+    let mut puts: Vec<String> = if form.by_layer {
+        groups.iter().flat_map(|g| packs(g).into_iter().chain(g.kept.iter().map(copy))).collect()
     } else {
-        groups.iter().flat_map(|g| g.packs.iter().map(linear)).chain(groups.iter().flat_map(|g| g.kept.iter().map(copy))).collect()
+        groups.iter().flat_map(packs).chain(groups.iter().flat_map(|g| g.kept.iter().map(copy))).collect()
     };
+    if export {
+        let experts: Vec<(&Pack35, usize, usize, bool)> = groups
+            .iter()
+            .flat_map(|g| g.packs.iter())
+            .filter_map(|(p, own)| match *own {
+                Own::Expert { moe, expert, down, .. } => Some((p, moe, expert, down)),
+                Own::Rest => None,
+            })
+            .collect();
+        for (i, &(p, k, e, down)) in experts.iter().enumerate() {
+            let matrix = if down { "downT" } else { "up" };
+            puts.push(format!("{{\"codebook\": {}, \"layer\": {k}, \"expert\": {e}, \"matrix\": \"{matrix}\"}}", q(&p.key)));
+            if experts.get(i + 1).is_none_or(|x| x.1 != k) {
+                let module = p.key.split(".experts.").next().unwrap_or(&p.key);
+                puts.push(format!("{{\"signs\": {}, \"layer\": {k}}}", q(&format!("{module}.glyd_rot_signs"))));
+            }
+        }
+    }
     Ok(format!("{{\"puts\": [{}]}}", puts.join(", ")))
 }
 
@@ -456,6 +484,7 @@ mod tests {
     use super::*;
     use crate::nemotron::{pack_layout, ConfigNemotronH};
     use crate::qwen35::Config35;
+    use crate::support::Family;
     use glyd_gpu::safetensors::File;
 
     /// The family's row's form of its saves.
@@ -463,9 +492,16 @@ mod tests {
         crate::support::row(f).saves.unwrap()
     }
 
-    /// The plan of a family's own lists of its packs and tensors (its reader's, `Config35::packs` and `kept`), to hold the description's to.
-    fn listed(packs: &[Pack35], kept: &[Tensor35], f32: &dyn Fn(&str) -> bool, own: &dyn Fn(&Pack35) -> Option<Layout>) -> String {
-        format!("{{\"puts\": [{}]}}", plan_puts(packs, kept, f32, own).join(", "))
+    /// The plan of a family's own lists of its packs and tensors (its reader's, `Config35::packs` and `kept`), to hold the description's to: one linear for
+    /// each pack, its parts fused under the first one's name, one copy for each tensor (an F32 one cast).
+    fn listed(packs: &[Pack35], kept: &[Tensor35], f32: &dyn Fn(&str) -> bool) -> String {
+        let q = |n: &str| format!("\"{n}\"");
+        let linear = |p: &Pack35| {
+            let names = p.parts.iter().map(|x| q(Pack35::saved(&x.0))).collect::<Vec<_>>().join(", ");
+            format!("{{\"linear\": [{names}], \"from\": [{names}]}}")
+        };
+        let copy = |t: &Tensor35| format!("{{\"copy\": {}{}}}", q(&t.name), if f32(&t.name) { ", \"cast\": \"BF16\"" } else { "" });
+        format!("{{\"puts\": [{}]}}", packs.iter().map(linear).chain(kept.iter().map(copy)).collect::<Vec<_>>().join(", "))
     }
 
     /// The plan of a real config whose checkpoint's tensors (name, dtype, shape) a fixture lists: their dtypes cast as the row says, their shapes where the
@@ -513,7 +549,7 @@ mod tests {
             let tensors = have.get(name).and_then(|t| t.as_object());
             let f32 = |n: &str| tensors.is_some_and(|t| t.iter().any(|(k, v)| k == n && v.as_array().unwrap()[0].as_str() == Some("F32")));
             let made = plan(&ModelConfig::parse(&text).unwrap(), Layout::Int6, &form(Family::Qwen35), None, &f32, &|_| None).unwrap();
-            assert_eq!(made, listed(&c.packs(), &c.kept(), &f32, &|_| None), "{name}");
+            assert_eq!(made, listed(&c.packs(), &c.kept(), &f32), "{name}");
             let plan = glyd_gpu::json::parse(&made).unwrap();
             let (mut linear, mut copy) = (Vec::new(), Vec::new());
             for it in plan.get("puts").unwrap().as_array().unwrap() {
@@ -1224,8 +1260,7 @@ mod tests {
                 let c = ConfigNemotronH::load(&model).unwrap();
                 crate::hbpack::toy_export(&c, &export, 1, 40).unwrap();
                 crate::hbpack::run(model.to_str().unwrap(), &out, 4, &export).unwrap();
-                let ck = Checkpoint::open(&model).unwrap();
-                let text = crate::hbpack::plan(&c, &|n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32"));
+                let text = crate::hbpack::plan(&model).unwrap();
                 saves.insert("nemotron-latent hb".into(), json!({ "files": save_digests(&out), "plan": plan_digest("nemotron-latent-hb", &text) }));
                 let _ = std::fs::remove_dir_all(&out);
             }
