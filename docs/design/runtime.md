@@ -569,6 +569,20 @@ queries, head weights and the complete entries' keys, `Dyn::trace_picks`); where
 indexer (`reference::mla::choose`, fp32) is run on those inputs and must pick the same pools or a near tie (below `NEAR` by the pools' scores);
 the reference then takes the engine's picks with its experts (`LatentCache::take`), and the logits are held at the kind's bound.
 
+A latent attention's indexer computes its head weights (`weights_proj`) in fp32 on the GPU and keeps them so (kernels/mla.cu `small_linear_f32`),
+as the reference of the kind does, transformers' GlmMoeDsaIndexer does (it keeps `weights_proj` in float32) and vLLM's GLM-5.3-Flash path does (its head
+gate in fp32): rounded to bf16, a weight moves by up to 2^-9 of itself and a near tie of two pools' scores goes the other way. `kindcheck` holds each
+latent attention's head weights to the reference's fp32 product of the same input rows (within 1e-4 of the largest) and its picks to the reference's
+choice on the engine's own queries and keys with those weights (within 1e-4 of the scores, the order of fp32 sums), and prints the rows where bf16
+weights would have picked another set; `logitsmodel glm-dsa DIR --ties` makes GLM-5.3's random model with indexers whose picks the head weights
+decide (two heads' scores cancelling but for a 64th), where bf16 weights pick another set at most rows.
+
+**Exact ties.** Where two scores are equal in fp32 the engine's rule is the reference's: a router takes the expert of the smaller index first
+(`reference::ffn`, kernels/moe.cu; the reference's groups of experts the smaller group first, which the executor refuses), and an indexer the earlier pool or entry first (`reference::mla`,
+`reference::comp`, kernels/mla.cu `idx_pick`), -0 below +0 (`total_cmp`'s order). transformers (`torch.topk`) and exo (`argpartition`) leave the
+order of equal scores unspecified, and vLLM's and SGLang's top-k kernels take theirs as their kernels do; so at an exact tie Glyd's choice is a
+defined one where a reference's may be either. Any difference of the scores, however small, orders them alike everywhere.
+
 ### Rows sized by memory
 
 `max_rows` comes from the plan: KV pages and state slots that fit after weights and workspace, not a constant. Graphs are captured at row

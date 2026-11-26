@@ -153,7 +153,7 @@ impl KernGlm {
         launch!(if w32 { self.out_w32.sig() } else { self.out.sig() }, [n, heads as u32, 1], [128, 1, 1], s; core, og, w, att, heads, eps)
     }
 
-    /// scores [n, pmax] fp32 for the rows whose pools are more than `ksel`: the indexer's heads (`ih` of `d` channels, queries iq with rows `iqs` apart, head weights wts with rows `wsr` apart) against the pool keys pk.
+    /// scores [n, pmax] fp32 for the rows whose pools are more than `ksel`: the indexer's heads (`ih` of `d` channels, queries iq with rows `iqs` apart, head weights wts with rows `wsr` apart, bf16) against the pool keys pk.
     ///
     /// # Safety
     /// As `streams`.
@@ -178,7 +178,7 @@ impl KernGlm {
         n: u32,
     ) -> Result<()> {
         let smem = ((ih * (d + 1) + ih + 8 * d) * 4) as u32;
-        launch!(self.idx_score, [(pmax as u32).div_ceil(8), n, 1], [256, 1, 1], smem smem, s; iq, iqs, wts, wsr, pk, d, 1i32, 0i32, 0u64, 0i64, pos, scores, pmax, ih, d, kp, ksel, scale, wscale)
+        launch!(self.idx_score, [(pmax as u32).div_ceil(8), n, 1], [256, 1, 1], smem smem, s; iq, iqs, wts, wsr, 0i32, pk, d, 1i32, 0i32, 0u64, 0i64, pos, scores, pmax, ih, d, kp, ksel, scale, wscale)
     }
 
     /// The tokens each of n rows attends to: sel [n, tmax] int32 (the first cnt[i] of a row), from the scores.

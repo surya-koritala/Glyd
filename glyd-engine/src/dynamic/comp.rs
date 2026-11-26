@@ -75,6 +75,7 @@ impl Dyn {
                     let at = PickAt {
                         q: iq + (r0 * x.heads * 128 * 2) as u64,
                         w: iw + (r0 * x.heads * 2) as u64,
+                        w32: false,
                         keys: entries,
                         stride: 128,
                         tab,
@@ -217,6 +218,7 @@ impl Dyn {
                     let at = PickAt {
                         q: p.slot(Slot::Iq) + (r0 * x.heads * 128 * 2) as u64,
                         w: p.slot(Slot::Iw) + (r0 * x.heads * 2) as u64,
+                        w32: false,
                         keys: entries,
                         stride: 128,
                         tab: super::rows::tab_at(tab, ts, r0),

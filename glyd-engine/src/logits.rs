@@ -2272,6 +2272,19 @@ pub fn glm_dsa_mtp_random(out: &Path, fp8: bool) -> Result<()> {
 
 /// `glm_dsa_random` (`fp8`: `glm_dsa_f8_random`; `mtp`: with its draft head, `glm_dsa_mtp_random`) drawn from `seed` (not 0).
 pub fn glm_dsa_draw(out: &Path, seed: u64, fp8: bool, mtp: bool) -> Result<()> {
+    glm_dsa_drawn(out, seed, fp8, mtp, false)
+}
+
+/// `glm_dsa_random`'s model with near ties its indexers' head weights decide (`logitsmodel glm-dsa DIR --ties`): every tensor drawn as that model's, then in
+/// each indexer of its own the second head's queries made the first's (the second query rows of `wq_b` the first's), its head weights the first's times
+/// -(1 - 2^-6) (each rounded to bf16), the third's a 64th of their draw and the fourth's 0. The first two heads' scores then cancel but for a 64th (c = w0 + w1),
+/// which the third's, of its own size, competes with: a pick decided by c, which bf16 head weights move by some tenth of it (each rounded by up to 2^-9 of
+/// itself) and fp32 ones by some 2^-18. The case for an indexer's head weights in fp32 (kernels/mla.cu `small_linear_f32`; `kindcheck glm-dsa --dir DIR`).
+pub fn glm_dsa_ties(out: &Path) -> Result<()> {
+    glm_dsa_drawn(out, GLM_DSA_SEED, false, false, true)
+}
+
+fn glm_dsa_drawn(out: &Path, seed: u64, fp8: bool, mtp: bool, ties: bool) -> Result<()> {
     let mut cfg: Value = serde_json::from_str(include_str!("../tests/fixtures/glm_moe_dsa_toy_config.json")).map_err(|e| Error(e.to_string()))?;
     if mtp {
         cfg["num_nextn_predict_layers"] = json!(1);
@@ -2358,6 +2371,9 @@ pub fn glm_dsa_draw(out: &Path, seed: u64, fp8: bool, mtp: bool) -> Result<()> {
         };
         tensors.push((name, dtype, shape.iter().map(|&x| x as u64).collect(), bytes));
     }
+    if ties {
+        ties_of_head_weights(&mut tensors)?;
+    }
     io(std::fs::create_dir_all(out))?;
     io(std::fs::write(out.join("config.json"), text))?;
     let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = tensors.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), &b[..])).collect();
@@ -2369,6 +2385,47 @@ pub fn glm_dsa_draw(out: &Path, seed: u64, fp8: bool, mtp: bool) -> Result<()> {
         tensors.len(),
         tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6
     );
+    Ok(())
+}
+
+/// `glm_dsa_ties`' edit of a drawn model's indexers (bf16 tensors, `glm_dsa_drawn`'s list): in each `wq_b` the second head's rows the first's, in each
+/// `weights_proj` the second row the first's times -(1 - 2^-6), the third a 64th of its own and the fourth 0.
+fn ties_of_head_weights(tensors: &mut [(String, &str, Vec<u64>, Vec<u8>)]) -> Result<()> {
+    let bf = |b: &[u8]| f32::from_bits((u16::from_le_bytes([b[0], b[1]]) as u32) << 16);
+    let to = |x: f32| ((crate::runtime::reference::bf16(x).to_bits() >> 16) as u16).to_le_bytes();
+    let mut edited = 0;
+    for (name, dtype, shape, bytes) in tensors.iter_mut() {
+        let (wq, weights) = (name.ends_with("indexer.wq_b.weight"), name.ends_with("indexer.weights_proj.weight"));
+        if !(wq || weights) {
+            continue;
+        }
+        let (rows, cols) = match &shape[..] {
+            &[r, c] if *dtype == "BF16" => (r as usize, c as usize),
+            _ => return err(format!("{name}: a bf16 matrix to make ties in, not {dtype} {shape:?}")),
+        };
+        let row = cols * 2;
+        if wq {
+            // (heads of rows / 4 rows: the toy's four heads)
+            let head = rows / 4 * row;
+            let (first, rest) = bytes.split_at_mut(head);
+            rest[..head].copy_from_slice(first);
+        } else {
+            if rows != 4 {
+                return err(format!("{name}: {rows} head weights, where the ties are made in four"));
+            }
+            for c in 0..cols {
+                let w0 = bf(&bytes[c * 2..]);
+                let w2 = bf(&bytes[2 * row + c * 2..]);
+                bytes[row + c * 2..][..2].copy_from_slice(&to(-w0 * (1.0 - 1.0 / 64.0)));
+                bytes[2 * row + c * 2..][..2].copy_from_slice(&to(w2 / 64.0));
+                bytes[3 * row + c * 2..][..2].copy_from_slice(&[0, 0]);
+            }
+        }
+        edited += 1;
+    }
+    if edited == 0 || edited % 2 != 0 {
+        return err(format!("{edited} indexer matrices to make ties in, where each indexer of its own has two"));
+    }
     Ok(())
 }
 
@@ -3599,6 +3656,11 @@ pub fn make_model(a: &crate::args::Args) -> Result<()> {
                 }
             }
             id => return err(format!("--real and --stacked: the qwen35moe case's (not {id})")),
+        },
+        // (`--ties`: the glm-dsa case's model with near ties its indexers' head weights decide, `glm_dsa_ties`)
+        Ok(Weights::Random(_)) if a.has("ties") => match base {
+            "glm-dsa" => glm_dsa_ties(dir)?,
+            id => return err(format!("--ties: the glm-dsa case's (not {id})")),
         },
         Ok(Weights::Random(make)) => make(dir)?,
         Err(_) => random_model_of(base, dir)?,
