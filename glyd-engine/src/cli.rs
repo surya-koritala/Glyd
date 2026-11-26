@@ -2410,14 +2410,14 @@ mod tests {
         let room = vec![(0, dense.iter().sum::<u64>() + base + kv + all / 3)];
         let table = crate::sizes::Table::from_dir(&dir).unwrap();
         let src = release_experts(&table, &mc(&text), nl, false).unwrap();
-        let k = expert_cache(&src, &room, "tiny", &[], Some(all + HOST_MARGIN + (1 << 30))).unwrap();
+        let k = expert_cache(&src, &room, "tiny", &[], Some(all + HOST_MARGIN + (1 << 30)), true).unwrap();
         let experts = k.experts;
         // (room for a token's experts beside the layers' weights: no dense layer in the computer's memory; DeepSeek-V4's loader keeps none there)
         assert_eq!(k.dense, (0, 0));
         assert!(k.cuts.is_empty() && k.devices == vec![0] && k.places[0] > 0 && k.places[0] < experts, "{:?} of {experts}", k.places);
         assert_eq!((k.all, k.ram), (all, all));
         assert!(k.on_gpus <= room[0].1);
-        let e = expert_cache(&src, &room, "tiny", &[], Some(all / 2 + HOST_MARGIN)).unwrap_err();
+        let e = expert_cache(&src, &room, "tiny", &[], Some(all / 2 + HOST_MARGIN), true).unwrap_err();
         assert!(e.what.contains("keeps the experts its GPUs do not hold in the computer's memory"), "{}", e.what);
         // (the plan `run` loads and `fit` prints, on a GPU of that room: the cache's layers are the model's layers of experts, and its bytes all the experts')
         let free = (0..40).fold((0u64, 64u64 << 30), |(lo, hi), _| {
@@ -2469,17 +2469,17 @@ mod tests {
         // (each layer's sequences beside its weights: here the room's share of them)
         let kv_layers = vec![kv / nl as u64; nl];
         let src = hb_dir_experts(&out, &mc(&text), nl, false).unwrap();
-        let k = expert_cache(&src, &room, "tiny", &kv_layers, Some(all + HOST_MARGIN + (1 << 30))).unwrap();
+        let k = expert_cache(&src, &room, "tiny", &kv_layers, Some(all + HOST_MARGIN + (1 << 30)), true).unwrap();
         assert_eq!(k.dense, (0, 0));
         assert!(k.cuts.is_empty() && k.devices == vec![0] && k.places.len() == 1, "{:?} {:?} {:?}", k.cuts, k.devices, k.places);
         assert!(k.places[0] > 0 && k.places[0] < k.experts, "{:?} of {}", k.places, k.experts);
         assert_eq!((k.all, k.ram), (all, all));
         assert!(k.on_gpus <= room[0].1);
         // memory for half of them: the rest on the disk
-        let k = expert_cache(&src, &room, "tiny", &kv_layers, Some(all / 2 + HOST_MARGIN)).unwrap();
+        let k = expert_cache(&src, &room, "tiny", &kv_layers, Some(all / 2 + HOST_MARGIN), true).unwrap();
         assert_eq!(k.ram, all / 2);
         // none to give: refused
-        let e = expert_cache(&src, &room, "tiny", &kv_layers, Some(HOST_MARGIN)).unwrap_err();
+        let e = expert_cache(&src, &room, "tiny", &kv_layers, Some(HOST_MARGIN), true).unwrap_err();
         assert!(e.what.contains("in the computer's memory and on the disk"), "{}", e.what);
         std::fs::remove_dir_all(&dir).unwrap();
     }

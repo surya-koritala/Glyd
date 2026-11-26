@@ -3684,10 +3684,10 @@ pub mod sizing {
         alt: Option<String>,
     ) -> Refusal {
         let what = format!(
-            "{name} at the {level} level takes about {} of GPU memory at {} tokens of context{}, and the {gpu} has {} free",
+            "{name} at the {level} level takes about {} of GPU memory{} at {} tokens of context, and the {gpu} has {} free",
             gib(s.need),
+            if users > 1 { format!(" for {users} users") } else { String::new() },
             s.at,
-            if users > 1 { format!(" for each of {users} users") } else { String::new() },
             gib(free)
         );
         if asked.is_some() && s.most >= 1024 {
@@ -4642,8 +4642,9 @@ pub mod sizing {
         Ok(Cached { cuts, devices, places, on_gpus, all: c.all, experts: c.experts, ram, dense: (held, ram_held(&c.ram, &dense, held)) })
     }
 
-    /// `expert_cache_with` on the dynamic route (a token's experts a layer at least; `host` None: none free), or the refusal `run` gives, in its words.
-    pub(crate) fn expert_cache(c: &CacheOf, room: &[(i32, u64)], name: &str, kv: &[u64], host: Option<u64>) -> Done<Cached> {
+    /// `expert_cache_with` on the dynamic route (a token's experts a layer at least; `host` None: none free), or the refusal `run` gives, in its words. `hb`: the
+    /// model's row runs at the hummingbird level too (src/support.rs), the way out a refusal for the computer's memory then names; a row without it is not told of one.
+    pub(crate) fn expert_cache(c: &CacheOf, room: &[(i32, u64)], name: &str, kv: &[u64], host: Option<u64>, hb: bool) -> Done<Cached> {
         let host = host.unwrap_or(0);
         expert_cache_with(c, CacheAsk::default(), room, kv, Some(host)).map_err(|why| match why {
             CacheShort::Memory { .. } if c.across > 1 => Refusal::unsupported(
@@ -4657,7 +4658,7 @@ pub mod sizing {
             ),
             CacheShort::Memory { .. } => Refusal::unsupported(
                 format!("{name} keeps the experts its GPUs do not hold in the computer's memory: they take {}, and {} is free", gib(c.all), gib(host)),
-                "A machine with that much memory runs it, or its hummingbird level, whose experts the disk holds too",
+                if hb { "A machine with that much memory runs it, or its hummingbird level, whose experts the disk holds too" } else { "A machine with that much memory runs it" },
             ),
             CacheShort::Asked { .. } | CacheShort::Held { .. } => Refusal::unsupported(
                 format!(
@@ -5218,15 +5219,16 @@ pub mod sizing {
         // (a server's users on one GPU beside the expert cache: every user's whole context first (`SeqRoom::plan` of them all, as the pools take them), the engine's
         // work next (`room` keeps it apart), the places what the GPU has left: --users is held, or refused in words with the numbers. Where the places fill more than
         // one GPU, the stages hold one sequence, as a run's)
+        let hb = row.levels.contains(&"hummingbird");
         let mut cache = None;
         if let (Some(src), Some(s)) = (&source, seq.as_ref().filter(|_| serving)) {
             let users_kv = |k: usize| with(s.plan(k, u64::MAX).map_or(0, |p| p.1).saturating_sub(one_seq));
-            match expert_cache(src, &room, name, &users_kv(users), host) {
+            match expert_cache(src, &room, name, &users_kv(users), host, hb) {
                 Ok(c) if c.cuts.is_empty() && c.devices.len() == 1 => (served, kv_layers, cache) = (true, users_kv(users), Some(c)),
                 Err(_) if room.len() == 1 => {
                     // (one sequence's refusal first, where even one does not fit: the computer's memory, or the GPU's room beside the weights)
-                    expert_cache(src, &room, name, &kv_layers, host)?;
-                    let most = (1..users).rev().find(|&k| expert_cache(src, &room, name, &users_kv(k), host).is_ok());
+                    expert_cache(src, &room, name, &kv_layers, host, hb)?;
+                    let most = (1..users).rev().find(|&k| expert_cache(src, &room, name, &users_kv(k), host, hb).is_ok());
                     let gpu = devs.iter().find(|t| t.ordinal == room[0].0);
                     let free = gpu.map_or(0, |t| t.free);
                     let (weights, all) = (src.dense.iter().sum::<u64>() + src.base, s.plan(users, u64::MAX).map_or(0, |p| p.1));
@@ -5252,9 +5254,9 @@ pub mod sizing {
         }
         let cache = match (cache, &source) {
             (Some(c), _) => Some(c),
-            (None, Some(src)) => Some(expert_cache(src, &room, name, &kv_layers, host)?),
+            (None, Some(src)) => Some(expert_cache(src, &room, name, &kv_layers, host, hb)?),
             // (every layer across the GPUs: each its slice of the big matrices, its sequence's bytes whole, and a slice of each place)
-            (None, None) if packed && across => Some(expert_cache(&packed_experts(table, c, nl, hbm, tp_room.len())?, &tp_room, name, &with(0), host)?),
+            (None, None) if packed && across => Some(expert_cache(&packed_experts(table, c, nl, hbm, tp_room.len())?, &tp_room, name, &with(0), host, hb)?),
             (None, None) => None,
         };
         let held = kv_layers.iter().sum::<u64>();
