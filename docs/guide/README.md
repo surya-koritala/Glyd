@@ -8,9 +8,9 @@ scripts/build_site.sh /tmp/glyd-guide       # from the repository root; open /tm
 ```
 
 - `src/api.md` and `src/service.md` are not in git: `scripts/gen_reference.py` writes them from `docs/serve-api.md` and `docs/service.md`. Edit those.
-- `scripts/check_gate_docs.py` fails the build if `benchmarks/gates/m1-gate.sh` has a step that `src/gate.md` does not name.
+- `scripts/check_gate_docs.py` fails the build if `benchmarks/gates/m1-gate.sh` has a step that `src/gate.md` does not name, or `m2-gate.sh` one that `src/gate-m2.md` does not.
 - `src/models.md` is not in git. `scripts/gen_models.py` writes it from `glyd-engine/src/support.rs`, `levels.rs`,
-  `machine.rs` and `kvcal.rs` on every build. If one of those changes shape, the script stops with the reason: fix it in
+  `machine.rs`, `kvcal.rs`, `plan.rs`, `runtime/config.rs` and `runtime/describe.rs` on every build. If one of those changes shape, the script stops with the reason: fix it in
   the same change.
 - `.github/workflows/pages.yml` builds main to `/guide/` and each `v*` tag that has this folder to `/guide/vX.Y.Z/`, and
   deploys on a push to main or a release. A pull request that touches the site is built, not deployed.
