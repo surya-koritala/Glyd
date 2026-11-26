@@ -4,7 +4,7 @@
     "tensors": 95776,
     "kinds": "bc67f72ba993f3e0",
     "weights": "6632c8ed94397f3f",
-    "plan": "ecacae94fa33b23e",
+    "plan": "61cb47796162e731",
     "family": "DeepSeekV41"
   },
   "deepseek_v41_tiny_config.json": {
@@ -12,7 +12,7 @@
     "tensors": 872,
     "kinds": "60f0005f61c7710d",
     "weights": "ca414623efe29891",
-    "plan": "f6bce9eae67f5d1f",
+    "plan": "7992e2a378117ec5",
     "family": "DeepSeekV41"
   },
   "gemma4_12b_config.json": {
@@ -180,7 +180,7 @@
     "tensors": 95776,
     "kinds": "bc67f72ba993f3e0",
     "weights": "6632c8ed94397f3f",
-    "plan": "ecacae94fa33b23e",
+    "plan": "61cb47796162e731",
     "family": "DeepSeekV41"
   },
   "headers/Kimi-K3.1-Pro.json": {

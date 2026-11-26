@@ -34,6 +34,18 @@ impl Placer {
     }
 }
 
+/// A stage's layers in the computer's memory keep each matrix packed from the bf16 that a matrix released in FP8 dequantises to, where the model on the GPU holds it as
+/// released (the E4M3 values with their block scales, `f8::released_shape`): another product, so a matrix of the layers kept there (`ram`: the tensors of each) that is so
+/// released is refused, of whichever family. `layers` of the stage `family` are to be there.
+pub fn refuse_released_f8(ck: &glyd_gpu::safetensors::Checkpoint, family: &str, layers: usize, ram: &[&[String]]) -> Result<()> {
+    if ram.iter().any(|members| crate::f8::released_shape(ck, members).is_some()) {
+        return err(format!(
+            "{family}'s layers keep their matrices on the GPU: {layers} layers of them in the computer's memory would be packed from the bf16 its FP8 matrices dequantise to"
+        ));
+    }
+    Ok(())
+}
+
 /// Where each matrix's three arrays (its data and its two others: blocks and their bases, or exceptions and theirs) go in a layer's bytes, for matrices of `sizes`, and the layer's bytes: each array at a multiple of
 /// `ALIGN`, the matrices in order.
 pub fn layout(sizes: &[[usize; 3]]) -> (Vec<[usize; 3]>, usize) {
@@ -147,6 +159,30 @@ impl DenseRam {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A layer kept in the computer's memory packs its matrices from bf16: refused where one of them is released in FP8 (E4M3 with fp32 block scales), by the matrix's format and
+    /// in the words the GLM-5.3 loader used, whichever family's it is; a bf16 matrix, and an FP8 one with no block scales beside it (held as bf16 on the GPU too), are not.
+    #[test]
+    fn a_matrix_released_in_fp8_is_refused_in_the_computers_memory() {
+        let dir = std::env::temp_dir().join(format!("glyd-dense-ram-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = crate::sizes::tests::safetensors(&[
+            ("f.weight", "F8_E4M3", &[256, 128]),
+            ("f.weight_scale_inv", "F32", &[2, 1]),
+            ("n.weight", "F8_E4M3", &[128, 128]),
+            ("b.weight", "BF16", &[4, 4]),
+        ]);
+        std::fs::write(dir.join("model.safetensors"), file).unwrap();
+        let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
+        let m = |n: &str| vec![n.to_string()];
+        let (f8, no_scales, bf16) = (m("f.weight"), m("n.weight"), m("b.weight"));
+        assert!(refuse_released_f8(&ck, "Any family", 2, &[&bf16, &no_scales]).is_ok());
+        let e = refuse_released_f8(&ck, "GLM-5.3", 2, &[&bf16, &f8]).unwrap_err().msg;
+        assert_eq!(e, "GLM-5.3's layers keep their matrices on the GPU: 2 layers of them in the computer's memory would be packed from the bf16 its FP8 matrices dequantise to");
+        assert!(refuse_released_f8(&ck, "Another", 1, &[&f8]).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A layer's matrices laid out one after another, each array at a multiple of 256 bytes and none overlapping; the stage's last layers are the ones in the computer's memory.
     #[test]

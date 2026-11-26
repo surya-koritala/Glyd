@@ -1732,8 +1732,9 @@ mod tests {
         let url = format!("http://{addr}");
         let stats = || get_json(&format!("{url}/stats")).map(|v| (v["prompt_tokens"].as_f64().unwrap(), v["prefix_hit_tokens"].as_f64().unwrap())).unwrap();
         let turns = converse(&agent(), &url, "fake", "short", 7, 3, 24);
-        assert_eq!(turns.iter().map(|r| r.turn).collect::<Vec<_>>(), vec![0, 1, 2]);
-        assert!(turns.iter().all(|r| r.error.is_none() && r.tokens > 0), "{:?}", turns.iter().map(|r| r.error.clone()).collect::<Vec<_>>());
+        let errors = || turns.iter().map(|r| r.error.clone()).collect::<Vec<_>>();
+        assert_eq!(turns.iter().map(|r| r.turn).collect::<Vec<_>>(), vec![0, 1, 2], "{:?}", errors());
+        assert!(turns.iter().all(|r| r.error.is_none() && r.tokens > 0), "{:?}", errors());
         let (run, hit) = stats();
         assert!(hit >= 2.0 * crate::kv::PAGE as f64 && hit < run, "{hit} of {run} prompt tokens found in the cache");
         let mut seed = 100;

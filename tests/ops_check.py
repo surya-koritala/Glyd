@@ -155,7 +155,8 @@ if kv is None:
     print(open("/tmp/ops-serve.log").read()[-1500:])
 gpu = [v for k, v in s.items() if k.startswith("glyd_gpu_memory_used_bytes")]
 assert gpu and max(gpu) > 1 << 28, f"the GPU's memory in use: {gpu}"
-print(f"metrics ok: first token {1000 * ttft[1] / ttft[0]:.0f} ms mean, {1000 * tpot[1] / tpot[0]:.1f} ms a token, KV {"%.3f used of %d pages" % (s["glyd_kv_cache_usage_ratio"], kv) if kv else "not told"}, GPU {max(gpu) / 2**30:.1f} GiB")
+kv_told = "%.3f used of %d pages" % (s["glyd_kv_cache_usage_ratio"], kv) if kv else "not told"
+print(f"metrics ok: first token {1000 * ttft[1] / ttft[0]:.0f} ms mean, {1000 * tpot[1] / tpot[0]:.1f} ms a token, KV {kv_told}, GPU {max(gpu) / 2**30:.1f} GiB")
 
 # ---- the traces: a request span for each request, with its prompt pass and decode beneath (the collector got them within a few seconds) ----
 t = time.time()

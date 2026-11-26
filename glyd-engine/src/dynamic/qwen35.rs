@@ -10,10 +10,10 @@ use super::Slot;
 use super::{Dyn, ModelDesc, Opts, Placing, Stage};
 #[cfg(test)]
 use super::{NormW, Op, Ring, Rope};
+use crate::dynamic::experts::MoeBlock;
 #[cfg(test)]
 use crate::ffi::err;
 use crate::ffi::{Error, Result};
-use crate::kern_nh::MoeBlock;
 use crate::qwen35::Kind;
 use crate::runtime::describe::Described;
 use crate::runtime::kinds::{Body, Ffn};

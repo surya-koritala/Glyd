@@ -844,7 +844,7 @@ fn cmd_check_nh(a: &Args, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The dynamic engine on one GPU or split across several, as check35 --dynamic runs it.
+/// The dynamic engine on one GPU or split across several, as check35 runs it.
 trait Q35Run {
     fn reset(&mut self) -> Result<()>;
     fn prefill(&mut self, t: &[u32]) -> Result<glyd_engine::sched::Sample>;
@@ -903,7 +903,7 @@ impl Q35Run for glyd_engine::dynamic::split::Split {
     }
 }
 
-/// `check35 --dynamic`: the same OUT.json from the dynamic engine (to compare with the old engine's to the digit), and its decode step's time.
+/// `check35`: the same OUT.json from the dynamic engine (to compare with the old engine's to the digit), and its decode step's time.
 fn cmd_check35_dyn(a: &Args, dir: &Path) -> Result<()> {
     let pf = a.need(2, "PROMPTS.json")?;
     let of = a.need(3, "OUT.json")?;

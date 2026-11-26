@@ -655,10 +655,11 @@ impl Shape {
             "mxfp4" | "nvfp4" => 4.25,
             _ => 16.0,
         };
-        // (FP4 experts beside the rest: DeepSeek-V4's `expert_dtype`, and compressed-tensors' MXFP4 or NVFP4 groups, which Kimi-K3 puts on its
-        // routed experts alone and the rest left bf16)
+        // (FP4 experts beside the rest: DeepSeek-V4's `expert_dtype` (at the top of the config, or V4.1's in its quantization_config), and compressed-tensors'
+        // MXFP4 or NVFP4 groups, which Kimi-K3 puts on its routed experts alone and the rest left bf16)
         let format = qc.and_then(|q| q.format.as_deref()).unwrap_or("");
-        if s.expert_dtype.as_deref() == Some("fp4") || (quant == "compressed-tensors" && format.contains("fp4")) {
+        let expert_dtype = s.expert_dtype.as_deref().or(qc.and_then(|q| q.expert_dtype.as_deref()));
+        if expert_dtype == Some("fp4") || (quant == "compressed-tensors" && format.contains("fp4")) {
             sh.expert_release_bits = 4.25;
         }
         sh.expert_width = expert_width as usize;
@@ -667,11 +668,12 @@ impl Shape {
     }
 
     /// The same model with its parameters counted from the checkpoint's own tensors (src/sizes.rs: the headers of its files, a directory's or the Hub's by ranges) in
-    /// place of an estimate from config.json: each part by its tensors' weights (a packed type's at the release's bits), a vision tower left out, and the
-    /// multi-token-prediction head counted only where the model drafts with it. A table with no weights of the parts changes nothing.
+    /// place of an estimate from config.json: each part by its tensors' weights (a packed type's at the bits the release has that part's weights in: the routed
+    /// experts' own where they differ), a vision tower left out, and the multi-token-prediction head counted only where the model drafts with it. A table with no
+    /// weights of the parts changes nothing.
     pub fn with_table(mut self, t: &crate::sizes::Table) -> Shape {
         use crate::sizes::Part;
-        let p = t.params_by_part(self.layers, self.release_bits.max(1.0));
+        let p = t.params_by_part(self.layers, self.release_bits.max(1.0), self.expert_bits_released().max(1.0));
         let get = |k: Part| p.get(&k).copied().unwrap_or(0.0);
         let dense = get(Part::Attention) + get(Part::Mlp) + get(Part::SharedExperts) + get(Part::Other) + if self.mtp { get(Part::Mtp) } else { 0.0 };
         if get(Part::Embedding) + get(Part::Head) + dense + get(Part::RoutedExperts) <= 0.0 {
@@ -4780,6 +4782,16 @@ pub mod sizing {
                     "Leave out --split; --devices 1 picks the GPU",
                 ));
             }
+            // (a stage begins only at a layer whose indexer is its own: the loader refuses the layer that takes the picks of another stage's, after the plan is printed)
+            if let Some(l) = cuts.iter().copied().filter(|&l| !starts.get(l).copied().unwrap_or(true)).min() {
+                return Err(Refusal::unsupported(
+                    crate::dynamic::lower::split_apart_picks(l),
+                    format!(
+                        "A stage may begin at a layer whose indexer is its own: {}",
+                        (1..nl).filter(|&l| starts.get(l).copied().unwrap_or(true)).take(6).map(|l| l.to_string()).collect::<Vec<_>>().join(", ")
+                    ),
+                ));
+            }
             (cuts, devices)
         } else if one_gpu {
             cut.ok_or_else(|| {
@@ -5334,6 +5346,13 @@ mod tests {
             "n_routed_experts": 256, "num_experts_per_tok": 6, "moe_intermediate_size": 2048, "expert_dtype": "fp4", "quantization_config": {"quant_method": "fp8"}}"#;
         let d = Shape::from_config(dsv4).unwrap();
         assert_eq!((d.release_bits, d.expert_bits_released(), d.expert_width), (8.0, 4.25, 4096));
+        // (V4.1 names the experts' dtype in its quantization_config: the same bits)
+        let dsv41 = dsv4.replace(
+            r#""expert_dtype": "fp4", "quantization_config": {"quant_method": "fp8"}"#,
+            r#""quantization_config": {"quant_method": "fp8", "expert_dtype": "fp4"}"#,
+        );
+        assert_ne!(dsv41, dsv4);
+        assert_eq!(Shape::from_config(&dsv41).unwrap().expert_bits_released(), 4.25);
         let glm = r#"{"model_type": "glm5_next_text", "hidden_size": 4096, "num_hidden_layers": 4, "num_attention_heads": 64, "n_routed_experts": 288,
             "num_experts_per_tok": 8, "moe_intermediate_size": 2048, "quantization_config": {"quant_method": "fp8"}}"#;
         let g = Shape::from_config(glm).unwrap();
@@ -7479,6 +7498,35 @@ mod tests {
         let r = plan(256 << 30).unwrap_err();
         // (the model's 75 layers of experts, 675 GiB: its draft layer's are not the model's)
         assert_eq!(r.what, "GLM-5.3 keeps the experts its GPUs do not hold in the computer's memory: they take 675.2 GiB, and 256.0 GiB is free");
+        // (a split asked for at a layer that takes another stage's picks (7: the layer before it, 6, has its indexer's own) is refused by the plan in the loader's words, and one at a
+        // layer with its own is not refused for that)
+        let cut = |l: usize| {
+            let a = args(&["run", "GLM-5.3", "--split", &l.to_string(), "--devices", "0,1"]);
+            sizing::size_dynamic(&a, "GLM-5.3", &table, None, &text, "GLM-5.3", &devs, Some(m.ram_free), &|_| false).err().map(|r| r.what)
+        };
+        assert_eq!(cut(7).as_deref(), Some("a latent attention model: layer 7 takes the picks of a layer of another stage: a split must keep them together"));
+        assert!(!cut(6).is_some_and(|w| w.contains("takes the picks")), "{:?}", cut(6));
+    }
+
+    /// The plan refuses a split by the rule the loader keeps: a stage begins at a layer whose indexer is its own. On GLM-5.3's random case (a layer of its own and one more, then
+    /// two that take its picks) `stage_starts` says what the loader says of the stage beginning at each layer, and the words are the loader's.
+    #[test]
+    fn the_plans_stage_starts_are_the_loaders() {
+        use crate::dynamic::{
+            lower::{latent_moe, split_apart_picks},
+            Stage,
+        };
+        let text = fixture("glm_moe_dsa_toy_config.json");
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(&text).unwrap()).unwrap();
+        let starts = sizing::stage_starts(&text, 4);
+        assert_eq!(starts, [true, true, false, false]);
+        for c in 1..4 {
+            let loaded = latent_moe(&kinds, vec![1], 4096, &Stage { layers: (c, 4), first: false, last: true });
+            assert_eq!(loaded.is_err(), !starts[c], "a stage beginning at layer {c}");
+            if let Err(e) = loaded {
+                assert_eq!(e.msg, split_apart_picks(c));
+            }
+        }
     }
 
     /// A stage of the expert cache's plan begins only where one may (`places_plan_at`: the layers from each such layer to the next on one GPU), and where

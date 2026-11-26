@@ -12,8 +12,8 @@
 use super::{Dyn, ModelDesc, Op, Opts, ResidentMoe, Stage};
 use crate::cb_pack::CbPack;
 use crate::dev::Dev;
+use crate::dynamic::experts::MoeBlock;
 use crate::ffi::{err, Result};
-use crate::kern_nh::MoeBlock;
 use crate::moe_qwen4x::{QxCbShared, QxMoeCb};
 use crate::offload::{ExpertStore, Offload};
 pub use crate::qwen4x::PackMode;
