@@ -2,7 +2,7 @@
 //! of its keys and one of its values (none where its keys are its values, as in Gemma 4's global layers), in that layer's own shape (Gemma 4's
 //! are 256 and 512 channels), made from the keys and values the model itself writes. `calibrate` runs prompts through the engine and reads them
 //! back from its cache; the rule is kvcal's (`kvcal::best_base` over histograms of exponent >> 1), and each layer's share of values outside its
-//! windows is the escape pool's load. The tables of the legacy engine (kv.rs, one shape for every layer) are not these.
+//! windows is the escape pool's load.
 use super::{Dyn, Op};
 use crate::dev::copy_d2h_async;
 use crate::ffi::{err, Error, Result};

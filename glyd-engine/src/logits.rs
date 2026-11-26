@@ -1475,9 +1475,9 @@ pub fn gemma4_kv_random(out: &Path) -> Result<()> {
 }
 
 /// Qwen3.8-Flash-Next on the description executor (src/dynamic/qwen4x.rs) at every level, as the other cases' engines: the matrices at the level (penguin's lossless
-/// packs where none is), the experts lossless at penguin and in a lossy level's codes at the others. Condor's own engine runs no level of the case: the family is held to
+/// packs where none is), the experts lossless at penguin and in a lossy level's codes at the others. Condor's own engine (deleted in R3d) ran no level of the case: the family is held to
 /// the CPU reference of the kinds, not to that engine's bits (its kestrel rows on an RTX 4080 SUPER are its record, tests/fixtures/qwen4x_condor_rows.json.gz, which
-/// the reference's own test reads), and `paritycheck` runs the two side by side while that engine exists. The penguin fixture's bound is the kind's (the Qwen3.5
+/// the reference's own test reads), and `paritycheck` holds the executor to the reference alone. The penguin fixture's bound is the kind's (the Qwen3.5
 /// layout's fixture's: KL mean 1e-4, max 2.5e-4), and the case asks to be held on its routers' choices (`Case::on_choices`): the random model's 16 experts, 4 a token,
 /// leave choices within 1e-2 of the next expert (`reference::ffn::margin`), which a bf16 engine may take either way, and one taken the other way moves its row and
 /// the rows after it by more than the bound allows arithmetic. Such a choice is judged by the reference's router on the engine's own input row, and the logits are

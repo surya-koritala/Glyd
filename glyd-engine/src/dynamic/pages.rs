@@ -20,7 +20,7 @@
 //! caller (`share`: rows.rs copies it).
 //!
 //! Block 0 of every pool is never given out: every entry a sequence does not hold names it, so a write the engine makes there (a graph's capture runs a step at position 0 of a sequence
-//! that holds nothing) lands where no one reads. The kernels read a position through the table (`g4_place` in kernels/gemma4.cu); this file is the host's side: which blocks a sequence
+//! that holds nothing) lands where no one reads. The kernels read a position through the table (`at_place` in kernels/attn.cu); this file is the host's side: which blocks a sequence
 //! holds, and which entries changed since the tables were last copied to the GPU.
 
 use crate::ffi::Result;

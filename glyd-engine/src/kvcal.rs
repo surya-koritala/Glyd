@@ -1,6 +1,6 @@
 //! The host's half of calibrating the 12-bit KV pages' tables (src/dynamic/kv12.rs) on the engine itself: the corpus and the sequences made of it, and the windows from the
 //! exponents' histograms. The plugin's `glyd_gpu.kvcal` reads the same corpus the same way. The legacy dense engine's tables (their sweep, meta and file format) went with
-//! it (R3c, #139); what was left of them here, used by nothing, went with `work_gen` (R4a, #138).
+//! it (R3c, #139); what was left of them here, used by nothing, went with the loop of their own the engines that ran one request at a time served by (R4a, #138).
 
 pub const TIERS: [usize; 5] = [4096, 8192, 16384, 32768, 40960]; // the positions a table is calibrated for
 pub const WINDOW: usize = 8; // values of exponent >> 1 a base covers

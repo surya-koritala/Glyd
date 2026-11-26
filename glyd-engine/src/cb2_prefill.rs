@@ -8,7 +8,7 @@
 //! The slot is as big as the layer's biggest expert (in the form the kernels read: a ternary row is made two-bit rows by a kernel after its copy, in a buffer of its own), and an expert copies only its own bytes.
 //!
 //! The result is each pair's row, `prow` (f32 [n * k, hid], pair p = token p / k's choice p % k, in the router's order): activation . downT in the rotated basis, not weighted, written once by one thread of the
-//! products (no atomic add); the caller sums a token's rows in the router's order with their weights (src/moe_qwen4x.rs `qx_cb_sum_rot`, the per-pair products' sum), so a token's sum is in an order the
+//! products (no atomic add); the caller sums a token's rows in the router's order with their weights (src/moe_cb.rs `qx_cb_sum_rot`, the per-pair products' sum), so a token's sum is in an order the
 //! layer's shape fixes, whatever experts run at once or wherever they are: the same bits from run to run. The host's share (`HostShare`) sums its pairs by token on the CPU; the caller adds those sums first and
 //! leaves those pairs out (`HostSums`).
 //!
@@ -1274,7 +1274,7 @@ mod bench {
         ((b.wrapping_add(0x7FFF + ((b >> 16) & 1))) >> 16) as u16
     }
 
-    /// A layer file of a pack mapped read-only (the codes' and the books' offsets as `GlmMoeCb` finds them: the first kept expert's tensors, the others end to end after them).
+    /// A layer file of a pack mapped read-only (the codes' and the books' offsets as `map_layer` checks them: the first kept expert's tensors, the others end to end after them).
     struct Mapped {
         ptr: *mut u8,
         #[cfg_attr(windows, allow(dead_code))]

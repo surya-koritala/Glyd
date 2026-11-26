@@ -32,7 +32,7 @@ pub struct Device {
     pub free: u64,
     /// Memory bandwidth, GB/s: the maker's figure (`BANDWIDTH`), or what a machine's JSON says.
     pub bandwidth: f64,
-    /// What a kernel streaming the GPU's memory reads, GB/s, as the rate probe measured it on this computer (`rates_of`); None for a preset or a GPU not probed,
+    /// What a kernel streaming the GPU's memory reads, GB/s, as the rate probe measured it on this computer (`rates_in`); None for a preset or a GPU not probed,
     /// whose rate is the maker's figure times `STREAM_OF_SPEC`.
     pub stream: Option<f64>,
     /// The dense bf16 tensor rate (fp32 sums), TFLOPS, from the makers' sheets (`TFLOPS`); 0 where the planner does not know it (no prefill prediction).
@@ -2924,7 +2924,7 @@ pub mod sizing {
     }
 
     /// A token's keys and values in the executor's cache, all layers: bf16, or in its 12-bit lossless pages (`twelve`) where they take the layers' heads
-    /// (`kv12_token_bytes`; what they spend once is `dense_once`).
+    /// (`kv12_token_bytes`; what they spend once is `Once`).
     pub fn kv_per_token(cfg: &Config, twelve: bool) -> u64 {
         let layer = match dense_ring(cfg, twelve) {
             Some(s) => kv12_token_bytes(s.heads, s.channels, s.one),
@@ -4733,7 +4733,7 @@ pub mod sizing {
     }
 
     /// What an expert cache is planned from, read by one rule whatever the source of its experts and whatever the route (`expert_cache_with`: a release's,
-    /// `release_experts`; a loader's own packs, `packed_experts`; a hummingbird directory's, `hb_dir_experts`; a lossy level's, `nemotron_experts`): each
+    /// `release_experts`; a loader's own packs, `packed_experts`; a hummingbird directory's, `hb_dir_experts`; a lossy level's, `MoeShape::cache_of`): each
     /// layer's weights besides its experts (`dense`, the rest `base`) and the bytes of them its loader can keep in the computer's memory (`ram`, src/dense_ram.rs),
     /// which layers have experts, a place's bytes (an expert's, their mean where they differ), a layer's experts and a token's, every expert's bytes, whether
     /// those the computer's memory does not hold are read from the disk (`disk`: a hummingbird directory's, the hummingbird level's) or all must be in it, the

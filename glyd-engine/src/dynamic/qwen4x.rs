@@ -207,7 +207,7 @@ impl Caching {
     }
 }
 
-/// What Condor's server's flags select, flag for flag as v0.34.2's engine read them (its `qwen4x_serve::load`): the pack's mode (`--precise`; else `best` where
+/// What Condor's server's flags select, flag for flag as v0.34.2's engine read them: the pack's mode (`--precise`; else `best` where
 /// the pack's folder is named so, else `fast`: its skipping and the Monitor's name), the sidecars over the pack's experts (`--side A,B`; none with `--no-side`;
 /// else the mode's, `PackMode::side`), the always-on matrices' layout (`--layout`, four bits where none is given) and the layout of the attention blocks' own
 /// matrices and the LM head (`--hi i6 | i5 | i4 | none`; where none is given five bits beside a layout of four, else the layout's), None where it is the
