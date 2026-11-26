@@ -3608,14 +3608,15 @@ pub mod sizing {
     /// GLYD_KV=lossless asks for them), as `one_gpu` makes each: both are lossless, so the 12-bit pages are taken only where they reserve no more than bf16
     /// for the plan, that is where their plan gives more context than bf16's, or the same in no more bytes for its users (`Needs::kv`: the pages' worst case
     /// beside their tokens, a raw slab for every page of one sequence and the rows a pass unpacks, `kv12::once_bytes`, which one user at a long context pays
-    /// for and many users share). Else bf16's plan, so a level is never planned lower for the 12-bit pages than bf16 holds it.
+    /// for and many users share). Else bf16's plan, so a level is never planned lower for the 12-bit pages than bf16 holds it. A check of the pages against
+    /// their own plan asks for the 12-bit plan wherever one fits (`twelve_always`).
     pub(crate) fn one_gpu_pages(n: &Needs, twelve: Option<&Needs>, free: u64, asked: Option<usize>, gpu: &str) -> Result<LoadPlan, Short> {
         let bf16 = one_gpu(n, free, asked, gpu);
         let Some(t) = twelve.filter(|t| t.twelve()) else { return bf16 };
         match (bf16, one_gpu(t, free, asked, gpu)) {
             (Ok(b), Ok(p)) => {
                 let seqs = n.users.max(1) as u64;
-                Ok(if p.context > b.context || (p.context == b.context && t.kv(seqs, p.context) <= n.kv(seqs, b.context)) { p } else { b })
+                Ok(if twelve_always() || p.context > b.context || (p.context == b.context && t.kv(seqs, p.context) <= n.kv(seqs, b.context)) { p } else { b })
             }
             (Err(_), Ok(p)) => Ok(p),
             (bf16, _) => bf16,
@@ -3777,6 +3778,26 @@ pub mod sizing {
     #[cfg(test)]
     thread_local! {
         static LOSSLESS: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+        static ALWAYS: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// Whether a development build's GLYD_KV12_ALWAYS=1 asks for the 12-bit plan wherever one fits, also where bf16 reserves less: a check that runs the 12-bit
+    /// pages holds them to the plan made for them (`usercheck --ctx plan --kv12`), never to bf16's bytes. A test's thread says so for itself alone (`always_twelve`).
+    pub(crate) fn twelve_always() -> bool {
+        #[cfg(test)]
+        if let Some(on) = ALWAYS.with(std::cell::Cell::get) {
+            return on;
+        }
+        crate::tune!("GLYD_KV12_ALWAYS").as_deref() == Some("1")
+    }
+
+    /// `f` run with the 12-bit plan asked for wherever one fits (`on`) or not, as this test's thread alone sees it.
+    #[cfg(test)]
+    pub(crate) fn always_twelve<T>(on: bool, f: impl FnOnce() -> T) -> T {
+        ALWAYS.with(|c| c.set(Some(on)));
+        let got = f();
+        ALWAYS.with(|c| c.set(None));
+        got
     }
 
     /// `f` run with GLYD_KV=lossless asked (`on`) or not, as this test's thread alone sees it: the tests share one process's environment.
@@ -5290,6 +5311,31 @@ mod tests {
         let (b, t) = (plan(false, &words), plan(true, &words));
         assert!(t.kv12 && !b.kv12 && t.level == b.level && t.context > b.context, "bf16 {b:?}, 12-bit {t:?}");
         assert!(t.json(m).contains(r#""kv_format":"12-bit""#) && t.text().contains("keys and values in 12-bit pages"), "{}", t.text());
+    }
+
+    /// A check that runs the 12-bit pages where a server's plan is bf16's asks for the plan made for them (`sizing::twelve_always`): one user at 32,768 tokens of
+    /// gemma-4-12B on an L4 is planned in bf16 for a server (the pages' worst case beside the tokens reserves more), and in 12-bit pages of more bytes for the
+    /// check, which the loader's pools then take. Without the pages asked for (no GLYD_KV=lossless) the plan stays bf16's.
+    #[test]
+    fn a_check_asks_for_the_twelve_bit_plan_where_a_servers_is_bf16() {
+        let text = fixture("gemma4_12b_config.json");
+        let dir = model_dir("kvalways", "gemma-4-12B", &text);
+        let m = dir.to_str().unwrap();
+        let words = ["serve", m, "--machine", "l4", "--users", "1", "--no-draft", "--context", "32768"];
+        let plan = |lossless: bool, always: bool| -> LoadPlan {
+            sizing::always_twelve(always, || sizing::asking_lossless(lossless, || planned(&args(&words))))
+                .unwrap()
+                .plan
+                .chosen
+                .and_then(|c| c.load)
+                .expect("a plan")
+        };
+        let (server, check, plain) = (plan(true, false), plan(true, true), plan(false, true));
+        assert_eq!((server.kv_format(), server.context), ("bf16", 32_768), "{server:?}");
+        assert_eq!((check.kv_format(), check.context, check.level), ("12-bit", 32_768, server.level), "{check:?}");
+        assert!(check.kv > server.kv, "the 12-bit pages of one user reserve more: {} against {}", check.kv, server.kv);
+        assert_eq!(plain, plan(false, false), "no pages asked for: bf16's plan whatever the check's switch");
+        assert_eq!(plain.kv_format(), "bf16");
     }
 
     fn fixture(name: &str) -> String {
