@@ -21,7 +21,7 @@
 //! A call the library refuses, a plan a development build's tuning variable asks for, and an AMD build go to the library still (each
 //! function here says false and `ffi::Lib` calls it).
 
-use crate::device::{Attr, CudaDevice as D, Device};
+use crate::device::{Attr, CudaDevice as D, Device, TensorMap};
 use crate::ffi::{Error, Kind, Pack, Result, Stream, Words};
 
 /// The routes (glyd_gpu.h's GLYD_GPU_ROUTE_*): W decoded for the caller's dense product; the step product (to 64 tokens); the 12-bit layout's
@@ -816,11 +816,6 @@ unsafe fn step_linear(u: Unpacker, w: &Pack, x: u64, m: i64, y: u64, (ws, ws_byt
     Ok(true)
 }
 
-/// CUtensorMap (cuda.h): a tensor map as the driver's cuTensorMapEncodeTiled writes it, 128 bytes on a 64-byte line, passed to Hopper's kernels by value.
-#[repr(C, align(64))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TensorMap(pub [u64; 16]);
-
 /// MoePairs (gpu/glyd_gpu_kernels.h), field for field: the prompt kernel's experts' plan (56 bytes); one matrix's product passes the library's
 /// MoePairs{} (`Default`: `skip` 1, the rest zero).
 #[repr(C)]
@@ -1200,7 +1195,7 @@ fn wgt_run(o: i64, k: i64, m: i64) -> Result<Option<HopRun>> {
 /// # Safety
 /// As `linear`; `a` holds the arguments after the map, the kernel's.
 unsafe fn hop_launch(r: &HopRun, x: u64, k: i64, m: i64, a: Slots, cs: Stream) -> Result<()> {
-    let mut map = TensorMap(D::tensor_map(x, (k as u64, m as u64, (k * 2) as u64), (64, r.box_rows))?);
+    let mut map = D::tensor_map(x, (k as u64, m as u64, (k * 2) as u64), (64, r.box_rows))?;
     let mut a = a;
     let mut ptrs = vec![&mut map as *mut TensorMap as *mut std::ffi::c_void];
     ptrs.extend(crate::dev::KernelArgs::ptrs(&mut a));
@@ -4621,7 +4616,6 @@ mod tests {
         assert_eq!((offset_of!(F8Pk, plain), offset_of!(F8Un, o), offset_of!(F8Un, vec)), (32, 56, 76));
         // f8c::F8Lin's offsets as a host compiler lays it out (gpu/fp8/emu_f8.cpp's build of the f8c block, 2026-11-23): 168 bytes
         assert_eq!(size_of::<F8Lin>(), 168);
-        assert_eq!((size_of::<TensorMap>(), std::mem::align_of::<TensorMap>()), (128, 64));
         assert_eq!((size_of::<MoePairs>(), offset_of!(MoePairs, k), offset_of!(MoePairs, w), offset_of!(MoePairs, skip)), (56, 16, 32, 52));
         let at =
             [offset_of!(F8Lin, lds), offset_of!(F8Lin, m), offset_of!(F8Lin, xvec), offset_of!(F8Lin, plan), offset_of!(F8Lin, e), offset_of!(F8Lin, gather)];
