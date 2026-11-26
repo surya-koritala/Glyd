@@ -185,6 +185,21 @@ impl RefModel {
             + 4 * self.final_norm.len()
     }
 
+    /// The model of `d` from here on with its release's simulated quantizations of its activations in the form of FP8 blocks of `block` (src/cpu_fp4.rs `Sim`;
+    /// the kinds' reference simulates the form of 32s, src/dsv4_ref.rs `RefV4` that of 128s): every product whose matrix the checkpoint stores quantized (the
+    /// description's `scales`) takes its input rounded as the release's act_quant rounds it, and the compressed attention's caches, indexer and output and the
+    /// experts' activations are rounded as that release rounds them (`Params::sim`).
+    pub fn simulate(&mut self, d: &Described, block: usize) -> Result<()> {
+        if block != 32 {
+            return err(format!("the kinds' reference simulates a release's quantizations of FP8 blocks of 32, not of {block}"));
+        }
+        for (l, roles) in self.layers.iter_mut().zip(&d.blocks) {
+            l.p.sim = block;
+            l.p.quantized = roles.iter().filter(|(_, s)| s.names().iter().any(|n| d.scales.contains_key(n))).map(|(r, _)| r.clone()).collect();
+        }
+        Ok(())
+    }
+
     /// The tokens of one sequence (slot 0) from position `start`: each token's logits.
     pub fn forward(&mut self, tokens: &[u32], start: u32) -> Result<Vec<Vec<f32>>> {
         self.forward_seen(tokens, start, &mut |_| {})

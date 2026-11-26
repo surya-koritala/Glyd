@@ -431,8 +431,8 @@ fn load_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store:
                     threads,
                     tpr,
                     exact8,
-                    // (the description's: a release whose quantizations the kernels do not simulate runs without them, `lower_comp::lower`)
-                    sim: desc.v4.as_ref().is_some_and(|v| v.sim),
+                    // (the description's: the activations' block of the form it simulates, none where the release's quantizations are not simulated, `lower_comp::lower`)
+                    sim: desc.v4.as_ref().map_or(0, |v| v.sim.block()),
                     inter,
                 },
                 ml,
@@ -475,7 +475,8 @@ struct ExpertsAt<'a> {
     threads: usize,
     tpr: Option<(usize, usize)>,
     exact8: bool,
-    sim: bool,
+    /// the block of the experts' activations' E4M3 as the release's simulation rounds them (0: not simulated)
+    sim: usize,
     inter: usize,
 }
 
