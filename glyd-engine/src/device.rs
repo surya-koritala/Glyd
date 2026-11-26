@@ -652,7 +652,8 @@ impl Device for CudaDevice {
 pub struct TensorMap(pub [u64; 16]);
 
 /// cuda.h's CUlaunchConfig and CUlaunchAttribute (one: the cluster's dimension, CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION 4), as cuLaunchKernelEx and
-/// cuOccupancyMaxActiveClusters take them.
+/// cuOccupancyMaxActiveClusters take them (NVIDIA's alone: an AMD build launches no cluster).
+#[cfg(not(glyd_hip))]
 #[repr(C)]
 struct LaunchConfig {
     grid: [u32; 3],
@@ -663,6 +664,7 @@ struct LaunchConfig {
     num_attrs: u32,
 }
 
+#[cfg(not(glyd_hip))]
 #[repr(C)]
 struct LaunchAttribute {
     id: u32,
@@ -670,6 +672,7 @@ struct LaunchAttribute {
     value: [u32; 16],
 }
 
+#[cfg(not(glyd_hip))]
 fn cluster_config(grid: u32, threads: u32, smem: u32, cluster: u32, s: Stream, attr: &mut LaunchAttribute) -> LaunchConfig {
     *attr = LaunchAttribute { id: 4, _pad: 0, value: [0; 16] };
     attr.value[..3].copy_from_slice(&[cluster, 1, 1]);
@@ -687,8 +690,11 @@ mod tests {
         assert!(attrs.iter().all(|&(a, n)| a as i32 == n));
         assert_eq!([HostMem::Pinned as u32, HostMem::Portable as u32, HostMem::Mapped as u32], [0, 1, 2]);
         // cuda.h's launch configuration and attribute: 56 and 72 bytes (the stream at 32, the attributes at 40)
-        assert_eq!((std::mem::size_of::<super::LaunchConfig>(), std::mem::size_of::<super::LaunchAttribute>()), (56, 72));
-        assert_eq!((std::mem::offset_of!(super::LaunchConfig, stream), std::mem::offset_of!(super::LaunchConfig, num_attrs)), (32, 48));
+        #[cfg(not(glyd_hip))]
+        {
+            assert_eq!((std::mem::size_of::<super::LaunchConfig>(), std::mem::size_of::<super::LaunchAttribute>()), (56, 72));
+            assert_eq!((std::mem::offset_of!(super::LaunchConfig, stream), std::mem::offset_of!(super::LaunchConfig, num_attrs)), (32, 48));
+        }
         // cuda.h's CUtensorMap: 128 bytes, aligned to 128 by CUDA 13's toolkit and to 64 by CUDA 12's (the main fatbin's, build.rs's cfg)
         let align = if cfg!(tensor_map_128) { 128 } else { 64 };
         assert_eq!((std::mem::size_of::<super::TensorMap>(), std::mem::align_of::<super::TensorMap>()), (128, align));
