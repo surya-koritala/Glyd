@@ -1,6 +1,6 @@
-//! R9's spikes (#230): one kind, the dense MLP block, through the layer-kind seam on more than the reference: MLX (`runtime::mlx`, a
-//! Mac) and CUDA (`runtime::cuda`). What a spike's `build` reads of the block and its weights, and the check that runs a backend's block
-//! against the reference's on the same weights.
+//! R9's spike (#230): one kind, the dense MLP block, through the layer-kind seam on more than the reference: MLX (`runtime::mlx`, a Mac).
+//! What its `build` reads of the block and its weights, and the check that runs a backend's block against the reference's on the same
+//! weights. (The CUDA backend, `runtime::cuda`, runs every kind on the executor's kernels; `kindcheck` holds it to the reference.)
 use super::backend::{HostTensor, LayerDesc, WeightSource};
 use super::kinds::{Act, Body, Ffn, NormKind, NormWeight, Residual};
 use crate::ffi::{err, Error, Result};

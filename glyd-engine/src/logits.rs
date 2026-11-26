@@ -1435,10 +1435,26 @@ pub fn codes_form(name: &str) -> Result<&'static [(Fmt, Fmt)]> {
 /// other tensor of the description at random by the family's rules (`manifest_random`). A shard of each (`model.safetensors`, `experts.safetensors`) and the index
 /// that names them. Two-bit experts are the draws of the form before the others were made (the `qwen4x-cb` case's model is the same bytes).
 pub fn qwen4x_codes_random(out: &Path, form: &[(Fmt, Fmt)]) -> Result<()> {
+    codes_model(out, form, false)
+}
+
+/// The release's form of a directory of the family (glyd/Qwen3.8-Flash-Next-hummingbird's `model/` and a pack of its experts): `qwen4x_codes_random` in the
+/// form `precise-v2` (the release's default pack's formats) and a third layer, with an n-gram embedding before its second layer (a Gated DeltaNet one, as the
+/// release's) at the release's row of 160 values (its `ple_embed_dim` the hidden width), the checkpoint slim (none of its routed experts: they are the pack's alone, `pack/`) and its n-gram table stored at 4 bits
+/// (`tables_at_4_bits`), as the release stores it; its index says so in its metadata, in the release's words.
+pub fn qwen4x_release_random(out: &Path) -> Result<()> {
+    codes_model(out, codes_form("precise-v2")?, true)?;
+    tables_at_4_bits(out, &|n| n.contains(".ngram_embedding."))
+}
+
+/// `qwen4x_codes_random`, or with `release` the release's form (`qwen4x_release_random`, but its table's form: written in bf16 here).
+fn codes_model(out: &Path, form: &[(Fmt, Fmt)], release: bool) -> Result<()> {
     use crate::cb_random::{write_codes, CodesExpert, Rng};
     let m: Value = serde_json::from_str(include_str!("../tests/fixtures/qwen4x_tiny_manifest.json")).map_err(|e| Error(e.to_string()))?;
     let mut c: Value = serde_json::from_str(m["config"].as_str().unwrap_or("{}")).map_err(|e| Error(e.to_string()))?;
-    let (hidden, inter, experts, layers) = (2560usize, 640usize, 8usize, 2usize);
+    // (the release's form: a third layer, its n-gram block before the second (a Gated DeltaNet one), as the release's `ple_layer_ids` [2])
+    let types: &[&str] = if release { &["linear_attention", "linear_attention", "indexed_attention"] } else { &["linear_attention", "indexed_attention"] };
+    let (hidden, inter, experts, layers) = (2560usize, 640usize, 8usize, types.len());
     let t = &mut c["text_config"];
     for (k, v) in [
         ("hidden_size", json!(hidden)),
@@ -1446,17 +1462,29 @@ pub fn qwen4x_codes_random(out: &Path, form: &[(Fmt, Fmt)]) -> Result<()> {
         ("shared_expert_intermediate_size", json!(inter)),
         ("num_experts", json!(experts)),
         ("num_hidden_layers", json!(layers)),
-        ("layer_types", json!(["linear_attention", "indexed_attention"])),
-        ("ple_layer_ids", json!([])),
-        ("number_of_conv_states", json!(1)),
+        ("layer_types", json!(types)),
+        ("ple_layer_ids", if release { json!([2]) } else { json!([]) }),
     ] {
         t[k] = v;
+    }
+    // (the n-gram block's convolution states, the tiny model's 3, where it has one)
+    match release {
+        true => t["ple_embed_dim"] = json!(hidden),
+        false => t["number_of_conv_states"] = json!(1),
     }
     let text = c.to_string();
     let d = crate::runtime::describe::describe(&c)?;
     let routed = |n: &str| n.contains(".mlp.experts.");
     let shared = |n: &str| n.contains(".mlp.shared_expert.");
-    let rest: Vec<Value> = d.shapes.iter().filter(|(n, _)| !routed(n) && !shared(n)).map(|(n, sh)| json!([n, "BF16", sh])).collect();
+    // (the n-gram hash's int64 tensors as the tiny manifest records them: its vocabulary, seed, base and heads are these)
+    let i64s: BTreeMap<&str, &Value> =
+        m["tensors"].as_array().into_iter().flatten().filter(|e| e[1] == "I64").filter_map(|e| Some((e[0].as_str()?, e))).collect();
+    let rest: Vec<Value> = d
+        .shapes
+        .iter()
+        .filter(|(n, _)| !routed(n) && !shared(n))
+        .map(|(n, sh)| i64s.get(n.as_str()).map_or_else(|| json!([n, "BF16", sh]), |e| (*e).clone()))
+        .collect();
     let manifest = json!({"config": text, "experts": OFF_GRID, "tensors": rest}).to_string();
     manifest_random(&manifest, out, 0x2026_1125_0000_00cb, false, "Qwen3.8-Flash-Next family at the codebook kernels' widths (all but its experts)")?;
     // (the routed experts: a pack's, and their weights in the model's basis; the shared expert on the int8 grid)
@@ -1501,14 +1529,112 @@ pub fn qwen4x_codes_random(out: &Path, form: &[(Fmt, Fmt)]) -> Result<()> {
         }
         pack.push((signs, ex));
     }
+    // (the release's checkpoint is slim: its routed experts the pack's alone)
+    shard.retain(|x| !(release && routed(&x.0)));
     let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = shard.iter().map(|(n, t, s, b)| (n.as_str(), *t, s.clone(), &b[..])).collect();
     crate::pack::write_safetensors(&out.join("experts.safetensors"), &[("format", "pt".to_string())], &refs)?;
     let mut map = serde_json::Map::new();
-    for n in d.shapes.keys() {
+    for n in d.shapes.keys().filter(|n| !(release && routed(n))) {
         map.insert(n.clone(), json!(if routed(n) || shared(n) { "experts.safetensors" } else { "model.safetensors" }));
     }
-    io(std::fs::write(out.join("model.safetensors.index.json"), json!({"weight_map": map}).to_string()))?;
+    let index = match release {
+        true => json!({"metadata": {"glyd": "slim: routed experts in the Glyd pack; n-gram table at 4 bits (NF4, a bf16 scale a row)"}, "weight_map": map}),
+        false => json!({"weight_map": map}),
+    };
+    io(std::fs::write(out.join("model.safetensors.index.json"), index.to_string()))?;
     write_codes(&out.join("pack"), hidden, inter, &pack)
+}
+
+/// A case's name and whether it asks for its tables read by rows stored at 4 bits: `CASE+q4` (`tables_at_4_bits`, every table its description holds on the
+/// host: the n-gram table's shards and the embedding, for the family's cases).
+pub fn q4_case(case: &str) -> (&str, bool) {
+    case.strip_suffix("+q4").map_or((case, false), |b| (b, true))
+}
+
+/// The tables the description of the model in `dir` reads by rows on the host (`tables::host_names`) that `keep` keeps, stored at 4 bits in place of their
+/// bf16 rows (`formats::q4_name`, as Glyd's slim checkpoints store the n-gram table): each row its scale (its largest magnitude, rounded to bf16), then each
+/// value's nearest NF4 level of the scale's (`formats::nf4_encode`). Every file that holds one is written again, the index's names with it. The tables' bf16
+/// rows are then the values their 4-bit rows decode to (`tables_decoded`).
+pub fn tables_at_4_bits(dir: &Path, keep: &dyn Fn(&str) -> bool) -> Result<()> {
+    let text = io(std::fs::read_to_string(dir.join("config.json")))?;
+    let names: std::collections::BTreeSet<String> = crate::dynamic::tables::host_names(&text).into_iter().filter(|n| keep(n)).collect();
+    if names.is_empty() {
+        return err(format!("{}: its description holds no table read by rows on the host to store at 4 bits", dir.display()));
+    }
+    let n = rewrite_tensors(dir, &|name, dtype, shape, b| {
+        if !names.contains(name) {
+            return Ok(None);
+        }
+        let cols = shape.get(1).copied().unwrap_or(0) as usize;
+        if dtype != "BF16" || shape.len() != 2 || cols % 2 != 0 {
+            return err(format!("{name}: {dtype} {shape:?}, where a bf16 table of an even number of columns is stored at 4 bits"));
+        }
+        let q4 = crate::formats::q4_name(name).ok_or_else(|| Error(format!("{name}: no .weight to name its 4-bit form by")))?;
+        let rows: Vec<u8> = b.chunks_exact(cols * 2).flat_map(crate::formats::nf4_encode).collect();
+        Ok(Some((q4, "U8".into(), vec![shape[0], 2 + cols as u64 / 2], rows)))
+    })?;
+    if n != names.len() {
+        return err(format!("{}: {n} of the {} tables on the host stored at 4 bits", dir.display(), names.len()));
+    }
+    Ok(())
+}
+
+/// `tables_at_4_bits`' tables back in bf16: each 4-bit table (`X.q4`) of the checkpoint in `dir` stored as `X.weight`, the bf16 rows it decodes to
+/// (`formats::nf4_row`); its index's names with it. How many it wrote.
+pub fn tables_decoded(dir: &Path) -> Result<usize> {
+    rewrite_tensors(dir, &|name, dtype, shape, b| {
+        if !name.ends_with(".q4") {
+            return Ok(None);
+        }
+        let cols = (shape.get(1).copied().unwrap_or(2) as usize).saturating_sub(2) * 2;
+        let rb = crate::formats::q4_row_bytes(dtype, shape, cols).ok_or_else(|| Error(format!("{name}: {dtype} {shape:?}, not a table at 4 bits")))?;
+        let mut out = vec![0u8; b.len() / rb * cols * 2];
+        for (q, o) in b.chunks_exact(rb).zip(out.chunks_exact_mut(cols * 2)) {
+            crate::formats::nf4_row(q, o);
+        }
+        Ok(Some((crate::formats::stands_for(name).into_owned(), "BF16".into(), vec![shape[0], cols as u64], out)))
+    })
+}
+
+/// A tensor's new name, type, shape and bytes, where a rewrite replaces it.
+type Rewritten = Option<(String, String, Vec<u64>, Vec<u8>)>;
+
+/// Each safetensors file of the checkpoint in `dir` that holds a tensor `f` replaces (`f(name, dtype, shape, bytes)`), written again with the replacements
+/// in their places (its metadata `format: pt`), and the index's names with them; how many were replaced.
+fn rewrite_tensors(dir: &Path, f: &dyn Fn(&str, &str, &[u64], &[u8]) -> Result<Rewritten>) -> Result<usize> {
+    let ck = io(glyd_gpu::safetensors::Checkpoint::open(dir))?;
+    let mut renamed: BTreeMap<String, String> = BTreeMap::new();
+    for file in &ck.files {
+        let (mut out, mut changed) = (Vec::new(), false);
+        for (name, t) in &file.tensors {
+            let b = io(file.read(t))?;
+            match f(name, &t.dtype, &t.shape, &b)? {
+                Some(x) => {
+                    renamed.insert(name.clone(), x.0.clone());
+                    out.push(x);
+                    changed = true;
+                }
+                None => out.push((name.clone(), t.dtype.clone(), t.shape.clone(), b)),
+            }
+        }
+        if changed {
+            let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = out.iter().map(|(n, d, sh, b)| (n.as_str(), d.as_str(), sh.clone(), &b[..])).collect();
+            crate::pack::write_safetensors(&file.path, &[("format", "pt".to_string())], &refs)?;
+        }
+    }
+    let idx = dir.join("model.safetensors.index.json");
+    if idx.exists() && !renamed.is_empty() {
+        let mut v: Value = serde_json::from_str(&io(std::fs::read_to_string(&idx))?).map_err(|e| Error(format!("{}: {e}", idx.display())))?;
+        if let Some(map) = v.get_mut("weight_map").and_then(Value::as_object_mut) {
+            for (old, new) in &renamed {
+                if let Some(file) = map.remove(old) {
+                    map.insert(new.clone(), file);
+                }
+            }
+        }
+        io(std::fs::write(&idx, v.to_string()))?;
+    }
+    Ok(renamed.len())
 }
 
 /// The random case's model on the expert cache (`dynamic::qwen4x::load_cached`): the matrices at the level, the routed experts from the case's pack (`PackMode::Best`,
@@ -1801,6 +1927,50 @@ pub fn ref_head(dir: &Path, rows: &[HeadRow], edit: fn(&mut crate::runtime::desc
         out.picks.push(pk.map_or((Vec::new(), Vec::new()), |p| (p.own, p.picks)));
     }
     Ok(out)
+}
+
+/// The DSpark drafter of the model in `dir` (its description's first draft head) on the CPU reference of the kinds (`RefDSpark::load`), and the model's
+/// embedding and LM head (f32 [vocab, hidden]) its block reads.
+pub fn ref_dspark(dir: &Path) -> Result<(Vec<f32>, Vec<f32>, crate::runtime::reference::mtp::RefDSpark)> {
+    use crate::runtime::reference::{model::checkpoint_tensor, mtp::RefDSpark};
+    let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(dir.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
+    let desc = crate::runtime::describe::describe(&cfg)?;
+    let ck = io(glyd_gpu::safetensors::Checkpoint::open(dir))?;
+    let src = |n: &str| checkpoint_tensor(&ck, n);
+    let t = |n: &str| src(n).map(|x| x.1).ok_or_else(|| Error(format!("the checkpoint has no tensor {n}")));
+    let (embed, head) = (t(&desc.embed)?, t(desc.head.as_deref().unwrap_or(&desc.embed))?);
+    Ok((embed, head, RefDSpark::load(&desc, &src)?))
+}
+
+/// The CPU reference of the kinds on the model in `dir` over `tokens` (one sequence from position 0): each position's taps for its DSpark drafter
+/// (`kinds::DSpark::targets`), the mean of the streams each target layer's attention reads (after an n-gram block before it), the targets' side by side.
+pub fn ref_taps(dir: &Path, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
+    let mut m = ref_model(dir)?;
+    let ds = m.desc.mtp.first().and_then(|h| h.dspark.clone()).ok_or_else(|| Error("the description has no DSpark drafter".into()))?;
+    // (the block of each target layer's attention: a layer's mixer the l-th of the blocks')
+    let mixers: Vec<usize> =
+        m.desc.blocks.iter().enumerate().filter(|(_, b)| matches!(b.body, crate::runtime::kinds::Body::Mixer(_))).map(|(i, _)| i).collect();
+    let at: Vec<usize> =
+        ds.targets.iter().map(|&t| mixers.get(t).copied().ok_or_else(|| Error(format!("target layer {t} of {}", mixers.len())))).collect::<Result<_>>()?;
+    let (n, d) = (m.desc.embed.streams.max(1), m.desc.hidden);
+    let mut out = vec![vec![0f32; at.len() * d]; tokens.len()];
+    let mut b = 0usize;
+    m.forward_seen(tokens, 0, &mut |x| {
+        for (k, _) in at.iter().enumerate().filter(|(_, &a)| a == b) {
+            for (t, xt) in x.chunks(n * d).enumerate() {
+                for c in 0..d {
+                    out[t][k * d + c] = (0..n).map(|s| xt[s * d + c]).sum::<f32>() / n as f32;
+                }
+            }
+        }
+        b += 1;
+    })?;
+    Ok(out)
+}
+
+/// The `deepseek-v4` case's random model with its DSpark drafter (`dsv4_ref::random_dspark`: the case's model to the bit, two draft layers, a block of 8).
+pub fn deepseek_v4_dspark_random(out: &Path) -> Result<()> {
+    crate::dsv4_ref::random_dspark(out)
 }
 
 /// The plain dense kind's small model (a pre-norm decoder of one attention and one gated SiLU MLP a layer: 4 layers, 16 query and 8 key-value heads of 128 with normed
@@ -3104,33 +3274,38 @@ pub fn level_check(a: &crate::args::Args) -> Result<()> {
     }
 }
 
-/// `logitsmodel CASE DIR`: the case's random model made in DIR (a model to run the other checks on: `kvtest DIR`, `run DIR`).
+/// `logitsmodel CASE DIR [--servable]`: the case's random model made in DIR (a model to run the other checks on: `kvtest DIR`, `run DIR`); `qwen4x-rel` the
+/// family's release's form (`qwen4x_release_random`); `CASE+q4` with its tables on the host stored at 4 bits.
 pub fn make_model(a: &crate::args::Args) -> Result<()> {
-    let c = find_case(a.need(1, "CASE")?)?;
-    match c.weights {
-        Weights::Random(make) => {
-            let dir = Path::new(a.need(2, "DIR")?);
-            make(dir)?;
-            // (`--servable`: the files a server needs besides the weights, for a client to talk to it: a tokenizer, the chat template and the end token; the
-            // family's chat template where one is made: Qwen's for the Qwen3.5 layout's and Qwen3.8-Flash-Next's cases, GLM-5.3's for its layout's, DeepSeek-V4.1's
-            // release's own (tests/fixtures/chat_deepseek_v41.jinja, its chat_template.jinja) for its case)
-            if a.has("servable") {
-                let template = match c.id {
-                    "qwen35" | "qwen35moe" | "qwen4x" | "qwen4x-s2" => include_str!("../tests/fixtures/chat_qwen38_tools.jinja"),
-                    "glm-dsa" | "glm-dsa-f8" => include_str!("../tests/fixtures/chat_glm53_tools.jinja"),
-                    "deepseek-v41" => include_str!("../tests/fixtures/chat_deepseek_v41.jinja"),
-                    id => {
-                        return err(format!(
-                            "--servable: only the cases whose family's chat template is made (qwen35, qwen35moe, qwen4x, qwen4x-s2, glm-dsa, glm-dsa-f8, deepseek-v41; not {id})"
-                        ))
-                    }
-                };
-                write_serving_files(dir, template)?;
-            }
-            Ok(())
-        }
-        Weights::Hub(id) => err(format!("{}: a real model ({id}), not a random one", c.id)),
+    let id = a.need(1, "CASE")?;
+    let (base, q4) = q4_case(id);
+    let dir = Path::new(a.need(2, "DIR")?);
+    // (a case of the logits checks by its own maker; another random model `random_model` makes, the release's form among them; + q4: its tables at 4 bits)
+    match find_case(base).map(|c| c.weights) {
+        Ok(Weights::Hub(h)) => return err(format!("{id}: a real model ({h}), not a random one")),
+        Ok(Weights::Random(make)) => make(dir)?,
+        Err(_) => random_model_of(base, dir)?,
     }
+    if q4 {
+        tables_at_4_bits(dir, &|_| true)?;
+    }
+    // (`--servable`: the files a server needs besides the weights, for a client to talk to it: a tokenizer, the chat template and the end token; the
+    // family's chat template where one is made: Qwen's for the Qwen3.5 layout's and Qwen3.8-Flash-Next's cases, GLM-5.3's for its layout's, DeepSeek-V4.1's
+    // release's own (tests/fixtures/chat_deepseek_v41.jinja, its chat_template.jinja) for its case)
+    if a.has("servable") {
+        let template = match base {
+            "qwen35" | "qwen35moe" | "qwen4x" | "qwen4x-s2" | "qwen4x-cb" | "qwen4x-rel" => include_str!("../tests/fixtures/chat_qwen38_tools.jinja"),
+            "glm-dsa" | "glm-dsa-f8" => include_str!("../tests/fixtures/chat_glm53_tools.jinja"),
+            "deepseek-v41" => include_str!("../tests/fixtures/chat_deepseek_v41.jinja"),
+            id => {
+                return err(format!(
+                    "--servable: only the cases whose family's chat template is made (qwen35, qwen35moe, qwen4x, qwen4x-s2, qwen4x-cb, qwen4x-rel, glm-dsa, glm-dsa-f8, deepseek-v41; not {id})"
+                ))
+            }
+        };
+        write_serving_files(dir, template)?;
+    }
+    Ok(())
 }
 
 /// The tokens of a servable random model: Qwen's own special ones in the places the random config's end token (id 2) wants them, then every printable ASCII character and the new line and tab, one each. A text with
@@ -3452,6 +3627,34 @@ mod tests {
         let best = |r: &[f32]| (0..r.len()).fold(0, |b, t| if r[t] > r[b] { t } else { b });
         let same = base.iter().zip(&model[1..]).filter(|(h, m)| best(h) == best(m)).count();
         assert!(same < base.len(), "the head's best token is the model's next at every row");
+    }
+
+    /// The DSpark drafters' cases (`draft_model`: deepseek-v4's two draft layers and a block of 8, deepseek-v41's release-shaped one) hold every tensor their
+    /// descriptions read (`describe_dir`), and the CPU reference drafts a block on each: on the reference's own taps of a prompt of 20, the block after it of
+    /// the drafter's size, its logits finite, the Markov head moving them, its blocks of experts each choosing for every row.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn the_dspark_drafters_cases_draft_on_the_reference() {
+        for case in ["deepseek-v4", "deepseek-v41"] {
+            let dir = std::env::temp_dir().join(format!("glyd-dspark-{case}-{}", std::process::id()));
+            draft_model(case, &dir).unwrap();
+            let (d, _) = crate::runtime::describe::describe_dir(&dir).unwrap_or_else(|e| panic!("{case}: {}", e.msg));
+            let ds = d.desc.mtp[0].dspark.clone().unwrap();
+            let toks: Vec<u32> = (0..20u32).map(|i| 3 + (i * 7919) % (d.desc.vocab as u32 - 3)).collect();
+            let taps = ref_taps(&dir, &toks).unwrap();
+            let (embed, head, mut r) = ref_dspark(&dir).unwrap();
+            std::fs::remove_dir_all(&dir).ok();
+            assert_eq!((taps.len(), taps[0].len()), (20, ds.targets.len() * d.desc.hidden), "{case}");
+            for b in r.blocks.iter_mut().filter(|b| matches!(b.block.body, crate::runtime::kinds::Body::Ffn(_))) {
+                b.routed = Some(Vec::new());
+            }
+            let out = r.draft(&taps[..19], toks[19], &embed, &head).unwrap();
+            assert_eq!(out.tokens.len(), ds.block, "{case}");
+            assert!(out.logits.iter().flatten().all(|x| x.is_finite()), "{case}");
+            assert!(out.logits.iter().zip(&out.base).all(|(l, b)| l != b), "{case}: the Markov head moves no draft's logits");
+            assert!(r.blocks.iter().filter_map(|b| b.routed.as_ref()).all(|x| x.len() == ds.block), "{case}");
+            println!("{case}: the reference's block after a prompt of 20: drafts {:?}, confidence {:?}", out.tokens, out.confidence);
+        }
     }
 
     /// GLM-5.3's draft head (`glm_dsa_mtp_random`: the glm-dsa and glm-dsa-f8 cases' models with one MTP layer, DeepSeek-V3's joined head) is well conditioned
@@ -4660,7 +4863,7 @@ mod tests {
 
 /// The case's model in `dir` on the description executor.
 pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
-    Ok(match case {
+    Ok(match q4_case(case).0 {
         "gemma4" | "gemma4-kv" => {
             let c = crate::gemma4::ConfigG4::load(dir)?;
             Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
@@ -4677,10 +4880,10 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         // (DeepSeek-V4 and V4.1: one loader of the compressed attention's lowering)
         "deepseek-v4" | "deepseek-v41" => crate::dynamic::deepseek_v4::load(dir, o)?,
         "qwen4x" | "qwen4x-s2" => crate::dynamic::qwen4x::load(dir, o)?,
-        "qwen4x-cb" => qwen4x_cb_load(dir, o)?,
+        "qwen4x-cb" | "qwen4x-rel" => qwen4x_cb_load(dir, o)?,
         other => {
             return err(format!(
-                "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, glm-dsa-f8, nemotron, deepseek-v4, deepseek-v41, qwen4x, qwen4x-s2 or qwen4x-cb"
+                "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, glm-dsa-f8, nemotron, deepseek-v4, deepseek-v41, qwen4x, qwen4x-s2, qwen4x-cb or qwen4x-rel"
             ))
         }
     })
@@ -4730,8 +4933,17 @@ fn routers_of(dir: &Path, e: &Dyn) -> Result<Option<Routers>> {
     }
 }
 
-/// The case's random model written to `dir`.
+/// The case's random model written to `dir` (`CASE+q4`: with its tables read by rows on the host stored at 4 bits, `tables_at_4_bits`).
 pub(crate) fn random_model(case: &str, dir: &Path) -> Result<()> {
+    let (case, q4) = q4_case(case);
+    random_model_of(case, dir)?;
+    if q4 {
+        tables_at_4_bits(dir, &|_| true)?;
+    }
+    Ok(())
+}
+
+fn random_model_of(case: &str, dir: &Path) -> Result<()> {
     match case {
         "gemma4" => gemma4_random(dir),
         "gemma4-kv" => gemma4_kv_random(dir),
@@ -4751,10 +4963,147 @@ pub(crate) fn random_model(case: &str, dir: &Path) -> Result<()> {
         "qwen4x" => qwen4x_random(dir),
         "qwen4x-s2" => qwen4x_s2_random(dir),
         "qwen4x-cb" => qwen4x_cb_random(dir),
+        "qwen4x-rel" => qwen4x_release_random(dir),
         other => err(format!(
-            "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, glm-dsa-f8, nemotron, deepseek-v4, deepseek-v41, qwen4x, qwen4x-s2 or qwen4x-cb"
+            "{other}: gemma4, gemma4-kv, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, kimi-dsa, glm, glm-dsa, glm-dsa-f8, nemotron, deepseek-v4, deepseek-v41, qwen4x, qwen4x-s2, qwen4x-cb or qwen4x-rel (each + q4: its tables on the host at 4 bits)"
         )),
     }
+}
+
+/// The draft heads' cases' random models with their heads (`draftcheck`'s): the case's model to the bit and its MTP layer or DSpark drafter.
+fn draft_model(case: &str, dir: &Path) -> Result<()> {
+    match case {
+        "qwen4x" => qwen4x_mtp_random(dir),
+        "glm-dsa" => glm_dsa_mtp_random(dir, false),
+        "glm-dsa-f8" => glm_dsa_mtp_random(dir, true),
+        "deepseek-v4" => deepseek_v4_dspark_random(dir),
+        "deepseek-v41" => deepseek_v41_random(dir),
+        other => err(format!("{other}: the draft heads' cases are qwen4x, glm-dsa, glm-dsa-f8, deepseek-v4 and deepseek-v41")),
+    }
+}
+
+/// The model of a draft head's case in `dir` drafting with its head `k` tokens a round, by its family's loader.
+fn load_drafting_dyn(case: &str, dir: &Path, o: &DynOpts, k: usize) -> Result<Dyn> {
+    match case {
+        "qwen4x" => crate::dynamic::qwen4x::load_drafting(dir, o, crate::dynamic::qwen4x::experts_at(o.layout), k),
+        "glm-dsa" | "glm-dsa-f8" => crate::dynamic::glm::load_plain_drafting(dir, o, k),
+        "deepseek-v4" | "deepseek-v41" => crate::dynamic::deepseek_v4::load_drafting(dir, o, k, None),
+        other => err(format!("{other}: the draft heads' cases are qwen4x, glm-dsa, glm-dsa-f8, deepseek-v4 and deepseek-v41")),
+    }
+}
+
+/// `usercheck CASE --draft K [--users N] [--tokens T]`: the case's model with its draft head (`draft_model`) drafting K tokens a round, its greedy replies held to
+/// the model's own alone (its engine without the head), token for token: each reply alone (`Gen::reply`, drafted), then through the scheduler (a drafted model
+/// serves one sequence at a time, each of its decode steps a drafting round: `ModelStep::draft`), one prompt at a time and all of them asked at once.
+fn users_drafted(case: &str, level: &str, users: usize, tokens: usize, k: usize) -> Result<()> {
+    use crate::conv::Gen;
+    use crate::sched::{Ev, Finish, Reply, Sched, Submit};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    let dir = std::env::temp_dir().join(format!("glyd-usercheck-draft-{case}-{}", std::process::id()));
+    let o = DynOpts { ctx: 1024, ..dyn_opts(level_layout(level)?) };
+    let r: Result<(Vec<Vec<u32>>, Dyn, Vec<Vec<u32>>)> = (|| {
+        draft_model(case, &dir)?;
+        let vocab = crate::runtime::describe::describe_dir(&dir)?.0.desc.vocab as u32;
+        let prompts: Vec<Vec<u32>> = (0..users).map(|u| (0..5 + 29 * u as u32).map(|i| 3 + (i * 7919 + u as u32 * 104_729) % (vocab - 3)).collect()).collect();
+        let reply = Reply {
+            params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
+            max_new: tokens,
+            ignore_eos: true,
+            logprobs: None,
+            stop_ids: Vec::new(),
+        };
+        // (the model's own replies, its engine without the head)
+        let mut plain = load_dyn(case, &dir, &o, level)?;
+        let want = prompts.iter().map(|p| plain.reply(p, &reply, &mut |_| true).map(|r| r.0)).collect::<Result<Vec<_>>>()?;
+        drop(plain);
+        Ok((want, load_drafting_dyn(case, &dir, &o, k)?, prompts))
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    let (want, mut e, prompts) = r?;
+    let reply = Reply {
+        params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
+        max_new: tokens,
+        ignore_eos: true,
+        logprobs: None,
+        stop_ids: Vec::new(),
+    };
+    println!(
+        "{case} at {level}: drafting {k} tokens a round with its draft head, {users} prompts of {:?} tokens, {tokens} tokens each",
+        prompts.iter().map(Vec::len).collect::<Vec<_>>()
+    );
+    let mut fails = 0usize;
+    for (i, p) in prompts.iter().enumerate() {
+        let got = e.reply(p, &reply, &mut |_| true)?.0;
+        let ok = got == want[i];
+        fails += !ok as usize;
+        println!(
+            "{} drafted reply {i} alone: {}",
+            if ok { "PASS" } else { "FAIL" },
+            if ok { "the model's own, token for token".into() } else { format!("{got:?} against {:?}", want[i]) }
+        );
+    }
+    let Some((slots, step)) = e.as_step(users)? else { return err(format!("{case}: no scheduler's step of the drafted model")) };
+    let mut s = Sched::new(step, slots).keeping(false);
+    let mut ask = |ps: &[Vec<u32>]| -> Result<Vec<Vec<u32>>> {
+        let mut rx = Vec::new();
+        for p in ps {
+            let (tx, r) = std::sync::mpsc::channel();
+            s.submit(Submit {
+                prompt: p.clone(),
+                reply: reply.clone(),
+                out: tx,
+                abort: Arc::new(AtomicBool::new(false)),
+                resumed: Default::default(),
+                cached: Default::default(),
+                created: Default::default(),
+                salt: 0,
+                pin: 0,
+                images: Vec::new(),
+            });
+            rx.push(r);
+        }
+        while !s.idle() {
+            s.tick()?;
+        }
+        rx.iter()
+            .map(|r| {
+                let mut out = Vec::new();
+                loop {
+                    match r.recv().map_err(|_| Error("the scheduler dropped a sequence".into()))? {
+                        Ev::Token(t) => out.push(t),
+                        Ev::Lp(_) => {}
+                        Ev::End(Ok(Finish::Length)) => return Ok(out),
+                        Ev::End(f) => return err(format!("a sequence ended {f:?} before its {tokens} tokens")),
+                    }
+                }
+            })
+            .collect()
+    };
+    for (i, p) in prompts.iter().enumerate() {
+        let got = ask(std::slice::from_ref(p))?.remove(0);
+        let ok = got == want[i];
+        fails += !ok as usize;
+        println!(
+            "{} through the scheduler, drafted, reply {i} alone: {}",
+            if ok { "PASS" } else { "FAIL" },
+            if ok { "the model's own, token for token".into() } else { format!("{got:?} against {:?}", want[i]) }
+        );
+    }
+    let together = ask(&prompts)?;
+    let same = together.iter().zip(&want).filter(|(a, b)| a == b).count();
+    fails += prompts.len() - same;
+    println!(
+        "{} through the scheduler, drafted, {} prompts at once ({slots} sequence at a time): {same} of {} replies the model's own, token for token",
+        if same == prompts.len() { "PASS" } else { "FAIL" },
+        prompts.len(),
+        prompts.len()
+    );
+    if fails > 0 {
+        return err(format!("usercheck {case} --draft {k}: {fails} replies not the model's own"));
+    }
+    println!("PASS usercheck {case} --draft {k}");
+    Ok(())
 }
 
 /// The plan `serve` makes of the case's random model at `level` on this GPU for `users` sequences, its draft model off (`plan::planned`): the plan the load takes,
@@ -4778,24 +5127,34 @@ fn planned_for(case: &str, level: &str, users: usize) -> Result<crate::plan::Loa
     got
 }
 
-/// `splitcheck CASE [--split CUT,..] [--devices GPU,..] [--level L | --layout mma12] [--tokens T] [--mode M] [--tables]` (development): the case's random model
+/// `splitcheck CASE [--split CUT,..] [--devices GPU,..] [--level L | --layout mma12] [--tokens T] [--mode M] [--tables] [--decoded]` (development): the case's random model
 /// on the dynamic route as `run` opens it (`split::open`: its family's loader, any family of that route; the expert cache's case, `qwen4x-cb`, its pack in an
 /// expert cache a stage, its misses as `--mode` says: `split_open`), once on one GPU and once with its layers cut into stages (by default before its middle layer,
 /// both stages on GPU 0 or on the two `--devices` names: the hand-over through host memory checked on a machine with one GPU). A prompt of 24 tokens and one
 /// past two chunks (150), each then T greedy steps fed the one-GPU run's tokens: every pass's logits the same bits both ways; and each prompt's greedy reply
 /// through the scheduler with the log-probabilities a server sends (the token's and its 5 likeliest): every one the same bits both ways. `--tables`: the one-GPU run with its
 /// tables read by rows on the GPU (src/dynamic/tables.rs `force`), the other with them where its description holds them (on the host: refused where none
-/// is), on one GPU unless `--split` cuts it: the rows copied up are the GPU's rows.
+/// is), on one GPU unless `--split` cuts it: the rows copied up are the GPU's rows. `--decoded` (a case whose tables are at 4 bits: `CASE+q4`, `qwen4x-rel`):
+/// the one-GPU run on the same model with those tables as the bf16 rows they decode to (`tables_decoded`), on one GPU unless `--split` cuts the other: the
+/// rows decoded as they are gathered are the bf16 table's.
 pub fn split_check(a: &crate::args::Args) -> Result<()> {
     let case = a.need(1, "CASE")?;
     let level = a.flag("level").unwrap_or("penguin");
     let tokens: usize = a.num("tokens", 12usize)?;
     let mode =
         a.flag("mode").map_or(Some(crate::offload::Mode::Cpu), crate::offload::Mode::parse).ok_or_else(|| Error("--mode: copy, cpu, split or auto".into()))?;
-    let Weights::Random(make) = find_case(case)?.weights else { return err(format!("{case}: a real model, not a random one")) };
-    let dir = std::env::temp_dir().join(format!("glyd-splitcheck-{case}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("glyd-splitcheck-{}-{}", case.replace('+', "-"), std::process::id()));
+    let bf16 = dir.with_extension("decoded");
+    let decoded = a.has("decoded");
     let r = (|| -> Result<()> {
-        make(&dir)?;
+        random_model(case, &dir)?;
+        // (--decoded: the same model again, its tables at 4 bits written as the bf16 rows they decode to, for the one-GPU run)
+        if decoded {
+            random_model(case, &bf16)?;
+            if tables_decoded(&bf16)? == 0 {
+                return err(format!("{case}: its checkpoint holds no table at 4 bits (--decoded compares it with its bf16 rows)"));
+            }
+        }
         let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(e.to_string()))?;
         if crate::dynamic::split::family(&text).is_none() {
             return err(format!("{case}: its family is not on the dynamic route (`run` cuts no layers of it)"));
@@ -4807,9 +5166,9 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
         if tables && hosted == 0 {
             return err(format!("{case}: its description holds no table on the host (--tables compares the two places)"));
         }
-        // (no cut asked: before the middle layer, on the two GPUs `--devices` names, else both on GPU 0; with --tables, none)
+        // (no cut asked: before the middle layer, on the two GPUs `--devices` names, else both on GPU 0; with --tables or --decoded, none)
         let (cuts, devices) = match crate::dynamic::split::split_args(a)? {
-            (c, d) if c.is_empty() && tables => (c, d[..1].to_vec()),
+            (c, d) if c.is_empty() && (tables || decoded) => (c, d[..1].to_vec()),
             (c, d) if c.is_empty() => (vec![nl / 2], if d.len() == 2 { d } else { vec![0, 0] }),
             x => x,
         };
@@ -4820,8 +5179,8 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
         // (each pass's logits, a prompt after the other in one sequence each, the steps fed `feed` where given, else the run's own greedy tokens; then each prompt's
         // greedy reply through the scheduler, with the log-probabilities a server sends: the token's and its 5 likeliest's)
         type Served = Vec<(Vec<u32>, Vec<crate::sampler::Lp>)>;
-        let run = |cuts: &[usize], devices: &[i32], feed: Option<&[u32]>| -> Result<(Vec<Vec<f32>>, Vec<u32>, Served)> {
-            let mut e = split_open(case, mode, &dir, &o, cuts, devices)?;
+        let run = |dir: &Path, cuts: &[usize], devices: &[i32], feed: Option<&[u32]>| -> Result<(Vec<Vec<f32>>, Vec<u32>, Served)> {
+            let mut e = split_open(case, mode, dir, &o, cuts, devices)?;
             let (mut rows, mut fed) = (Vec::new(), Vec::new());
             for prompt in &prompts {
                 e.reset()?;
@@ -4838,10 +5197,10 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
             Ok((rows, fed, served))
         };
         crate::dynamic::tables::force(tables.then_some(crate::runtime::kinds::TableAt::Gpu));
-        let one = run(&[], &devices[..1], None);
+        let one = run(if decoded { &bf16 } else { &dir }, &[], &devices[..1], None);
         crate::dynamic::tables::force(None);
         let (one, fed, one_lp) = one?;
-        let (staged, _, staged_lp) = run(&cuts, &devices, Some(&fed))?;
+        let (staged, _, staged_lp) = run(&dir, &cuts, &devices, Some(&fed))?;
         let differ: Vec<usize> = (0..one.len()).filter(|&i| one[i].iter().map(|x| x.to_bits()).ne(staged[i].iter().map(|x| x.to_bits()))).collect();
         // (a served token's log-probabilities to the bit: the token, its log-probability, and each of the likeliest tokens and theirs)
         let bits = |l: &crate::sampler::Lp| (l.token, l.logprob.to_bits(), l.top.iter().map(|&(t, x)| (t, x.to_bits())).collect::<Vec<_>>());
@@ -4860,10 +5219,11 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
             )
             .sum::<usize>();
         println!(
-            "{case} at {level}{}{}: {nl} layers, cut before {cuts:?} on GPUs {devices:?}; {} passes (prompts of {} and {}, {tokens} steps after each), {} with logits that differ from the one-GPU run's; \
+            "{case} at {level}{}{}{}: {nl} layers, cut before {cuts:?} on GPUs {devices:?}; {} passes (prompts of {} and {}, {tokens} steps after each), {} with logits that differ from the one-GPU run's; \
              {lps} served tokens' log-probabilities (the token's and its 5 likeliest, through the scheduler), {lp_differ} not the one-GPU run's bits",
-            if case == "qwen4x-cb" { format!(", the expert cache's misses by {}", mode.name()) } else { String::new() },
+            if cached(case) { format!(", the expert cache's misses by {}", mode.name()) } else { String::new() },
             if tables { format!(", its tables read by rows ({hosted} tensors) on the GPU in the one-GPU run and on the host in the other") } else { String::new() },
+            if decoded { ", its tables at 4 bits in the other run and the bf16 rows they decode to in the one-GPU run" } else { "" },
             one.len(),
             prompts[0].len(),
             prompts[1].len(),
@@ -4878,14 +5238,20 @@ pub fn split_check(a: &crate::args::Args) -> Result<()> {
         Ok(())
     })();
     let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&bf16);
     r
+}
+
+/// Whether the case's experts are a codes pack's in the expert cache (`qwen4x-cb`, the release's form `qwen4x-rel`).
+fn cached(case: &str) -> bool {
+    matches!(q4_case(case).0, "qwen4x-cb" | "qwen4x-rel")
 }
 
 /// The case's random model as `splitcheck` opens it: on the dynamic route by its family's loader (`split::open`), or for the expert cache's case (`qwen4x-cb`)
 /// its pack in an expert cache a stage (`dynamic::qwen4x::open_cached`, the case's places a layer each), its misses served as `mode` says (the host computes
 /// them in `cpu`, the case's own; `copy` copies each into a place first); on one GPU where `cuts` is empty.
 fn split_open(case: &str, mode: crate::offload::Mode, dir: &Path, o: &DynOpts, cuts: &[usize], devices: &[i32]) -> Result<crate::dynamic::split::Run> {
-    if case == "qwen4x-cb" {
+    if cached(case) {
         let mut k = qwen4x_cb_caching(dir);
         k.offload.mode = mode;
         return crate::dynamic::qwen4x::open_cached(dir, o, &k, cuts, devices);
@@ -6559,6 +6925,8 @@ fn time_rows(e: &Dyn, rows: usize, v: usize) -> Result<(f64, f64)> {
 /// With a page budget too small for all of them at once (GLYD_ENGINE_PAGES, R4d) the prompts are run at once three more times: sequences sent back for room swapped to the host wherever they can be,
 /// swapped where that costs less than their recompute (the default), and run again from their tokens only; each run's replies against the references, its sequences sent back and swapped, and each
 /// request's first token and the mean time between its tokens. Swapped sequences go on with the cache they had, bit for bit: with prompts one a pass their replies must be the references.
+///
+/// With `--draft K` (the draft heads' cases: qwen4x, glm-dsa, glm-dsa-f8, deepseek-v4, deepseek-v41): `users_drafted`.
 pub fn users_check(a: &crate::args::Args) -> Result<()> {
     use crate::conv::Gen;
     use crate::sched::{Ev, Finish, Reply, Sched, Submit, SwapMode};
@@ -6568,6 +6936,10 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let level = a.flag("level").unwrap_or("penguin");
     let users: usize = a.num("users", 4usize)?;
     let tokens: usize = a.num("tokens", 24usize)?;
+    if let Some(k) = a.flag("draft") {
+        let k = k.parse().map_err(|_| Error(format!("--draft {k}: not a number")))?;
+        return users_drafted(case, level, users, tokens, k);
+    }
     // (--ctx plan: the random model at the context the planner gives it on this GPU, each prompt filling it to within half a chunk with its reply: the long-context check;
     // with --kv12 the plan made for 12-bit pages wherever the planner makes one (GLYD_KV=lossless asks for them, and GLYD_KV12_ALWAYS takes their plan also where a
     // server's would be bf16's, `sizing::twelve_always`), so the pages are held to the bytes planned for them)

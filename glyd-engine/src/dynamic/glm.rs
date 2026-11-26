@@ -378,5 +378,6 @@ pub(crate) fn glm_desc(
         hc,
         logit_mult: 0.0,
         host: Vec::new(),
+        context: Vec::new(),
     }
 }

@@ -1671,8 +1671,9 @@ mod tests {
         assert!(same_number("18.0", "18") && !same_number("19", "18"));
     }
 
-    /// A load whose requests begin one after another, against the real handler and scheduler over a made-up model: each first token comes after the one before by about the time between the
-    /// requests, every reply is whole, and the round has no prefill rate (the prompts were not one pass).
+    /// A load whose requests begin one after another, against the real handler and scheduler over a made-up model: no request is begun before its turn (the i-th at
+    /// least i times the time between them after the round began: when it was sent is its first token's instant less its time to the first token, which holds however
+    /// loaded the machine is, where the gap between two first tokens does not), every reply is whole, and the round has no prefill rate (the prompts were not one pass).
     #[test]
     fn requests_one_after_another_begin_in_order() {
         let mut f = crate::sched::tests::Fake::new(512, 64);
@@ -1680,14 +1681,16 @@ mod tests {
         let addr = crate::server::tests::serve_fake(f, None, 8);
         let url = format!("http://{addr}");
         let mut seed = 0;
+        let began = Instant::now();
         let reqs = requests(&agent(), &url, "fake", "short+150ms", 3, &mut seed, 12);
         assert!(reqs.iter().all(|r| r.error.is_none() && r.tokens > 0), "{:?}", reqs.iter().map(|r| r.error.clone()).collect::<Vec<_>>());
-        let firsts: Vec<Instant> = reqs.iter().map(|r| r.first.expect("a first token")).collect();
-        for w in firsts.windows(2) {
+        for (i, r) in reqs.iter().enumerate() {
+            let sent = r.first.expect("a first token") - Duration::from_secs_f64(r.ttft.expect("a time to the first token"));
+            // (a millisecond for the seconds' rounding)
             assert!(
-                w[1] > w[0] + Duration::from_millis(40),
-                "a request begun 150 ms after another had its first token {:?} after it",
-                w[1].duration_since(w[0])
+                sent + Duration::from_millis(1) >= began + Duration::from_millis(150) * i as u32,
+                "request {i} of a load begun 150 ms apart was sent {:?} after the round began",
+                sent.duration_since(began)
             );
         }
         let r = round(&agent(), &url, "fake", "short+20ms", 3, &mut seed, 12);

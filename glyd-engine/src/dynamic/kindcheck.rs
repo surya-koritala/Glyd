@@ -5,10 +5,12 @@
 //! random), on both sides; an indexer that picks for itself (a latent attention's, a compressed attention's index source) is traced and its picks taken
 //! by the reference, so that a layer reading another's picks reads the same ones.
 //!
-//! Each layer of the executor's description runs operation by operation on a prompt of `--prompt` rows, then `--steps` decode steps, each pass
+//! Each layer of the executor's description runs piece by piece on a prompt of `--prompt` rows, then `--steps` decode steps, each pass
 //! from a residual made at random (the layer's caches and states carried from pass to pass, as a sequence's). A layer's operations are runs of
-//! the residual's (the norms, the residual rule, mHC's mixing, the depth mix) and of the blocks' bodies (a mixer or a feed-forward); each is
-//! compared where it ends:
+//! the residual's (the norms, the residual rule, mHC's mixing, the depth mix) and of the blocks' bodies (a mixer or a feed-forward), and each run
+//! is a kind's entry point of the CUDA backend (`runtime::cuda`: a body built from its block for its kind, `Backend::build`; the residual's
+//! operations before or after a body, `Around`), run through its `LayerImpl::run`, which takes the operations through `Dyn::op` as a served
+//! pass does. Each is compared where it ends:
 //!
 //! - a body's output slot against the reference's body (`RefLayer::body`) on the GPU's own input rows (H), so a body's error is its own;
 //! - after the residual's operations, the residual (X, mHC's streams S, the depth mix's partial sum and completed groups) and the next body's
@@ -16,6 +18,10 @@
 //! - an n-gram embedding, whose operations add its output into the streams in place (`Op::NgramAdd`), by the residual it leaves: the streams
 //!   against the reference's block on the same rows (and its own output, the streams' change, printed beside: not judged, as the streams round
 //!   it to bf16 with them).
+//! - on the first layer's pass, the embedding of its tokens (the backend's `Around::Embed`: their rows, the description's first operation) and the
+//!   residual's operations into the first block, against the reference's embedding and its input to that block;
+//! - on the last layer's pass, the head (`Around::Head`) on its last row: the final norm where the head adds it, and the logits against the
+//!   reference's head on the GPU's own input (the MLP's bound: one product, rounded into the logits, and the soft-cap).
 //!
 //! A comparison is the largest difference over the reference's largest magnitude on a pass's rows; each line has its kind's bound (`bound`,
 //! the table in `runtime::reference`), and names the rows left out as near a tie (`NEAR`), which may be few (`near_within`: a body that
@@ -30,8 +36,11 @@
 //! GLYD_KINDCHECK_ROWS prints each body's rows one by one. DeepSeek-V4's simulated quantizations of the release (GLYD_V4_SIM) are turned
 //! off: no kind names them (GLYD_KINDCHECK_SIM=1 leaves them on, to see where they first take a body away from the reference).
 
+use super::entry::{block_starts, runs, Run};
 use super::{Dyn, Op, Opts, Slot};
 use crate::ffi::{err, Error, Result};
+use crate::runtime::backend::{Arenas, Around, Backend, LayerDesc, LayerImpl, Placement, StepCx};
+use crate::runtime::cuda::{self, Cuda, Exec};
 use crate::runtime::kinds::{AttnRounding, Block, Body, Ffn, Indexer, LinearKind, Mixer, NormKind, NormWeight, Residual, StreamsP};
 use crate::runtime::reference::comp::CompState;
 use crate::runtime::reference::mla::{LatentCache, Picked};
@@ -215,18 +224,6 @@ fn residual_label(b: Option<&Block>) -> String {
     format!("residual ({rule}) and the {norm} norm{}", if b.norm_out.is_some() { ", with the block's post-norm" } else { "" })
 }
 
-/// Whether an operation is the residual's (it reads or writes X, mHC's streams or the depth mix's blocks, or it is a block's post-norm of its
-/// output in place) and not a body's.
-fn residual_op(op: &Op) -> bool {
-    match *op {
-        Op::AddNorm { .. } | Op::NormAdd { .. } | Op::EmbedNorm { .. } | Op::GatedResidual { .. } | Op::Nop => true,
-        Op::RmsNorm { x, y, .. } => x == Slot::X || x == y,
-        Op::Streams | Op::StreamsPre { .. } | Op::StreamsPost { .. } | Op::StreamsHead { .. } => true,
-        Op::DepthMix(_) | Op::Add { .. } | Op::MoeEarly { .. } => true,
-        _ => false,
-    }
-}
-
 /// Where a body's last operation writes its output.
 fn out_slot(op: &Op) -> Result<Slot> {
     match *op {
@@ -235,48 +232,6 @@ fn out_slot(op: &Op) -> Result<Slot> {
         Op::Mla { .. } => Ok(Slot::O),
         ref o => err(format!("kindcheck: where {o:?} writes a body's output is not known")),
     }
-}
-
-/// What a run of a layer's operations is: the residual's, a body's (its output in a slot), or an n-gram embedding's (`Op::NgramRows` to
-/// `Op::NgramAdd`: its output added into the streams in place).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Run {
-    Residual,
-    Body,
-    Ngram,
-}
-
-/// A layer's operations as runs: (what each is, its range). An n-gram embedding's operations are a run of their own, ending at its add.
-fn runs(ops: &[Op]) -> Vec<(Run, Range<usize>)> {
-    let mut v: Vec<(Run, Range<usize>)> = Vec::new();
-    let mut open = false;
-    for (i, op) in ops.iter().enumerate() {
-        let run = if open || matches!(op, Op::NgramRows(_)) {
-            Run::Ngram
-        } else if residual_op(op) {
-            Run::Residual
-        } else {
-            Run::Body
-        };
-        let starts = matches!(op, Op::NgramRows(_));
-        open = run == Run::Ngram && !matches!(op, Op::NgramAdd(_));
-        match v.last_mut() {
-            Some((k, r)) if *k == run && !starts => r.end = i + 1,
-            _ => v.push((run, i..i + 1)),
-        }
-    }
-    v
-}
-
-/// Each layer's first block, and the blocks' count after the last: a block for each run of a body or of an n-gram embedding (a layer may have
-/// more blocks than another: Qwen3.8-Flash-Next's n-gram embedding before some layers' mixers).
-fn block_starts(layers: &[Vec<Op>]) -> Vec<usize> {
-    let mut v = vec![0];
-    for ops in layers {
-        let n = runs(ops).iter().filter(|(k, _)| *k != Run::Residual).count();
-        v.push(v[v.len() - 1] + n);
-    }
-    v
 }
 
 struct Rng(u64);
@@ -328,30 +283,6 @@ impl Dyn {
         let mut w = vec![0u16; n * self.kc_width(s)];
         self.big.slots[s as usize].read(0, &mut w)?;
         Ok(w.iter().map(|&b| f32::from_bits((b as u32) << 16)).collect())
-    }
-
-    /// Operations `ops` of layer `l` on n rows at positions `at`.., the tokens `tok` (DeepSeek-V4's hash routing reads them).
-    fn kc_ops(&self, l: usize, ops: Range<usize>, n: usize, at: usize, tok: &[u32]) -> Result<()> {
-        self.dev.sync()?;
-        self.pos.write(0, &(0..n).map(|i| (at + i) as i32).collect::<Vec<i32>>())?;
-        if let Some(v) = &self.tok {
-            v.write(0, &tok.iter().map(|&t| t as i32).collect::<Vec<i32>>())?;
-        }
-        // (an n-gram block's table on the host: its rows staged from the tokens, as a pass's embedding stages them)
-        self.stage_ngram(tok)?;
-        self.start.set(at);
-        let pp = self.pos.ptr;
-        // (what `forward` makes before a pass's operations: the decode's rows' lengths and first tokens, which the attention's decode steps read)
-        // SAFETY: as below.
-        unsafe { self.pass_prepare(&self.big, n, (pp, pp))? };
-        for i in ops {
-            // SAFETY: the engine's own buffers, sized for a chunk (n rows at most a chunk); its slots hold the rows the operation reads (written above or by the
-            // operations before it), and the stream orders the launches; it is synchronized before a slot is read.
-            unsafe { self.op(&self.big, l, i, &self.big.d.layers[l][i], n, (pp, pp), 0)? };
-            self.trace_pick(&self.big, l, &self.big.d.layers[l][i], n, pp)?;
-            self.trace_comp_pick(&self.big, l, &self.big.d.layers[l][i], n, pp)?;
-        }
-        self.dev.sync()
     }
 
     /// Lagged mHC's weights for the rows of the next pass (`hc_lag` [rows, 4] fp32, which the first lagged block of a layer reads).
@@ -415,6 +346,89 @@ fn indexer_apart(ix: &Indexer, picked: Vec<Picked>, rows: Vec<crate::logits::Pic
 type Got = Vec<(String, String, Class, f32, Vec<String>, Vec<String>)>;
 
 /// A pass's rows: their tokens, the first's position, each row's residual before the layer, and with lagged mHC the weights its first block takes ([rows, 4]).
+/// Which piece of the CUDA backend (`runtime::cuda`) a run of the executor's operations is: a block's body, the residual's operations before or after one, the
+/// embedding, the head.
+#[derive(Clone, Copy, Debug)]
+enum Piece {
+    Body(usize),
+    Before(usize),
+    After(usize),
+    Embed,
+    Head,
+}
+
+type Built<'e> = Box<dyn LayerImpl<Cuda<'e>>>;
+
+/// Every piece of a case's model built through the CUDA backend from the description's blocks (`Backend::build`, `Backend::build_around`), and its queue:
+/// what each run of operations goes through here, as a kind's entry point.
+struct Seam<'e> {
+    q: Exec<'e>,
+    body: Vec<Built<'e>>,
+    before: Vec<Built<'e>>,
+    after: Vec<Built<'e>>,
+    embed: Built<'e>,
+    head: Built<'e>,
+    /// The executor's own cut of its layers (`entry::pieces`): the operations each piece holds, which a run is checked against.
+    cut: super::entry::Pieces,
+}
+
+impl<'e> Seam<'e> {
+    fn new(cu: &Cuda<'e>, dy: &Dyn, m: &RefModel) -> Result<Seam<'e>> {
+        let (d, w, place, mut mem) = (m.desc.hidden, cuda::Held, Placement::default(), Arenas::default());
+        if cu.blocks() != m.layers.len() {
+            return err(format!("the backend's executor holds {} blocks, the description {}", cu.blocks(), m.layers.len()));
+        }
+        let mut around = |a: Around| cu.build_around(&a, &w, &place, &mut mem);
+        let mut before = Vec::new();
+        let mut after = Vec::new();
+        for (index, x) in m.layers.iter().enumerate() {
+            before.push(around(Around::Before { index, block: &x.block })?);
+            after.push(around(Around::After { index, block: &x.block })?);
+        }
+        let (embed, head) = (around(Around::Embed(&m.desc.embed))?, around(Around::Head { norm: &m.desc.final_norm, head: &m.desc.head })?);
+        let body = m
+            .layers
+            .iter()
+            .enumerate()
+            .map(|(index, x)| cu.build(&LayerDesc { index, block: &x.block, hidden: d }, &w, &place, &mut Arenas::default()))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Seam { q: cu.queue(0)?, body, before, after, embed, head, cut: super::entry::pieces(&dy.big.d.layers)? })
+    }
+
+    /// The layer and operations piece `p` holds (none for the embedding and the head).
+    fn ops(&self, p: Piece) -> Option<(usize, Range<usize>)> {
+        match p {
+            Piece::Body(b) => self.cut.body.get(b).map(|(l, r, _)| (*l, r.clone())),
+            Piece::Before(b) => self.cut.before.get(b).cloned(),
+            Piece::After(b) => self.cut.after.get(b).cloned(),
+            Piece::Embed | Piece::Head => None,
+        }
+    }
+
+    /// Piece `p` on the n rows at positions `at`.., tokens `tok` (the head on the last of them), through its `LayerImpl::run`: the pass's metadata written first
+    /// (`Exec::begin`, before each run as each of this check's runs is a pass of its own), and waited for after (the slots are read next). For a run of
+    /// layer `l`'s operations `r`, the piece's own are checked to be those.
+    fn run(&mut self, dy: &Dyn, p: Piece, at_ops: Option<(usize, &Range<usize>)>, n: usize, at: usize, tok: &[u32]) -> Result<()> {
+        if let Some((l, r)) = at_ops {
+            if self.ops(p) != Some((l, r.clone())) {
+                return err(format!("layer {l}'s operations {r:?}: the backend's piece {p:?} holds {:?}", self.ops(p)));
+            }
+        }
+        let pos: Vec<u32> = (at..at + n).map(|x| x as u32).collect();
+        self.q.begin(&pos, tok)?;
+        let Seam { q, body, before, after, embed, head, .. } = self;
+        let piece = match p {
+            Piece::Body(b) => &mut body[b],
+            Piece::Before(b) => &mut before[b],
+            Piece::After(b) => &mut after[b],
+            Piece::Embed => embed,
+            Piece::Head => head,
+        };
+        piece.run(&mut StepCx { queue: q, positions: &pos, seqs: &vec![0; n], tokens: tok }, &mut cuda::Rows { n, head: 1 })?;
+        dy.dev.sync()
+    }
+}
+
 struct Rows<'a> {
     at: usize,
     tok: &'a [u32],
@@ -426,7 +440,17 @@ struct Rows<'a> {
 /// compared, the residual the layer left (as the slot holds it).
 /// `lend`: the picks the last latent attention with an indexer of its own took for the pass's rows (each row's entries), which a layer whose indexer is
 /// shared attends to, as the engine's does (`MlaOp::lent`); set by such a body here.
-fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng: &mut Rng, lend: &mut Option<Vec<Vec<usize>>>) -> Result<(Got, Vec<f32>)> {
+#[allow(clippy::too_many_arguments)]
+fn pass(
+    dy: &Dyn,
+    seam: &mut Seam,
+    m: &mut RefModel,
+    l: usize,
+    starts: &[usize],
+    rows: Rows,
+    rng: &mut Rng,
+    lend: &mut Option<Vec<Vec<usize>>>,
+) -> Result<(Got, Vec<f32>)> {
     let Rows { at, tok, x0, lag } = rows;
     let (d, layers, n) = (m.desc.hidden, dy.big.d.layers.len(), tok.len());
     let (first, per) = (starts[l], starts[l + 1] - starts[l]);
@@ -437,12 +461,6 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
     if x0.len() != n * sw {
         return err(format!("layer {l}: a residual of {} values for {n} rows of {sw}", x0.len()));
     }
-    dy.kc_put(state, &x0)?;
-    for s in [Slot::O, Slot::D] {
-        if dy.kc_width(s) > 0 {
-            dy.kc_put(s, &vec![0.0; n * dy.kc_width(s)])?;
-        }
-    }
     let depth = matches!(m.layers[first].block.residual, Residual::DepthMix(_));
     let (bw, nb) = (dy.kc_width(Slot::Blk), m.layers[..first].iter().filter(|b| matches!(b.block.residual, Residual::DepthMix(dm) if dm.starts)).count());
     let mut rows: Vec<Row> = Vec::with_capacity(n);
@@ -451,15 +469,28 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
         for t in 0..n {
             b[t * bw..][..nb * d].copy_from_slice(&rng.v(nb * d));
         }
-        dy.kc_put(Slot::Blk, &b)?;
         b
     } else {
         Vec::new()
     };
-    // (lagged mHC: the weights the layer's first block takes, each row's, on the GPU too)
-    if let Some(w) = &lag {
-        dy.kc_put_lag(w)?;
-    }
+    // the layer's residual on the GPU: the state x0, the bodies' outputs zero, the depth mix's completed groups, and with lagged mHC the weights the layer's first
+    // block takes (each row's)
+    let reset = |x: &[f32], blk: &[f32]| -> Result<()> {
+        dy.kc_put(state, x)?;
+        for s in [Slot::O, Slot::D] {
+            if dy.kc_width(s) > 0 {
+                dy.kc_put(s, &vec![0.0; n * dy.kc_width(s)])?;
+            }
+        }
+        if bw > 0 {
+            dy.kc_put(Slot::Blk, blk)?;
+        }
+        match &lag {
+            Some(w) => dy.kc_put_lag(w),
+            None => Ok(()),
+        }
+    };
+    reset(&x0, &blk)?;
     for t in 0..n {
         let x = x0[t * sw..][..sw].to_vec();
         let dp = depth.then(|| Depth { sources: (0..nb).map(|j| blk[t * bw + j * d..][..d].to_vec()).collect(), partial: Some(x.clone()) });
@@ -531,13 +562,50 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
     };
     // (an n-gram embedding's input is the residual itself: before it the residual alone is compared)
     let ngram = |m: &RefModel, b: usize| matches!(m.layers[b].block.body, Body::Ngram(_));
+    if l == 0 {
+        // the embedding of the pass's tokens (`Piece::Embed`: their rows, the description's first operation) and the residual's operations into the first block, against
+        // the reference's embedding of them (`RefModel::forward_seen`'s) and its input to that block; then the layer's own residual as below
+        let e = &m.desc.embed;
+        let mut er: Vec<Row> = Vec::with_capacity(n);
+        for (t, &k) in tok.iter().enumerate() {
+            let mut row: Vec<f32> = m.embed[k as usize * d..][..d].iter().map(|&v| v * e.scale).collect();
+            if let Some(nm) = e.norm {
+                row = crate::runtime::reference::norm::norm(&nm, &row, None, None);
+            }
+            let x: Vec<f32> = (0..sw / d).flat_map(|_| row.iter().copied()).collect();
+            let dp = depth.then(|| Depth { sources: Vec::new(), partial: Some(row.clone()) });
+            er.push(Row { x, depth: dp, hc: None, lag: lag.as_ref().map(|w| w[t * 4..][..4].to_vec()) });
+        }
+        reset(&vec![0.0; n * sw], &vec![0.0; blk.len()])?;
+        seam.run(dy, Piece::Embed, None, n, at, tok)?;
+        if let Some((Run::Residual, r)) = runs_l.first() {
+            seam.run(dy, Piece::Before(first), Some((l, r)), n, at, tok)?;
+        }
+        let v = if ngram(m, first) {
+            state_rel(&er)?
+        } else {
+            let h = pre(m, &mut er, Some(first))?;
+            state_rel(&er)?.max(rel(&dy.kc_get(Slot::H, n)?, &h))
+        };
+        let kind = format!(
+            "embedding: scale {}{}, {} streams, and the {}",
+            e.scale,
+            if e.norm.is_some() { ", normed" } else { "" },
+            e.streams.max(1),
+            residual_label(Some(&m.layers[first].block))
+        );
+        put("the embedding into B0".into(), kind, Class::Residual, v, Vec::new(), Vec::new());
+        reset(&x0, &blk)?;
+    }
     let mut pending: Option<(usize, Vec<f32>)> = None;
     let mut body = 0;
     let mut last_ran = false;
     for (k, (run, r)) in runs_l.iter().enumerate() {
         let b = first + body;
         if *run == Run::Residual {
-            dy.kc_ops(l, r.clone(), n, at, &tok)?;
+            // (the residual's operations after the layer's last body are its last block's `After`, else the next body's `Before`)
+            let piece = if body == per { Piece::After(first + per - 1) } else { Piece::Before(b) };
+            seam.run(dy, piece, Some((l, r)), n, at, tok)?;
             last_ran = true;
             if body == per {
                 // (the trailing run: compared with the next layer's first run, below)
@@ -567,7 +635,7 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
                 post(m, &mut rows, pb, &o)?;
             }
             let before: Vec<f32> = rows.iter().flat_map(|r| r.x.clone()).collect();
-            dy.kc_ops(l, r.clone(), n, at, &tok)?;
+            seam.run(dy, Piece::Body(b), Some((l, r)), n, at, tok)?;
             last_ran = false;
             // (the reference's block on each row's residual: its norms per stream, its body with the row's token, its residual rule)
             for (t, row) in rows.iter_mut().enumerate() {
@@ -596,7 +664,7 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
         // that each row is compared on the engine's choice and each choice apart is judged on the engine's own input: `indexer_apart`)
         let ix = own_indexer(&m.layers[b]);
         dy.trace_picks(ix.is_some());
-        dy.kc_ops(l, r.clone(), n, at, &tok)?;
+        seam.run(dy, Piece::Body(b), Some((l, r)), n, at, tok)?;
         let traced = dy.trace_picks(false);
         last_ran = false;
         let out = out_slot(&dy.big.d.layers[l][r.end - 1])?;
@@ -674,7 +742,7 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
     // the residual after the last body: the layer's last run and the next layer's first (its norm), or the final norm
     let next = (l + 1 < layers).then(|| runs(&dy.big.d.layers[l + 1]).into_iter().next().filter(|(k, _)| *k == Run::Residual)).flatten();
     if let Some((_, r)) = &next {
-        dy.kc_ops(l + 1, r.clone(), n, at, &tok)?;
+        seam.run(dy, Piece::Before(starts[l + 1]), Some((l + 1, r)), n, at, tok)?;
     }
     if last_ran || next.is_some() {
         if let Some((pb, o)) = pending.take() {
@@ -690,6 +758,36 @@ fn pass(dy: &Dyn, m: &mut RefModel, l: usize, starts: &[usize], rows: Rows, rng:
         };
         let what = b.map_or("the final norm".to_string(), |b| format!("B{b}"));
         put(format!("L{l} before {what}"), residual_label(b.map(|b| &m.layers[b].block)), Class::Residual, v, Vec::new(), Vec::new());
+    }
+    if l + 1 == layers {
+        // the head (`Piece::Head`) on the pass's last row: where the description adds the final norm in the head (`ModelDesc::final_norm`), its input against the
+        // reference's final norm of the row's residual; then the logits against the reference's head on the GPU's own input. The head is one product of that input by
+        // the head's matrix rounded into the bf16 logits, then the soft-cap: an MLP's product's arithmetic, so the MLP's class and bound.
+        if let Some((pb, o)) = pending.take() {
+            post(m, &mut rows, pb, &o)?;
+        }
+        seam.run(dy, Piece::Head, None, n, at, tok)?;
+        let r = &rows[n - 1];
+        let hn = m.final_h_with(&r.x, r.depth.as_ref(), r.lag.as_deref().unwrap_or(&[]))?;
+        let hin = match dy.big.d.final_norm {
+            Some(_) => {
+                let h = dy.kc_get(Slot::Hlast, 1)?;
+                put(format!("L{l} the head's final norm"), residual_label(None), Class::Residual, rel(&h, &hn), Vec::new(), Vec::new());
+                h
+            }
+            None => dy.kc_get(Slot::H, n)?[(n - 1) * d..].to_vec(),
+        };
+        let mut w = vec![0u16; m.desc.vocab];
+        dy.big.logits.read(0, &mut w)?;
+        let logits: Vec<f32> = w.iter().map(|&b| f32::from_bits((b as u32) << 16)).collect();
+        let h = &m.desc.head;
+        let want: Vec<f32> = crate::runtime::reference::matvec(&m.head, d, &hin).into_iter().map(|z| crate::runtime::reference::model::logit(h, z)).collect();
+        let kind = format!(
+            "head: the LM head{}{}",
+            if h.scale != 1.0 { format!(", times {}", h.scale) } else { String::new() },
+            h.softcap.map_or(String::new(), |c| format!(", soft-capped at {c}"))
+        );
+        put("the head".into(), kind, Class::Mlp, rel(&logits, &want), Vec::new(), Vec::new());
     }
     Ok((got, dy.kc_get(state, n)?))
 }
@@ -742,6 +840,9 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
     if layers == 0 || starts[layers] != m.layers.len() {
         return err(format!("{id}: {} blocks, where the executor's {layers} layers run {}", m.layers.len(), starts[layers]));
     }
+    // (every piece through the CUDA backend: each block's body built for its kind, the residual's operations around them, the embedding, the head)
+    let cu = Cuda::over(&dy)?;
+    let mut seam = Seam::new(&cu, &dy, &m)?;
     if prompt + steps + 1 > o.ctx || prompt > o.chunk {
         return err(format!("a prompt of {prompt} and {steps} steps: a chunk of {} and a cache of {}", o.chunk, o.ctx));
     }
@@ -800,7 +901,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes) 
                 0 => (0..n * 4).map(|i| (i % 4 == 0) as u32 as f32).collect(),
                 _ => rngs[l].v(n * 4).into_iter().map(|v| 0.55 + 0.45 * v).collect(),
             });
-            let (got, after) = pass(&dy, &mut m, l, &starts, Rows { at, tok: &tok, x0, lag }, &mut rngs[l], &mut lend)?;
+            let (got, after) = pass(&dy, &mut seam, &mut m, l, &starts, Rows { at, tok: &tok, x0, lag }, &mut rngs[l], &mut lend)?;
             if alone.is_some() {
                 let want = &own[starts[l + 1]];
                 let v = rel(&after, want);

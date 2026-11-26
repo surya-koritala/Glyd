@@ -1,7 +1,8 @@
 //! A release's quantized matrices decoded exactly, by the type they are stored in and the scales stored beside them: FP8 (E4M3) with a power-of-two scale
 //! (E8M0) a block of the matrix, the block read from the scales' shape; FP4 (E2M1, two weights a byte, the first in the low four bits) with an E8M0 scale a
 //! run of 32 of a row, as a release names it (`X.weight` stored as I8, its scales `X.scale`) or as compressed-tensors packs it (MXFP4: `X.weight_packed`,
-//! `X.weight_scale`). A weight times a power of two is exact in f32, and in bf16 where it is in range.
+//! `X.weight_scale`). A weight times a power of two is exact in f32, and in bf16 where it is in range. And a table read by rows stored at 4 bits (NF4 levels
+//! times a bf16 scale a row: `X.q4`), as v0.34.2 decoded it.
 
 use crate::ffi::{err, Error, Result};
 use glyd_gpu::safetensors::Checkpoint;
@@ -101,9 +102,10 @@ pub fn fp8_scaled(q: &[u8], scales: &[f32], rows: usize, cols: usize) -> Result<
 /// A checkpoint's tensor as f32, by the type it is stored in: bf16 and f32 as stored, int64 (a hash table's ids) as their values; an FP8 matrix with its
 /// scales (`X.scale`, a block each, or fp32 block scales `X.weight_scale_inv`: `scales_beside`); an FP4 matrix stored as I8 with its runs' scales
 /// (`X.scale`); and where `X.weight` or its codes `X.weight_packed` are asked for and the checkpoint holds the matrix as compressed-tensors packs it, that
-/// MXFP4 matrix. Another type, or a quantized matrix without its scales: none.
+/// MXFP4 matrix, or the table stored at 4 bits (`X.q4`) as the bf16 values it decodes to (`nf4_row`). Another type, or a quantized matrix without its
+/// scales: none.
 pub fn tensor(ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
-    let Some((_, t)) = ck.get(name) else { return packed_fp4(ck, name) };
+    let Some((_, t)) = ck.get(name) else { return packed_fp4(ck, name).or_else(|| q4_table(ck, name)) };
     let shape: Vec<usize> = t.shape.iter().map(|&d| d as usize).collect();
     let bf16 = |w: u16| f32::from_bits((w as u32) << 16);
     let v = match t.dtype.as_str() {
@@ -133,6 +135,104 @@ pub fn tensor(ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
     Some((shape, v))
 }
 
+/// NF4's levels (the quantiles of a normal distribution, scaled to [-1, 1]): the values of a table stored at 4 bits (`nf4_row`).
+pub const NF4: [f32; 16] = [
+    -1.0,
+    -0.696_192_8,
+    -0.525_073_05,
+    -0.394_917_5,
+    -0.284_441_38,
+    -0.184_773_43,
+    -0.091_050_036,
+    0.0,
+    0.079_580_3,
+    0.160_930_2,
+    0.246_112_3,
+    0.337_915_24,
+    0.440_709_83,
+    0.562_617,
+    0.722_956_84,
+    1.0,
+];
+
+/// The name a table read by rows (`X.weight`, bf16) has stored at 4 bits: `X.q4`, U8 [rows, 2 + cols / 2], a row its bf16 scale, then a code of 4 bits a
+/// value, low nibble first (`nf4_row`). Glyd's slim checkpoints store the n-gram table so.
+pub fn q4_name(name: &str) -> Option<String> {
+    name.strip_suffix(".weight").map(|b| format!("{b}.q4"))
+}
+
+/// The name a stored tensor stands for: a table at 4 bits (`X.q4`) for `X.weight`, which a description reads; any other name for itself.
+pub fn stands_for(stored: &str) -> std::borrow::Cow<'_, str> {
+    match stored.strip_suffix(".q4") {
+        Some(b) => format!("{b}.weight").into(),
+        None => stored.into(),
+    }
+}
+
+/// The 4-bit table stored for `name` (`q4_name`) where the checkpoint holds it and not `name` itself.
+pub fn q4_beside(ck: &Checkpoint, name: &str) -> Option<String> {
+    let q = q4_name(name).filter(|_| ck.get(name).is_none())?;
+    ck.get(&q).map(|_| q)
+}
+
+/// The bytes a row of `cols` values takes stored at 4 bits, where its shape `[rows, bytes]` and type are that form's for `cols` (an even number).
+pub fn q4_row_bytes(dtype: &str, shape: &[u64], cols: usize) -> Option<usize> {
+    (dtype == "U8" && shape.len() == 2 && cols % 2 == 0 && shape[1] as usize == 2 + cols / 2).then_some(2 + cols / 2)
+}
+
+/// A row of a table stored at 4 bits (`q`: its bf16 scale, then the codes, low nibble first) as its `out.len() / 2` bf16 values (little-endian), each its
+/// NF4 level times the scale: one f32 product, rounded to bf16 to nearest, ties to even. v0.34.2's decode of the n-gram table, bit for bit.
+pub fn nf4_row(q: &[u8], out: &mut [u8]) {
+    let scale = f32::from_bits(((q[0] as u32) | ((q[1] as u32) << 8)) << 16);
+    for (j, o) in out.chunks_exact_mut(2).enumerate() {
+        let code = (q[2 + j / 2] >> ((j & 1) * 4)) & 15;
+        let b = (NF4[code as usize] * scale).to_bits();
+        let v = (b.wrapping_add(0x7fff + ((b >> 16) & 1)) >> 16) as u16;
+        o.copy_from_slice(&v.to_le_bytes());
+    }
+}
+
+/// A bf16 row (little-endian) at 4 bits, in `nf4_row`'s form: its scale its largest magnitude rounded to bf16, each value the code whose decode is nearest
+/// it (of a tie, the one of the value's own bits, else the lower: zeros stay +0). A random model's tables are written so (src/logits.rs `tables_at_4_bits`).
+pub fn nf4_encode(row: &[u8]) -> Vec<u8> {
+    let bf = |b: u32| (b.wrapping_add(0x7fff + ((b >> 16) & 1)) >> 16) as u16;
+    let vals: Vec<f32> = row.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect();
+    let scale = bf(vals.iter().fold(0f32, |m, v| m.max(v.abs())).to_bits());
+    let levels: Vec<f32> = NF4.iter().map(|l| f32::from_bits((bf((l * f32::from_bits((scale as u32) << 16)).to_bits()) as u32) << 16)).collect();
+    let mut out = vec![0u8; 2 + vals.len().div_ceil(2)];
+    out[..2].copy_from_slice(&scale.to_le_bytes());
+    for (j, v) in vals.iter().enumerate() {
+        let key = |c: usize| ((levels[c] - v).abs(), levels[c].to_bits() != v.to_bits());
+        let code = (0..16).min_by(|&a, &b| key(a).0.total_cmp(&key(b).0).then(key(a).1.cmp(&key(b).1))).unwrap_or(7) as u8;
+        out[2 + j / 2] |= code << ((j & 1) * 4);
+    }
+    out
+}
+
+/// A table stored at 4 bits (`X.q4`, `q4_beside`) of `cols` values a row as its bf16 words, every row decoded (`nf4_row`).
+pub fn nf4_words(ck: &Checkpoint, q4: &str, cols: usize) -> Result<Vec<u16>> {
+    let (_, t) = ck.get(q4).ok_or_else(|| Error(format!("{}: no tensor {q4}", ck.dir.display())))?;
+    let rb = q4_row_bytes(&t.dtype, &t.shape, cols)
+        .ok_or_else(|| Error(format!("{q4}: {} {:?}, where a table of {cols} values a row at 4 bits is U8 [rows, {}]", t.dtype, t.shape, 2 + cols / 2)))?;
+    let q = ck.read(q4).map_err(|e| Error(format!("{q4}: {e}")))?;
+    let mut out = vec![0u16; q.len() / rb * cols];
+    // SAFETY: u16's bytes, as many as its elements take; written little-endian, as the host's.
+    let bytes = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, out.len() * 2) };
+    for (row, o) in q.chunks_exact(rb).zip(bytes.chunks_exact_mut(cols * 2)) {
+        nf4_row(row, o);
+    }
+    Ok(out)
+}
+
+/// The 4-bit table stored for `X.weight` (`X.q4`), decoded, where `X.weight` is asked for.
+fn q4_table(ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
+    let q = q4_beside(ck, name)?;
+    let (_, t) = ck.get(&q)?;
+    let cols = (*t.shape.get(1)? as usize).checked_sub(2)? * 2;
+    let w = nf4_words(ck, &q, cols).ok()?;
+    Some((vec![t.shape[0] as usize, cols], w.into_iter().map(|x| f32::from_bits((x as u32) << 16)).collect()))
+}
+
 /// The MXFP4 matrix compressed-tensors stores for `X.weight` (`X.weight_packed`, `X.weight_scale`), decoded, where `X.weight` or its codes are asked for.
 fn packed_fp4(ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
     let base = name.strip_suffix(".weight_packed").or_else(|| name.strip_suffix(".weight"))?;
@@ -145,6 +245,48 @@ fn packed_fp4(ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A row at 4 bits is its bf16 scale, then a code a value, the low nibble first: codes 0 to 15 in turn under a scale of 2 decode to NF4's levels times 2
+    /// (exact in f32), each rounded to bf16 once (-2, 0 and 2 exactly; the others within bf16's half step). A row written at 4 bits (`nf4_encode`) decodes to
+    /// each value's nearest level of its scale, the scale its largest magnitude; a row of zeros to zeros. And the names: `X.weight` is `X.q4` at 4 bits.
+    #[test]
+    fn a_row_at_4_bits_is_a_scale_and_nf4_codes_low_nibble_first() {
+        let words = |b: &[u8]| -> Vec<f32> { b.chunks_exact(2).map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16)).collect() };
+        let mut q = vec![0x00, 0x40];
+        q.extend((0..8u8).map(|k| (2 * k) | ((2 * k + 1) << 4)));
+        let mut out = vec![0u8; 32];
+        nf4_row(&q, &mut out);
+        let got = words(&out);
+        for (c, g) in got.iter().enumerate() {
+            let want = NF4[c] * 2.0;
+            assert!((g - want).abs() <= want.abs() / 256.0, "code {c}: {g} for {want}");
+        }
+        assert_eq!((got[0], got[7], got[15]), (-2.0, 0.0, 2.0));
+        let row: Vec<u8> = (0..40).flat_map(|i| (((((i * 37 % 23) as f32 - 11.0) / 7.0).to_bits() >> 16) as u16).to_le_bytes()).collect();
+        let x = words(&row);
+        let q = nf4_encode(&row);
+        assert_eq!((q.len(), words(&q[..2])[0]), (22, x.iter().fold(0f32, |m, v| m.max(v.abs()))));
+        let mut back = vec![0u8; row.len()];
+        nf4_row(&q, &mut back);
+        let levels: Vec<f32> = (0..16u8)
+            .map(|c| {
+                let mut o = [0u8; 2];
+                nf4_row(&[q[0], q[1], c], &mut o);
+                words(&o)[0]
+            })
+            .collect();
+        for (v, b) in x.iter().zip(words(&back)) {
+            assert!(levels.contains(&b) && levels.iter().all(|l| (l - v).abs() >= (b - v).abs()), "{v} decoded to {b}");
+        }
+        let zeros = nf4_encode(&[0u8; 8]);
+        let mut z = [1u8; 8];
+        nf4_row(&zeros, &mut z);
+        assert_eq!(z, [0u8; 8]);
+        assert_eq!(
+            (q4_name("a.b.weight").as_deref(), q4_name("a.b"), stands_for("a.b.q4"), stands_for("a.b")),
+            (Some("a.b.q4"), None, "a.b.weight".into(), "a.b".into())
+        );
+    }
 
     #[test]
     fn fp4_runs_are_the_weights_exactly() {

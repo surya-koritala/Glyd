@@ -689,6 +689,30 @@ pub(crate) const SMALL_CONFIG: &str = r#"{"architectures": ["DeepseekV4ForCausal
         "quantization_config": {"activation_scheme": "dynamic", "fmt": "e4m3", "quant_method": "fp8", "scale_fmt": "ue8m0", "weight_block_size": [128, 128]}}"#;
 
 pub fn random(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
+    random_with(out, real, false)
+}
+
+/// The DSpark drafter `random_dspark` gives the small model (`SMALL_CONFIG` with it): two draft layers (the model's with the window alone and its experts), main_x of
+/// the inputs of layers 2 to 4, a Markov head of rank 32, a block of 8 (its anchor and 7 drafts: a round's most).
+const DSPARK_KEYS: &str = r#""num_nextn_predict_layers": 2, "n_mtp_layers": 2, "dspark_block_size": 8, "dspark_noise_token_id": 4095, "dspark_target_layer_ids": [2, 3, 4], "dspark_markov_rank": 32"#;
+
+/// `random`'s small model with a DSpark drafter (`DSPARK_KEYS`; the draftcheck case deepseek-v4): the model's tensors `random`'s to the bit, then its drafter's under
+/// DeepSeek's names (`mtp.{i}.`: each draft layer's attention of the window and its experts as a model layer's, drawn by the same rules; main_proj FP8 and
+/// main_norm on the first, the Markov head's two matrices, the confidence head, the final norm and the hyper-head on the last), drawn after the model's.
+pub fn random_dspark(out: &Path) -> Result<()> {
+    random_with(out, None, true)
+}
+
+/// `random_dspark`'s config: the small one with the drafter's keys (`DSPARK_KEYS`).
+#[cfg(test)]
+pub(crate) fn dspark_config() -> String {
+    SMALL_CONFIG.replace(r#""num_nextn_predict_layers": 0"#, DSPARK_KEYS)
+}
+
+fn random_with(out: &Path, real: Option<(usize, usize)>, dspark: bool) -> Result<()> {
+    if dspark && real.is_some() {
+        return err("a DSpark drafter is drawn for the small model alone");
+    }
     let real_text = real.map(|(layers, experts)| {
         let ratios: Vec<String> = (0..=layers).map(|l| if l == layers || l == 0 { "0".to_string() } else if l % 2 == 1 { "4".to_string() } else { "128".to_string() }).collect();
         format!(
@@ -839,6 +863,74 @@ pub fn random(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
         let v = (0..n).map(|_| uni(lo, hi)).collect();
         t.push((name, "F32", shape, f32s(v)));
     }
+    // (the drafter, after every tensor of the model: a layer's tensors as a model layer's of the window alone, by the same rules, then its own)
+    let with_draft;
+    let text = if dspark {
+        let (mut bf, mut f32t): (Vec<(String, Vec<u64>, f32, f32)>, Vec<(String, Vec<u64>, f32, f32)>) = (Vec::new(), Vec::new());
+        let (layers, targets, rank) = (2usize, 3usize, 32usize);
+        for i in 0..layers {
+            let p = format!("mtp.{i}");
+            for b in ["attn", "ffn"] {
+                f32t.push((format!("{p}.hc_{b}_fn"), vec![24, 4 * d as u64], -0.02, 0.02));
+                f32t.push((format!("{p}.hc_{b}_base"), vec![24], -0.5, 0.5));
+                f32t.push((format!("{p}.hc_{b}_scale"), vec![3], 0.5, 1.5));
+                bf.push((format!("{p}.{b}_norm.weight"), vec![d as u64], 0.9, 1.1));
+            }
+            let a = format!("{p}.attn");
+            fp8(&mut t, &format!("{a}.wq_a"), c.q_lora, d, &mut uni);
+            fp8(&mut t, &format!("{a}.wq_b"), nh * hd, c.q_lora, &mut uni);
+            fp8(&mut t, &format!("{a}.wkv"), hd, d, &mut uni);
+            fp8(&mut t, &format!("{a}.wo_a"), c.o_groups * c.o_lora, nh * hd / c.o_groups, &mut uni);
+            fp8(&mut t, &format!("{a}.wo_b"), d, c.o_groups * c.o_lora, &mut uni);
+            bf.push((format!("{a}.q_norm.weight"), vec![c.q_lora as u64], 0.9, 1.1));
+            bf.push((format!("{a}.kv_norm.weight"), vec![hd as u64], 0.9, 1.1));
+            f32t.push((format!("{a}.attn_sink"), vec![nh as u64], -1.0, 1.0));
+            let f = format!("{p}.ffn");
+            let sc = (3.0 / d as f32).sqrt();
+            bf.push((format!("{f}.gate.weight"), vec![c.experts as u64, d as u64], -sc, sc));
+            f32t.push((format!("{f}.gate.bias"), vec![c.experts as u64], -0.1, 0.1));
+            fp8(&mut t, &format!("{f}.shared_experts.w1"), c.inter, d, &mut uni);
+            fp8(&mut t, &format!("{f}.shared_experts.w3"), c.inter, d, &mut uni);
+            fp8(&mut t, &format!("{f}.shared_experts.w2"), d, c.inter, &mut uni);
+            for e in 0..c.experts {
+                for (w, rows, cols) in [("w1", c.inter, d), ("w3", c.inter, d), ("w2", d, c.inter)] {
+                    let q: Vec<u8> = (0..rows * cols / 2).map(|_| uni(0.0, 256.0) as u8).collect();
+                    let e0 = (((3.0 / cols as f32).sqrt() / 3.0).log2().round() as i32 + 126) as f32;
+                    let s: Vec<u8> = (0..rows * cols / 32).map(|_| (e0 + uni(-1.0, 1.0).round()) as u8).collect();
+                    t.push((format!("{f}.experts.{e}.{w}.weight"), "I8", vec![rows as u64, cols as u64 / 2], q));
+                    t.push((format!("{f}.experts.{e}.{w}.scale"), "F8_E8M0", vec![rows as u64, cols as u64 / 32], s));
+                }
+            }
+        }
+        let last = format!("mtp.{}", layers - 1);
+        fp8(&mut t, "mtp.0.main_proj", d, targets * d, &mut uni);
+        bf.push(("mtp.0.main_norm.weight".into(), vec![d as u64], 0.9, 1.1));
+        let m = (3.0 / rank as f32).sqrt();
+        bf.push((format!("{last}.markov_head.markov_w1.weight"), vec![c.vocab as u64, rank as u64], -1.0, 1.0));
+        bf.push((format!("{last}.markov_head.markov_w2.weight"), vec![c.vocab as u64, rank as u64], -m, m));
+        bf.push((format!("{last}.confidence_head.proj.weight"), vec![1, (d + rank) as u64], -0.05, 0.05));
+        bf.push((format!("{last}.norm.weight"), vec![d as u64], 0.9, 1.1));
+        f32t.push((format!("{last}.hc_head_fn"), vec![4, 4 * d as u64], -0.02, 0.02));
+        f32t.push((format!("{last}.hc_head_base"), vec![4], -0.5, 0.5));
+        f32t.push((format!("{last}.hc_head_scale"), vec![1], 0.5, 1.5));
+        for (name, shape, lo, hi) in bf {
+            let n: u64 = shape.iter().product();
+            let v = (0..n).map(|_| uni(lo, hi)).collect();
+            t.push((name, "BF16", shape, bf16s(v)));
+        }
+        for (name, shape, lo, hi) in f32t {
+            let n: u64 = shape.iter().product();
+            let v = (0..n).map(|_| uni(lo, hi)).collect();
+            t.push((name, "F32", shape, f32s(v)));
+        }
+        with_draft = text.replace(r#""num_nextn_predict_layers": 0"#, DSPARK_KEYS);
+        if with_draft == text {
+            return err("the small config has no num_nextn_predict_layers to put the drafter's keys at");
+        }
+        &with_draft[..]
+    } else {
+        text
+    };
     io(std::fs::create_dir_all(out))?;
     io(std::fs::write(out.join("config.json"), text))?;
     let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = t.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), &b[..])).collect();
