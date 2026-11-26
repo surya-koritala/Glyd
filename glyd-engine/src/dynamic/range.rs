@@ -1276,7 +1276,10 @@ fn generate(
     }
     let first = out.ok_or_else(|| Error("an empty prompt".into()))?;
     let (mut tok, l) = picked(&first)?;
-    let (mut toks, mut lg, mut lo) = (vec![tok], vec![l].into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>(), vec![logit_of(&first)]);
+    let (mut toks, mut lg, mut lo) = (vec![tok], Vec::new(), vec![logit_of(&first)]);
+    if !l.is_empty() {
+        lg.push(l);
+    }
     for i in 1..new {
         let r = chain(ws, &[tok], at, true, each(i))?;
         let (t, l) = picked(&r)?;
@@ -1741,11 +1744,13 @@ pub fn rangecheck(a: &Args) -> Result<()> {
         for d in &SAMPLED {
             let (one, read) = served(&mut r, &prompt, d.params(&defaults), m)?;
             println!("one GPU's scheduler, sampled ({}, seed {}): {m} tokens {:?}; {read} rows read on the host", d.what, d.seed, one.0);
-            (refs.push(one), reads += read);
+            refs.push(one);
+            reads += read;
         }
         if sessions > 1 {
             let (one, read) = served(&mut r, &prompt_b, SAMPLED[2].params(&defaults), m)?;
-            (ref_b, reads) = (one, reads + read);
+            ref_b = one;
+            reads += read;
         }
         drop(r);
         if reads > 0 {

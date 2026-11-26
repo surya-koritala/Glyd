@@ -255,7 +255,9 @@ prompt's whole-model run, bit for bit. Then `end_session`, `unload`, `exit`. Bef
 step, a verify pass of 8 rows, its states' copy and a rewind to each keep; with `--sessions 2` also a second sequence's
 bytes and graph capture, and a step of each in turn against a step alone. Prints "all checks passed", or the first
 difference and exits 1.
-Each run's SHA-256 of (tokens, logits) is printed.
+Each run's SHA-256 of (tokens, logits) is printed. On a random model: `glyd-engine logitsmodel qwen35 DIR --servable` (the
+tokenizer and chat template `--workers` needs; `qwen35-wide` is the other dense shape), then `glyd-engine rangecheck DIR:swift
+--workers [--sessions 2]` (the verify chunks are checked at swift only).
 
 ## Against Compute's proposal (partial-worker-contract.md)
 
