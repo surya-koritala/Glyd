@@ -910,12 +910,13 @@ fn exec(op: &str, f: &Frame, s: &Setup, held: &mut Option<Held>, counter: &mut u
                 return Ok((pairs, Vec::new()));
             }
             let logits = get_bool(&f.head, "logits").unwrap_or(false);
-            let (picks, w) = e.head_out(rows, logits || sampler.is_some())?;
+            let (picks, w) = e.head_out(rows, logits)?;
             let (mut token, mut logit) = picks[rows - 1];
             if let Some(sm) = sampler.as_mut() {
-                let row: Vec<f32> = w.iter().map(|&x| f32::from_bits((x as u32) << 16)).collect();
-                token = sm.sample(&row);
-                logit = row[token as usize];
+                // (drawn from what this GPU makes of the row (`sched::draw_row`: its candidates, the request's changes put on it, its weights and tokens by range), as one GPU's
+                // scheduler draws; the token's logit the model's)
+                token = crate::sched::draw_row_again(&mut crate::sched::Step(&mut *e), rows - 1, sm)?.0;
+                logit = crate::sched::ModelStep::gather(&mut *e, rows - 1, &[token])?.first().map_or(f32::NAN, |x| x.1);
             }
             pairs.push(("token", num(token)));
             pairs.push(("logit", num(logit)));

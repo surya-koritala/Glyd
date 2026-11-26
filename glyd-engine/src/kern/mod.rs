@@ -11,13 +11,22 @@ pub use glm::{mla_positions, mla_smem, Hc, KernGlm, GM_CHUNK_SMEM, GM_D, GM_HC, 
 pub use mamba2::{KernMamba2, SsdWs, MAMBA2_CHUNK, MAMBA2_HEAD, MAMBA2_STATE};
 pub use qwen35::Kern35;
 
-use crate::dev::{copy_d2h_async, copy_h2d_async, ArgsOf, Buf, ByArgs, Dev, Pinned, Typed};
+use crate::dev::{copy_h2d_async, ArgsOf, Buf, ByArgs, Dev, Pinned, Typed};
 use crate::ffi::{Result, Stream};
 use crate::launch;
-use crate::sampler::{Need, Proc, Resolved, Top};
+use crate::sampler::{Query, Resolved};
 
 /// Candidates the sampling kernel returns for a row of logits (kernels/engine.cu).
 pub const TOPK: usize = 64;
+
+/// The bytes of a query's bins (`Kern::draw_bins`): 256 counts (u32), then 256 weights, least keys and greatest keys (u64).
+pub const DRAW_BINS_BYTES: usize = 256 * (4 + 8 * 3);
+
+/// A query's bins as `Kern::draw_bins` leaves them (`DRAW_BINS_BYTES` of u32 words).
+pub fn bins_of_words(w: &[u32]) -> crate::sampler::Bins {
+    let u64s = |at: usize| (0..256).map(|i| w[at + 2 * i] as u64 | (w[at + 2 * i + 1] as u64) << 32).collect::<Vec<u64>>();
+    crate::sampler::Bins { count: w[..256].to_vec(), weight: u64s(256), least: u64s(768), most: u64s(1280) }
+}
 
 /// Threads of a norm's block: 1024 for a row of 1024 or more (a thread holds at most 8 of its elements), else the row's length up to a warp.
 pub(crate) fn norm_threads(k: i32) -> Result<u32> {
@@ -99,20 +108,19 @@ pub struct Kern {
     argmax: crate::kt::argmax_bf16,
     topk: crate::kt::topk64_bf16,
     gather: crate::kt::gather_bf16,
-    /// The row a draw sees (`ProcGpu`), and its candidates, sums and buckets made of it.
+    /// The row a draw sees (`ProcGpu`), and its candidates made of it; a draw's total, bins and tokens of a row of bf16 logits or of floats (`sampler::View`).
     proc_fill: crate::kt::proc_fill,
     proc_entries: crate::kt::proc_entries,
     topk_f32: crate::kt::topk64_f32,
-    expsum_f32: crate::kt::expsum_f32,
-    hist_f32: (crate::kt::exp_hist_f32, crate::kt::hist_bucket_f32),
+    draw_total: (crate::kt::draw_total_bf16, crate::kt::draw_total_f32),
+    draw_bins: (crate::kt::draw_bins_bf16, crate::kt::draw_bins_f32),
+    draw_tokens: (crate::kt::draw_tokens_bf16, crate::kt::draw_tokens_f32),
+    draw_weight_sums: crate::kt::draw_weight_sums,
     kv12_rows: crate::kt::kv12_rows,
     row_tables: crate::kt::row_tables,
     swap_copy: crate::kt::swap_copy,
     /// None in a table made without it (a step is then not launched before the one before it is read); `load` always has it.
     step_ids: Option<crate::kt::step_ids>,
-    /// A whole row's draw's buckets and a bucket's tokens (`Sampler::sample_hist`); None in a table made without them (the row is then read); `load` always
-    /// has them.
-    hist: Option<(crate::kt::exp_hist_bf16, crate::kt::hist_bucket_bf16)>,
     expsum: crate::kt::expsum_bf16,
     logsumexp: crate::kt::logsumexp_bf16,
     read_stream: crate::kt::read_stream,
@@ -140,14 +148,15 @@ impl Kern {
             proc_fill: dev.typed()?,
             proc_entries: dev.typed()?,
             topk_f32: dev.typed()?,
-            expsum_f32: dev.typed()?,
-            hist_f32: (dev.typed()?, dev.typed()?),
+            draw_total: (dev.typed()?, dev.typed()?),
+            draw_bins: (dev.typed()?, dev.typed()?),
+            draw_tokens: (dev.typed()?, dev.typed()?),
+            draw_weight_sums: dev.typed()?,
             kv12_rows: dev.typed()?,
             row_tables: dev.typed()?,
             swap_copy: dev.typed()?,
             // (kernels of every build of kernels/engine.cu: one that does not load is this load's error, not a table without it)
             step_ids: Some(dev.typed()?),
-            hist: Some((dev.typed()?, dev.typed()?)),
             expsum: dev.typed()?,
             logsumexp: dev.typed()?,
             read_stream: dev.typed()?,
@@ -444,49 +453,6 @@ impl Kern {
         self.step_ids.is_some()
     }
 
-    /// Whether the kernels have the whole row's draw's buckets (`exp_hist`, `hist_bucket`).
-    pub fn has_hist(&self) -> bool {
-        self.hist.is_some()
-    }
-
-    /// Of a row of `v` logits (its largest at `maxv`, f32): each token's exp((x - max) / temp) summed into `b` buckets of the quotient, `per` buckets a unit of it, with their
-    /// counts (`exp_hist_bf16`): sums (f64) and counts (u32), `b` of each, zeroed here first.
-    ///
-    /// # Safety
-    /// Live device buffers of those sizes on the stream.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn exp_hist(&self, s: Stream, logits: u64, v: i32, maxv: u64, temp: f32, b: i32, per: f32, sums: u64, counts: u64) -> Result<()> {
-        let Some((k, _)) = &self.hist else { return crate::ffi::err("these kernels have no exp_hist") };
-        crate::dev::memset_async(sums, 0, 8 * b as usize, s)?;
-        crate::dev::memset_async(counts, 0, 4 * b as usize, s)?;
-        launch!(k, [1, 1, 1], [1024, 1, 1], s; logits, v, maxv, temp, b, per, sums, counts)
-    }
-
-    /// The tokens of bucket `want` (an int on the device) of `exp_hist`'s, at most `cap`: token (int32) and logit (f32) into `tok` and `val`, how many into `n` (zeroed here).
-    ///
-    /// # Safety
-    /// Live device buffers of those sizes on the stream.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn hist_bucket(
-        &self,
-        s: Stream,
-        logits: u64,
-        v: i32,
-        maxv: u64,
-        temp: f32,
-        b: i32,
-        per: f32,
-        want: u64,
-        cap: i32,
-        n: u64,
-        tok: u64,
-        val: u64,
-    ) -> Result<()> {
-        let Some((_, k)) = &self.hist else { return crate::ffi::err("these kernels have no hist_bucket") };
-        crate::dev::memset_async(n, 0, 4, s)?;
-        launch!(k, [1, 1, 1], [1024, 1, 1], s; logits, v, maxv, temp, b, per, want, cap, n, tok, val)
-    }
-
     pub unsafe fn gather_row(&self, s: Stream, logits: u64, v: usize, row: usize, idx: u64, n: usize, out: u64) -> Result<()> {
         launch!(self.gather, [(n as u32).div_ceil(256), 1, 1], [256, 1, 1], s; logits + (row * v * 2) as u64, idx, n as i32, out)
     }
@@ -541,51 +507,54 @@ impl Kern {
         launch!(self.topk_f32, [rows as u32, 1, 1], [1024, 1, 1], s; w, v as i32, dst, tok, val)
     }
 
-    /// `exp_sum_rows` of rows of floats (W): row r's sum of exp((x - max) / temperature) into `out`[r] (f64), `maxv`[r] (f32) its largest.
+    /// A draw's total (`sampler::View::total`) of each of `rows` rows of `v` (bf16 logits, or floats where `f32`) at `rows_at`: row r's sum of its tokens' weights about `maxv`[r]
+    /// (f32, its largest) at `temperature` into `out`[r] (u64).
     ///
     /// # Safety
-    /// As `copy_row`.
+    /// As `copy_row`; `maxv` and `out` hold `rows` values.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn exp_sum_f32(&self, s: Stream, w: u64, v: usize, rows: u32, maxv: u64, temperature: f32, out: u64) -> Result<()> {
-        if !v.is_multiple_of(8) {
-            return crate::ffi::err(format!("vocabulary {v}: not supported"));
+    pub unsafe fn draw_total(&self, s: Stream, rows_at: u64, f32: bool, v: usize, rows: u32, maxv: u64, temperature: f32, out: u64) -> Result<()> {
+        match f32 {
+            true => launch!(self.draw_total.1, [rows, 1, 1], [1024, 1, 1], s; rows_at, v as i32, maxv, temperature, out),
+            false => launch!(self.draw_total.0, [rows, 1, 1], [1024, 1, 1], s; rows_at, v as i32, maxv, temperature, out),
         }
-        launch!(self.expsum_f32, [rows, 1, 1], [1024, 1, 1], s; w, v as i32, maxv, temperature, out)
     }
 
-    /// `exp_hist` of a row of floats (W): the tokens taken out (-inf) in no bucket.
+    /// A query's bins of the row of `v` at `row` (bf16 logits, or floats where `f32`), into `out` (`DRAW_BINS_BYTES`: 256 counts, u32, then 256 weights, least and greatest keys, u64).
     ///
     /// # Safety
-    /// Live device buffers of those sizes on the stream.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn exp_hist_f32(&self, s: Stream, w: u64, v: usize, maxv: u64, temp: f32, b: i32, per: f32, sums: u64, counts: u64) -> Result<()> {
-        crate::dev::memset_async(sums, 0, 8 * b as usize, s)?;
-        crate::dev::memset_async(counts, 0, 4 * b as usize, s)?;
-        launch!(self.hist_f32.0, [1, 1, 1], [1024, 1, 1], s; w, v as i32, maxv, temp, b, per, sums, counts)
+    /// As `copy_row`; `out` holds DRAW_BINS_BYTES.
+    pub unsafe fn draw_bins(&self, s: Stream, row: u64, f32: bool, v: usize, q: &Query, out: u64) -> Result<()> {
+        let (mx, t, lo, hi, qmin, shift) = (q.max, q.temperature, q.lo, q.hi, q.floor, q.shift as i32);
+        match f32 {
+            true => launch!(self.draw_bins.1, [1, 1, 1], [1024, 1, 1], s; row, v as i32, mx, t, lo, hi, qmin, shift, out),
+            false => launch!(self.draw_bins.0, [1, 1, 1], [1024, 1, 1], s; row, v as i32, mx, t, lo, hi, qmin, shift, out),
+        }
     }
 
-    /// `hist_bucket` of a row of floats (W): the tokens taken out (-inf) in no bucket.
+    /// A query's tokens of the row of `v` at `row` (bf16 logits, or floats where `f32`): at most `cap`, token (int32) and logit (f32) into `tok` and `val`, how many there are into `n`
+    /// (u32, zeroed here).
     ///
     /// # Safety
-    /// Live device buffers of those sizes on the stream.
+    /// As `copy_row`; `tok` and `val` hold `cap` values.
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn hist_bucket_f32(
-        &self,
-        s: Stream,
-        w: u64,
-        v: usize,
-        maxv: u64,
-        temp: f32,
-        b: i32,
-        per: f32,
-        want: u64,
-        cap: i32,
-        n: u64,
-        tok: u64,
-        val: u64,
-    ) -> Result<()> {
+    pub unsafe fn draw_tokens(&self, s: Stream, row: u64, f32: bool, v: usize, q: &Query, cap: usize, n: u64, tok: u64, val: u64) -> Result<()> {
         crate::dev::memset_async(n, 0, 4, s)?;
-        launch!(self.hist_f32.1, [1, 1, 1], [1024, 1, 1], s; w, v as i32, maxv, temp, b, per, want, cap, n, tok, val)
+        let (mx, t, lo, hi, qmin, c) = (q.max, q.temperature, q.lo, q.hi, q.floor, cap as i32);
+        let blocks = (v as u32).div_ceil(256).min(1024);
+        match f32 {
+            true => launch!(self.draw_tokens.1, [blocks, 1, 1], [256, 1, 1], s; row, v as i32, mx, t, lo, hi, qmin, c, n, tok, val),
+            false => launch!(self.draw_tokens.0, [blocks, 1, 1], [256, 1, 1], s; row, v as i32, mx, t, lo, hi, qmin, c, n, tok, val),
+        }
+    }
+
+    /// Every float from -0 to -32 weighed on the GPU (`draw_weight_sums`): the sum of the weights and of each times its float's bits, mod 2^64, into `out` (two u64, zeroed here).
+    ///
+    /// # Safety
+    /// `out` holds two u64 on the stream's device.
+    pub unsafe fn draw_weight_sums(&self, s: Stream, out: u64) -> Result<()> {
+        crate::dev::memset_async(out, 0, 16, s)?;
+        launch!(self.draw_weight_sums, [1024, 1, 1], [256, 1, 1], s; out)
     }
 
     /// The sum over each of `rows` rows of v logits of exp((x - max) / temperature), the normalizer of a top-p cut over the row's largest logits: row r's into `out`[r] (f64). `maxv`[r] (f32): the row's largest, as `argmax_rows` leaves it.
@@ -659,6 +628,16 @@ impl ProcGpu {
         ProcGpu { vocab, words: 1 + vocab.div_ceil(32), w: Buf::none(), rows: 0, input: Buf::none(), stage: None, made: Vec::new() }
     }
 
+    /// Room for W's rows of `rows` head rows (`plan::draw_rows_bytes`), made where it has less.
+    pub fn reserve(&mut self, rows: usize) -> Result<()> {
+        if self.rows < rows {
+            self.w = Buf::none();
+            self.w = Buf::new(crate::plan::draw_rows_bytes(self.vocab, rows) as usize)?;
+            self.rows = rows;
+        }
+        Ok(())
+    }
+
     /// Whether the kernels take the vocabulary (a multiple of 8, at least TOPK).
     pub fn can(&self) -> bool {
         self.vocab.is_multiple_of(8) && self.vocab >= TOPK
@@ -681,11 +660,7 @@ impl ProcGpu {
         }
         let ents: usize = rows.iter().map(|r| r.1.entries.len()).sum();
         let (o_scal, o_mask, o_ent, o_bias, total) = proc_layout(n, self.words, ents);
-        if self.rows < n {
-            self.w = Buf::none();
-            self.w = Buf::new(4 * v * n)?;
-            self.rows = n;
-        }
+        self.reserve(n)?;
         if self.input.bytes < 4 * total || self.stage.is_none() {
             (self.input, self.stage) = (Buf::none(), None);
             self.input = Buf::new(4 * total)?;
@@ -732,81 +707,6 @@ impl ProcGpu {
     /// The head rows the last `queue` made W's rows for.
     pub fn made(&self) -> &[usize] {
         &self.made
-    }
-}
-
-/// The GPU's side of the sampler's candidates for an engine with one row of logits (the Qwen3.5 layout's and the Nemotron-H layout's, whose `Gen::reply` draws on the host): behind a step that `ask` names (`Sampler::gpu_ask`), `queue` makes the row's
-/// 64 largest logits and, for a top-p or a min-p with no top-k, the sum of its exponentials, and copies them to the host in the step's one synchronize; `read` gives them. Where the request changes the row (`proc`), they are of
-/// the row its draw sees (`ProcGpu`). A draw then reads 520 bytes in place of the row (131,072 to 248,000 logits to copy, sort and exponentiate on the host). `off` (GLYD_ENGINE_HOST_SAMPLING=1, to compare): none are made and the row is read.
-pub struct TopGpu {
-    tok: Buf,
-    val: Buf,
-    sum: Buf,
-    stage: Pinned,
-    vocab: usize,
-    /// What the next step is asked for.
-    pub ask: Option<Need>,
-    /// What the last `queue` made.
-    got: Option<Need>,
-    pub off: bool,
-    /// What the next step's draw puts on the row (`Sampler::gpu_ask`), and the room the GPU makes that row in; whether the last `queue` made its candidates of it.
-    pub proc: Option<Proc>,
-    procg: ProcGpu,
-    processed: bool,
-}
-
-impl TopGpu {
-    pub fn new(vocab: usize) -> Result<TopGpu> {
-        Ok(TopGpu {
-            tok: Buf::zeroed(4 * TOPK)?,
-            val: Buf::zeroed(4 * TOPK)?,
-            sum: Buf::zeroed(8)?,
-            stage: Pinned::new(8 * TOPK + 8)?,
-            vocab,
-            ask: None,
-            got: None,
-            off: crate::tune!("GLYD_ENGINE_HOST_SAMPLING").is_some(),
-            proc: None,
-            procg: ProcGpu::new(vocab),
-            processed: false,
-        })
-    }
-
-    /// Behind the step's work on the stream: the candidates of the row `ask` names, with the copies to the host (the caller synchronizes). The kernels take a vocabulary of a multiple of 8 and at least TOPK; a smaller one has none.
-    ///
-    /// # Safety
-    /// `logits` is a row of the vocabulary's size and `maxv` its largest (f32), both live and made on the engine's stream; the stream was synchronized since the last call.
-    pub unsafe fn queue(&mut self, kern: &Kern, dev: &Dev, logits: u64, maxv: u64) -> Result<()> {
-        self.got = self.ask.filter(|_| !self.off && self.vocab.is_multiple_of(8) && self.vocab >= TOPK);
-        let proc = self.proc.take();
-        self.processed = false;
-        let Some(need) = self.got else { return Ok(()) };
-        let (s, host) = (dev.stream, self.stage.ptr as *mut u8);
-        kern.topk_rows(s, logits, self.vocab as i32, 1, self.tok.ptr, self.val.ptr)?;
-        // (a request that changes the row: the candidates of the row its draw sees, made over the model's; where the room cannot be had, the model's, which the draw then does not take)
-        if let Some(p) = proc {
-            let r = p.resolve(self.vocab);
-            self.processed = self.procg.queue(kern, dev, &[(0, &r)], logits, self.tok.ptr, self.val.ptr).is_ok();
-        }
-        copy_d2h_async(host as *mut _, self.tok.ptr, 4 * TOPK, s)?;
-        copy_d2h_async(host.add(4 * TOPK) as *mut _, self.val.ptr, 4 * TOPK, s)?;
-        if need.mass {
-            match self.procg.row_of(0).filter(|_| self.processed) {
-                // (about the row's largest, its first candidate)
-                Some(w) => kern.exp_sum_f32(s, w, self.vocab, 1, self.val.ptr, need.temperature, self.sum.ptr)?,
-                None => kern.exp_sum_rows(s, logits, self.vocab as i32, 1, maxv, need.temperature, self.sum.ptr)?,
-            }
-            copy_d2h_async(host.add(8 * TOPK) as *mut _, self.sum.ptr, 8, s)?;
-        }
-        Ok(())
-    }
-
-    /// What the last `queue` made (the stream synchronized since): None where it made nothing.
-    pub fn read(&self) -> Option<Top> {
-        let need = self.got?;
-        let p = self.stage.ptr as *const u8;
-        // SAFETY: the pinned bytes were copied behind the step (the stream synchronized since): TOPK tokens (int32), TOPK logits (f32), then the sum (f64) where asked.
-        unsafe { Some(Top { cands: read_candidates(p, 0, 4 * TOPK, 0), mass: need.mass.then(|| *(p.add(8 * TOPK) as *const f64)), processed: self.processed }) }
     }
 }
 
@@ -876,8 +776,8 @@ mod tests {
         assert_eq!(embed_plan(&[], 4).1.len(), 0);
     }
 
-    /// A row's candidates are read from where the copies put them: several rows, a step's TOPK of each one after the other from two places, and the one row of the
-    /// engines' `TopGpu`, its tokens and then its logits from the start.
+    /// A row's candidates are read from where the copies put them: several rows, a step's TOPK of each one after the other from two places, and one row, its tokens and
+    /// then its logits from the start.
     #[test]
     fn candidates_are_read_where_the_copies_put_them() {
         const ROWS: usize = 8;

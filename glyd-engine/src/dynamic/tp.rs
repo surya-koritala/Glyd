@@ -369,6 +369,8 @@ enum Cmd {
     Logits,
     Logprob(f32),
     Describe,
+    /// A question of the last pass's head rows, answered on the first GPU's engine as one GPU's step answers it (`split::RowAsk`).
+    Row(super::split::RowAsk),
 }
 
 enum Out {
@@ -377,6 +379,7 @@ enum Out {
     Logits(Result<Vec<f32>>),
     Logprob(Result<f32>),
     Text(String),
+    Row(super::split::RowGot),
 }
 
 struct Worker {
@@ -436,6 +439,7 @@ impl Tp {
                             Cmd::Logits => Out::Logits(e.logits()),
                             Cmd::Logprob(l) => Out::Logprob(e.logprob(l)),
                             Cmd::Describe => Out::Text(e.describe()),
+                            Cmd::Row(a) => Out::Row(super::split::row_ask(&mut e, a)),
                         };
                         if otx.send(out).is_err() {
                             break;
@@ -565,10 +569,13 @@ impl Tp {
         self.reset()?;
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
+        use super::split::{AsksRows, Last, RowAsk};
+        // (a drawn token: from what the first GPU makes of the pass's head row, the request's changes put on it first, as one GPU's: `sched::draw_row`)
+        self.ask_rows(RowAsk::Procs(vec![sampler.proc()]));
         let mut s = self.prefill(prompt)?;
         let mut out = Vec::new();
         loop {
-            let tok = if greedy { s.token } else { sampler.sample_with(None, || self.logits())? };
+            let tok = if greedy { s.token } else { crate::sched::draw_row(&mut Last(&*self), 0, &mut sampler)?.0 };
             if !o.ignore_eos && (self.eos.contains(&(tok as i64)) || o.stop_ids.contains(&tok)) {
                 return Ok((out, Finish::Stop));
             }
@@ -579,7 +586,18 @@ impl Tp {
             if out.len() >= o.max_new || self.n + 1 > self.ctx {
                 return Ok((out, Finish::Length));
             }
+            self.ask_rows(RowAsk::Procs(vec![sampler.proc()]));
             s = self.step(tok)?;
+        }
+    }
+}
+
+/// The first GPU's engine answers a question of the last pass's head rows: every GPU has the logits whole.
+impl super::split::AsksRows for Tp {
+    fn ask_rows(&self, a: super::split::RowAsk) -> Option<super::split::RowGot> {
+        match self.one(Cmd::Row(a)) {
+            Ok(Out::Row(g)) => Some(g),
+            _ => None,
         }
     }
 }

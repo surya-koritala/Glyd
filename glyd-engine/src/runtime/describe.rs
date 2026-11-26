@@ -2628,8 +2628,8 @@ fn dspark_roles(layers: usize, experts: usize, v41: bool) -> (Vec<Vec<(String, S
 /// the most recent index source (`index_source_layer_ids`), the candidate source (`candidate_source_layer_id`) publishing blocks of
 /// `candidate_block_size` entries, `candidate_topk_blocks` kept, which the index sources after it score inside (`CompShare`). Its residual is lagged
 /// mHC (`StreamsP::lagged`, the head's collapse `Collapse::LastPre`: no hyper-head). On `engram_layer_ids` an Engram block (`NgramForm::Engram`)
-/// comes before the layer's attention. The MoE is V4's sqrt-softplus router (no hash layers; `gate_temp` 1 alone). Not read: the DSpark draft
-/// layers (counted), the vision tower, the routers' image-token bias.
+/// comes before the layer's attention, its tables read by rows on the host (`TableAt::Host`). The MoE is V4's sqrt-softplus router (no hash layers;
+/// `gate_temp` 1 alone). Not read: the DSpark draft layers (counted), the vision tower, the routers' image-token bias.
 fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
     let (mt, tc) = ("deepseek_v41", &c.text);
     // (the image token beside the vision tower's config: the tower is not read)
@@ -2772,7 +2772,8 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
             dilation: 1,
             norm: Norm::rms(eps),
             form: NgramForm::Engram,
-            table: TableAt::Gpu,
+            // (its tables read by rows on the host: the release's are 384M rows of 256 a layer, FP8 with a scale a run of 32, about 98 GB each)
+            table: TableAt::Host,
         };
         let rows = list("engram_num_embeddings")?;
         let want = super::reference::ngram::tables(&n).0.iter().sum::<u64>();

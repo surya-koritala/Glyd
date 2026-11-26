@@ -79,6 +79,7 @@ const SWITCHES: &[&str] = &[
     "tables",
     "decoded",
     "stacked",
+    "no-weights",
     "ref",
 ];
 #[cfg(not(feature = "dev"))]

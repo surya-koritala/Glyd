@@ -202,13 +202,13 @@ pub(super) struct Cands {
     bufs: Option<(Buf, Buf, crate::dev::Pinned, usize)>,
     rows: usize,
     made: bool,
-    /// Each head row's sum of exponentials made with the step (a launched one's, `ModelStep::draws`): the temperature and the sum.
-    sums: Vec<Option<(f32, f64)>>,
+    /// Each head row's sum made with the step (a launched one's, `ModelStep::draws`): what it is, and its bits (a draw's total, u64; the model's row's sum of exponentials, f64).
+    sums: Vec<Option<(crate::sched::Sum, u64)>>,
     /// Where a request's changes made a row's candidates (`ProcGpu`: of the row its draw sees), the rows' own largest logits before them (the log-probabilities' top: the model's
     /// row's), in the host's pinned room (tokens, then logits, `cap` rows of each), and the rows they were made for.
     raw: Option<crate::dev::Pinned>,
     raw_rows: usize,
-    /// The head rows whose candidates (and sums, buckets) are of the row the draw sees.
+    /// The head rows whose candidates (and totals, bins and tokens) are of the row the draw sees.
     procd: Vec<bool>,
 }
 
@@ -272,9 +272,9 @@ struct Lane {
     raw_rows: usize,
     /// The 12-bit pages' status words of each group after the step (its void pages' ring, `kv12_lost`), copied with its samples.
     status: crate::dev::Pinned,
-    /// The head rows' sums of exponentials the step was asked for (f64 a row), and the asks.
+    /// The head rows' sums the step was asked for (8 bytes a row), and the asks.
     sums: crate::dev::Pinned,
-    asks: Vec<Option<f32>>,
+    asks: Vec<Option<crate::sched::Sum>>,
 }
 
 impl Lanes {
@@ -1876,33 +1876,25 @@ impl Dyn {
             crate::dev::copy_d2h_async(lane.outs.ptr, self.big.tok.ptr, 4 * asked, s)?;
             crate::dev::copy_d2h_async((lane.outs.ptr as *mut u8).add(4 * head) as *mut _, self.big.val.ptr, 4 * asked, s)?;
         }
-        // (a step whose rows draw from their candidates: those queued with its work, and the sums of exponentials its rows ask for, read once its event is waited for; the
-        // top-k kernel takes the vocabulary)
+        // (a step whose rows draw from their candidates: those queued with its work, and the sums its rows ask for (a draw's total, of the row it sees; the model's row's sum of
+        // exponentials), read once its event is waited for; the top-k kernel takes the vocabulary)
         let v = self.big.d.vocab;
         let asks = std::mem::take(&mut self.draws);
-        let drawn = asks.iter().any(Option::is_some) && !self.top.off && v.is_multiple_of(8) && v >= crate::kern::TOPK;
+        let summed = |a: &Option<crate::sched::Sum>| matches!(a, Some(crate::sched::Sum::Total(_) | crate::sched::Sum::Lse));
+        let drawn = asks.iter().any(Option::is_some) && !self.host_sampling && v.is_multiple_of(8) && v >= crate::kern::TOPK;
         if drawn {
             self.queue_cands(asked)?;
-            if asks.iter().flatten().any(|&t| t > 0.0) && self.sums.as_ref().is_none_or(|b| b.bytes < 8 * head) {
+            if asks.iter().any(summed) && self.sums.as_ref().is_none_or(|b| b.bytes < 8 * head) {
                 self.sums = Some(Buf::zeroed(8 * head)?);
             }
             let out = self.sums.as_ref().map_or(0, |b| b.ptr);
-            for (r, &t) in asks.iter().enumerate().take(asked) {
-                // (of the row the draw sees where the request changes it: `sum_row`)
-                if let (Some(t), Some((row, maxv, procd))) = (t.filter(|&t| t > 0.0), self.sum_row(r)) {
-                    // SAFETY: head row r's row (v bf16 logits, or the v floats its draw sees) and its largest (f32); its f64 sum at row r of the sums' room (a head's rows).
-                    unsafe {
-                        match procd {
-                            true => self.kern.exp_sum_f32(s, row, v, 1, maxv, t, out + (8 * r) as u64)?,
-                            false => self.kern.exp_sum_rows(s, row, v as i32, 1, maxv, t, out + (8 * r) as u64)?,
-                        }
-                    };
-                }
+            for (r, a) in asks.iter().enumerate().take(asked) {
+                self.queue_sum(r, *a, out + (8 * r) as u64)?;
             }
         }
         let lanes = self.lanes.as_mut().expect("lanes");
         let lane = &mut lanes.lane[k];
-        if drawn && asks.iter().flatten().any(|&t| t > 0.0) {
+        if drawn && asks.iter().any(summed) {
             if let Some(b) = &self.sums {
                 // SAFETY: the sums' room holds `asked` f64 (the head's rows); the lane's pinned room `head` of them, read after its event.
                 unsafe { crate::dev::copy_d2h_async(lane.sums.ptr, b.ptr, 8 * asked, s)? };
@@ -1962,8 +1954,12 @@ impl Dyn {
         }
         let drawn = lane.drawn;
         // SAFETY: the lane's pinned sums, written by the step's copies (its event waited for) for the rows that asked.
-        let sums: Vec<Option<(f32, f64)>> =
-            lane.asks.iter().enumerate().map(|(r, a)| a.filter(|&t| t > 0.0).map(|t| (t, unsafe { *(lane.sums.ptr as *const f64).add(r) }))).collect();
+        let sums: Vec<Option<(crate::sched::Sum, u64)>> = lane
+            .asks
+            .iter()
+            .enumerate()
+            .map(|(r, a)| a.filter(|a| *a != crate::sched::Sum::None).map(|a| (a, unsafe { *(lane.sums.ptr as *const u64).add(r) })))
+            .collect();
         // (the step's own status for the lost blocks the scheduler asks for next, `kv12_lost`)
         self.status_from = Some(lane.status.ptr as *const u32);
         self.cands.fresh(asked);
@@ -2007,7 +2003,7 @@ impl Dyn {
     fn row_top(&mut self, row: usize) -> Result<Option<Vec<(u32, f32)>>> {
         use crate::kern::TOPK;
         let v = self.big.d.vocab;
-        if self.top.off || row >= self.cands.rows || !v.is_multiple_of(8) || v < TOPK {
+        if self.host_sampling || row >= self.cands.rows || !v.is_multiple_of(8) || v < TOPK {
             return Ok(None);
         }
         if !self.cands.made {
@@ -2070,8 +2066,8 @@ impl Dyn {
         Ok(())
     }
 
-    /// The device address of head row `row`'s row for the sums and buckets of its draw, of that row's largest (f32), and whether it is the row the draw sees: that row where the
-    /// step's candidates were made of it (`ProcGpu`; its largest its first candidate), else the model's (the head's own largest). None where the row the draw sees is gone.
+    /// The device address of head row `row`'s row for its draw's totals, bins and tokens, of that row's largest (f32), and whether it is the row the draw sees (floats): that row where
+    /// the step's candidates were made of it (`ProcGpu`; its largest its first candidate), else the model's (bf16; the head's own largest). None where the row the draw sees is gone.
     fn sum_row(&self, row: usize) -> Option<(u64, u64, bool)> {
         let v = self.big.d.vocab;
         if self.cands.procd(row) {
@@ -2082,101 +2078,177 @@ impl Dyn {
         Some((self.big.logits.ptr + (row * v * 2) as u64, self.big.val.ptr + (4 * row) as u64, false))
     }
 
-    /// The largest of head row `row`'s row for its draw (`sum_row`), read back.
-    fn sum_max(&self, row: usize) -> Result<f32> {
-        let mut m = [0f32; 1];
-        match (self.cands.procd(row), self.cands.bufs.as_ref()) {
-            (true, Some(b)) => b.1.read(4 * crate::kern::TOPK * row, &mut m)?,
-            _ => self.big.val.read(4 * row, &mut m)?,
+    /// Head row `row`'s sum `a` queued at `out` (8 bytes): a draw's total of the row it sees (`Kern::draw_total`), or the model's row's sum of exponentials at temperature 1 (f64).
+    fn queue_sum(&self, row: usize, a: Option<crate::sched::Sum>, out: u64) -> Result<()> {
+        use crate::sched::Sum;
+        let (v, s) = (self.big.d.vocab, self.dev.stream);
+        match a {
+            Some(Sum::Total(t)) => {
+                let Some((w, maxv, f32)) = self.sum_row(row) else { return Ok(()) };
+                // SAFETY: head row `row`'s row (v bf16 logits, or the v floats its draw sees) and its largest (f32); one u64 at `out`.
+                unsafe { self.kern.draw_total(s, w, f32, v, 1, maxv, t, out) }
+            }
+            // SAFETY: the model's head row `row` (v bf16 logits) and its largest (the head's); one f64 at `out`.
+            Some(Sum::Lse) => unsafe {
+                self.kern.exp_sum_rows(s, self.big.logits.ptr + (row * v * 2) as u64, v as i32, 1, self.big.val.ptr + (4 * row) as u64, 1.0, out)
+            },
+            _ => Ok(()),
         }
-        Ok(m[0])
     }
 
-    /// `ModelStep::hist`: row `row`'s HIST_BUCKETS buckets of its weights at `temperature` (`Kern::exp_hist`), and the row's largest logit they are about; of the row its draw sees where
-    /// the request changes it (`sum_row`).
-    fn row_hist(&mut self, row: usize, temperature: f32) -> Result<Option<crate::sampler::Hist>> {
-        use crate::sampler::{HIST_BUCKETS, HIST_PER};
-        let v = self.big.d.vocab;
-        if self.top.off || row >= self.cands.rows || !self.kern.has_hist() || self.lanes.as_ref().is_some_and(|l| l.stale) {
+    /// Whether head row `row` of the last step may be queried on the GPU (`row_total`, `row_bins`, `row_tokens`): a row the step wrote, its candidates made, no later step over it.
+    fn row_queryable(&mut self, row: usize) -> bool {
+        !self.lanes.as_ref().is_some_and(|l| l.stale) && ModelStep::top(self, row).is_some()
+    }
+
+    /// A small device room for a query's answer (`DRAW_BINS_BYTES`, or a count and SELECT_CAP + 1 tokens and logits), made once.
+    fn query_room(&mut self) -> Result<u64> {
+        let need = crate::kern::DRAW_BINS_BYTES.max(4 + 8 * (crate::sampler::SELECT_CAP + 1));
+        if self.qroom.as_ref().is_none_or(|b| b.bytes < need) {
+            self.qroom = Some(Buf::new(need)?);
+        }
+        Ok(self.qroom.as_ref().expect("made above").ptr)
+    }
+
+    /// `ModelStep::total`: the step's (`draws`) where it made this one, else made now (`Kern::draw_total`) and read back (8 bytes).
+    fn row_total(&mut self, row: usize, temperature: f32) -> Result<Option<u64>> {
+        if !self.row_queryable(row) {
             return Ok(None);
         }
-        let Some((w, maxv, procd)) = self.sum_row(row) else { return Ok(None) };
-        let (sums, counts) = (Buf::new(8 * HIST_BUCKETS)?, Buf::new(4 * HIST_BUCKETS)?);
-        let s = self.dev.stream;
-        let (b, per) = (HIST_BUCKETS as i32, HIST_PER);
-        // SAFETY: the step's head row `row` (v bf16 logits, or the v floats its draw sees) and its largest (f32); HIST_BUCKETS sums and counts; read after the synchronize.
-        unsafe {
-            match procd {
-                true => self.kern.exp_hist_f32(s, w, v, maxv, temperature, b, per, sums.ptr, counts.ptr)?,
-                false => self.kern.exp_hist(s, w, v as i32, maxv, temperature, b, per, sums.ptr, counts.ptr)?,
+        if let Some(&Some((crate::sched::Sum::Total(t), w))) = self.cands.sums.get(row) {
+            if t == temperature {
+                return Ok(Some(w));
             }
-        };
+        }
+        let Some((w, maxv, f32)) = self.sum_row(row) else { return Ok(None) };
+        let out = self.query_room()?;
+        // SAFETY: as `queue_sum`; one u64 at `out`, read after the synchronize.
+        unsafe { self.kern.draw_total(self.dev.stream, w, f32, self.big.d.vocab, 1, maxv, temperature, out)? };
         self.dev.sync()?;
-        let (mut h, mut c) = (vec![0f64; HIST_BUCKETS], vec![0u32; HIST_BUCKETS]);
-        sums.read(0, &mut h)?;
-        counts.read(0, &mut c)?;
-        Ok(Some(crate::sampler::Hist { max: self.sum_max(row)?, per: HIST_PER, sums: h, counts: c }))
+        let mut t = [0u64; 1];
+        // SAFETY: device memory this engine made and the stream wrote (synchronized above), of the size read.
+        unsafe { crate::dev::read_dev(out, &mut t)? };
+        Ok(Some(t[0]))
     }
 
-    /// `ModelStep::hist_bucket`: the tokens of bucket `bucket` of row `row`'s `row_hist` (`Kern::hist_bucket`), at most `cap`.
-    fn row_bucket(&mut self, row: usize, temperature: f32, bucket: usize, cap: usize) -> Result<Option<Vec<(u32, f32)>>> {
-        use crate::sampler::{HIST_BUCKETS, HIST_PER};
-        let v = self.big.d.vocab;
-        if self.top.off || row >= self.cands.rows || !self.kern.has_hist() || self.lanes.as_ref().is_some_and(|l| l.stale) {
+    /// `ModelStep::bins`: a query of head row `row`'s row its draw sees, on the GPU (`Kern::draw_bins`), read back (7 KB, not the row).
+    fn row_bins(&mut self, row: usize, q: &crate::sampler::Query) -> Result<Option<crate::sampler::Bins>> {
+        if !self.row_queryable(row) {
             return Ok(None);
         }
-        let Some((w, maxv, procd)) = self.sum_row(row) else { return Ok(None) };
-        let (want, n, tok, val) = (Buf::new(4)?, Buf::new(4)?, Buf::new(4 * cap.max(1))?, Buf::new(4 * cap.max(1))?);
-        want.write(0, &[bucket as i32])?;
-        let s = self.dev.stream;
-        let (b, per, c) = (HIST_BUCKETS as i32, HIST_PER, cap as i32);
-        // SAFETY: as `row_hist`; want holds the bucket, n one count, tok and val room for `cap`; read after the synchronize.
-        unsafe {
-            match procd {
-                true => self.kern.hist_bucket_f32(s, w, v, maxv, temperature, b, per, want.ptr, c, n.ptr, tok.ptr, val.ptr)?,
-                false => self.kern.hist_bucket(s, w, v as i32, maxv, temperature, b, per, want.ptr, c, n.ptr, tok.ptr, val.ptr)?,
-            }
-        };
+        let Some((w, _, f32)) = self.sum_row(row) else { return Ok(None) };
+        let out = self.query_room()?;
+        // SAFETY: the row (v bf16 logits, or the v floats its draw sees); DRAW_BINS_BYTES at `out`, read after the synchronize.
+        unsafe { self.kern.draw_bins(self.dev.stream, w, f32, self.big.d.vocab, q, out)? };
+        self.dev.sync()?;
+        let mut words = vec![0u32; crate::kern::DRAW_BINS_BYTES / 4];
+        // SAFETY: device memory this engine made and the stream wrote (synchronized above), of the size read.
+        unsafe { crate::dev::read_dev(out, &mut words)? };
+        Ok(Some(crate::kern::bins_of_words(&words)))
+    }
+
+    /// `ModelStep::tokens`: a query's tokens of head row `row`'s row its draw sees (`Kern::draw_tokens`), where they are `cap` or fewer (and SELECT_CAP + 1 or fewer).
+    fn row_tokens(&mut self, row: usize, q: &crate::sampler::Query, cap: usize) -> Result<Option<Vec<(u32, f32)>>> {
+        let cap = cap.min(crate::sampler::SELECT_CAP + 1);
+        if !self.row_queryable(row) {
+            return Ok(None);
+        }
+        let Some((w, _, f32)) = self.sum_row(row) else { return Ok(None) };
+        let out = self.query_room()?;
+        let (n, tok, val) = (out, out + 4, out + 4 + 4 * cap as u64);
+        // SAFETY: the row; a count, `cap` tokens and logits at `out` (its room holds them), read after the synchronize.
+        unsafe { self.kern.draw_tokens(self.dev.stream, w, f32, self.big.d.vocab, q, cap, n, tok, val)? };
         self.dev.sync()?;
         let mut k = [0u32; 1];
-        n.read(0, &mut k)?;
+        // SAFETY: device memory this engine made and the stream wrote (synchronized above), of the size read.
+        unsafe { crate::dev::read_dev(n, &mut k)? };
         let k = k[0] as usize;
         if k > cap {
             return Ok(None);
         }
         let (mut t, mut x) = (vec![0i32; k], vec![0f32; k]);
-        tok.read(0, &mut t)?;
-        val.read(0, &mut x)?;
+        // SAFETY: device memory this engine made and the stream wrote (synchronized above), of the size read.
+        unsafe { crate::dev::read_dev(tok, &mut t)? };
+        // SAFETY: device memory this engine made and the stream wrote (synchronized above), of the size read.
+        unsafe { crate::dev::read_dev(val, &mut x)? };
         Ok(Some(t.into_iter().map(|t| t as u32).zip(x).collect()))
     }
 
-    /// `ModelStep::mass`: row `row`'s sum of exp((logit - largest) / temperature) on the GPU, read back (8 bytes, not the row): of the row its draw sees where the request changes it
-    /// (`sum_row`), of the model's own where `raw` (the log-probabilities').
-    fn row_mass(&mut self, row: usize, temperature: f32, raw: bool) -> Result<Option<f64>> {
+    /// `ModelStep::logit`: token `t`'s logit in head row `row`'s row its draw sees (4 bytes).
+    fn row_logit(&mut self, row: usize, t: u32) -> Result<Option<f32>> {
         let v = self.big.d.vocab;
-        if self.top.off || row >= self.cands.rows || !v.is_multiple_of(8) || self.lanes.as_ref().is_some_and(|l| l.stale) {
+        if t as usize >= v || !self.row_queryable(row) {
             return Ok(None);
         }
-        let Some((w, maxv, procd)) = (match raw {
-            true => Some((self.big.logits.ptr + (row * v * 2) as u64, self.big.val.ptr + (4 * row) as u64, false)),
-            false => self.sum_row(row),
-        }) else {
-            return Ok(None);
-        };
-        if self.sums.is_none() {
-            self.sums = Some(Buf::zeroed(8 * self.head_room())?);
+        let Some((w, _, f32)) = self.sum_row(row) else { return Ok(None) };
+        self.dev.sync()?;
+        if f32 {
+            let mut x = [0f32; 1];
+            // SAFETY: device memory this engine made and the stream wrote (synchronized above), of the size read.
+            unsafe { crate::dev::read_dev(w + 4 * t as u64, &mut x)? };
+            return Ok(Some(x[0]));
         }
-        let out = self.sums.as_ref().expect("made above").ptr;
-        // SAFETY: the step's head row `row` (v bf16 logits, or the v floats its draw sees) and its largest (f32); one f64 out; read after the synchronize.
+        let mut x = [0u16; 1];
+        // SAFETY: device memory this engine made and the stream wrote (synchronized above), of the size read.
+        unsafe { crate::dev::read_dev(w + 2 * t as u64, &mut x)? };
+        Ok(Some(f32::from_bits((x[0] as u32) << 16)))
+    }
+
+    /// `ModelStep::remake`: head row `row`'s candidates made again, of the model's row or of the row with `res` put on it (`ProcGpu`), as a step's are (a drafted row's, checked
+    /// after the rows before it); the model's own kept for its log-probabilities. False where they cannot be made.
+    fn remake_row(&mut self, row: usize, res: Option<&crate::sampler::Resolved>) -> Result<bool> {
+        use crate::kern::TOPK;
+        let v = self.big.d.vocab;
+        if !self.row_queryable(row) {
+            return Ok(false);
+        }
+        let (tok, val, host, cap) = self.cands.bufs.as_ref().map(|b| (b.0.ptr, b.1.ptr, b.2.ptr as *mut u8, b.3)).expect("made with the candidates");
+        if self.cands.raw.as_ref().is_none_or(|r| r.bytes < 8 * TOPK * cap) {
+            self.cands.raw = Some(crate::dev::Pinned::new(8 * TOPK * cap)?);
+        }
+        let raw = self.cands.raw.as_ref().expect("made above").ptr as *mut u8;
+        let (s, at) = (self.dev.stream, 4 * TOPK * row);
+        // SAFETY: head row `row` (v bf16 logits) and its TOPK candidates' room; the pinned rooms' row `row`, read after the synchronize; no work queued reads W.
         unsafe {
-            match procd {
-                true => self.kern.exp_sum_f32(self.dev.stream, w, v, 1, maxv, temperature, out)?,
-                false => self.kern.exp_sum_rows(self.dev.stream, w, v as i32, 1, maxv, temperature, out)?,
+            self.kern.topk_rows(s, self.big.logits.ptr + (row * v * 2) as u64, v as i32, 1, tok + at as u64, val + at as u64)?;
+            crate::dev::copy_d2h_async(raw.add(at) as *mut _, tok + at as u64, 4 * TOPK, s)?;
+            crate::dev::copy_d2h_async(raw.add(4 * TOPK * cap + at) as *mut _, val + at as u64, 4 * TOPK, s)?;
+            let procd = match res {
+                Some(r) => self
+                    .procg
+                    .get_or_insert_with(|| crate::kern::ProcGpu::new(v))
+                    .queue(&self.kern, &self.dev, &[(row, r)], self.big.logits.ptr, tok, val)
+                    .is_ok(),
+                None => false,
+            };
+            crate::dev::copy_d2h_async(host.add(at) as *mut _, tok + at as u64, 4 * TOPK, s)?;
+            crate::dev::copy_d2h_async(host.add(4 * TOPK * cap + at) as *mut _, val + at as u64, 4 * TOPK, s)?;
+            self.dev.sync()?;
+            // (W holds this row alone now: no other row's candidates are of a row the draw sees)
+            self.cands.procd = vec![false; self.cands.rows];
+            self.cands.procd[row] = procd;
+            self.cands.raw_rows = self.cands.raw_rows.max(row + 1);
+            if let Some(x) = self.cands.sums.get_mut(row) {
+                *x = None;
             }
-        };
+            Ok(procd || res.is_none())
+        }
+    }
+
+    /// `ModelStep::mass`: the model's head row `row`'s sum of exp((logit - largest) / temperature) on the GPU, about its largest (the head's), read back (8 bytes, not the row).
+    fn row_mass(&mut self, row: usize, temperature: f32) -> Result<Option<f64>> {
+        let v = self.big.d.vocab;
+        if self.host_sampling || row >= self.cands.rows || !v.is_multiple_of(8) || self.lanes.as_ref().is_some_and(|l| l.stale) {
+            return Ok(None);
+        }
+        let out = self.query_room()?;
+        let (w, maxv) = (self.big.logits.ptr + (row * v * 2) as u64, self.big.val.ptr + (4 * row) as u64);
+        // SAFETY: the step's head row `row` (v bf16 logits) and its largest (f32); one f64 out; read after the synchronize.
+        unsafe { self.kern.exp_sum_rows(self.dev.stream, w, v as i32, 1, maxv, temperature, out)? };
         self.dev.sync()?;
         let mut m = [0f64; 1];
-        self.sums.as_ref().expect("made above").read(0, &mut m)?;
+        // SAFETY: device memory this engine made and the stream wrote (synchronized above), of the size read.
+        unsafe { crate::dev::read_dev(out, &mut m)? };
         Ok(Some(m[0]))
     }
 
@@ -2197,6 +2269,20 @@ impl Dyn {
         let decoded: Vec<Sample> = out.by_ref().take(rows.len()).map(|s| s.expect("every row samples")).collect();
         Ok((decoded, out.collect()))
     }
+    /// The head's first `n` rows (each one's logits, token and largest logit: `logits_pass`'s) moved to rows `at` .. `at` + n, `at` at least n (a pass of fewer rows run before
+    /// the rows below it: `decode_rows`). Every sum, candidate and log-probability of a row is then of its own (a row's largest left behind gave rows past the first another
+    /// row's largest: their served log-probabilities were not their own).
+    fn move_head_rows(&self, at: usize, n: usize) -> Result<()> {
+        let w = self.big.d.vocab * 2;
+        // SAFETY: the head's logits, tokens and largest hold head_room rows, at + n of them at most (the step's rows); the rows moved do not reach their place.
+        unsafe {
+            copy_d2d_async(self.big.logits.ptr + (at * w) as u64, self.big.logits.ptr, n * w, self.dev.stream)?;
+            copy_d2d_async(self.big.tok.ptr + (4 * at) as u64, self.big.tok.ptr, 4 * n, self.dev.stream)?;
+            copy_d2d_async(self.big.val.ptr + (4 * at) as u64, self.big.val.ptr, 4 * n, self.dev.stream)?;
+        }
+        Ok(())
+    }
+
     /// `ModelStep::decode`.
     fn decode_rows(&mut self, rows: &[Row]) -> Result<Vec<Sample>> {
         for r in rows {
@@ -2210,15 +2296,13 @@ impl Dyn {
         }
         if rows.len() == 1 || !self.batchable() || (!Self::batch_prefill() && !self.rows_exact()) {
             // (one sequence's step as a reply alone takes it, its graph where it has one, on the blocks the scheduler's growth took; several one after another, the last
-            // first, each one's logits row moved to its place in the head's rows before the next step writes its own over the first)
+            // first, each one's head row (logits, token, largest) moved to its place in the head's rows before the next step writes its own over the first)
             let mut out = vec![None; rows.len()];
-            let w = self.big.d.vocab * 2;
             for (j, r) in rows.iter().enumerate().rev() {
                 self.select(r.pages[0] as usize)?;
                 out[j] = Some(self.step_with(r.token, false)?);
                 if j > 0 {
-                    // SAFETY: the head's logits hold head_room rows; the step's are row 0.
-                    unsafe { copy_d2d_async(self.big.logits.ptr + (j * w) as u64, self.big.logits.ptr, w, self.dev.stream)? };
+                    self.move_head_rows(j, 1)?;
                 }
             }
             return Ok(out.into_iter().map(|s| s.expect("every row stepped")).collect());
@@ -2229,15 +2313,13 @@ impl Dyn {
             // (GLYD_ENGINE_BATCH_PREFILL=0, where every reply is to be the reply alone bit for bit: passes of at most EXACT_ROWS rows, the last first, each one's logits rows moved to
             // their place in the head's rows before the next writes its own over the first)
             let mut out = vec![None; rows.len()];
-            let w = self.big.d.vocab * 2;
             for (g, part) in jobs.chunks(EXACT_ROWS).enumerate().collect::<Vec<_>>().into_iter().rev() {
                 let at = g * EXACT_ROWS;
                 for (j, s) in self.pass(part)?.into_iter().enumerate() {
                     out[at + j] = s;
                 }
                 if at > 0 {
-                    // SAFETY: the head's logits hold head_room rows; the pass's are its first rows, and they do not reach their place (a pass is at most EXACT_ROWS rows, `at` at least that).
-                    unsafe { copy_d2d_async(self.big.logits.ptr + (at * w) as u64, self.big.logits.ptr, part.len() * w, self.dev.stream)? };
+                    self.move_head_rows(at, part.len())?;
                 }
             }
             return Ok(out.into_iter().map(|s| s.expect("every row samples")).collect());
@@ -2378,7 +2460,7 @@ impl ModelStep for Dyn {
             (l.out, l.stale) = (0, false);
         }
     }
-    fn draws(&mut self, asks: &[Option<f32>]) {
+    fn draws(&mut self, asks: &[Option<crate::sched::Sum>]) {
         self.draws = asks.to_vec();
     }
     /// An expert cache's end of a step owed for QUIET_EVERY steps launched ahead (`land_step`): the next step is launched after this one lands.
@@ -2402,38 +2484,41 @@ impl ModelStep for Dyn {
     fn processed(&mut self, row: usize) -> bool {
         ModelStep::top(self, row).is_some() && self.cands.procd(row)
     }
-    /// Row `row`'s buckets on the GPU (`exp_hist`), about the head's largest (`val`), read back (12 KB, not the row).
-    fn hist(&mut self, row: usize, temperature: f32) -> Option<crate::sampler::Hist> {
-        self.row_hist(row, temperature).unwrap_or(None)
+    fn total(&mut self, row: usize, _max: f32, temperature: f32) -> Option<u64> {
+        self.row_total(row, temperature).unwrap_or(None)
     }
-    fn hist_bucket(&mut self, row: usize, temperature: f32, bucket: usize, cap: usize) -> Option<Vec<(u32, f32)>> {
-        self.row_bucket(row, temperature, bucket, cap).unwrap_or(None)
+    /// A query of row `row`'s row its draw sees on the GPU (`Kern::draw_bins`), read back (7 KB, not the row).
+    fn bins(&mut self, row: usize, q: &crate::sampler::Query) -> Option<crate::sampler::Bins> {
+        self.row_bins(row, q).unwrap_or(None)
+    }
+    fn tokens(&mut self, row: usize, q: &crate::sampler::Query, cap: usize) -> Option<Vec<(u32, f32)>> {
+        self.row_tokens(row, q, cap).unwrap_or(None)
+    }
+    fn logit(&mut self, row: usize, t: u32) -> Option<f32> {
+        self.row_logit(row, t).unwrap_or(None)
+    }
+    fn remake(&mut self, row: usize, proc: Option<crate::sampler::Proc>) -> bool {
+        let res = proc.map(|p| p.resolve(self.big.d.vocab));
+        self.remake_row(row, res.as_ref()).unwrap_or(false)
     }
     /// The row's own candidates where a request's changes made `top`'s (copied before those were made): those of `top` otherwise.
     fn top_raw(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
         let top = ModelStep::top(self, row)?;
-        if row >= self.cands.raw_rows {
+        if row >= self.cands.raw_rows || !self.cands.procd(row) {
             return Some(top);
         }
         let (raw, cap) = (self.cands.raw.as_ref()?, self.cands.bufs.as_ref()?.3);
         // SAFETY: the pinned room the unmasked candidates were copied into with the masked ones (the stream run since: `top` read those), TOPK a row below `raw_rows`.
         Some(unsafe { crate::kern::read_candidates(raw.ptr as *const u8, 0, 4 * crate::kern::TOPK * cap, row) })
     }
+    /// The model's row's sum of exponentials: the step's where it made that one (the log-probabilities', at temperature 1), else made now.
     fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
-        // (made with the step where it asked for this one; else made now)
-        if let Some(&Some((t, m))) = self.cands.sums.get(row).filter(|_| self.lanes.as_ref().is_none_or(|l| !l.stale)) {
-            if t == temperature {
-                return Some(m);
+        if let Some(&Some((crate::sched::Sum::Lse, m))) = self.cands.sums.get(row).filter(|_| self.lanes.as_ref().is_none_or(|l| !l.stale)) {
+            if temperature == 1.0 {
+                return Some(f64::from_bits(m));
             }
         }
-        self.row_mass(row, temperature, false).unwrap_or(None)
-    }
-    /// The model's row's sum at temperature 1: the step's where it made that one of the model's row, else made now.
-    fn raw_mass(&mut self, row: usize) -> Option<f64> {
-        if self.cands.procd(row) {
-            return self.row_mass(row, 1.0, true).unwrap_or(None);
-        }
-        ModelStep::mass(self, row, 1.0)
+        self.row_mass(row, temperature).unwrap_or(None)
     }
     /// The candidates the GPU makes of the step's head rows (`Cands`); where it cannot (an error), the row is read as without them.
     fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {

@@ -53,8 +53,8 @@
 //!   glyd-engine kvshapes                                     the lossless KV cache of head dims 128, 256 and 512 (no model): values written, read back bit for bit, and decode and prompt attention against the host's
 //!   glyd-engine kvprefill [--chunk 256] [--prefixes 0,1024,4096,8192] [--reps 20]   the prompt attention over 12-bit pages at gemma-4-12B's shapes against the pages unpacked to a bf16 ring and the bf16 kernel on it
 //!   glyd-engine kvdecode [--lens 40,1024,4096] [--ctx 32768] [--reps 100]   a decode row's attention over 12-bit pages against a bf16 cache of the same values, and its token's 12-bit write, us a call (8 kv heads of 128 with 32 query heads, gemma-4-12B's and the Qwen3.5 layout's shapes)
-//!   glyd-engine topkcheck                                     the sampling kernels' 64 largest logits of a row and sum of its exponentials against the host's; the rows the draws see (penalties, a bias, masks put on them) made on the GPU against the host's
-//!   glyd-engine samplecheck CASE [--users N] [--tokens T] [--vocab V]   a random model's requests of every sampling (a grammar, penalties, a bias, an allowed list, plain) at once through the scheduler, the rows their draws see made on the GPU: each against its run alone and the host's draws; the host's time a step both ways
+//!   glyd-engine topkcheck [--no-weights]                      the sampling kernels' 64 largest logits of a row and sum of its exponentials against the host's; the rows the draws see (penalties, a bias, masks put on them) made on the GPU against the host's; a draw's totals, bins and tokens and the weights of every float (but with --no-weights) to the bit
+//!   glyd-engine samplecheck CASE [--users N] [--tokens T] [--vocab V] [--split C --devices A,B | --tp A,B]   a random model's requests of every sampling (a grammar, penalties, a bias, an allowed list, flat top-p, min-p, top-k 200, plain) at once through the scheduler, the rows their draws see made on the GPU: each against its run alone (log-probabilities to the bit) and the host's draws, no row read on the host; on stages or across GPUs, each against one GPU's; the host's time a step both ways
 //!   glyd-engine sampletime DIR PROMPT [--new N] [--ctx N]     a Qwen3.5 or Nemotron-H model's decode speed by greedy steps, by sampled ones from the GPU's candidates and from the row on the host (the same tokens)
 //!   glyd-engine logitscheck [CASE...] [--fixtures DIR] [--cpu-ref] [--level L] [--list-cases]   each model's engine logits against its fixture in tests/logits (src/logits.rs); logitsrecord CASE --from cpu|engine --out FILE: a fixture made; logitsbound FIXTURE LEVEL=BOUND...: its bounds set; logitsmodel CASE DIR: the case's random model made (qwen35moe --real --layers L --experts E: at its release's width); paritycheck [CASE...] [--level L] [--choice ROW:LAYER]: Qwen3.8-Flash-Next's cases (qwen4x, qwen4x-s2) on the description executor, held to the CPU reference of the layer kinds on its own routers' choices, its layers beside the reference's (--choice: no engine; the reference alone with the nearest other choice taken in that row's pass and layer, and what it leaves in the rows after); levelcheck [CASE...] [--level L]: each lossy level's KL from penguin on its families' random models, against the thresholds of the family and level (qwen35, gemma4 and nemotron-h at kestrel, swift and wren; deepseek-v4 and muse at hummingbird; kimi and glm at hummingbird printed as open)
 //!   glyd-engine packcheck [--gpu] [--record] [--engine [--scratch DIR]]   every pack format of tests/data/packs read and run on the CPU reference against its digest in tests/packs (--gpu: decoded by the GPU library; --record: the digests written); --engine: the formats the engine reads (glyd-v7 penguin, kestrel, swift, wren) made from the logits cases' random models, loaded from the saved directory, against the same model packed as it loads in the same layout (bits) and the case's reference where one bounds the level, and the Hummingbird level against this GPU generation's digest in tests/packs (--engine --record: that digest written, on a GPU of the generation); a row or a digest with nothing recorded for this GPU fails (src/packcheck.rs)
@@ -143,7 +143,11 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
             report::l2check(&dev, &mibs, a.num("reps", 20usize)?, a.num("gap-us", 10u64)?)
         }
         "topkcheck" => {
-            if !glyd_engine::kcheck::topk_check(&glyd_engine::dev::Dev::new(0)?)? {
+            let dev = glyd_engine::dev::Dev::new(0)?;
+            // (the candidates, the rows the draws see and a draw's questions of them; the draw's weights of every float, the GPU's against the host's, but with --no-weights)
+            let rows = glyd_engine::kcheck::topk_check(&dev)?;
+            let weights = a.has("no-weights") || glyd_engine::kcheck::weights_check(&dev)?;
+            if !(rows && weights) {
                 std::process::exit(1);
             }
             Ok(())
@@ -515,12 +519,18 @@ fn cmd_sampletime(a: &Args) -> Result<()> {
     if let Some(dir) = nemotron_dir(a) {
         let (mut e, load, _store, _) = open_nh(a, &dir)?;
         eprintln!("loaded in {load:.1} s: {}", e.describe());
-        return time_replies(&mut e, |e, host| e.top.off = host, &Tok::load(&dir)?.encode(prompt)?, &glyd_engine::sampler::generation_defaults(&dir), new);
+        return time_replies(
+            &mut e,
+            |e, host| e.host_sampling = host,
+            &Tok::load(&dir)?.encode(prompt)?,
+            &glyd_engine::sampler::generation_defaults(&dir),
+            new,
+        );
     }
     let dir = exec_dir(a)?;
     let (mut e, load) = open35(a, &dir)?;
     eprintln!("loaded in {load:.1} s: {}", e.describe());
-    time_replies(&mut e, |e, host| e.top.off = host, &Tok::load(&dir)?.encode(prompt)?, &glyd_engine::sampler::generation_defaults(&dir), new)
+    time_replies(&mut e, |e, host| e.host_sampling = host, &Tok::load(&dir)?.encode(prompt)?, &glyd_engine::sampler::generation_defaults(&dir), new)
 }
 
 /// `new` tokens after `ids` by `Gen::reply` with `params` (the end token ignored): the tokens and the decode speed from the first token on, tokens a second.
