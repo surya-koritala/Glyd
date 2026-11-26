@@ -1,6 +1,6 @@
 # Condor
 
-Qwen3.8-Flash-Next (180B, MoE) on one 12-16 GB NVIDIA GPU with 32-64 GB of RAM, on Linux or Windows. Our own engine and our own
+Qwen3.8-Flash-Next (180B, MoE) on one 12-16 GB NVIDIA GPU with 32-64 GB of RAM, on Linux or Windows. Glyd's engine and our own
 compressed weights. OpenAI- and Anthropic-compatible APIs, a chat page, MCP. Apache-2.0, like the rest of Glyd. More Flash-class models will come here.
 
 ![Star Drift, a space shooter the model wrote in one prompt](docs/media/star-drift.gif)
@@ -118,7 +118,7 @@ Switch: `tools/download.sh --best` (or `--fast`), then `tools/serve.sh --best`. 
 - MCP: `claude mcp add glyd -- ~/.glyd-qwen-3.8-flash/bin/glyd-engine qwenmcp --repo /path/to/condor`
 - Images: PNG or JPEG in OpenAI `image_url` parts (base64, or a URL on a public host) or Anthropic image blocks, up to 1,024 tokens
   an image by default. An image adds 0.3-2 s to the prompt on a 4080 SUPER; text speed is unchanged.
-- Several users: 4 requests at once by default, each streaming from the start (`GLYD_USERS=N tools/serve.sh`, 1 to 8).
+- Several users: 4 requests at once by default, each streaming from the start (`GLYD_USERS=N tools/serve.sh`, 1 to 64).
 - Thinking is off by default; turn it on in chat settings or with `reasoning_effort`.
 - Context up to 262,144 tokens; follow-ups reuse the conversation and start in under a second.
 
@@ -126,7 +126,7 @@ Switch: `tools/download.sh --best` (or `--fast`), then `tools/serve.sh --best`. 
 
 - NVIDIA only, RTX 30 series or newer, 12 GB minimum (#8); no macOS. An AMD build exists but hasn't run on a card yet.
 - Images: PNG and JPEG, no video, no uploads on the chat page yet. A new long prompt pauses the other streams while it's read.
-- Up to 4 requests at once; past that they wait in order. Total speed stays about one user's.
+- Up to 4 requests at once by default (`GLYD_USERS`); past that they wait in order. Total speed stays about one user's.
 - Fast mode is weaker on long code.
 - Short on free RAM, it gets slow and the disk gets busy: close what's eating RAM.
 

@@ -27,7 +27,7 @@ Glyd's goal is one unified, zero-Python Rust inference engine from an 8 GB lapto
 ### Rules for agents working on this repository
 
 - **Respect milestone order.** Pick open blockers in the active milestone before starting later milestones unless explicitly instructed.
-- **Never add features to legacy pipelines.** `model.rs`, `model35.rs`, `model_gemma4.rs`, `model_nh.rs`, `model_glm.rs`, and `model_qwen4x.rs` are frozen for retirement; all new runtime capabilities belong in `glyd-engine/src/runtime/` (`docs/design/runtime.md`).
+- **Never add a pipeline of a family's own.** The hand-written ones (`model.rs`, `model35.rs`, `model_gemma4.rs`, `model_nh.rs`, `model_glm.rs`, `model_qwen4x.rs`) are deleted: every family runs on the executor (`glyd-engine/src/dynamic/`) from a description of layer kinds; all new runtime capabilities belong in `glyd-engine/src/runtime/` and the executor (`docs/design/runtime.md`).
 - **Delete legacy code immediately after parity.** Once a family passes `R7` logits + `R8` bench gates on the shared runtime, delete its hand-written pipeline in the very next PR.
 - **Prevent `Format × Kind × Backend` explosion.** Weight formats plug *only* into linear / grouped-MoE product ops; KV codecs plug *only* into page read/write/decode. Never duplicate attention/SSM/MLA mixers per format.
 - **Real hardware gates only.** Never check off a `needs-gpu` acceptance criterion from a compile-only or mocked test; commit measured results under `benchmarks/`.
@@ -51,16 +51,16 @@ Released, on main and planned are listed apart.
 - One repository under Apache-2.0 with the engine, the GPU library, Condor and Starlings (#263); raw data out of the tree
   (#265); rustfmt, clippy and cargo-deny in CI (#266, part of S8); one table of what the engine runs, shared by `fit`,
   `run` and `serve` (#267, P16); security updates (S7, #211).
-- The engine runs Qwen3 dense (lossless); Qwen3.5/3.6/3.8 dense (lossy levels only); Gemma 4 12B and 31B and Nemotron-H
-  (lossless and lossy levels); and, lossless, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark, each through its own
-  pipeline. Qwen3.8-Flash-Next (Condor's model) runs through Condor's `qwenserve`, not `glyd run`. The list is
-  `glyd-engine/src/support.rs`.
-- With the Python tool, `glyd run` hands a model to the engine only on GPUs listed in `GPUS` (`glyd-engine/src/machine.rs`):
-  the RTX 4080 SUPER is the one so far (S10), the others use vLLM unless `GLYD_ENGINE=1`.
-- Batching on the Qwen3 path only (up to 8 sequences); other families serve one request at a time.
-- MoE experts on GPU/RAM/NVMe with CPU compute for misses; layer split over the GPUs of one machine for Nemotron-H,
-  Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark; two-machine pipeline (Starlings, beta). `glyd-engine fit` plans before
-  download; `P2a` (#148) is wiring `run` to load by the plan on every path.
+- The engine runs the plain dense kind, the Qwen3.5 layout (3.5, 3.6, 3.8) and Gemma 4 at penguin, kestrel, swift and wren,
+  Nemotron-H at those and hummingbird, and Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark at penguin and hummingbird, all on one executor. Qwen3.8-Flash-Next (Condor's
+  model) runs there too: `glyd run` takes it at penguin and its codes packs at hummingbird; Condor's scripts serve the packs
+  with `qwenserve`. The list is `glyd-engine/src/support.rs`.
+- With the Python tool, `glyd run` hands a plain dense model at penguin to the engine only on GPUs listed in `GPUS` (`glyd-engine/src/machine.rs`):
+  the RTX 4080 SUPER is the one so far (S10), the others use vLLM unless `GLYD_ENGINE=1`; every other family and level is the engine's.
+- One scheduler batches every family (up to 64 users); a model split across GPUs or with a draft model runs one sequence at a time.
+- MoE experts on GPU/RAM/NVMe with CPU compute for misses; layer split over the GPUs of one machine for the families
+  `split_levels` in `glyd-engine/src/support.rs` names; two-machine pipeline (Starlings, beta). `glyd-engine fit` plans before
+  download, and `run` and `serve` load by the plan it prints (`P2a`, #148).
 - NVIDIA Ampere to Blackwell, Linux x86_64, driver 535+ (CUDA 12/13 dual kernel builds landed in #407). AMD RDNA 3/4 as
   development builds (`GLYD_HIP=1`). GPU CI runs on one self-hosted machine (`sm_89`) with a small model; Windows and macOS
   CI compile and unit-test the engine, codec, store and CLI.
@@ -182,7 +182,7 @@ Replace the per-family pipelines with one config-driven runtime (`docs/design/ru
 - [ ] F1d Qwen 2/2.5 and Qwen3 MoE ([#169](https://github.com/surya-koritala/Glyd/issues/169))
 - [ ] F1e Phi-4 family ([#170](https://github.com/surya-koritala/Glyd/issues/170))
 - [ ] F1h Granite, OLMo, SmolLM and other standard dense models ([#173](https://github.com/surya-koritala/Glyd/issues/173))
-- [ ] R3d Condor's model (Qwen3.8-Flash-Next) on the shared executor ([#140](https://github.com/surya-koritala/Glyd/issues/140))
+- [x] R3d Condor's model (Qwen3.8-Flash-Next) on the shared executor ([#140](https://github.com/surya-koritala/Glyd/issues/140))
 - [x] R3b Retire the hand-written Qwen3.5, Gemma 4 and Nemotron-H engines ([#137](https://github.com/surya-koritala/Glyd/issues/137))
 - [ ] R3c Qwen3 dense on the shared executor ([#139](https://github.com/surya-koritala/Glyd/issues/139))
 - [ ] R13 Retire or freeze the GLM development engine ([#234](https://github.com/surya-koritala/Glyd/issues/234))

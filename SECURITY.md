@@ -56,7 +56,7 @@ credited in the advisory unless they ask not to be.
   time. The chat page, `/health`, `/ready` and `/stats` do not need the key; `/metrics` does.
 - In scope: reading or using the model without the key where one is set; getting past the loopback checks on an
   address the server chose itself; a request that crashes, hangs or exhausts memory beyond the limits it sets
-  (request body 16 MiB, header block 64 KiB, 256 headers, 64 connections, 30 s for the request line and headers, 120 s for the body, 60 s for a write to a client that reads nothing: a request that is too slow is answered 408); an out-of-bounds read or
+  (request body 16 MiB, header block 64 KiB, 256 headers, 50,000 open connections, 8,192 requests in flight, 30 s for the request line and headers, 120 s for the body, 60 s for a write to a client that reads nothing: a request that is too slow is answered 408); an out-of-bounds read or
   write while parsing a request; reading a file outside the chat page's own directory.
 - Image URLs in chat requests: the server fetches only `http(s)` URLs whose host resolves to a public address, at
   every redirect (up to 5), with a 64 MiB and 30 s limit. `file:` and other schemes are refused. A way to make it

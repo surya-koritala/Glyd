@@ -13,18 +13,14 @@ checkpoint, no packing. No weights are kept in git; the saves are made on a pod 
 | `cards/` | The seven cards, from the 2026-10-06 run, without `--serve`: vLLM refuses these saves today |
 | `results/` | What the 2026-10-06 run measured, per model (`results/README.md`) |
 
-## What the owner has to do before anything is uploaded
+## Uploading
 
-1. Create the organization `glyd` on huggingface.co. On 2026-10-06 the name was free: `https://huggingface.co/glyd` returned 404.
-2. Create a write token that can write to `glyd`'s repos. Log in on this Mac with `pip install huggingface_hub`
-   and then `hf auth login`, which stores the token in `~/.cache/huggingface/token`. The Mac had no token and no `hf` CLI on 2026-10-06.
-3. Before publishing, the open points under "Loading today" need a decision.
-
-Then run `ORG=glyd bash tools/hf-prepacked/publish.sh` to upload the repos as private and check them. It has not
-run yet, because there is no token. It uses `tools/runpod/rp_run.sh`. The seven models take about 45 minutes, so a
+The organization `glyd` exists (huggingface.co/glyd). `ORG=glyd bash tools/hf-prepacked/publish.sh` uploads the repos as private and checks them; it needs a write token
+for `glyd`'s repos (`pip install huggingface_hub`, then `hf auth login`) and uses `tools/runpod/rp_run.sh`. The seven models take about 45 minutes, so a
 running `rp_guard.sh` must allow that (`MAX_AGE`). Add `PUBLIC=1` to make each repo public once its files and card have been checked. Add `SERVE=1` only once vLLM loads these families' saves.
+A lossy pack of a recent release is published by `glyd-engine ship` (`glyd-engine/src/ship.rs`), with its quality card.
 
-## Loading today (glyd 0.29.0, read from the code)
+## Loading in glyd 0.29.0 (2026-10-06, read from the code then; not read again since)
 
 - **`glyd.from_pretrained("glyd/<model>")`** loads a save of format glyd-v1 to v4, in either layout, for any
   family that transformers loads. On 2026-10-06 all seven saves loaded this way, passed verify bit for bit and answered

@@ -16,7 +16,7 @@ uname -sm
 
 | Requirement | Needed |
 |---|---|
-| System | Linux on x86-64, Ubuntu 22.04 or newer (tested on 22.04, 24.04 and 26.04). No Windows yet; WSL2 is untested. |
+| System | Linux on x86-64, Ubuntu 22.04 or newer (tested on 22.04, 24.04 and 26.04). These steps are Linux's; on Windows run `setup.ps1` (see `condor/README.md`). WSL2 is untested. |
 | GPU | NVIDIA, Ampere or newer (RTX 30, 40 or 50 series, A-series, H100), 16 GB or more |
 | Driver | 580 or newer |
 | RAM | 64 GB |

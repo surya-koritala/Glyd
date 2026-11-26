@@ -9,8 +9,8 @@ Thanks for helping. Bug reports, speed results from your hardware and fixes are 
 - `tests/`: `node tests/test_flow.js` checks the flowchart renderer; `python3 tests/test_server.py --url http://127.0.0.1:8080` checks
   a running server end to end.
 
-Condor is a folder of the Glyd repository: the engine it runs is [glyd-engine/](../glyd-engine) with its CUDA kernels and the GPU library in
-[gpu/](../gpu), all Apache-2.0. Fixes to the engine are pull requests to this same repository.
+Condor is a folder of the Glyd repository: the engine it runs is [glyd-engine/](../glyd-engine) with its CUDA kernels (the GPU library in
+[gpu/](../gpu) is the Python package's), all Apache-2.0. Fixes to the engine are pull requests to this same repository.
 
 ## Reporting a problem
 

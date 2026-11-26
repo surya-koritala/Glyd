@@ -83,8 +83,8 @@ glyd --version                                       # says `engine: linked`
 Without `--features engine` the install is the file compression program alone.
 
 - `-p glyd --features engine` builds `glyd` with the engine linked in: `run`, `serve`, `pull`, `ls`, `fit`, `doctor` and the
-  rest are its own commands. `cargo build --release -p glyd-engine` builds the engine's own program, `glyd-engine`, which has
-  the older command line without `pull`, `ls`, `rm` and the service.
+  rest are its own commands. `cargo build --release -p glyd-engine` builds the engine's own program, `glyd-engine`: the same
+  model commands (`pull`, `ls`, `rm` and the service too), no file compression.
 - The build finds `nvcc` on the PATH, or at `$NVCC`. Without one it builds without CUDA kernels and warns. The kernels are
   built for Ampere, Ada and Hopper (`GLYD_ENGINE_ARCHS="80 86 89 90a"` is the default); `GLYD_ENGINE_ARCHS="89"` builds for one
   architecture, which is quicker.

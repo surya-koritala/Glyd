@@ -6,6 +6,8 @@ release has it. Today it exists for Nemotron 3 Super alone (`src/moe_hb.rs`, `sr
 description builder maps (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark, Qwen3.5/3.8 MoE), with the calibration in the engine.
 Written 2026-11-21 against main ca0b6a4b.
 
+Status (2026-11-26): built for the families above: the calibration is `calibrate-experts` (`src/hb_usage.rs`), the packer `pack MODEL OUT --layout hummingbird --usage FILE` (`src/hb_pack.rs`) and the block `src/moe_hbg.rs`; `docs/design/runtime.md` and `glyd-engine/REFERENCE.md` describe what runs. The "Today" and "exists for Nemotron 3 Super alone" lines below are those of 2026-11-21.
+
 ## What a hummingbird expert is
 
 An expert of width W (its input: the hidden size, or the latent where the MoE has one) and intermediate size I is stored as

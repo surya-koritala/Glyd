@@ -27,7 +27,7 @@
 </p>
 
 Glyd is an open-source inference engine for large language models, written in Rust with its own CUDA kernels. It
-compresses a model's weights and KV cache, losslessly or at a lossy level you choose, plans the model to the GPUs, RAM
+compresses a model's weights, losslessly or at a lossy level you choose, plans the model to the GPUs, RAM
 and disk you have, and serves it with OpenAI-, Anthropic- and Ollama-compatible APIs. One program, no Python.
 
 ## Get started
@@ -67,7 +67,7 @@ serving, tools and troubleshooting.
 | **hummingbird** | 2 to 3 on experts | no | mixture-of-experts layers: the busiest experts at 3 bits, the rest at 2 |
 
 The planner picks the best level that fits: penguin where the model fits, else the highest lossy level that does. Ask for
-one with a tag: `glyd run google/gemma-4-12B-it:wren`. The KV cache is lossless at 12 bits a value.
+one with a tag: `glyd run google/gemma-4-12B-it:wren`. The KV cache is bf16 pages; `GLYD_KV=lossless` asks a server for 12-bit lossless pages where the plan finds them no bigger.
 
 ## Supported hardware
 
