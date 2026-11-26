@@ -391,6 +391,14 @@ pub const SAVED: &[(&str, &str, &str, &str)] = &[
     ("qwen35moe", "kestrel", "i6", "glyd-v7 i6: the Qwen3.5 layout with experts at kestrel, each expert's gate and up one pack and its down another"),
     ("qwen35moe", "swift", "i5", "glyd-v7 i5: the same at swift"),
     ("qwen35moe", "wren", "i4", "glyd-v7 i4: the same at wren"),
+    (
+        "qwen35moe-st",
+        "kestrel",
+        "i6",
+        "glyd-v7 i6: the same model with each layer's experts stacked in two tensors (Qwen3.8-2.4T-A95B's form), packed from their rows",
+    ),
+    ("qwen35moe-st", "swift", "i5", "glyd-v7 i5: the same at swift"),
+    ("qwen35moe-st", "wren", "i4", "glyd-v7 i4: the same at wren"),
     ("gemma4", "penguin", "mma", "glyd-v7 at penguin: glyd/gemma-4-12B-penguin, -31B-penguin"),
     ("gemma4", "kestrel", "i6", "glyd-v7 i6: Gemma 4 at kestrel"),
     ("gemma4", "swift", "i5", "glyd-v7 i5: Gemma 4 at swift"),
@@ -427,10 +435,13 @@ fn check_engine(scratch: &Path, fixtures: &Path) -> Result<(Vec<String>, usize, 
     let (mut failed, mut same) = (Vec::new(), 0usize);
     let mut tally = logits::Tally::default();
     for &(case, level, layout, what) in SAVED {
-        let c = logits::find_case(case)?;
+        // (a case in another stored form of its model, the experts stacked: its case's model so written, held to that case's references)
+        let base = logits::case_of_form(case);
+        let c = logits::find_case(base)?;
         let model = scratch.join(case);
         if !model.join("config.json").exists() {
             match c.weights {
+                logits::Weights::Random(_) if base != case => logits::random_model(case, &model)?,
                 logits::Weights::Random(make) => make(&model)?,
                 logits::Weights::Hub(id) => return err(format!("{case}: a Hub model ({id}), not a random one")),
             }
@@ -485,7 +496,7 @@ fn check_engine(scratch: &Path, fixtures: &Path) -> Result<(Vec<String>, usize, 
         }
         // (and every reference of the case that bounds the level; a pin is logitscheck's, and so is the reference of a case held on its routers' own choices
         // (`Case::on_choices`): its rows against the reference's choices are not what bounds it)
-        for (path, fx, bound) in level_fixtures(fixtures, case, level)?.into_iter().filter(|x| x.1.held() == logits::Held::Reference && c.on_choices.is_none())
+        for (path, fx, bound) in level_fixtures(fixtures, base, level)?.into_iter().filter(|x| x.1.held() == logits::Held::Reference && c.on_choices.is_none())
         {
             let rows = logits::drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
             let v = logits::compare(&fx, &bound, &rows);

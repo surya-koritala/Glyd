@@ -16,7 +16,7 @@
 use crate::ffi::{err, Error, Result};
 use crate::hb_codec::{self, bits_by_use, block_of, code_expert, signs, ExpertRows, LayerRows, Usage, HB40_PERCENT};
 use crate::runtime::config::ModelConfig;
-use crate::runtime::describe::{describe_config, Described, Source as Src};
+use crate::runtime::describe::{describe_dir_of, Described, Source as Src};
 use crate::runtime::kinds::{Body, Ffn};
 use glyd_gpu::codebook::{cb_strides, CbRows};
 use glyd_gpu::json::{self, Value};
@@ -384,7 +384,8 @@ pub fn run(model: &str, out: &Path, threads: usize, usage: &Path) -> Result<()> 
         eprintln!("{}: already packed, keeping its files", out.display());
         return Ok(());
     }
-    let d = describe_config(&ModelConfig::load(&source.dir)?)?;
+    // (the release as its index holds it: a layer's experts a tensor an expert's matrix, or stacked in one tensor, each expert's rows of it read alone)
+    let (d, _) = describe_dir_of(&source.dir, &ModelConfig::load(&source.dir)?)?;
     let layers = moe_layers(&d)?;
     if layers.is_empty() {
         return err(format!("{model}: no mixture of experts: the hummingbird level is for the experts of one"));
@@ -705,6 +706,31 @@ pub(crate) mod tests {
         assert!(HbDir::experts_for(Some(&hb), first, true).err().expect("refused").msg.contains("every layer across GPUs"));
         assert!(HbDir::experts_for(Some(&hb), 0, false).err().expect("refused").msg.contains("no experts for decoder layer 0"));
         assert!(HbDir::open(&src).unwrap().is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The Qwen3.5 layout's random model with experts and the same model with each layer's experts stacked (Qwen3.8-2.4T-A95B's form) packed at the
+    /// hummingbird level from one usage file: the same directory, every file byte for byte (each expert of a stacked tensor read by its rows alone, the
+    /// stacked tensors left out of the copy as each expert's tensors are).
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_release_of_stacked_experts_packs_as_its_experts_one_a_tensor() {
+        let dir = std::env::temp_dir().join(format!("glyd-hbpack-stacked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (each, stacked) = (dir.join("each"), dir.join("stacked"));
+        crate::logits::qwen35moe_random(&each).unwrap();
+        crate::logits::random_model("qwen35moe-st", &stacked).unwrap();
+        let (d, _) = crate::runtime::describe::describe_dir(&stacked).unwrap();
+        assert!(moe_layers(&d).unwrap().iter().all(|l| matches!(l.gate_up, Experts::Stacked(_)) && matches!(l.down, Experts::Stacked(_))));
+        let up = dir.join("usage.json");
+        std::fs::write(&up, usage_for(&d, 5).to_json()).unwrap();
+        for (m, o) in [(&each, dir.join("hb-each")), (&stacked, dir.join("hb-stacked"))] {
+            run(m.to_str().unwrap(), &o, 3, &up).unwrap();
+        }
+        assert_eq!(
+            crate::stacked::same_files(&dir.join("hb-each"), &dir.join("hb-stacked"), (each.to_str().unwrap(), stacked.to_str().unwrap())).unwrap(),
+            None
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -269,6 +269,40 @@ impl Checkpoint {
         }
     }
 
+    /// Rows `a..b` of tensor `name` seen as a matrix of its last dimension's columns (a tensor [experts, rows, cols] of experts stacked: [experts rows, cols],
+    /// expert e's rows `e rows..(e + 1) rows`): its file and the info of those rows alone, a range of the file's bytes, as a tensor [b - a, cols] of its dtype.
+    pub fn rows(&self, name: &str, a: usize, b: usize) -> io::Result<(&File, TensorInfo)> {
+        let (f, t) = self.get(name).ok_or_else(|| self.missing(name))?;
+        let width = dtype_bytes(&t.dtype).ok_or_else(|| bad(&self.dir, format!("{name}: {}, not whole bytes an element", t.dtype)))?;
+        let (cols, all) = match t.shape.split_last() {
+            Some((&c, rest)) if !rest.is_empty() => (c, rest.iter().product::<u64>()),
+            _ => return Err(bad(&self.dir, format!("{name}: shape {:?}, where rows of a matrix are read", t.shape))),
+        };
+        if a > b || b as u64 > all {
+            return Err(bad(&self.dir, format!("{name}: rows {a}..{b} of {all}")));
+        }
+        let row = cols * width;
+        Ok((f, TensorInfo { dtype: t.dtype.clone(), shape: vec![(b - a) as u64, cols], offset: t.offset + a as u64 * row, bytes: (b - a) as u64 * row }))
+    }
+
+    /// `rows` of a BF16 tensor as bf16 words into `out` (its elements): the bytes of those rows alone are read.
+    pub fn read_rows_bf16(&self, name: &str, a: usize, b: usize, out: &mut [u16]) -> io::Result<()> {
+        let (f, t) = self.rows(name, a, b)?;
+        if t.dtype != "BF16" || t.bytes as usize != out.len() * 2 {
+            return Err(bad(
+                &self.dir,
+                format!("{name}: rows {a}..{b} of {} are {} bytes, where {} bytes of BF16 are wanted", t.dtype, t.bytes, out.len() * 2),
+            ));
+        }
+        // SAFETY: u16's bytes, as many as its elements take; the file's are little-endian, as the host's.
+        let bytes = unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, out.len() * 2) };
+        f.read_into(&t, bytes)?;
+        if cfg!(target_endian = "big") {
+            out.iter_mut().for_each(|v| *v = u16::from_le(*v));
+        }
+        Ok(())
+    }
+
     /// Tensor `name` as bf16 words into `out` (its elements): a BF16 tensor as it is; an F8_E4M3 matrix times its block scales ([`crate::fp8::dequant`]: each weight's f32 product rounded to bf16 once), its scales
     /// being `NAME_scale_inv` and its blocks config.json's `weight_block_size`. Any other dtype is refused.
     pub fn read_bf16(&self, name: &str, out: &mut [u16]) -> io::Result<()> {
@@ -333,6 +367,29 @@ mod tests {
         assert!(file([(0, 4), (5, 10)], 10).unwrap_err().to_string().contains("b's bytes at 5"));
         assert!(file([(0, 5), (4, 10)], 10).unwrap_err().to_string().contains("where the tensor before ends at 5"));
         assert!(file([(0, 4), (4, 10)], 12).unwrap_err().to_string().contains("2 bytes past its last tensor"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An expert's rows of a tensor of experts stacked [experts, rows, cols] are its range of the file, read alone: expert 1's rows of a [3, 2, 4] bf16
+    /// tensor are words 8..16, and rows past the tensor's are refused.
+    #[test]
+    fn rows_of_a_stacked_tensor() {
+        let dir = std::env::temp_dir().join(format!("glyd-gpu-st-rows-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let h = r#"{"a":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"x":{"dtype":"BF16","shape":[3,2,4],"data_offsets":[4,52]}}"#;
+        let mut b = (h.len() as u64).to_le_bytes().to_vec();
+        b.extend(h.as_bytes());
+        b.extend([0u8; 4]);
+        b.extend((0u16..24).flat_map(|v| (v * 3).to_le_bytes()));
+        std::fs::write(dir.join("model.safetensors"), b).unwrap();
+        let ck = Checkpoint::open(&dir).unwrap();
+        let (_, t) = ck.rows("x", 2, 4).unwrap();
+        let x = ck.get("x").unwrap().1;
+        assert_eq!((t.shape.clone(), t.offset, t.bytes, t.dtype.as_str()), (vec![2, 4], x.offset + 16, 16, "BF16"));
+        let mut w = [0u16; 8];
+        ck.read_rows_bf16("x", 2, 4, &mut w).unwrap();
+        assert_eq!(w, std::array::from_fn(|i| (8 + i as u16) * 3));
+        assert!(ck.rows("x", 4, 7).is_err() && ck.rows("a", 0, 1).is_err() && ck.read_rows_bf16("x", 0, 1, &mut w).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

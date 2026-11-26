@@ -1251,7 +1251,7 @@ pub(crate) fn engine_at(case: &str, dir: &Path, level: &str, layout: Layout) -> 
         return err(format!("{case} at {level} is packed {}, not {}", l.name(), layout.name()));
     }
     let o = dyn_opts(Some(layout));
-    match case {
+    match case_of_form(case) {
         "gemma4" | "gemma4-kv" => gemma4_at(dir, Some(layout)),
         "qwen35" | "qwen35-wide" | "qwen35moe" => boxed(crate::dynamic::qwen35::load(dir, &o)),
         "dense" => boxed(crate::dynamic::dense::load(dir, &o)),
@@ -2022,6 +2022,22 @@ pub fn qwen35moe_random_real(out: &Path, layers: usize, experts: usize) -> Resul
     qwen35moe_draw(&c.to_string(), out)
 }
 
+/// `qwen35moe_random`'s model (with `real` (layers, experts): `qwen35moe_random_real`'s) with each layer's experts written as two stacked tensors
+/// (`mlp.experts.gate_up_proj` [experts, 2 inter, in], `mlp.experts.down_proj` [experts, out, inter]), the form Qwen3.8-2.4T-A95B is released in: the same weights
+/// to the bit (`stacked::restack`), as `logitsmodel qwen35moe DIR --stacked [--real --layers L --experts E]` makes it (the case `qwen35moe-st`: the stacked form
+/// of the case's own model).
+pub fn qwen35moe_stacked(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
+    let at = out.join("per-expert");
+    match real {
+        None => qwen35moe_random(&at)?,
+        Some((layers, experts)) => qwen35moe_random_real(&at, layers, experts)?,
+    }
+    let (named, _) = crate::runtime::describe::describe_dir(&at)?;
+    let held = crate::runtime::describe::describe_stacked(&crate::runtime::config::ModelConfig::load(&at)?)?;
+    crate::stacked::restack(&at, out, &named, &held)?;
+    std::fs::remove_dir_all(&at).map_err(|e| Error(format!("{}: {e}", at.display())))
+}
+
 /// `qwen35moe_random`'s draw of the model of config `text`.
 fn qwen35moe_draw(text: &str, out: &Path) -> Result<()> {
     let d = crate::runtime::describe::describe(&serde_json::from_str(text).map_err(|e| Error(e.to_string()))?)?;
@@ -2031,6 +2047,15 @@ fn qwen35moe_draw(text: &str, out: &Path) -> Result<()> {
         .map(|n| d.shapes.get(&n).map(|s| json!([n, "BF16", s])).ok_or_else(|| Error(format!("the description has no shape for {n}"))))
         .collect::<Result<Vec<Value>>>()?;
     manifest_random(&json!({"config": text, "tensors": tensors}).to_string(), out, 0x2026_1124_0000_0333, false, "Qwen3.5-family mixture of experts")
+}
+
+/// A case that is another case's model in another stored form (the same weights): that case. `qwen35moe-st`: the Qwen3.5 layout with experts, each layer's
+/// experts stacked in two tensors as Qwen3.8-2.4T-A95B is released (`qwen35moe_stacked`).
+pub fn case_of_form(case: &str) -> &str {
+    match case {
+        "qwen35moe-st" => "qwen35moe",
+        other => other,
+    }
 }
 
 /// GLM-5.3's layout as a small random model (tests/fixtures/glm_moe_dsa_toy_config.json, `glm_moe_dsa`: four layers 256 wide of the latent attention, two heads
@@ -3309,19 +3334,28 @@ pub fn level_check(a: &crate::args::Args) -> Result<()> {
     }
 }
 
-/// `logitsmodel CASE DIR [--servable] [--real [--layers L] [--experts E]]`: the case's random model made in DIR (`--real`: the Qwen3.5 layout with experts at its release's width) (a model to run the other checks on: `kvtest DIR`, `run DIR`); `qwen4x-rel` the
+/// `logitsmodel CASE DIR [--servable] [--real [--layers L] [--experts E]] [--stacked]`: the case's random model made in DIR (`--real`: the Qwen3.5 layout with experts at its release's width; `--stacked`: its experts stacked, `qwen35moe_stacked`) (a model to run the other checks on: `kvtest DIR`, `run DIR`); `qwen4x-rel` the
 /// family's release's form (`qwen4x_release_random`); `CASE+q4` with its tables on the host stored at 4 bits.
 pub fn make_model(a: &crate::args::Args) -> Result<()> {
     let id = a.need(1, "CASE")?;
     let (base, q4) = q4_case(id);
     let dir = Path::new(a.need(2, "DIR")?);
     // (a case of the logits checks by its own maker; another random model `random_model` makes, the release's form among them; + q4: its tables at 4 bits)
+    let (real, stacked) = (a.has("real"), a.has("stacked"));
     match find_case(base).map(|c| c.weights) {
         Ok(Weights::Hub(h)) => return err(format!("{id}: a real model ({h}), not a random one")),
-        // (`--real --layers L --experts E`: the Qwen3.5 layout with experts at its release's width, `qwen35moe_random_real`)
-        Ok(Weights::Random(_)) if a.has("real") => match base {
-            "qwen35moe" => qwen35moe_random_real(dir, a.num("layers", 8usize)?, a.num("experts", 256usize)?)?,
-            id => return err(format!("--real: the qwen35moe case's release width only (not {id})")),
+        // (`--real --layers L --experts E`: the Qwen3.5 layout with experts at its release's width, `qwen35moe_random_real`; `--stacked`: its experts stacked as
+        // Qwen3.8-2.4T-A95B holds them, `qwen35moe_stacked`)
+        Ok(Weights::Random(_)) if real || stacked => match base {
+            "qwen35moe" => {
+                let r = real.then(|| Ok::<_, Error>((a.num("layers", 8usize)?, a.num("experts", 256usize)?))).transpose()?;
+                match (stacked, r) {
+                    (true, r) => qwen35moe_stacked(dir, r)?,
+                    (false, Some((l, e))) => qwen35moe_random_real(dir, l, e)?,
+                    (false, None) => unreachable!("--real or --stacked"),
+                }
+            }
+            id => return err(format!("--real and --stacked: the qwen35moe case's (not {id})")),
         },
         Ok(Weights::Random(make)) => make(dir)?,
         Err(_) => random_model_of(base, dir)?,
@@ -4905,7 +4939,7 @@ mod tests {
 
 /// The case's model in `dir` on the description executor.
 pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
-    Ok(match q4_case(case).0 {
+    Ok(match case_of_form(q4_case(case).0) {
         "gemma4" | "gemma4-kv" => {
             let c = crate::gemma4::ConfigG4::load(dir)?;
             Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
@@ -4992,6 +5026,7 @@ fn random_model_of(case: &str, dir: &Path) -> Result<()> {
         "qwen35" => qwen35_random(dir),
         "qwen35-wide" => qwen35_wide_random(dir),
         "qwen35moe" => qwen35moe_random(dir),
+        "qwen35moe-st" => qwen35moe_stacked(dir, None),
         "dense" => dense_random(dir),
         "muse" => crate::muse_ref::random(dir),
         "kimi" => crate::kimi_ref::random(dir, 1, true, 8),

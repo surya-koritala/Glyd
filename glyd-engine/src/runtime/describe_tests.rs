@@ -1109,6 +1109,46 @@ fn qwen38_2_4ts_weight_map_is_its_index() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #333, Qwen3.8-2.4T-A95B's stacked experts as the lossy route's packer reads them (`stacked_rows`): each of the 92 x 512 experts' three matrices the
+/// config alone names (the names its save gives them) is its rows of the layer's stacked tensor in its recorded headers, gate then up then the next expert,
+/// every row of the 92 x 2 stacked tensors one matrix's; the release's lossy plan reads each from those rows (`pack::qwen35_plan_held`). A description held
+/// to a checkpoint of a tensor an expert's matrix gives none, and one whose experts do not cover the stacked tensor's rows is refused.
+#[test]
+fn qwen38_2_4ts_stacked_experts_are_rows_of_its_tensors() {
+    use super::describe::{describe_held, stacked_rows};
+    let h = fixture("headers/Qwen3.8-2.4T-A95B.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let (t, have) = (header_tensors(&h), header_names(&h));
+    let (alone, held) = (describe(&cfg).unwrap(), describe_held(&cfg, &have).unwrap());
+    let rows = stacked_rows(&alone, &held).unwrap();
+    assert_eq!(rows.len(), 92 * 512 * 3);
+    let at = |n: &str| rows[n].clone();
+    let gu = "model.layers.7.mlp.experts.gate_up_proj".to_string();
+    assert_eq!(at("model.layers.7.mlp.experts.0.gate_proj.weight"), (gu.clone(), 0, 2048));
+    assert_eq!(at("model.layers.7.mlp.experts.0.up_proj.weight"), (gu.clone(), 2048, 4096));
+    assert_eq!(at("model.layers.7.mlp.experts.511.up_proj.weight"), (gu, 511 * 4096 + 2048, 512 * 4096));
+    assert_eq!(at("model.layers.91.mlp.experts.300.down_proj.weight"), ("model.layers.91.mlp.experts.down_proj".into(), 300 * 8192, 301 * 8192));
+    // (every row of every stacked tensor one matrix's)
+    let mut covered: std::collections::BTreeMap<&str, usize> = Default::default();
+    for (tensor, a, b) in rows.values() {
+        *covered.entry(tensor.as_str()).or_default() += b - a;
+    }
+    assert_eq!(covered.len(), 92 * 2);
+    for (n, r) in covered {
+        assert_eq!(r as u64, t[n].1[0] as u64 * t[n].1[1] as u64, "{n}");
+    }
+    // (a checkpoint of a tensor an expert's matrix: none; a stacked tensor the experts do not cover: refused)
+    assert!(stacked_rows(&alone, &alone).unwrap().is_empty());
+    let mut short = held.clone();
+    short.shapes.insert("model.layers.0.mlp.experts.down_proj".into(), vec![512, 8192 + 64, 2048]);
+    assert!(stacked_rows(&alone, &short).unwrap_err().msg.contains("expert 0's matrices take 8192 of its 8256 rows"));
+    let plan = crate::pack::qwen35_plan_held(&crate::runtime::config::ModelConfig::from_value(&cfg).unwrap(), &|_| false, Some(&held)).unwrap();
+    assert!(plan.contains(
+        r#"{"linear": ["model.layers.7.mlp.experts.511.gate_proj", "model.layers.7.mlp.experts.511.up_proj"], "from": [{"tensor": "model.layers.7.mlp.experts.gate_up_proj", "rows": [2093056, 2095104]}, {"tensor": "model.layers.7.mlp.experts.gate_up_proj", "rows": [2095104, 2097152]}]}"#
+    ));
+    assert!(!plan.contains(r#""from": ["model.layers.7.mlp.experts.511.gate_proj""#));
+}
+
 /// Every config of tests/fixtures describes from its own file, the toy and tiny ones as the released (Condor's Qwen3.8-Flash-Next too: 48 layers of two blocks, and
 /// the n-gram embedding's block before its second layer).
 #[test]

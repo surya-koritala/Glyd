@@ -64,13 +64,27 @@ fn plan_json(packs: &[Pack35], kept: &[Tensor35], f32: &dyn Fn(&str) -> bool, ow
 
 /// The puts of `plan_json`, one JSON object each.
 pub(crate) fn plan_puts(packs: &[Pack35], kept: &[Tensor35], f32: &dyn Fn(&str) -> bool, own: &dyn Fn(&Pack35) -> Option<Layout>) -> Vec<String> {
+    plan_puts_from(packs, kept, f32, own, &Rows::new())
+}
+
+/// Each matrix a checkpoint holds as rows of a tensor of experts stacked: its name, that tensor's and its rows there (`describe::stacked_rows`).
+type Rows = std::collections::BTreeMap<String, (String, usize, usize)>;
+
+/// `plan_puts`, a pack's part that `rows` names read from its rows of the tensor of experts stacked that holds it (glyd-gpu's plan: `{"tensor", "rows"}`
+/// in a linear's "from"), its pack and glyd.json's entry the same as where the checkpoint holds it as a tensor of its own.
+fn plan_puts_from(packs: &[Pack35], kept: &[Tensor35], f32: &dyn Fn(&str) -> bool, own: &dyn Fn(&Pack35) -> Option<Layout>, rows: &Rows) -> Vec<String> {
     let q = |n: &str| format!("\"{n}\"");
+    let from = |n: &str| match rows.get(n) {
+        Some((t, a, b)) => format!("{{\"tensor\": {}, \"rows\": [{a}, {b}]}}", q(t)),
+        None => q(Pack35::saved(n)),
+    };
     let mut puts: Vec<String> = packs
         .iter()
         .map(|p| {
             let names = p.parts.iter().map(|x| q(Pack35::saved(&x.0))).collect::<Vec<_>>().join(", ");
+            let froms = p.parts.iter().map(|x| from(&x.0)).collect::<Vec<_>>().join(", ");
             let layout = own(p).map_or(String::new(), |l| format!(", \"layout\": {}", q(l.name())));
-            format!("{{\"linear\": [{names}], \"from\": [{names}]{layout}}}")
+            format!("{{\"linear\": [{names}], \"from\": [{froms}]{layout}}}")
         })
         .collect();
     puts.extend(kept.iter().map(|t| format!("{{\"copy\": {}{}}}", q(&t.name), if f32(&t.name) { ", \"cast\": \"BF16\"" } else { "" })));
@@ -80,8 +94,19 @@ pub(crate) fn plan_puts(packs: &[Pack35], kept: &[Tensor35], f32: &dyn Fn(&str) 
 /// The plan of a model of the Qwen3.5 layout, dense or with experts, by its description (`dynamic::qwen35::saved`: what the loader reads of it, `described`):
 /// none for the vision tower or the MTP head.
 pub fn qwen35_plan(c: &ModelConfig, f32: &dyn Fn(&str) -> bool) -> Result<String> {
+    qwen35_plan_held(c, f32, None)
+}
+
+/// `qwen35_plan` of the checkpoint `held` describes as it stores its experts (`describe::describe_dir_of`): where it holds a layer's experts stacked, each
+/// expert's matrices are read from their rows of the stacked tensors (`describe::stacked_rows`), and the save is the one of the same weights held a tensor
+/// an expert's matrix, byte for byte (its packs and glyd.json name each expert's matrices, as the description from the config alone does).
+pub fn qwen35_plan_held(c: &ModelConfig, f32: &dyn Fn(&str) -> bool, held: Option<&crate::runtime::describe::Described>) -> Result<String> {
     let (_, packs, kept) = crate::dynamic::qwen35::saved(c)?;
-    Ok(plan_json(&packs, &kept, f32, &|_| None))
+    let rows = match held {
+        Some(h) => crate::runtime::describe::stacked_rows(&crate::runtime::describe::describe_config(c)?, h)?,
+        None => Rows::new(),
+    };
+    Ok(format!("{{\"puts\": [{}]}}", plan_puts_from(&packs, &kept, f32, &|_| None, &rows).join(", ")))
 }
 
 /// What a level's save holds of a model the executor loads by its layer kinds, in load order (the lossy route's packer, `qwen35_plan`, and its sizer,
@@ -288,8 +313,10 @@ fn level_plan(dir: &Path, level: Layout, config: Option<&ModelConfig>) -> Result
         return Ok(Some(desc_plan(&crate::dynamic::dense::lowered_of(dir, c)?, &|n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32"))));
     }
     if c.family() == Some(Family::Qwen35) {
+        // (the checkpoint's own form of its experts, by its index: a tensor an expert's matrix, or each layer's experts stacked)
+        let (held, _) = crate::runtime::describe::describe_dir_of(dir, c)?;
         let ck = io(Checkpoint::open(dir))?;
-        return qwen35_plan(c, &|n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32")).map(Some).map_err(|e| e.context(&label));
+        return qwen35_plan_held(c, &|n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32"), Some(&held)).map(Some).map_err(|e| e.context(&label));
     }
     let glm = if c.family() == Some(Family::Glm) { Some(ConfigGlm::of(c, &label, generation.as_deref())?) } else { None };
     let nemotron = ConfigNemotronH::of(c, &label, generation.as_deref()).ok();
