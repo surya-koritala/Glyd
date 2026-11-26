@@ -13,6 +13,8 @@ run glm_reference_with_its_residual_rounded
 run glm_noise_floor
 run glm_dsa_noise_floor
 run nemotron_model_described_against_the_engines_logits
+# Every case with a CPU reference holds its reference fixture on the computer that runs it (logitscheck --cpu-ref's verdict; a fixture the reference recorded, to the bit).
+run every_reference_holds_its_fixture
 skip gguf_against_the_checkpoint because it needs a real BF16 GGUF and its checkpoint (GLYD_TEST_GGUF, GLYD_TEST_CKPT)
 skip real_headers_parse_and_are_described because it needs a directory of recorded GGUF headers (GLYD_TEST_GGUF_HEADERS)
 skip tokenizers_against_the_models_own because it needs a directory of the models' tokenizer files (GLYD_TEST_TOKENIZERS)

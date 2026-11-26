@@ -5197,6 +5197,77 @@ mod tests {
         assert_eq!(got, want.iter().map(|(n, h)| (n.to_string(), *h)).collect::<Vec<_>>());
     }
 
+    /// Every case with a CPU reference (the case table's `cpu`, so a new case is held without an edit here) is still what its reference fixture holds, as
+    /// `logitscheck --cpu-ref` judges it, on this computer: a fixture the layer kinds' reference recorded (its provenance source that reference's own words, as
+    /// `logitsrecord --from cpu` writes them) every row to the bit, since that reference is the same bits on every computer
+    /// (`the_reference_is_the_same_bits_on_every_computer`); any other within its lossless level's bound: transformers' rows, and a hand-written reference's
+    /// (src/dsv4_ref.rs takes the system's exp and the like: on an x86 machine one row of its Mac-recorded fixture is 7.8e-6 of KL apart). A case with a CPU
+    /// reference and no reference fixture fails. Run by the gate on the Mac's fixtures on an x86 machine, it is the proof that each fixture holds there; a
+    /// change of the reference's arithmetic fails it until the fixtures it moves are recorded again (a last place moved through the releases' bf16 rounding
+    /// points can flip a near tie of a router and so a row by 1e-3 of KL, as the `libm` functions did to four fixtures, unseen, 2026-11-26). Seconds a case,
+    /// the cases at once.
+    #[test]
+    #[ignore]
+    fn every_reference_holds_its_fixture() {
+        const KINDS_REF: &str = "the model's description (src/runtime/describe.rs) on the CPU reference of the layer kinds (src/runtime/reference)";
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits");
+        let held: Vec<Case> = cases().into_iter().filter(|c| c.cpu.is_some()).collect();
+        assert!(!held.is_empty(), "no case with a CPU reference");
+        let lines: Vec<(bool, String)> = std::thread::scope(|s| {
+            let jobs: Vec<_> = held
+                .iter()
+                .map(|c| {
+                    let fixtures = &fixtures;
+                    s.spawn(move || -> Vec<(bool, String)> {
+                        let Weights::Random(make) = &c.weights else {
+                            return vec![(true, format!("{}: a Hub model, not held here (no download in a test)", c.id))];
+                        };
+                        let dir = std::env::temp_dir().join(format!("glyd-refheld-{}-{}", c.id, std::process::id()));
+                        let out = (|| -> Result<Vec<(bool, String)>> {
+                            make(&dir)?;
+                            let mut v = Vec::new();
+                            for path in fixture_files(fixtures, c.id)? {
+                                let fx = Fixture::read(&path)?;
+                                let Some(lb) = fx.bounds.iter().find(|b| fx.gpu.is_none() && b.level == "penguin") else { continue };
+                                let mut run = (c.cpu.expect("a CPU reference"))(&dir)?;
+                                let got = drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
+                                let own = run.describe() == KINDS_REF && fx.provenance.get("source").is_some_and(|s| s.starts_with(KINDS_REF));
+                                let verdict = compare(&fx, &lb.bound, &got);
+                                let ok = if own { verdict.identical == verdict.rows } else { verdict.ok };
+                                v.push((
+                                    ok,
+                                    format!(
+                                        "{} {:12} {} rows: bits-equal {}, KL mean {:.2e} max {:.2e} [{}]",
+                                        if ok { "PASS" } else { "FAIL" },
+                                        c.id,
+                                        verdict.rows,
+                                        verdict.identical,
+                                        verdict.mean_kl,
+                                        verdict.max_kl,
+                                        if own { "the layer kinds' reference's own rows: every one to the bit".to_string() } else { bound_words(&lb.bound) }
+                                    ),
+                                ));
+                            }
+                            if v.is_empty() {
+                                v.push((false, format!("FAIL {:12} has a CPU reference and no reference fixture in {}", c.id, fixtures.display())));
+                            }
+                            Ok(v)
+                        })();
+                        let _ = std::fs::remove_dir_all(&dir);
+                        out.unwrap_or_else(|e| vec![(false, format!("FAIL {:12} {}", c.id, e.msg))])
+                    })
+                })
+                .collect();
+            jobs.into_iter().flat_map(|j| j.join().expect("a case's thread")).collect()
+        });
+        lines.iter().for_each(|(_, l)| println!("{l}"));
+        let bad: Vec<&String> = lines.iter().filter(|(ok, _)| !ok).map(|(_, l)| l).collect();
+        assert!(
+            bad.is_empty(),
+            "fixtures the CPU reference no longer makes (record them again: logitsrecord CASE --from cpu, the commit says which rows moved and why): {bad:#?}"
+        );
+    }
+
     /// The draw's floor (`draw_floor`): rows the same bits measure nothing; rows apart within a tenth of the bound hold, past it they fail; a sequence's rows after
     /// its tokens part are not judged, and a floor with fewer than half the rows judged fails.
     #[test]
