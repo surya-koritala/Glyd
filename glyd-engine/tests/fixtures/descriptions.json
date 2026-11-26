@@ -67,7 +67,7 @@
     "blocks": 88,
     "tensors": 41643,
     "kinds": "b4abbc3efab21433",
-    "weights": "abf622ef7bf7a298",
+    "weights": "9d6b19e313a02646",
     "plan": "407a6a487ad41820",
     "family": "NemotronH"
   },
@@ -75,7 +75,7 @@
     "blocks": 6,
     "tensors": 143,
     "kinds": "96bd128cb20e3397",
-    "weights": "7ff4e55160a62418",
+    "weights": "43c47d9f977a547a",
     "plan": "95ca869138cd9d16",
     "family": "NemotronH"
   },

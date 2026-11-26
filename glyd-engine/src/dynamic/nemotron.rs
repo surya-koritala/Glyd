@@ -39,6 +39,13 @@ pub fn load(dir: &Path, o: &Opts, level: Layout) -> Result<Dyn> {
     load_stage(dir, o, level, Stage::whole(layers))
 }
 
+/// The whole model with its experts at `level`, all on the GPU or in the expert cache `cache` (`load_cached_of`): what the one-GPU route's plan loads (src/cli.rs
+/// `open_lossy`). `m`: `dir`'s config.json, parsed once.
+pub fn load_whole_of(dir: &Path, m: &ModelConfig, o: &Opts, level: Layout, cache: Option<(usize, &Rc<ExpertStore>)>) -> Result<Dyn> {
+    let layers = m.read_with(dir, crate::nemotron::ConfigNemotronH::of)?.layers;
+    load_cached_of(dir, m, o, level, cache, Stage::whole(layers))
+}
+
 /// Stage `st` of it (a model split across GPUs: its layers, the embedding where it is the first, the head where the last; a layer of another
 /// stage is an empty one here).
 pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: Stage) -> Result<Dyn> {

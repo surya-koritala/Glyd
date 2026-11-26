@@ -369,7 +369,8 @@ pub fn cache_for(spec: Option<&str>, dir: &Path, level: Layout, cfg: &ConfigNemo
         Some(g) => {
             let gib: f64 =
                 g.parse().ok().filter(|v: &f64| v.is_finite() && *v > 0.0).ok_or_else(|| Error(format!("--expert-cache {g}: not a number of GiB")))?;
-            let plan = crate::plan::sizing::nemotron_cache(cfg, level, (gib * (1u64 << 30) as f64) as u64, cfg.moe.top_k)?;
+            let plan =
+                crate::plan::sizing::budget_cache(&crate::runtime::config::ModelConfig::load(dir)?, level, (gib * (1u64 << 30) as f64) as u64, cfg.moe.top_k)?;
             Ok(Some(plan.ok_or_else(|| Error(format!("--expert-cache {g}: fewer than {} experts a layer fit", cfg.moe.top_k)))?))
         }
     }

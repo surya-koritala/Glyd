@@ -4,9 +4,10 @@
 //! CPU architecture) is `machine`, on the same constants `machine::gpu_refusal` uses.
 
 use crate::machine::{driver_min, driver_need, ARCHS, MAX_CONTEXT};
-use crate::plan::{Machine, Vendor};
+use crate::plan::{Kind, Machine, Vendor, GEMMA_CHUNK, GEMMA_DRAFT_BYTES, LOSSY_CHUNK};
 use crate::runtime::config::ModelConfig;
 use crate::ui::Refusal;
+use crate::weights::Layout;
 
 /// A family of models the engine tells apart by its config.json.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +67,43 @@ pub struct Support {
     pub drafts: bool,
     /// How the planner sizes the family's path and what its loader takes (src/plan.rs `sizing`).
     pub route: Route,
+    /// What the one-GPU route's lossy levels take of it besides its model's description: the rows sized on one GPU (`Sizing::OneGpu`) have one, no other.
+    pub lossy: Option<Lossy>,
+}
+
+/// What the one-GPU route's lossy levels take of a row besides the model's description, from which src/plan.rs `sizing::level_of` reads the rest (its weights by
+/// kind at the level, its sequences' rings and states, its experts, its longest context): every field a row's, no branch on a family there.
+#[derive(Clone, Copy, Debug)]
+pub struct Lossy {
+    /// The engine that loads its plan (src/cli.rs `open_lossy`).
+    pub kind: crate::plan::Kind,
+    /// The prompt chunk its engine runs (`LoadPlan::chunk`; a drafted round's k + 1 rows fit in it), and the page its contexts are cut to, in tokens.
+    pub chunk: usize,
+    pub page: usize,
+    /// The GPU bytes kept for a draft model of its own, loaded beside it where one is found or comes with the download (src/cli.rs `draft_dir`, src/levels.rs
+    /// `draft_repo`); 0: it drafts with none.
+    pub draft: u64,
+    /// The layout its loader packs a matrix in at a level (the matrix by its save's key, `Pack35::key`), where it is not always the level's (None): src/nemotron.rs
+    /// `pack_layout`, the Nemotron-H layout's loader holding its matrices besides the routed experts at six bits at wren.
+    pub pack: Option<fn(Layout, &str) -> Layout>,
+    /// Its config read as its family's reader reads it before a plan is made: the reader's words where the engine does not run the model (Ok where the
+    /// description and its lowering are the whole reading: `described`).
+    pub reads: fn(&ModelConfig, Option<&str>) -> crate::ffi::Result<()>,
+}
+
+/// A config the description and its lowering read whole (they refuse in words what the engine does not run).
+fn described(_: &ModelConfig, _: Option<&str>) -> crate::ffi::Result<()> {
+    Ok(())
+}
+
+/// The Nemotron-H layout's reader (src/nemotron.rs `ConfigNemotronH::of`: a convolution without its bias, ...).
+fn nemotron_reads(c: &ModelConfig, generation: Option<&str>) -> crate::ffi::Result<()> {
+    crate::nemotron::ConfigNemotronH::of(c, "config.json", generation).map(drop)
+}
+
+/// Gemma 4's reader (src/gemma4.rs `ConfigG4::of`: the heads it runs, the kinds it does not yet).
+fn gemma4_reads(c: &ModelConfig, generation: Option<&str>) -> crate::ffi::Result<()> {
+    crate::gemma4::ConfigG4::of(c, generation, false).map(drop)
 }
 
 /// What a family's loader takes, as the planner reads it: every branch of `plan::sizing` that differs between families reads a field here, so a
@@ -154,6 +192,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: NONE,
         drafts: false,
         route: Route { sizing: Sizing::Dense, ..ONE_GPU },
+        lossy: None,
     },
     Support {
         family: Family::Qwen35,
@@ -168,6 +207,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: PENGUIN,
         drafts: false,
         route: Route { bf16_twelve: true, expert_cache: ExpertCache::Release, ..ONE_GPU },
+        lossy: Some(Lossy { kind: Kind::Qwen35, chunk: LOSSY_CHUNK, page: 1, draft: 0, pack: None, reads: described }),
     },
     Support {
         family: Family::NemotronH,
@@ -180,6 +220,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: &["kestrel", "swift", "wren", "hummingbird"],
         drafts: false,
         route: ONE_GPU,
+        lossy: Some(Lossy { kind: Kind::NemotronH, chunk: LOSSY_CHUNK, page: 1, draft: 0, pack: Some(crate::nemotron::pack_layout), reads: nemotron_reads }),
     },
     Support {
         family: Family::Gemma4,
@@ -192,6 +233,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: NONE,
         drafts: false,
         route: ONE_GPU,
+        lossy: Some(Lossy { kind: Kind::Gemma4, chunk: GEMMA_CHUNK, page: 16, draft: GEMMA_DRAFT_BYTES, pack: None, reads: gemma4_reads }),
     },
     Support {
         family: Family::Kimi,
@@ -210,6 +252,7 @@ pub static TABLE: [Support; 11] = [
             expert_cache: ExpertCache::Packed,
             ram_linears: RamLinears::Products,
         },
+        lossy: None,
     },
     Support {
         family: Family::Glm,
@@ -222,6 +265,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: PENGUIN_HB,
         drafts: false,
         route: Route { sizing: Sizing::Dynamic, across: Across::Asked, expert_cache: ExpertCache::Release, ..ONE_GPU },
+        lossy: None,
     },
     Support {
         family: Family::GlmDsa,
@@ -234,6 +278,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: PENGUIN,
         drafts: false,
         route: Route { sizing: Sizing::Dynamic, expert_cache: ExpertCache::Release, ..ONE_GPU },
+        lossy: None,
     },
     Support {
         family: Family::DeepSeekV4,
@@ -246,6 +291,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: PENGUIN_HB,
         drafts: false,
         route: Route { sizing: Sizing::Dynamic, across: Across::Default, expert_cache: ExpertCache::Release, ..ONE_GPU },
+        lossy: None,
     },
     Support {
         family: Family::DeepSeekV41,
@@ -258,6 +304,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: PENGUIN,
         drafts: false,
         route: Route { sizing: Sizing::Dynamic, expert_cache: ExpertCache::Release, ..ONE_GPU },
+        lossy: None,
     },
     Support {
         family: Family::Muse,
@@ -270,6 +317,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: PENGUIN_HB,
         drafts: false,
         route: Route { sizing: Sizing::Dynamic, across: Across::Asked, expert_cache: ExpertCache::Release, ram_linears: RamLinears::Products, ..ONE_GPU },
+        lossy: None,
     },
     Support {
         family: Family::FlashNext,
@@ -282,6 +330,7 @@ pub static TABLE: [Support; 11] = [
         experts_in_ram_levels: HB,
         drafts: true,
         route: Route { sizing: Sizing::Dynamic, expert_cache: ExpertCache::Codes, ..ONE_GPU },
+        lossy: None,
     },
 ];
 
@@ -322,6 +371,12 @@ impl Support {
     /// Whether `level` is one of this family's.
     pub fn allows(&self, level: &str) -> bool {
         self.levels.contains(&level)
+    }
+
+    /// Whether its hummingbird level is the one-GPU route's (src/moe_hb.rs: its experts on a latent the kernels take, every other matrix six-bit, a pre-packed
+    /// directory: src/hbpack.rs), not the dynamic route's (src/hb_pack.rs, src/moe_cb.rs).
+    pub fn hummingbird_one_gpu(&self) -> bool {
+        self.lossy.is_some() && self.allows("hummingbird")
     }
 
     /// The levels this build runs this family at, for `model`.
@@ -574,6 +629,30 @@ mod tests {
         assert_eq!(crate::dynamic::split::family(&v), Some("DeepSeek-V4.1"), "opened by the dynamic route from its release's directory");
         let d = crate::runtime::describe::describe(&serde_json::from_str(&v).unwrap()).unwrap();
         assert!(crate::dynamic::split::loader(&d).is_ok());
+    }
+
+    /// What the one-GPU route's lossy levels read of a row besides the description is the row's (`Lossy`): the rows sized on one GPU have it and no other row;
+    /// Gemma 4's engine runs prompts in chunks of 512 tokens, cuts its contexts to pages of 16 and drafts with a draft model of 640 MiB; the Nemotron-H layout's
+    /// loader packs some matrices in layouts of its own, the others' every matrix at the level; and only Nemotron-H's hummingbird level is the one-GPU route's.
+    #[test]
+    fn a_row_says_what_the_lossy_levels_take_beside_the_description() {
+        for r in &TABLE {
+            assert_eq!(r.lossy.is_some(), r.route.sizing == Sizing::OneGpu, "{}", r.name);
+        }
+        let l = |f: Family| row(f).lossy.unwrap();
+        let (g, n, q) = (l(Family::Gemma4), l(Family::NemotronH), l(Family::Qwen35));
+        assert_eq!((g.kind, g.chunk, g.page, g.draft), (Kind::Gemma4, 512, 16, 640 << 20));
+        assert_eq!((n.kind, n.chunk, n.page, n.draft), (Kind::NemotronH, 2048, 1, 0));
+        assert_eq!((q.kind, q.chunk, q.page, q.draft), (Kind::Qwen35, 2048, 1, 0));
+        assert!(n.pack.is_some() && g.pack.is_none() && q.pack.is_none());
+        let pack = n.pack.unwrap();
+        assert_eq!(pack(Layout::Int4, "backbone.layers.1.mixer.in_proj"), Layout::Int6, "its matrices besides the routed experts six-bit at wren");
+        assert_eq!(pack(Layout::Int4, "backbone.layers.1.mixer.experts.0.up_proj"), Layout::Int4);
+        assert_eq!(TABLE.iter().filter(|r| r.hummingbird_one_gpu()).map(|r| r.family).collect::<Vec<_>>(), [Family::NemotronH]);
+        // (a family's reader refuses in its words what the engine does not run: Nemotron-H's convolution without its bias)
+        let nh = fixture("nemotron_h_config.json").replace("\"use_conv_bias\": true", "\"use_conv_bias\": false");
+        assert!((n.reads)(&parsed(&nh, "n").unwrap(), None).unwrap_err().msg.contains("a convolution without its bias"));
+        assert!((g.reads)(&parsed(&fixture("gemma4_12b_config.json"), "g").unwrap(), None).is_ok());
     }
 
     #[test]

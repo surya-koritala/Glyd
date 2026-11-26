@@ -3130,6 +3130,8 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
     };
     let moe_keys =
         ["n_routed_experts", "num_experts_per_tok", "moe_intermediate_size", "moe_shared_expert_intermediate_size", "moe_latent_size", "mlp_hidden_act"];
+    // (an expert's width inside and the shared expert's)
+    let mut moe_widths = (0, 0);
     let moe = if has('E') {
         let (experts, top_k) = (k.usize("n_routed_experts")?, k.usize("num_experts_per_tok")?);
         if top_k == 0 || top_k > experts {
@@ -3138,7 +3140,7 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
         for g in ["n_group", "topk_group", "n_shared_experts"] {
             k.expect(g, &Value::from(1))?;
         }
-        (k.usize("moe_intermediate_size")?, k.usize("moe_shared_expert_intermediate_size")?);
+        moe_widths = (k.usize("moe_intermediate_size")?, k.usize("moe_shared_expert_intermediate_size")?);
         let mlp = Mlp { act: act(k.str("mlp_hidden_act")?.unwrap_or("relu2"))?, gated: false, bias: false, clamp: None };
         Some(Moe {
             router: Router {
@@ -3165,17 +3167,51 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
     };
     let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
     let n = Norm::rms(eps);
-    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
     for (l, c) in kinds.iter().enumerate() {
         let p = names::NEMOTRON.layer("", l);
-        let (body, r) = match (c, &mamba, &moe) {
-            ('M', Some(mb), _) => (Body::Mixer(Mixer::Mamba2(mb.clone())), names::roles(part::NH_MAMBA, &p, 0, all)),
+        // (the shapes: each matrix [rows, columns] as the heads and widths make it, each norm, bias and per-head value its width)
+        let (body, r, want) = match (c, &mamba, &moe) {
+            ('M', Some(mb), _) => {
+                let (nh, inner) = (mb.heads, mb.heads * mb.head_dim);
+                let cd = inner + 2 * mb.groups * mb.state;
+                let want = vec![
+                    ("in", vec![inner + cd + nh, d]),
+                    ("conv", vec![cd, 1, mb.conv]),
+                    ("conv_bias", vec![cd]),
+                    ("a_log", vec![nh]),
+                    ("d", vec![nh]),
+                    ("dt_bias", vec![nh]),
+                    ("norm", vec![inner]),
+                    ("o", vec![d, inner]),
+                ];
+                (Body::Mixer(Mixer::Mamba2(mb.clone())), names::roles(part::NH_MAMBA, &p, 0, all), want)
+            }
             // (no latent: the experts read the model's width, and there are no projections around them)
             ('E', _, Some(me)) => {
-                (Body::Ffn(Ffn::Moe(me.clone())), names::roles(part::NH_MOE, &p, me.experts, |x| me.latent.is_some() || !x.starts_with("latent_")))
+                let ((inter, shared), lat) = (moe_widths, me.latent.as_ref().map_or(0, |x| x.dim));
+                let w = if lat > 0 { lat } else { d };
+                let want = vec![
+                    ("router", vec![me.experts, d]),
+                    ("choice_bias", vec![me.experts]),
+                    ("latent_down", vec![lat, d]),
+                    ("latent_up", vec![d, lat]),
+                    ("shared_up", vec![shared, d]),
+                    ("shared_down", vec![d, shared]),
+                    ("experts_up", vec![inter, w]),
+                    ("experts_down", vec![w, inter]),
+                ];
+                let r = names::roles(part::NH_MOE, &p, me.experts, |x| me.latent.is_some() || !x.starts_with("latent_"));
+                (Body::Ffn(Ffn::Moe(me.clone())), r, want)
             }
-            _ => (Body::Mixer(Mixer::Attention(attn.clone())), names::roles(part::NH_ATTN, &p, 0, all)),
+            _ => {
+                let (q, kv) = (attn.heads * attn.head_dim, attn.kv_heads * attn.head_dim);
+                let want = vec![("q", vec![q, d]), ("k", vec![kv, d]), ("v", vec![kv, d]), ("o", vec![d, q])];
+                (Body::Mixer(Mixer::Attention(attn.clone())), names::roles(part::NH_ATTN, &p, 0, all), want)
+            }
         };
+        shape_roles(&mut shapes, &r, &want);
+        shape_roles(&mut shapes, &r, &[("norm_in", vec![d])]);
         blocks.push(Block { norm_in: n, body, norm_out: None, residual: Residual::Add });
         roles.push(r);
     }
@@ -3190,5 +3226,12 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
         vision: None,
         rope: None,
     };
-    finish(&k, desc, &names::NEMOTRON, "", roles, mtp_layers)
+    let mut out = finish(&k, desc, &names::NEMOTRON, "", roles, mtp_layers)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    out.shapes = shapes;
+    Ok(out)
 }

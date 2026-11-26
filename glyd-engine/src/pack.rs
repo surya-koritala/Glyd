@@ -115,8 +115,9 @@ pub fn qwen35_plan_held(c: &ModelConfig, f32: &dyn Fn(&str) -> bool, held: Optio
 /// glyd-v7 directory's), then the embedding and the head; the ones the library packs (`Pack35::packable`) packed. The tensors kept as saved: each layer's
 /// small tensors (the lowered description's), the parts of its matrices the library does not pack and its blocks of experts' router, choice bias and shared
 /// expert's gate; then the rest (the final norm; the embedding's or the head's parts where they do not pack). A small tensor the loader holds in fp32
-/// (`dynamic::small_f32`) is F32 here, else BF16. A layer's tensors are its blocks' roles' (`d`'s blocks, as many a layer). A block of experts whose
-/// experts work in a latent, or a role of one the loader does not read here, is refused in words, as is a matrix the loader pads with zero rows.
+/// (`dynamic::small_f32`) is F32 here, else BF16. A layer's tensors are its blocks' roles' (`d`'s blocks, as many a layer). A block whose experts work in a
+/// latent has its two projections before its experts' packs (the latent's norms are no role this reads: such a block is refused); a role of a block of experts
+/// the loader does not read here is refused in words, as is a matrix the loader pads with zero rows.
 pub(crate) fn described(d: &crate::runtime::describe::Described, lowered: &crate::dynamic::ModelDesc) -> Result<(Vec<Pack35>, Vec<Tensor35>)> {
     use crate::runtime::describe::Source;
     use crate::runtime::kinds::{Body, Ffn};
@@ -171,9 +172,6 @@ pub(crate) fn described(d: &crate::runtime::describe::Described, lowered: &crate
     for (b, (blk, roles)) in d.desc.blocks.iter().zip(&d.blocks).enumerate() {
         let Body::Ffn(Ffn::Moe(m)) = &blk.body else { continue };
         let l = b / per;
-        if m.latent.is_some() {
-            return err(format!("block {b}: experts in a latent, whose save is not this one's"));
-        }
         let role = |r: &str| roles.iter().find(|(n, _)| n == r).map(|(_, s)| s);
         let one = |r: &str| match role(r) {
             Some(Source::Tensor(n)) => Ok(n.clone()),
@@ -184,12 +182,22 @@ pub(crate) fn described(d: &crate::runtime::describe::Described, lowered: &crate
             other => err(format!("block {b}: the experts' role {r} is {other:?}, where {} experts' tensors are, a tensor (or its rows) an expert", m.experts)),
         };
         let gated = m.expert.gated;
+        // (the latent's projections: its experts read its width, not the model's)
+        let latent = m.latent.is_some();
+        if latent {
+            for r in ["latent_down", "latent_up"] {
+                x_packs[l].push(pack(Pack35::saved(&one(r)?).to_string(), &[one(r)?])?);
+            }
+        }
         let (first, second) = (each(if gated { "experts_gate_up" } else { "experts_up" })?, each("experts_down")?);
         for (u, dn) in first.iter().zip(second) {
             x_packs[l].push(pack(Pack35::saved(&u[0]).to_string(), u)?);
             x_packs[l].push(pack(Pack35::saved(&dn[0]).to_string(), dn)?);
         }
         let mut read = vec!["norm_in", "router", "experts_down", if gated { "experts_gate_up" } else { "experts_up" }];
+        if latent {
+            read.extend(["latent_down", "latent_up"]);
+        }
         x_kept[l].push(tensor(&one("router")?, false)?);
         if m.router.bias {
             x_kept[l].push(tensor(&one("choice_bias")?, true)?);

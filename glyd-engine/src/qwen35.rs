@@ -48,6 +48,21 @@ pub struct Config35 {
     pub vision: bool,
 }
 
+/// What a sequence of the Qwen3.5 layout takes besides its weights, as the costs' sums read it (src/costs.rs; the planner reads the description: src/plan.rs
+/// `sizing::level_of`).
+impl Config35 {
+    /// What one sequence holds besides its KV: every linear layer's fp32 state and bf16 convolution state.
+    pub fn state_bytes(&self) -> u64 {
+        let per = self.lin_v_heads * self.lin_k_dim * self.lin_v_dim * 4 + self.conv_dim() * (self.conv_kernel - 1) * 2;
+        (self.linear_layers() * per) as u64
+    }
+
+    /// A token's keys and values in bf16, over the full-attention layers.
+    pub fn kv_bytes_per_token(&self) -> u64 {
+        (self.full_layers() * 2 * self.kv_heads * self.head_dim * 2) as u64
+    }
+}
+
 impl Config35 {
     pub fn load(dir: &Path) -> Result<Config35> {
         Config35::load_of(dir, &ModelConfig::load(dir)?)
