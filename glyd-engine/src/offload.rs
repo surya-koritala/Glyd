@@ -1640,6 +1640,8 @@ struct DiskSlots {
 /// The expert cache of a model: a `LayerCache`, a host tier and a set of places for each mixture-of-experts layer (by its number among them), and one copy stream. The layers' blocks share it (`Rc`); it is not for threads.
 pub struct ExpertStore {
     inner: RefCell<Inner>,
+    /// Whether the calls being made are a decode step's of rows (`set_step_rows`).
+    step_rows: std::cell::Cell<bool>,
 }
 
 fn pinned_copy(bytes: &[u8]) -> Result<Pinned> {
@@ -2326,7 +2328,14 @@ impl ExpertStore {
                 ready: None,
                 last: Vec::new(),
             }),
+            step_rows: std::cell::Cell::new(false),
         })
+    }
+
+    /// Whether the calls to come are a decode step's of rows (rows that decode and nothing else, eager or in its graph): the plan on the GPU takes such a call up to `devplan::DEV_STEP_ROWS`
+    /// rows, any other up to `devplan::DEV_ROWS` (a prompt's chunk of more is the host's plan, as before the decode steps of rows took graphs).
+    pub fn set_step_rows(&self, on: bool) {
+        self.step_rows.set(on);
     }
 
     /// How a miss is served from now on (the layers loaded with a host half serve them by the mode; the others copy).
@@ -2661,12 +2670,13 @@ impl ExpertStore {
     }
 
     /// What a call of `tokens` tokens and `pairs` pairs of layer `layer` hands kernels/moe.cu's plan on the GPU (src/devplan.rs), where the layer is planned there and the call is one of a decode's
-    /// (`devplan::DEV_ROWS` rows at most); None: the store plans it on the host (`run`).
+    /// (`devplan::DEV_ROWS` rows at most, a decode step's of rows `devplan::DEV_STEP_ROWS`: `set_step_rows`); None: the store plans it on the host (`run`).
     pub fn device_args(&self, layer: usize, tokens: usize, pairs: usize) -> Option<crate::devplan::DevArgs> {
         let inner = self.inner.borrow();
         let (ly, mail) = (inner.layers.get(layer)?.as_ref()?, inner.mail.as_ref()?);
         let dp = ly.dplan.as_ref()?;
-        ((1..=crate::devplan::DEV_ROWS).contains(&tokens) && pairs <= crate::devplan::XP_PAIRS && pairs.is_multiple_of(tokens)).then(|| dp.args(mail, layer))
+        let most = if self.step_rows.get() { crate::devplan::DEV_STEP_ROWS } else { crate::devplan::DEV_ROWS };
+        ((1..=most).contains(&tokens) && pairs <= crate::devplan::XP_PAIRS && pairs.is_multiple_of(tokens)).then(|| dp.args(mail, layer))
     }
 
     /// Layer `layer`'s places emptied and their copies done (the copy thread's batch joined and the copy stream past it), so that their memory can be freed (a block's places released); the places at `dev` from now on

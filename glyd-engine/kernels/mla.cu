@@ -19,6 +19,10 @@
 // Position p's row of a cache: through the sequence's block table (16 positions a block) where it has one, else p.
 __device__ __forceinline__ size_t ml_place(const int* tab, int p) { return tab ? (size_t)tab[p >> 4] * 16 + (p & 15) : (size_t)p; }
 
+// Row r's block table: tab + r ts where a step's rows that decode each read their own sequence's (src/dynamic/rows.rs `RowTabs`, ts the entries from one row's table to the
+// next's), tab itself where ts is 0 (one sequence's rows); none where tab is null. A row whose position is negative is a graph's padding row: it reads and writes no cache row.
+__device__ __forceinline__ const int* ml_row_tab(const int* tab, long long ts, int r) { return tab ? tab + (size_t)r * ts : tab; }
+
 __device__ float block_max(float v) {  // (warp_max is qwen35.cu's)
     __shared__ float shm[32];
     __syncthreads();
@@ -35,10 +39,12 @@ __device__ float block_max(float v) {  // (warp_max is qwen35.cu's)
 }
 
 // y row (dst ? the row of position dst[i] : i) = w * bf16(x row i * rsqrt(mean(x^2) + eps)): transformers' RMSNorm (the normed value rounded to bf16, times the weight, rounded again). x rows xs apart, y rows ys apart; K
-// up to GM_PER * blockDim.x. With dst (the positions of the rows) the result lands in a cache's row for its position (through tab). A block a row, 256 threads.
-extern "C" __global__ void __launch_bounds__(256) rms2_rows(const bf16* x, int xs, const bf16* w, bf16* y, int ys, const int* dst, const int* tab, int K, float eps) {
+// up to GM_PER * blockDim.x. With dst (the positions of the rows) the result lands in a cache's row for its position (through row i's table, ml_row_tab; a negative position: none). A block a row,
+// 256 threads.
+extern "C" __global__ void __launch_bounds__(256) rms2_rows(const bf16* x, int xs, const bf16* w, bf16* y, int ys, const int* dst, const int* tab, long long ts, int K, float eps) {
+    if (dst && dst[blockIdx.x] < 0) return;
     const bf16* xr = x + (size_t)blockIdx.x * xs;
-    bf16* yr = y + (dst ? ml_place(tab, dst[blockIdx.x]) : (size_t)blockIdx.x) * ys;
+    bf16* yr = y + (dst ? ml_place(ml_row_tab(tab, ts, blockIdx.x), dst[blockIdx.x]) : (size_t)blockIdx.x) * ys;
     float v[GM_PER], ss = 0.f;
 #pragma unroll
     for (int j = 0; j < GM_PER; j++) {
@@ -89,11 +95,12 @@ extern "C" __global__ void __launch_bounds__(512) rms2_rows512(const bf16* x, in
     for (int d = tid; d < K; d += blockDim.x) yr[d] = f2b(b2f(w[d]) * b2f(f2b(b2f(xr[d]) * r)));
 }
 
-// nn.LayerNorm over K (<= 2 blockDim.x) channels: fp32, the mean and the biased variance of the row, (x - mean) * rsqrt(var + eps) * w + b, one rounding; y's row of position dst[i] (through tab) where dst. A block
-// a row, 128 threads.
-extern "C" __global__ void __launch_bounds__(128) layernorm_rows(const bf16* x, int xs, const bf16* w, const bf16* b, bf16* y, int ys, const int* dst, const int* tab, int K, float eps) {
+// nn.LayerNorm over K (<= 2 blockDim.x) channels: fp32, the mean and the biased variance of the row, (x - mean) * rsqrt(var + eps) * w + b, one rounding; y's row of position dst[i] (through row i's table,
+// ml_row_tab; a negative position: none) where dst. A block a row, 128 threads.
+extern "C" __global__ void __launch_bounds__(128) layernorm_rows(const bf16* x, int xs, const bf16* w, const bf16* b, bf16* y, int ys, const int* dst, const int* tab, long long ts, int K, float eps) {
+    if (dst && dst[blockIdx.x] < 0) return;
     const bf16* xr = x + (size_t)blockIdx.x * xs;
-    bf16* yr = y + (dst ? ml_place(tab, dst[blockIdx.x]) : (size_t)blockIdx.x) * ys;
+    bf16* yr = y + (dst ? ml_place(ml_row_tab(tab, ts, blockIdx.x), dst[blockIdx.x]) : (size_t)blockIdx.x) * ys;
     float v[2], s = 0.f;
 #pragma unroll
     for (int j = 0; j < 2; j++) {
@@ -117,21 +124,22 @@ extern "C" __global__ void __launch_bounds__(128) layernorm_rows(const bf16* x, 
     }
 }
 
-// dst's row of position pos[i] (through tab; rows ds apart) = src row i (K bf16 each, src rows ss apart): the rows of a call into a cache at their positions; pos null: dst's row i (a 12-bit
-// ring's staging rows). A block a row.
-extern "C" __global__ void scatter_rows(const bf16* src, int ss, bf16* dst, int ds, const int* pos, const int* tab, int K) {
+// dst's row of position pos[i] (through row i's table, ml_row_tab; rows ds apart; a negative position: none) = src row i (K bf16 each, src rows ss apart): the rows of a call into a cache at their
+// positions; pos null: dst's row i (a 12-bit ring's staging rows). A block a row.
+extern "C" __global__ void scatter_rows(const bf16* src, int ss, bf16* dst, int ds, const int* pos, const int* tab, long long ts, int K) {
+    if (pos && pos[blockIdx.x] < 0) return;
     const bf16* s = src + (size_t)blockIdx.x * ss;
-    bf16* d = dst + (pos ? ml_place(tab, pos[blockIdx.x]) : (size_t)blockIdx.x) * ds;
+    bf16* d = dst + (pos ? ml_place(ml_row_tab(tab, ts, blockIdx.x), pos[blockIdx.x]) : (size_t)blockIdx.x) * ds;
     for (int k = threadIdx.x; k < K; k += blockDim.x) d[k] = s[k];
 }
 
 // The rotary of interleaved pairs in place (DeepSeek's layout, transformers' apply_rotary_pos_emb_interleave): for row i, at position pos[i], and head h, channels
 // off + 2j and off + 2j + 1 (pair j < pairs) of x's row (rows xs apart, heads hs apart) turned by pair j's angle at that position, (a, b) -> (a cos - b sin, b cos + a sin)
 // in fp32 and rounded once; cos and sin bf16 [positions, pairs] (the executor's rotary tables, transformers' bf16 cos and sin). The latent attention's queries and shared
-// key part, and its indexer's queries and keys, before they are cached or scored. Grid (rows, heads), a thread a pair.
+// key part, and its indexer's queries and keys, before they are cached or scored. Grid (rows, heads), a thread a pair; a row at a negative position (a graph's padding row) is left.
 extern "C" __global__ void mla_rope(bf16* x, int xs, int hs, int off, const int* pos, const bf16* cs, const bf16* sn, int pairs) {
     const int j = threadIdx.x;
-    if (j >= pairs) return;
+    if (j >= pairs || pos[blockIdx.x] < 0) return;
     bf16* p = x + (size_t)blockIdx.x * xs + (size_t)blockIdx.y * hs + off + 2 * j;
     const size_t t = (size_t)pos[blockIdx.x] * pairs + j;
     const float c = b2f(cs[t]), s = b2f(sn[t]), a = b2f(p[0]), b = b2f(p[1]);
@@ -212,8 +220,13 @@ extern "C" __global__ void __launch_bounds__(256) mla_absorb(const bf16* q, int 
 // The keys of the complete pools that this call (rows at pos[0] .. pos[n-1], consecutive) completes, from the normed keys ik and the gate scores gs (D wide, a position's row iks and gss apart, through tab) and the
 // pooling bias ape [kp, D]: pool p's key = sum over its kp tokens j of softmax_j(gs[kp p + j][c] + ape[j][c]) * ik[kp p + j][c], rounded to bf16, into pk's row of position p pstep + poff (pks apart, through tab: the
 // executor keeps it in its last token's key, pstep = kp, poff = kp - 1, which only this block reads, each channel by the thread that writes it; a caller that keeps each pool's key in a row of its own passes pstep 1, poff 0). A block a pool
-// from pos[0] / kp on (grid ceil(n / kp) + 1); a pool whose last token is past the call's last row is left (a later call completes it).
-extern "C" __global__ void __launch_bounds__(128) idx_pool(const bf16* ik, int iks, const bf16* gs, int gss, const bf16* ape, bf16* pk, int pks, int pstep, int poff, const int* tab, const int* pos, int n, int D, int kp) {
+// from pos[0] / kp on (grid ceil(n / kp) + 1); a pool whose last token is past the call's last row is left (a later call completes it). Grid y: a step's rows that decode, a sequence's each (n 1): row y's
+// position at pos + y, its table ml_row_tab's (gridDim.y 1: one sequence's rows); a negative position (a graph's padding row) makes none.
+extern "C" __global__ void __launch_bounds__(128) idx_pool(const bf16* ik, int iks, const bf16* gs, int gss, const bf16* ape, bf16* pk, int pks, int pstep, int poff, const int* tab, long long ts, const int* pos,
+                                                           int n, int D, int kp) {
+    pos += blockIdx.y;
+    tab = ml_row_tab(tab, ts, blockIdx.y);
+    if (pos[0] < 0) return;
     const int p = pos[0] / kp + blockIdx.x;
     if ((p + 1) * kp - 1 > pos[n - 1]) return;
     bf16* out = pk + ml_place(tab, p * pstep + poff) * pks;
@@ -236,11 +249,12 @@ extern "C" __global__ void __launch_bounds__(128) idx_pool(const bf16* ik, int i
 // scores [n, Pmax] fp32: for each row i (a query at pos[i]) and each complete pool p < P_i = (pos[i] + 1) / kp: sum over the indexer's heads h of w_h relu(scale iq[i][h] . pk[p]), w_h = wscale wts[i][h] (iq rows iqs
 // apart, IH heads of D channels; pool p's key at pk's row of position p pstep + poff, pks apart, through tab: as idx_pool wrote it). Rows with P_i <= ksel take every pool and need no scores. A block of GM_IDX_W pools
 // (a warp each) of a row, grid (ceil(Pmax / GM_IDX_W), n), 256 threads; the lanes are heads (IH > 32: a lane takes several), so a lane's sum is over its head's D channels and a warp_sum adds the heads. Dynamic shared
-// memory (IH (D + 1) + IH + GM_IDX_W D) floats.
-extern "C" __global__ void __launch_bounds__(256) idx_score(const bf16* iq, int iqs, const bf16* wts, int wsr, const bf16* pk, int pks, int pstep, int poff, const int* tab, const int* pos, float* scores, int Pmax, int IH,
-                                                            int D, int kp, int ksel, float scale, float wscale) {
+// memory (IH (D + 1) + IH + GM_IDX_W D) floats. Row i's keys through its table (ml_row_tab).
+extern "C" __global__ void __launch_bounds__(256) idx_score(const bf16* iq, int iqs, const bf16* wts, int wsr, const bf16* pk, int pks, int pstep, int poff, const int* tab, long long ts, const int* pos, float* scores,
+                                                            int Pmax, int IH, int D, int kp, int ksel, float scale, float wscale) {
     GM_DYN_FLOATS(smi)
     const int i = blockIdx.y, tid = threadIdx.x, lane = tid & 31, w = tid >> 5;
+    tab = ml_row_tab(tab, ts, i);
     const int P = (pos[i] + 1) / kp;
     if (P <= ksel || (int)blockIdx.x * GM_IDX_W >= P) return;
     float* qs = smi;                      // [IH][D + 1]
@@ -267,9 +281,11 @@ extern "C" __global__ void __launch_bounds__(256) idx_score(const bf16* iq, int 
 
 // The indexer's scores in the release's bf16 arithmetic (DeepSeek-V4's): for row t and each entry e of its cache [entries, 128] (entry e's row through tab) it may read (e < (pos + 1) / ratio), sum over heads h of bf16(relu(bf16(q_h . k_e)) w_h), each product and the sum rounded to
 // bf16 as the release's bf16 tensors are, with w_h = bf16(wp_h x wscale) (wp [n, IH], the weights' product, bf16); scores [n, emax] fp32 (-inf past the entries). Block (row, ML_EC entries), 8 warps: a warp an
-// entry, a lane 4 of its channels, the queries in shared memory; at most ML_IH heads.
-extern "C" __global__ void __launch_bounds__(256) idx_score_bf16(const bf16* q, const bf16* wp, float wscale, const bf16* cache, const int* tab, const int* pos, float* scores, int IH, int ratio, int emax) {
+// entry, a lane 4 of its channels, the queries in shared memory; at most ML_IH heads. Row t's entries through its table (ml_row_tab).
+extern "C" __global__ void __launch_bounds__(256) idx_score_bf16(const bf16* q, const bf16* wp, float wscale, const bf16* cache, const int* tab, long long ts, const int* pos, float* scores, int IH, int ratio,
+                                                                 int emax) {
     const int t = blockIdx.x, w = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    tab = ml_row_tab(tab, ts, t);
     extern __shared__ float qs[];  // [IH][128] then [IH] weights, then the warps' terms [8][ML_IH]
     const int ne = (pos[t] + 1) / ratio;
     for (int i = threadIdx.x; i < IH * ML_IDX; i += 256) qs[i] = b2f(q[(size_t)t * IH * ML_IDX + i]);
@@ -434,10 +450,12 @@ extern "C" __global__ void __launch_bounds__(256) idx_inside(float* scores, int 
 // words: a block's tokens `tile` at a time (Kimi-K3's dense attention over the whole context).
 // The scores are over KS channels (qa's heads KS wide, lat's rows ls >= KS apart), the values the first KR of them (Kimi-K3: the latent's 512 and the shared key part's 64; GLM: KS = KR); sel null: every
 // position from 0 (a dense attention, cnt[i] = pos + 1). lat is a ring (ls = KS) or a 12-bit ring's pages unpacked to bf16 (ls its padded width, tab null): the same values in the same order, the same bits.
-extern "C" __global__ void __launch_bounds__(256) mla_attn(const float* qa, const bf16* lat, int ls, const int* tab, const int* sel, const int* cnt, float* olat, float* part, int Tmax, int NH, int KR, int KS, float scale,
-                                                           int splits, int tile) {
+// Row i's positions through its table (ml_row_tab: a step's rows that decode each through its own sequence's).
+extern "C" __global__ void __launch_bounds__(256) mla_attn(const float* qa, const bf16* lat, int ls, const int* tab, long long ts, const int* sel, const int* cnt, float* olat, float* part, int Tmax, int NH, int KR,
+                                                           int KS, float scale, int splits, int tile) {
     GM_DYN_FLOATS(sma)
     const int h = blockIdx.x, i = blockIdx.y, sp = blockIdx.z, tid = threadIdx.x, lane = tid & 31, w = tid >> 5, nw = blockDim.x >> 5;
+    tab = ml_row_tab(tab, ts, i);
     const int T = cnt[i], per = (T + splits - 1) / splits, t0 = min(T, sp * per), t1 = min(T, t0 + per), m_n = t1 - t0;
     float* qh = sma;                                // [KS]
     float* sc = sma + KS;                           // [tile] a tile's scores, then its weights

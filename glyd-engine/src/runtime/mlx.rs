@@ -121,10 +121,6 @@ impl LayerImpl<Mlx> for MlpBlock {
         0
     }
 
-    fn capturable(&self) -> bool {
-        false
-    }
-
     fn run(&mut self, cx: &mut StepCx<Mlx>, x: &mut Vec<f32>) -> Result<()> {
         let (d, s) = (self.hidden, cx.queue.0);
         if x.len() % d != 0 {
