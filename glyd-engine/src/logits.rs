@@ -6703,14 +6703,19 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let users: usize = a.num("users", 4usize)?;
     let tokens: usize = a.num("tokens", 24usize)?;
     // (--ctx plan: the random model at the context the planner gives it on this GPU, each prompt filling it to within half a chunk with its reply: the long-context check;
-    // with --kv12 the plan of a server whose keys and values are in 12-bit pages, as GLYD_KV=lossless asks `serve` for them)
+    // with --kv12 the plan made for 12-bit pages wherever the planner makes one (GLYD_KV=lossless asks for them, and GLYD_KV12_ALWAYS takes their plan also where a
+    // server's would be bf16's, `sizing::twelve_always`), so the pages are held to the bytes planned for them)
     let kv12 = a.has("kv12");
     if kv12 && a.flag("ctx") == Some("plan") {
         std::env::set_var("GLYD_KV", "lossless");
+        std::env::set_var("GLYD_KV12_ALWAYS", "1");
     }
     // (--ctx plan: the plan `serve` makes of the random model for these users on this GPU, which the load takes (its context, chunk, layout, sequences and their bytes:
     // `take_plan`); the GPU's memory the load and the step's sequences take is held to the plan's figure, and the users to the plan's)
     let plan = if a.flag("ctx") == Some("plan") { Some(planned_for(case, level, users)?) } else { None };
+    // (whether the plan is of the pages this run holds. The planner plans no 12-bit pages for some routes (`plan::takes_twelve`): there --kv12 runs them at the
+    // bf16 plan's context in pools of what the GPU has free, and its memory is not held to that plan, which is of other pages)
+    let own_plan = plan.as_ref().is_some_and(|lp| !kv12 || lp.kv_format() == "12-bit");
     let mib = |b: u64| b as f64 / (1u64 << 20) as f64;
     if let Some(lp) = &plan {
         println!(
@@ -6720,7 +6725,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             lp.users,
             mib(lp.kv),
             lp.kv_format(),
-            if kv12 && lp.kv_format() != "12-bit" { ": the 12-bit pages would reserve more there; the check runs them as asked" } else { "" },
+            if own_plan { "" } else { ": the planner plans no 12-bit pages for this route; the check runs them in pools of what the GPU has free" },
             lp.context.saturating_sub(tokens + 32)
         );
         println!("  the plan: {}", lp.text());
@@ -6784,7 +6789,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             let lp = plan.as_ref().expect("a plan");
             let (mut e, r) =
                 random_dyn_with(case, level, "usercheck", &DynOpts { ctx: lp.context, chunk: lp.chunk, graph: true, device: 0, layout: Some(lp.layout) })?;
-            e.take_plan(lp.users, lp.kv);
+            if own_plan {
+                e.take_plan(lp.users, lp.kv);
+            }
             (e, r)
         }
         // (--ctx N: the random model with a context of N tokens, for a long prompt's check: --prompt-tokens)
@@ -6823,6 +6830,10 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // (--ctx plan: the GPU memory the load and the step's sequences took, against the plan's (its weights, sequences and work: `planned_gpu_used_bytes`), and the users it holds)
     let held_to_plan = |when: &str| -> Result<bool> {
         let (Some(lp), Some(before)) = (&plan, free_before) else { return Ok(true) };
+        if !own_plan {
+            println!("  (GPU memory {when} is not held to the plan: the plan is of bf16 pages, this run's are 12-bit)");
+            return Ok(true);
+        }
         let used = before.saturating_sub(crate::dev::Dev::new(0)?.mem_info()?.0 as u64);
         let planned = lp.gpu_total() - lp.reserve;
         let ok = used <= planned;
