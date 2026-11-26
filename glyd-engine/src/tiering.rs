@@ -607,15 +607,25 @@ fn rows_run(e: &mut crate::dynamic::Dyn, n: usize, most: usize, (plen, steps, vo
         step.cold()?;
         step.trace_choices(traced);
         let pages: Vec<[i32; 1]> = (0..n).map(|r| [r as i32]).collect();
+        // (room for a sequence's first `upto` tokens before each pass, as the scheduler asks for it: a pooled cache's blocks taken)
+        let room = |step: &mut dyn ModelStep, r: usize, upto: usize| -> Result<()> {
+            if step.grow(r as i32, upto)? {
+                Ok(())
+            } else {
+                err(format!("no room for {upto} tokens in sequence {r}"))
+            }
+        };
         let r = (|| -> Result<()> {
             for (r, p) in pages.iter().enumerate() {
                 let prompt: Vec<u32> = (0..plen).map(|i| ((i * 7919 + r * 104_729 + n * 31) % (vocab - 4) + 2) as u32).collect();
+                room(step, r, plen)?;
                 let s = step.prefill(p, 0, &prompt, true)?.ok_or_else(|| Error("a prompt's last chunk gave no sample".into()))?;
                 run.logits[r].push(step.logits(0)?);
                 run.tokens[r].push(s.token);
                 run.prompts.push(step.expert_stats());
             }
             for i in 0..steps {
+                (0..n).try_for_each(|r| room(step, r, plen + i + 1))?;
                 let rows: Vec<Row> = (0..n).map(|r| Row::new(run.tokens[r][i], plen + i, &pages[r])).collect();
                 let got = step.decode(&rows)?;
                 for (r, s) in got.iter().enumerate() {
