@@ -655,10 +655,11 @@ impl Shape {
             "mxfp4" | "nvfp4" => 4.25,
             _ => 16.0,
         };
-        // (FP4 experts beside the rest: DeepSeek-V4's `expert_dtype`, and compressed-tensors' MXFP4 or NVFP4 groups, which Kimi-K3 puts on its
-        // routed experts alone and the rest left bf16)
+        // (FP4 experts beside the rest: DeepSeek-V4's `expert_dtype` (at the top of the config, or V4.1's in its quantization_config), and compressed-tensors'
+        // MXFP4 or NVFP4 groups, which Kimi-K3 puts on its routed experts alone and the rest left bf16)
         let format = qc.and_then(|q| q.format.as_deref()).unwrap_or("");
-        if s.expert_dtype.as_deref() == Some("fp4") || (quant == "compressed-tensors" && format.contains("fp4")) {
+        let expert_dtype = s.expert_dtype.as_deref().or(qc.and_then(|q| q.expert_dtype.as_deref()));
+        if expert_dtype == Some("fp4") || (quant == "compressed-tensors" && format.contains("fp4")) {
             sh.expert_release_bits = 4.25;
         }
         sh.expert_width = expert_width as usize;
@@ -667,11 +668,12 @@ impl Shape {
     }
 
     /// The same model with its parameters counted from the checkpoint's own tensors (src/sizes.rs: the headers of its files, a directory's or the Hub's by ranges) in
-    /// place of an estimate from config.json: each part by its tensors' weights (a packed type's at the release's bits), a vision tower left out, and the
-    /// multi-token-prediction head counted only where the model drafts with it. A table with no weights of the parts changes nothing.
+    /// place of an estimate from config.json: each part by its tensors' weights (a packed type's at the bits the release has that part's weights in: the routed
+    /// experts' own where they differ), a vision tower left out, and the multi-token-prediction head counted only where the model drafts with it. A table with no
+    /// weights of the parts changes nothing.
     pub fn with_table(mut self, t: &crate::sizes::Table) -> Shape {
         use crate::sizes::Part;
-        let p = t.params_by_part(self.layers, self.release_bits.max(1.0));
+        let p = t.params_by_part(self.layers, self.release_bits.max(1.0), self.expert_bits_released().max(1.0));
         let get = |k: Part| p.get(&k).copied().unwrap_or(0.0);
         let dense = get(Part::Attention) + get(Part::Mlp) + get(Part::SharedExperts) + get(Part::Other) + if self.mtp { get(Part::Mtp) } else { 0.0 };
         if get(Part::Embedding) + get(Part::Head) + dense + get(Part::RoutedExperts) <= 0.0 {
@@ -5317,6 +5319,13 @@ mod tests {
             "n_routed_experts": 256, "num_experts_per_tok": 6, "moe_intermediate_size": 2048, "expert_dtype": "fp4", "quantization_config": {"quant_method": "fp8"}}"#;
         let d = Shape::from_config(dsv4).unwrap();
         assert_eq!((d.release_bits, d.expert_bits_released(), d.expert_width), (8.0, 4.25, 4096));
+        // (V4.1 names the experts' dtype in its quantization_config: the same bits)
+        let dsv41 = dsv4.replace(
+            r#""expert_dtype": "fp4", "quantization_config": {"quant_method": "fp8"}"#,
+            r#""quantization_config": {"quant_method": "fp8", "expert_dtype": "fp4"}"#,
+        );
+        assert_ne!(dsv41, dsv4);
+        assert_eq!(Shape::from_config(&dsv41).unwrap().expert_bits_released(), 4.25);
         let glm = r#"{"model_type": "glm5_next_text", "hidden_size": 4096, "num_hidden_layers": 4, "num_attention_heads": 64, "n_routed_experts": 288,
             "num_experts_per_tok": 8, "moe_intermediate_size": 2048, "quantization_config": {"quant_method": "fp8"}}"#;
         let g = Shape::from_config(glm).unwrap();
