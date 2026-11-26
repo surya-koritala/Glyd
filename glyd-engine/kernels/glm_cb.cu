@@ -1,4 +1,4 @@
-// GLM-5.3-Flash's routed experts as codebook rows of 2-bit codes (glyd-hbr-codes/2: src/cb_pack.rs reads them, Condor's src/moe_qwen4x.rs runs these kernels). A layer's experts are held in the basis of one rotation of the hidden axis,
+// GLM-5.3-Flash's routed experts as codebook rows of 2-bit codes (glyd-hbr-codes/2: src/cb_pack.rs reads them, the codes block src/moe_cb.rs runs these kernels). A layer's experts are held in the basis of one rotation of the hidden axis,
 // R x = 4096^-0.5 H (s x) (H the natural-order Hadamard matrix, s the layer's signs); an expert is two matrices of rows of 4,096 values, each row its codes (2 bits, byte b holds codes 4 b .. 4 b + 3, the first at the
 // low bits) and its own four bf16 values (ascending, absolute: a weight is the row's entry the code names): `up` (4,096 rows: gate's 2,048 and up's 2,048) and `downT` (2,048 rows: down transposed, row n the weights
 // of neuron n over the 4,096 outputs). A layer's call: x' = R x once (glm_cb_rot_in); for each pair (a token and an expert in a place of the cache) the 4,096 products of up's rows with x' (glm_cb_up); the activation

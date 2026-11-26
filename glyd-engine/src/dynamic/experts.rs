@@ -108,6 +108,27 @@ pub fn of_layers(d: &Described, layers: (usize, usize), per: usize) -> impl Iter
         .filter_map(move |(moe, (layer, m, roles))| (layers.0..layers.1).contains(&layer).then_some((Ix { layer, moe }, m, roles)))
 }
 
+/// The blocks of experts of the decoder layers `layers` of a model whose every decoder layer ends with its feed-forward block, whatever comes before it in the
+/// layer (an n-gram embedding and a mixer: Qwen3.8-Flash-Next's layers of two blocks or three), in `Op::Moe`'s order: each one's place, its kind and its roles.
+pub fn of_ffn_layers(d: &Described, layers: (usize, usize)) -> impl Iterator<Item = (Ix, &kinds::Moe, &[(String, Source)])> {
+    d.desc
+        .blocks
+        .iter()
+        .zip(&d.blocks)
+        .scan(0usize, |ffns, (blk, roles)| {
+            // (a block's decoder layer: the feed-forward blocks before it)
+            let layer = *ffns;
+            *ffns += matches!(blk.body, Body::Ffn(_)) as usize;
+            Some((layer, blk, roles))
+        })
+        .filter_map(|(layer, blk, roles)| match &blk.body {
+            Body::Ffn(Ffn::Moe(m)) => Some((layer, m, roles.as_slice())),
+            _ => None,
+        })
+        .enumerate()
+        .filter_map(move |(moe, (layer, m, roles))| (layers.0..layers.1).contains(&layer).then_some((Ix { layer, moe }, m, roles)))
+}
+
 /// The blocks of experts of draft head `i` of `d` (`Described::mtp`), in order: each one's block number in the head, its kind and its roles.
 pub fn of_head(d: &Described, i: usize) -> impl Iterator<Item = (usize, &kinds::Moe, &[(String, Source)])> {
     let (blocks, roles) = (d.desc.mtp.get(i).map_or(&[][..], |h| &h.blocks[..]), d.mtp.get(i).map_or(&[][..], |r| &r.0[..]));
@@ -120,7 +141,8 @@ pub fn of_head(d: &Described, i: usize) -> impl Iterator<Item = (usize, &kinds::
 /// How a stage holds its blocks of experts beyond their level: a hummingbird directory's (src/hb_pack.rs; None: the release's), the expert cache (the stage's
 /// caching and its store: src/hbg_store.rs, src/tiering.rs; a cache of as many places as a layer has experts holds them all on the GPU), on the GPU `ordinal`;
 /// FP8 matrices as released where `f8` is given (`F8`); the block's matrices besides the routed experts' (the shared expert's, a latent's own projections) at
-/// `dense` where it is given, else at the experts' level; a glyd-v7 directory's codebook rows at its hummingbird level sharing `codebooks`' scratch (src/moe_hb.rs).
+/// `dense` where it is given, else at the experts' level; a glyd-v7 directory's codebook rows at its hummingbird level sharing `codebooks`' scratch (src/moe_hb.rs);
+/// a codes pack's experts at the hummingbird level where `codes` is given (src/moe_cb.rs: in its places, the pack's files the cache's host tier).
 /// A layer of a stage so held is across the thread's group of GPUs where it has one (src/dynamic/tp.rs): this GPU's rows of each expert's.
 #[derive(Clone, Copy)]
 pub struct Held<'a> {
@@ -130,6 +152,7 @@ pub struct Held<'a> {
     pub f8: Option<F8<'a>>,
     pub dense: Option<Layout>,
     pub codebooks: Option<&'a Rc<crate::moe_hb::HbShared>>,
+    pub codes: Option<crate::moe_cb::Codes<'a>>,
 }
 
 /// The experts and the shared expert held in the library's FP8 format as released (src/f8.rs: E4M3 bytes bit for bit, their 128 x 128 block scales), where the
@@ -453,6 +476,9 @@ pub fn resident(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &
 /// or at a block level each expert's packs (`block_packs`: relu squared experts' second matrices in a row layout, which the host computes misses from where the
 /// store's mode has it compute). A glyd-v7 directory's packs are read as saved, at its own level (no lossless level of its experts is read).
 pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Checkpoint, level: Layout, at: Option<(Ix, &Held)>) -> Result<MoeLayer> {
+    if at.is_some_and(|(_, h)| h.codes.is_some()) {
+        return err("a codes pack's experts are the codes block's (`block` at the hummingbird level), not the core's layer");
+    }
     let lossless = matches!(level, Layout::Tiered | Layout::Twelve);
     if !lossless && !matches!(level, Layout::Int6 | Layout::Int5 | Layout::Int4) {
         return err(format!("the experts are held at the penguin, kestrel, swift and wren levels: {} is asked", level.name()));
@@ -653,10 +679,17 @@ fn own_latent(m: &kinds::Moe) -> Option<&kinds::Latent> {
 /// The Moe kind's block of the layer at `at.0` as `Op::Moe` runs it, its experts held as the stage holds them (`held`): the core's layer (`ResidentMoe`), and
 /// around it the latent's own projections where the kind's latent has no norm (`own_latent`: `Projected`), packed at the stage's layout of the block's other
 /// matrices (`Held::dense`) as the checkpoint holds them; at the hummingbird level of a glyd-v7 directory, its experts' codebook rows (src/moe_hb.rs `HbMoe`,
-/// in the expert cache where the stage has one).
+/// in the expert cache where the stage has one); at the hummingbird level of a codes pack (`Held::codes`), its experts in the cache's places (src/moe_cb.rs
+/// `CbMoe`: as many places as a layer keeps, every one on the GPU).
 pub fn block(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Checkpoint, level: Layout, at: (Ix, &Held)) -> Result<Box<dyn MoeBlock>> {
     let (ix, h) = at;
     let dense = h.dense.unwrap_or(level);
+    if let Some(codes) = h.codes {
+        if level != Layout::Hummingbird {
+            return err(format!("a codes pack's experts are its hummingbird level's: {} is asked", level.name()));
+        }
+        return Ok(Box::new(crate::moe_cb::CbMoe::load(m, roles, hidden, ck, ix, codes)?));
+    }
     if level == Layout::Hummingbird {
         let common = h.codebooks.ok_or_else(|| Error("a glyd-v7 directory's codebook rows without the stage's scratch for them".into()))?;
         let cache = h.cache.filter(|(cg, _)| cg.places < m.experts).map(|(cg, st)| (cg.places, st));
@@ -1541,6 +1574,30 @@ mod tests {
         }
         assert_eq!(blocks, 4);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A model whose layers end with their experts, one of them after an n-gram embedding (Qwen3.8-Flash-Next's tiny model: eight layers of two blocks, the
+    /// second of three), numbers each block of experts by its decoder layer, as the family's lowering numbers its `Op::Moe`s, and a stage's by its own layers;
+    /// a fixed count of blocks a layer would number them wrong past the n-gram embedding.
+    #[test]
+    fn a_layer_ends_with_its_experts_whatever_comes_before_them() {
+        use super::Source;
+        let m: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/qwen4x_tiny_manifest.json")).unwrap();
+        let c: serde_json::Value = serde_json::from_str(m["config"].as_str().unwrap()).unwrap();
+        let d = crate::runtime::describe::describe(&c).unwrap();
+        assert_eq!(d.desc.blocks.len(), 17, "eight layers of two blocks, one of three");
+        let of = |layers: (usize, usize)| -> Vec<(usize, usize, bool)> {
+            super::of_ffn_layers(&d, layers)
+                .map(|(ix, _, roles)| {
+                    let own =
+                        roles.iter().any(|(r, s)| r == "router" && matches!(s, Source::Tensor(n) if n.contains(&format!("layers.{}.mlp.gate", ix.layer))));
+                    (ix.layer, ix.moe, own)
+                })
+                .collect()
+        };
+        assert_eq!(of((0, 8)), (0..8).map(|l| (l, l, true)).collect::<Vec<_>>());
+        assert_eq!(of((5, 8)), (5..8).map(|l| (l, l, true)).collect::<Vec<_>>());
+        assert_ne!(super::of_layers(&d, (0, 8), 2).map(|(ix, ..)| ix.layer).collect::<Vec<_>>(), (0..8).collect::<Vec<_>>());
     }
 
     /// The kind's router and activation as the core's layer takes them: a softmax router's logits bf16, a sigmoid's scores fp32 with its scale, the SwiGLU clamp.
