@@ -6,8 +6,10 @@
 //! the pass's tokens, the copy a node of a step's graph), their ids from the pass's tokens and each sequence's last two tokens as its state on the GPU holds
 //! them (kernels/qwen4x.cu `qx_ngram_rows`'s hash, the same ids). Nothing of such a table is on the GPU, and the planner counts its bytes in the computer's
 //! memory (`off_gpu`), at the bytes it is stored in. A table may be stored at 4 bits (`formats::q4_name`: NF4 codes and a bf16 scale a row, Glyd's slim
-//! checkpoints' n-gram table), its rows decoded as they are gathered: the rows staged are bf16 either way (v0.34.2's decode). GLYD_TABLES=gpu or =host (a
-//! development build's, or `force` in a check) holds every such table on the GPU (a table at 4 bits as the bf16 it decodes to), or on the host.
+//! checkpoints' n-gram table), or in FP8 with E8M0 block scales beside it (`X.scale`: DeepSeek-V4.1's Engram tables, E4M3 rows and a scale a run of 32), its
+//! rows decoded as they are gathered: the rows staged are bf16 either way (v0.34.2's decode; the FP8 decode the GPU's load makes, `glyd_gpu::fp8::dequant`).
+//! GLYD_TABLES=gpu or =host (a development build's, or `force` in a check) holds every such table on the GPU (a stored form as the bf16 it decodes to), or on
+//! the host.
 
 use super::ngram::NgramRows;
 use super::{Dyn, ModelDesc, Op, Part};
@@ -51,8 +53,8 @@ pub(super) fn held(m: &crate::runtime::kinds::ModelDesc, embed: usize, lm: usize
     e.into_iter().chain(ngram.iter().filter(|x| at(x.1)).map(|x| x.0)).collect()
 }
 
-/// The checkpoint's tensors the description of the config.json `text` holds on the host (`held`'s, by name): its embedding's, its n-gram tables'. Empty for a
-/// config no description reads.
+/// The checkpoint's tensors the description of the config.json `text` holds on the host (`held`'s, by name): its embedding's, its n-gram tables' (with the
+/// block scales of one stored in FP8). Empty for a config no description reads.
 pub fn host_names(text: &str) -> Vec<String> {
     let Ok(d) = serde_json::from_str(text).map_err(|e| Error(e.to_string())).and_then(|v| crate::runtime::describe::describe(&v)) else {
         return Vec::new();
@@ -65,7 +67,9 @@ pub fn host_names(text: &str) -> Vec<String> {
     for (b, roles) in d.desc.blocks.iter().zip(&d.blocks) {
         if let Body::Ngram(n) = &b.body {
             if at(n.table) {
-                out.extend(roles.iter().filter(|(r, _)| r == "ngram").flat_map(|(_, s)| s.names()));
+                let names: Vec<String> = roles.iter().filter(|(r, _)| r == "ngram").flat_map(|(_, s)| s.names()).collect();
+                let scales: Vec<String> = names.iter().filter_map(|t| d.scales.get(t).cloned()).collect();
+                out.extend(names.into_iter().chain(scales));
             }
         }
     }
@@ -82,8 +86,9 @@ pub fn off_gpu(table: &crate::sizes::Table, text: &str) -> (crate::sizes::Table,
 }
 
 /// A table read by rows on the host: each member's rows in its file mapped (`Piece`), zeros past them (an item padded with zero rows). A member is stored as
-/// the description names it (bf16 rows), or at 4 bits beside that name (`formats::q4_beside`: `X.q4` for `X.weight`, a row its bf16 scale and its NF4
-/// codes), whose rows are decoded as they are gathered (`formats::nf4_row`): the rows staged are bf16 either way, `row_bytes` each.
+/// the description names it (bf16 rows, or FP8 E4M3 rows with their E8M0 scales beside them, `X.scale` [rows / its blocks' rows, cols / their columns]), or at
+/// 4 bits beside that name (`formats::q4_beside`: `X.q4` for `X.weight`, a row its bf16 scale and its NF4 codes), whose rows are decoded as they are gathered
+/// (`formats::nf4_row`; an FP8 row as `glyd_gpu::fp8::dequant` decodes it, the GPU's load's arithmetic): the rows staged are bf16 either way, `row_bytes` each.
 pub struct HostTable {
     pieces: Vec<Piece>,
     held: usize,
@@ -91,13 +96,21 @@ pub struct HostTable {
     pub row_bytes: usize,
 }
 
-/// A member of a table on the host: its mapping, the offset of its first row, the table's row it begins at, its bytes a row as stored and whether at 4 bits.
+/// A member of a table on the host: its mapping, the offset of its first row, the table's row it begins at, its bytes a row as stored and its form.
 struct Piece {
     map: Arc<Mapping>,
     off: usize,
     at: usize,
     stride: usize,
-    q4: bool,
+    form: Form,
+}
+
+/// How a member's rows are stored: bf16 as read, at 4 bits (`formats::nf4_row`), or FP8 with its block scales' tensor (its mapping and offset, the blocks' rows
+/// and columns, a row of scales' bytes).
+enum Form {
+    Bf16,
+    Q4,
+    Fp8 { map: Arc<Mapping>, off: usize, block: [usize; 2], stride: usize },
 }
 
 impl HostTable {
@@ -116,27 +129,52 @@ impl HostTable {
             let q4 = crate::formats::q4_beside(ck, m);
             let name = q4.as_deref().unwrap_or(m);
             let (f, t) = ck.get(name).ok_or_else(|| Error(format!("{}: no tensor {m}", ck.dir.display())))?;
-            let stride = match &q4 {
-                Some(_) => crate::formats::q4_row_bytes(&t.dtype, &t.shape, it.cols).ok_or_else(|| {
-                    Error(format!("{name}: {} {:?}, where a table of {} columns at 4 bits is U8 [rows, {}]", t.dtype, t.shape, it.cols, 2 + it.cols / 2))
-                })?,
-                None if t.dtype == "BF16" && t.shape.len() == 2 && t.shape[1] as usize == it.cols => row_bytes,
-                None => return err(format!("{m}: {} {:?}, where a bf16 table of {} columns is read by rows on the host", t.dtype, t.shape, it.cols)),
+            let mut mapped = |path: &PathBuf| -> Result<Arc<Mapping>> {
+                Ok(match maps.get(path) {
+                    Some(x) => x.clone(),
+                    None => {
+                        let x = Arc::new(Mapping::open(path)?);
+                        maps.insert(path.clone(), x.clone());
+                        x
+                    }
+                })
             };
-            let map = match maps.get(&f.path) {
-                Some(x) => x.clone(),
-                None => {
-                    let x = Arc::new(Mapping::open(&f.path)?);
-                    maps.insert(f.path.clone(), x.clone());
-                    x
+            let rows = t.shape[0] as usize;
+            let two = t.shape.len() == 2 && t.shape[1] as usize == it.cols;
+            let (stride, form) = match &q4 {
+                Some(_) => (
+                    crate::formats::q4_row_bytes(&t.dtype, &t.shape, it.cols).ok_or_else(|| {
+                        Error(format!("{name}: {} {:?}, where a table of {} columns at 4 bits is U8 [rows, {}]", t.dtype, t.shape, it.cols, 2 + it.cols / 2))
+                    })?,
+                    Form::Q4,
+                ),
+                None if t.dtype == "BF16" && two => (row_bytes, Form::Bf16),
+                // (FP8 rows with their E8M0 block scales beside them, `X.scale`: a row's scales are its block row's)
+                None if t.dtype == "F8_E4M3" && two => {
+                    let sn = m.strip_suffix(".weight").map(|b| format!("{b}.scale")).unwrap_or_default();
+                    let (sf, st) = ck.get(&sn).ok_or_else(|| Error(format!("{m}: FP8 rows with no scales {sn} beside them")))?;
+                    let block = crate::formats::scale_block(rows, it.cols, &st.shape).filter(|_| st.dtype == "F8_E8M0").ok_or_else(|| {
+                        Error(format!(
+                            "{sn}: {} {:?}, where E8M0 scales of blocks of 1, 32 or 128 of a {rows} x {} table are read",
+                            st.dtype, st.shape, it.cols
+                        ))
+                    })?;
+                    let (sm, soff, sstride) = (mapped(&sf.path)?, st.offset as usize, it.cols.div_ceil(block[1]));
+                    if soff + rows.div_ceil(block[0]) * sstride > sm.len {
+                        return err(format!("{sn}: past the end of {}", sf.path.display()));
+                    }
+                    sm.random(soff, rows.div_ceil(block[0]) * sstride);
+                    (it.cols, Form::Fp8 { map: sm, off: soff, block, stride: sstride })
                 }
+                None => return err(format!("{m}: {} {:?}, where a bf16 or FP8 table of {} columns is read by rows on the host", t.dtype, t.shape, it.cols)),
             };
-            let (off, rows) = (t.offset as usize, t.shape[0] as usize);
+            let map = mapped(&f.path)?;
+            let off = t.offset as usize;
             if off + rows * stride > map.len {
                 return err(format!("{name}: past the end of {}", f.path.display()));
             }
             map.random(off, rows * stride);
-            pieces.push(Piece { map, off, at, stride, q4: q4.is_some() });
+            pieces.push(Piece { map, off, at, stride, form });
             at += rows;
         }
         if pieces.is_empty() || at > it.rows {
@@ -145,28 +183,43 @@ impl HostTable {
         Ok(HostTable { pieces, held: at, rows: it.rows, row_bytes })
     }
 
-    /// Row `r` as mapped (as stored) and whether at 4 bits; None past the members' rows (a zero row).
-    fn row(&self, r: usize) -> Option<(&[u8], bool)> {
+    /// Row `r` as mapped (as stored), its member's form and its row there; None past the members' rows (a zero row).
+    fn row(&self, r: usize) -> Option<(&[u8], &Form, usize)> {
         if r >= self.held {
             return None;
         }
         let p = &self.pieces[self.pieces.partition_point(|p| p.at <= r) - 1];
         // SAFETY: inside the mapping (checked at `open`), read-only, alive with `self`.
-        Some((unsafe { std::slice::from_raw_parts((p.map.ptr as *const u8).add(p.off + (r - p.at) * p.stride), p.stride) }, p.q4))
+        Some((unsafe { std::slice::from_raw_parts((p.map.ptr as *const u8).add(p.off + (r - p.at) * p.stride), p.stride) }, &p.form, r - p.at))
     }
 
-    /// Rows `ids` one after another into `out`, bf16 (a row at 4 bits decoded).
+    /// Rows `ids` one after another into `out`, bf16 (a stored form decoded). An FP8 row a value of which is not finite (a NaN byte or scale, a product past
+    /// bf16's range) is refused, as the GPU's load refuses the table.
     pub(super) fn gather(&self, ids: &[u64], out: &mut [u8]) -> Result<()> {
         if let Some(&r) = ids.iter().find(|&&r| r as usize >= self.rows) {
             return err(format!("row {r} of a table of {}", self.rows));
         }
         let rb = self.row_bytes;
+        let bad = std::sync::atomic::AtomicU64::new(u64::MAX);
         fill(&mut out[..ids.len() * rb], rb, |i, o| match self.row(ids[i] as usize) {
-            Some((q, true)) => crate::formats::nf4_row(q, o),
-            Some((r, false)) => o.copy_from_slice(r),
+            Some((q, Form::Q4, _)) => crate::formats::nf4_row(q, o),
+            Some((r, Form::Bf16, _)) => o.copy_from_slice(r),
+            Some((q, Form::Fp8 { map, off, block, stride }, at)) => {
+                // SAFETY: the row's block row of scales, inside the scales' mapping (checked at `open`), read-only.
+                let sc = unsafe { std::slice::from_raw_parts((map.ptr as *const u8).add(off + at / block[0] * stride), *stride) };
+                let s: Vec<f32> = sc.iter().map(|&b| crate::formats::e8m0(b)).collect();
+                let mut w = vec![0u16; q.len()];
+                if glyd_gpu::fp8::dequant(q, &s, 1, q.len(), [1, block[1]], &mut w).is_err() {
+                    bad.fetch_min(ids[i], Ordering::Relaxed);
+                }
+                o.iter_mut().zip(w.iter().flat_map(|x| x.to_le_bytes())).for_each(|(o, b)| *o = b);
+            }
             None => o.fill(0),
         });
-        Ok(())
+        match bad.load(Ordering::Relaxed) {
+            u64::MAX => Ok(()),
+            r => err(format!("row {r} of a table in FP8: a value that is not finite")),
+        }
     }
 }
 
@@ -460,6 +513,50 @@ mod tests {
         let odd = Item { members: vec!["u.weight".into()], rows, cols };
         let e = HostTable::open(&ck, &odd, &mut HashMap::new()).err().unwrap().msg;
         assert!(e.contains("u.q4") && e.contains("at 4 bits is U8"), "{e}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A table stored in FP8 with its E8M0 scales beside it (`X.scale`, a scale a row's run of 32: DeepSeek-V4.1's Engram tables), then a bf16 shard and zero
+    /// rows, gathers on the host the bf16 rows the GPU's load decodes it to (`formats::fp8_blocks` of the whole matrix, `glyd_gpu::fp8::dequant`: the V4 loader's
+    /// table on the GPU), bit for bit; a row with a NaN byte is refused in words, as the load refuses the table.
+    #[test]
+    fn a_table_in_fp8_gathers_the_rows_the_gpus_load_decodes() {
+        let dir = std::env::temp_dir().join(format!("glyd-tables-f8-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (rows, cols) = (37usize, 64usize);
+        let mut r = 7u64;
+        let mut next = || {
+            r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (r >> 33) as u32
+        };
+        // (E4M3 bytes but the NaNs, and scales 2^-7 to 2^3)
+        let mut q: Vec<u8> = (0..rows * cols).map(|_| (next() % 256) as u8).map(|b| if b & 0x7F == 0x7F { b ^ 1 } else { b }).collect();
+        let sc: Vec<u8> = (0..rows * cols / 32).map(|_| 120 + (next() % 11) as u8).collect();
+        let bf: Vec<u8> = (0..rows * cols).flat_map(|i| (((((i * 7919 % 211) as f32 - 105.0) / 64.0).to_bits() >> 16) as u16).to_le_bytes()).collect();
+        q[5 * cols + 3] = 0x7F;
+        let t = [
+            ("e.embed.weight", "F8_E4M3", vec![rows as u64, cols as u64], &q[..]),
+            ("e.embed.scale", "F8_E8M0", vec![rows as u64, (cols / 32) as u64], &sc[..]),
+            ("e.more.weight", "BF16", vec![rows as u64, cols as u64], &bf[..]),
+        ];
+        crate::pack::write_safetensors(&dir.join("model.safetensors"), &[], &t).unwrap();
+        let ck = Checkpoint::open(&dir).unwrap();
+        let it = Item { members: vec!["e.embed.weight".into(), "e.more.weight".into(), ZERO_ROWS.into()], rows: 2 * rows + 3, cols };
+        let table = HostTable::open(&ck, &it, &mut HashMap::new()).unwrap();
+        let mut ok = q.clone();
+        ok[5 * cols + 3] = 0;
+        let mut want: Vec<u8> = crate::formats::fp8_blocks(&ok, &sc, rows, cols, [1, 32]).unwrap().iter().flat_map(|w| w.to_le_bytes()).collect();
+        want.extend_from_slice(&bf);
+        want.resize(it.rows * cols * 2, 0);
+        let ids: Vec<u64> = (0..it.rows as u64).rev().filter(|&x| x != 5).collect();
+        let mut got = vec![0u8; ids.len() * cols * 2];
+        table.gather(&ids, &mut got).unwrap();
+        for (k, &x) in ids.iter().enumerate() {
+            let x = x as usize;
+            assert_eq!(got[k * cols * 2..(k + 1) * cols * 2], want[x * cols * 2..(x + 1) * cols * 2], "row {x}");
+        }
+        let e = table.gather(&[2, 5], &mut got[..2 * cols * 2]).unwrap_err().msg;
+        assert!(e.contains("row 5") && e.contains("not finite"), "{e}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

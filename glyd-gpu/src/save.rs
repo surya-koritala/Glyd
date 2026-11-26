@@ -125,10 +125,10 @@ enum Put {
     /// transformers loads it into a bf16 model).
     Copy { name: String, from: String, cast: bool },
     /// Linears' weights stacked by rows (q, k, v; gate, up; or one) as one pack under the first's module path, then
-    /// their biases; read from the source's `from` (the members' paths there). `layout`: the block layout this pack is
-    /// in where it is not the save's (a plan's `"layout"`: a save in one block layout may hold a pack in another, its
-    /// entry in glyd.json saying which).
-    Linear { members: Vec<String>, from: Vec<String>, layout: Option<Layout> },
+    /// their biases; read from the source's `from` (each member's place there: a module's weight, or rows of a tensor).
+    /// `layout`: the block layout this pack is in where it is not the save's (a plan's `"layout"`: a save in one block
+    /// layout may hold a pack in another, its entry in glyd.json saying which).
+    Linear { members: Vec<String>, from: Vec<Place>, layout: Option<Layout> },
     /// A mixture of experts' weight (its E matrices, held [E, out, in]) as one pack of them stacked, [E out, in]:
     /// saved under its module (`module.glyd_WEIGHT_...`) from the source's `from`.
     Experts { module: String, weight: String, from: String, experts: usize },
@@ -137,6 +137,60 @@ enum Put {
     Codebook { module: String, layer: usize, expert: usize, down: bool },
     /// The signs (+1 and -1, I8) of the rotation of the export's MoE layer `layer`, saved as `name`.
     Signs { name: String, layer: usize },
+}
+
+/// Where a linear's member is in the source: a module's (its `NAME.weight`, and its `NAME.bias` where there is one), or rows `a..b` of a tensor seen as a
+/// matrix of its last dimension's columns (a plan's `{"tensor": NAME, "rows": [a, b]}`: an expert's matrix of a mixture of experts whose experts are
+/// stacked in one tensor [experts, rows, cols], read by its range of the file alone; no bias).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Place {
+    Module(String),
+    Rows(String, usize, usize),
+}
+
+impl Place {
+    /// The module's path, where it is one.
+    fn module(&self) -> Option<&str> {
+        match self {
+            Place::Module(m) => Some(m),
+            Place::Rows(..) => None,
+        }
+    }
+
+    /// The member as the bf16 matrix [`Checkpoint::read_bf16`] reads ([`Checkpoint::matrix`]), or its rows of a BF16 tensor.
+    fn info(&self, src: &Checkpoint) -> io::Result<TensorInfo> {
+        match self {
+            Place::Module(m) => src.matrix(&format!("{m}.weight")),
+            Place::Rows(t, a, b) => {
+                let (_, i) = src.rows(t, *a, *b)?;
+                if i.dtype != "BF16" {
+                    return Err(bad(format!("{t}: {}, where rows of a bf16 tensor are packed", i.dtype)));
+                }
+                Ok(i)
+            }
+        }
+    }
+
+    /// Its weights into `out`.
+    fn read(&self, src: &Checkpoint, out: &mut [u16]) -> io::Result<()> {
+        match self {
+            Place::Module(m) => src.read_bf16(&format!("{m}.weight"), out),
+            Place::Rows(t, a, b) => src.read_rows_bf16(t, *a, *b, out),
+        }
+    }
+
+    /// Its name in words.
+    fn name(&self) -> String {
+        match self {
+            Place::Module(m) => m.clone(),
+            Place::Rows(t, a, b) => format!("{t} rows {a}..{b}"),
+        }
+    }
+}
+
+/// Modules' paths as linears' members' places.
+fn modules(m: &[String]) -> Vec<Place> {
+    m.iter().map(|x| Place::Module(x.clone())).collect()
 }
 
 /// A decoder layer's module in its family's order (transformers' registration order); each in the checkpoint.
@@ -401,7 +455,7 @@ impl Plan {
         let (mut puts, mut rest) = (Vec::new(), Vec::new());
         if gembedding && lossy && embed.shape[0] % 64 == 0 {
             // (a block layout's: the embedding a pack as the engine packs it, the output layer tied to it reading it)
-            puts.push(Put::Linear { members: vec!["model.embed_tokens".into()], from: vec!["model.embed_tokens".into()], layout: None });
+            puts.push(Put::Linear { members: vec!["model.embed_tokens".into()], from: modules(&["model.embed_tokens".into()]), layout: None });
         } else if gembedding {
             puts.push(Put::Copy { name: "model.embed_tokens.weight".into(), from: "model.embed_tokens.weight".into(), cast: false });
         } else {
@@ -430,7 +484,7 @@ impl Plan {
                                 continue;
                             }
                             if packable(&t) {
-                                puts.push(Put::Linear { members: vec![path(c)], from: vec![path(c)], layout: None });
+                                puts.push(Put::Linear { members: vec![path(c)], from: modules(&[path(c)]), layout: None });
                             } else {
                                 rest.push(copy(format!("{}.weight", path(c))));
                                 if has_bias(c) {
@@ -462,14 +516,14 @@ impl Plan {
                 }
                 if merged {
                     let members: Vec<String> = group.iter().map(|c| path(c)).collect();
-                    puts.push(Put::Linear { from: members.clone(), members, layout: None });
+                    puts.push(Put::Linear { from: modules(&members), members, layout: None });
                 }
             }
         }
         need("model.norm.weight")?;
         rest.push(copy("model.norm.weight".into()));
         if packable(&head) && !tied {
-            puts.push(Put::Linear { members: vec!["lm_head".into()], from: vec!["lm_head".into()], layout: None });
+            puts.push(Put::Linear { members: vec!["lm_head".into()], from: modules(&["lm_head".into()]), layout: None });
         } else if !packable(&head) {
             rest.push(Put::Copy {
                 name: "lm_head.weight".into(),
@@ -487,7 +541,9 @@ impl Plan {
     /// "i4" | "i3" | "i6r" | "i5r" | "i4r"} | {"copy": name, "from": its name in the source}, ...]} in save_pretrained's order ("from" defaults to the
     /// names; a linear's "layout", in a save in a block layout, puts that pack in another layout than the save's: another block layout, or a row
     /// layout, which packs the one weight's transpose); each tensor in the checkpoint, a linear's weights bf16 or FP8 with their block scales
-    /// ([`Checkpoint::matrix`]), packable and of one width, a copy's BF16 or F32 (saved as it is, F32 too, unless it is cast).
+    /// ([`Checkpoint::matrix`]), packable and of one width, a copy's BF16 or F32 (saved as it is, F32 too, unless it is cast). A linear's member may be
+    /// read from rows of a bf16 tensor, `{"tensor": NAME, "rows": [a, b]}` in its "from" (an expert's matrix of experts stacked in one tensor,
+    /// [`Place::Rows`]): its pack and glyd.json's entry are the member's as if the source held those rows as its weight.
     fn from_json(text: &str, src: &Checkpoint) -> io::Result<Plan> {
         let v = json::parse(text).map_err(|e| bad(format!("plan: {e}")))?;
         let items = v.get("puts").and_then(Value::as_array).ok_or_else(|| bad("plan: no \"puts\""))?;
@@ -508,11 +564,29 @@ impl Plan {
             if let Some(ms) = it.get("linear").and_then(Value::as_array) {
                 let names = |v: &[Value]| v.iter().map(|m| m.as_str().map(str::to_string)).collect::<Option<Vec<_>>>().filter(|m| !m.is_empty());
                 let members = names(ms).ok_or_else(|| bad("plan: a linear's members are not names"))?;
-                let from = match it.get("from").and_then(Value::as_array) {
-                    Some(f) => names(f).filter(|f| f.len() == members.len()).ok_or_else(|| bad("plan: a linear's \"from\" is not a name for each member"))?,
-                    None => members.clone(),
+                let place = |v: &Value| match v {
+                    Value::String(m) => Some(Place::Module(m.clone())),
+                    _ => match (v.get("tensor").and_then(Value::as_str), v.get("rows").and_then(Value::as_u64s).as_deref()) {
+                        (Some(t), Some(&[a, b])) => Some(Place::Rows(t.to_string(), a as usize, b as usize)),
+                        _ => None,
+                    },
                 };
-                let ts = from.iter().map(|m| weight(&format!("{m}.weight"))).collect::<io::Result<Vec<_>>>()?;
+                let from = match it.get("from").and_then(Value::as_array) {
+                    Some(f) => f
+                        .iter()
+                        .map(place)
+                        .collect::<Option<Vec<_>>>()
+                        .filter(|f| f.len() == members.len())
+                        .ok_or_else(|| bad("plan: a linear's \"from\" is not a name or {\"tensor\", \"rows\"} for each member"))?,
+                    None => modules(&members),
+                };
+                let ts = from
+                    .iter()
+                    .map(|m| match m {
+                        Place::Module(m) => weight(&format!("{m}.weight")),
+                        Place::Rows(t, ..) => found(t).and_then(|_| m.info(src)),
+                    })
+                    .collect::<io::Result<Vec<_>>>()?;
                 let layout = match it.get("layout") {
                     None => None,
                     Some(l) => Some(
@@ -545,7 +619,7 @@ impl Plan {
                 if !rows_pack && (!ts.iter().all(packable) || ts.iter().any(|t| dims(t).1 != dims(&ts[0]).1)) {
                     return Err(bad(format!("plan: {} is not packable as one matrix", members.join(" + "))));
                 }
-                for m in &from {
+                for m in from.iter().filter_map(Place::module) {
                     if src.get(&format!("{m}.bias")).is_some() {
                         tensor(&format!("{m}.bias"))?;
                     }
@@ -837,7 +911,7 @@ impl Put {
         let b = |n: &str| src.get(n).map_or(0, |(_, t)| t.bytes);
         match self {
             Put::Copy { from, .. } => b(from),
-            Put::Linear { from, .. } => from.iter().map(|m| src.matrix(&format!("{m}.weight")).map_or(0, |t| t.bytes)).sum(),
+            Put::Linear { from, .. } => from.iter().map(|m| m.info(src).map_or(0, |t| t.bytes)).sum(),
             Put::Experts { from, .. } => b(from),
             Put::Codebook { module, .. } => b(&format!("{module}.weight")),
             Put::Signs { .. } => 0,
@@ -861,15 +935,17 @@ impl Put {
             }
             Put::Linear { members, from, layout: own } => {
                 let layout = own.unwrap_or(layout);
-                let ts: Vec<TensorInfo> = from.iter().map(|m| src.matrix(&format!("{m}.weight"))).collect::<io::Result<_>>()?;
+                let ts: Vec<TensorInfo> = from.iter().map(|m| m.info(src)).collect::<io::Result<_>>()?;
                 let cols = dims(&ts[0]).1;
                 let rows: Vec<usize> = ts.iter().map(|t| dims(t).0).collect();
                 let mut w = vec![0u16; rows.iter().sum::<usize>() * cols];
-                let coded = codes.map(|c| read_codes(c, from, &rows, cols)).transpose()?.flatten(); // (calibrated: the codes and scales are packed as they are, the weights not read)
+                // (calibrated: the codes and scales are packed as they are, the weights not read; codes are a module's)
+                let names: Vec<String> = from.iter().map(Place::name).collect();
+                let coded = codes.map(|c| read_codes(c, &names, &rows, cols)).transpose()?.flatten();
                 let mut at = 0;
                 for (m, &r) in from.iter().zip(&rows) {
                     if coded.is_none() {
-                        src.read_bf16(&format!("{m}.weight"), &mut w[at..at + r * cols])?;
+                        m.read(src, &mut w[at..at + r * cols])?;
                     }
                     at += r * cols;
                 }
@@ -896,8 +972,8 @@ impl Put {
                     hashed.push((format!("{m}.weight"), vec![r as u64, cols as u64], sha256_u16(&w[at..at + r * cols])));
                     at += r * cols;
                 }
-                for (m, s) in members.iter().zip(from) {
-                    if let Some((f, t)) = src.get(&format!("{s}.bias")) {
+                for (m, s) in members.iter().zip(from.iter().map(Place::module)) {
+                    if let Some((f, t)) = s.and_then(|s| src.get(&format!("{s}.bias"))) {
                         let mut bytes = f.read(t)?;
                         if layout == Layout::Compact {
                             for b in bytes.chunks_exact_mut(2) {
@@ -1236,7 +1312,7 @@ fn save_as<const EXTRAS: bool>(
                     _ => None,
                 })
                 .flatten()
-                .map(String::as_str)
+                .filter_map(Place::module)
                 .collect();
             if let Some(n) = c.names().find(|n| n.strip_suffix(".codes").or_else(|| n.strip_suffix(".scales")).is_none_or(|m| !packed.contains(m))) {
                 return Err(bad(format!("{}: {n} is not a matrix the plan packs (codes of another model, or another plan?)", dir.display())));
@@ -2392,13 +2468,14 @@ mod tests {
         let linears: Vec<(String, usize, usize)> = puts
             .iter()
             .filter_map(|p| match p {
-                Put::Linear { from, .. } if from[0] != "model.embed_tokens" => Some(from),
+                Put::Linear { from, .. } if from[0].module() != Some("model.embed_tokens") => Some(from),
                 _ => None,
             })
             .flatten()
+            .filter_map(Place::module)
             .map(|m| {
                 let (r, c) = dims(Checkpoint::open(&src).unwrap().get(&format!("{m}.weight")).unwrap().1);
-                (m.clone(), r, c)
+                (m.to_string(), r, c)
             })
             .collect();
         for (layout, name, q, level) in [(Layout::Int5, "i5", 15i8, "swift"), (Layout::Int6, "i6", 31, "kestrel")] {

@@ -663,9 +663,8 @@ mod tests {
                 // (a grammar is no greedy step: the GPU's largest logit is not the choice, nor are its largest logits the draw's whole)
                 assert!(!p.greedy());
                 let mut s = Sampler::new(p, &[]);
-                // (the GPU's largest logits of the row with the grammar's mask on it serve a draw that looks at no more of it than they hold; the others, its buckets)
-                assert_eq!(s.proc_need().is_some(), temperature <= 0.0 || (1..=64).contains(&top_k));
-                assert!(s.top_need().is_none(), "the model's own candidates do not serve a draw under a grammar");
+                // (a GPU's candidates of a draw under a grammar are of the row with the grammar's mask on it, never the model's own)
+                assert!(s.changes(), "the model's own candidates do not serve a draw under a grammar");
                 let mut out = Vec::new();
                 for step in 0..20 {
                     let logits: Vec<f32> =
@@ -876,8 +875,9 @@ mod tests {
         assert!(Sampler::new(Params { temperature: 0.8, top_k: 40, ..Params::default() }, &[]).proc().is_none());
     }
 
-    /// The GPU's largest logits of the row with the grammar's mask put on it (and the penalties, a bias, the tokens held back: `Proc`) give the token the whole row gives, at every place of a
-    /// grammar and whatever the draw: temperature 0, a top-k, a top-p, a min-p, a draw over the whole row; the row the GPU makes is the host's bit for bit at every step (`emu::draw`).
+    /// A GPU's view of the row with the grammar's mask put on it (and the penalties, a bias, the tokens held back: `Proc`) gives the token the whole row gives, at every place of a
+    /// grammar and whatever the draw: temperature 0, a top-k, a top-p, a min-p, a draw over the whole row, never reading the row; the row the GPU makes is the host's bit for bit at
+    /// every step (`emu::draw`).
     #[test]
     fn a_draw_from_the_candidates_is_the_draw_from_the_row() {
         use crate::sampler::{emu, Params, Sampler};
@@ -921,7 +921,7 @@ mod tests {
                 // (the grammar is walked as far as it goes, the same tokens in both)
                 for step in 0..40 {
                     let row: Vec<f32> = (0..width).map(|t| (((t * 7919 + step * 31 + seed * 13) % 211) as f32 / 8.0).floor() / 4.0 - 3.0).collect();
-                    let (got, read) = emu::draw(&mut by_top, &row, [0.0, 7e-7, -7e-7][step % 3]);
+                    let (got, read) = emu::draw(&mut by_top, &row);
                     let want = by_row.sample(&row);
                     assert_eq!(got, want, "temperature {temperature} top_k {top_k} top_p {top_p} min_p {min_p} seed {seed} step {step}");
                     if read {
@@ -935,7 +935,7 @@ mod tests {
                 }
             }
         }
-        assert!(some > 500 && none * 20 < some, "{some} draws from the candidates, {none} from the row");
+        assert!(some > 500 && none == 0, "{some} draws from the GPU's view, {none} from the row");
     }
 
     /// A least length does not hold a reply that the grammar has ended past its end: the end token is chosen where nothing else may be.
@@ -960,7 +960,7 @@ mod tests {
             a.set_suppress(vec![end()]);
             b.set_suppress(vec![end()]);
             for step in 0..4 {
-                let (got, read) = crate::sampler::emu::draw(&mut a, &logits, 0.0);
+                let (got, read) = crate::sampler::emu::draw(&mut a, &logits);
                 assert_eq!((got, read), (b.sample(&logits), false), "temperature {temperature} repetition {rep} step {step}");
             }
         }

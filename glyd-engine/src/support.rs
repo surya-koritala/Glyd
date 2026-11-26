@@ -29,8 +29,10 @@ pub enum Family {
     /// in the expert cache as released (FP8 experts each packed on its own: src/tiering.rs).
     GlmDsa,
     DeepSeekV4,
-    /// DeepSeek-V4.1 (`deepseek_v41`: CSA2's compressed attention sharing its parts across layers, lagged mHC, Engram): penguin on the dynamic route on one
-    /// GPU, every expert of it on the GPU; no cut into stages (lagged mHC's weights are not handed over between them).
+    /// DeepSeek-V4.1 (`deepseek_v41`: CSA2's compressed attention sharing its parts across layers, lagged mHC, Engram): penguin on the dynamic route, on one
+    /// GPU or its layers cut over several (a stage begins where no layer after it reads a compressed part of a layer before: `plan::sizing::stage_starts`;
+    /// lagged mHC's weights handed over with the streams), its experts on the GPUs or, where they do not hold them, in the expert cache as released (FP4
+    /// experts, as DeepSeek-V4's: src/tiering.rs).
     DeepSeekV41,
     Muse,
     /// Qwen3.8-Flash-Next (the Qwen 4 preview, `qwen4_exp`): penguin on the dynamic route, every expert on the GPUs: one, or its layers cut over several
@@ -250,10 +252,10 @@ pub static TABLE: [Support; 11] = [
         hummingbird_packed_only: false,
         default_ctx: Some(DEFAULT_CTX),
         max_ctx: None,
-        split_levels: NONE,
-        experts_in_ram_levels: NONE,
+        split_levels: PENGUIN,
+        experts_in_ram_levels: PENGUIN,
         drafts: false,
-        route: Route { sizing: Sizing::Dynamic, ..ONE_GPU },
+        route: Route { sizing: Sizing::Dynamic, expert_cache: ExpertCache::Release, ..ONE_GPU },
     },
     Support {
         family: Family::Muse,
@@ -547,8 +549,8 @@ mod tests {
         assert!(crate::dynamic::split::loader(&d).is_ok());
     }
 
-    /// DeepSeek-V4.1 (`deepseek_v41`, its release's config) is a family of its own: penguin on the dynamic route on one GPU (lagged mHC's weights are not handed
-    /// over between stages, so no cut), opened by the compressed attention's loader, its layers and end tokens by its description (a nested text config).
+    /// DeepSeek-V4.1 (`deepseek_v41`, its release's config) is a family of its own: penguin on the dynamic route, its layers cut over GPUs, its experts there or
+    /// in the expert cache as released, opened by the compressed attention's loader, its layers and end tokens by its description (a nested text config).
     #[test]
     fn deepseek_v41_runs_on_the_dynamic_route() {
         let v = fixture("deepseek_v41_config.json");
@@ -556,7 +558,8 @@ mod tests {
         assert!(check(&v, "deepseek-ai/DeepSeek-V4.1-Flash-1017", "DeepSeek-V4.1-Flash-1017", "penguin").is_ok());
         let r = check(&v, "deepseek-ai/DeepSeek-V4.1-Flash-1017", "DeepSeek-V4.1-Flash-1017", "hummingbird").unwrap_err();
         assert_eq!(r.what, "DeepSeek-V4.1-Flash-1017 (DeepSeek-V4.1) runs at the penguin level in this engine, not hummingbird", "{r:?}");
-        assert!(row(Family::DeepSeekV41).split_levels.is_empty() && row(Family::DeepSeekV41).route.sizing == Sizing::Dynamic);
+        let r = row(Family::DeepSeekV41);
+        assert_eq!((r.split_levels, r.experts_in_ram_levels, r.route.expert_cache, r.route.sizing), (PENGUIN, PENGUIN, ExpertCache::Release, Sizing::Dynamic));
         assert_eq!(crate::dynamic::split::family(&v), Some("DeepSeek-V4.1"), "opened by the dynamic route from its release's directory");
         let d = crate::runtime::describe::describe(&serde_json::from_str(&v).unwrap()).unwrap();
         assert!(crate::dynamic::split::loader(&d).is_ok());

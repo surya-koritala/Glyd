@@ -837,12 +837,20 @@ fn ref_model_with(d: &Path, edit: fn(&mut crate::runtime::describe::Described)) 
     Ok(m)
 }
 
-/// Engram's compressed vocabulary (`engram_token_map`) into the reference's Engram blocks (role `ngram_map`), where the model in `dir` has them.
+/// Engram's compressed vocabulary (the directory's map, else its tokenizer's: src/tok.rs `engram_map`) into the reference's Engram blocks (role `ngram_map`),
+/// where the model in `dir` has them.
 pub(crate) fn put_token_map(m: &mut crate::runtime::reference::model::RefModel, dir: &Path) -> Result<()> {
-    if let Some(map) = engram_token_map(dir)? {
-        for l in
-            m.layers.iter_mut().filter(|l| matches!(l.block.body, crate::runtime::kinds::Body::Ngram(g) if g.form == crate::runtime::kinds::NgramForm::Engram))
-        {
+    use crate::runtime::kinds::{Body, NgramForm};
+    let Some(g) = m.layers.iter().find_map(|l| match l.block.body {
+        Body::Ngram(g) if g.form == NgramForm::Engram => Some(g),
+        _ => None,
+    }) else {
+        return Ok(());
+    };
+    let vocab = crate::runtime::config::ModelConfig::load(dir)?.num("vocab_size").ok_or_else(|| Error(format!("{}: no vocab_size", dir.display())))?;
+    if let Some(map) = crate::tok::engram_map(dir, vocab, g.vocab, g.eos)? {
+        let map: Vec<f32> = map.into_iter().map(|x| x as f32).collect();
+        for l in m.layers.iter_mut().filter(|l| matches!(l.block.body, Body::Ngram(g) if g.form == NgramForm::Engram)) {
             l.p.put("ngram_map", &[map.len()], map.clone());
         }
     }
@@ -1251,7 +1259,7 @@ pub(crate) fn engine_at(case: &str, dir: &Path, level: &str, layout: Layout) -> 
         return err(format!("{case} at {level} is packed {}, not {}", l.name(), layout.name()));
     }
     let o = dyn_opts(Some(layout));
-    match case {
+    match case_of_form(case) {
         "gemma4" | "gemma4-kv" => gemma4_at(dir, Some(layout)),
         "qwen35" | "qwen35-wide" | "qwen35moe" => boxed(crate::dynamic::qwen35::load(dir, &o)),
         "dense" => boxed(crate::dynamic::dense::load(dir, &o)),
@@ -2032,6 +2040,22 @@ pub fn qwen35moe_random_real(out: &Path, layers: usize, experts: usize) -> Resul
     qwen35moe_draw(&c.to_string(), out, 0.5)
 }
 
+/// `qwen35moe_random`'s model (with `real` (layers, experts): `qwen35moe_random_real`'s) with each layer's experts written as two stacked tensors
+/// (`mlp.experts.gate_up_proj` [experts, 2 inter, in], `mlp.experts.down_proj` [experts, out, inter]), the form Qwen3.8-2.4T-A95B is released in: the same weights
+/// to the bit (`stacked::restack`), as `logitsmodel qwen35moe DIR --stacked [--real --layers L --experts E]` makes it (the case `qwen35moe-st`: the stacked form
+/// of the case's own model).
+pub fn qwen35moe_stacked(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
+    let at = out.join("per-expert");
+    match real {
+        None => qwen35moe_random(&at)?,
+        Some((layers, experts)) => qwen35moe_random_real(&at, layers, experts)?,
+    }
+    let (named, _) = crate::runtime::describe::describe_dir(&at)?;
+    let held = crate::runtime::describe::describe_stacked(&crate::runtime::config::ModelConfig::load(&at)?)?;
+    crate::stacked::restack(&at, out, &named, &held)?;
+    std::fs::remove_dir_all(&at).map_err(|e| Error(format!("{}: {e}", at.display())))
+}
+
 /// `qwen35moe_random`'s draw of the model of config `text`, its LM head `head` times the manifest's rule.
 fn qwen35moe_draw(text: &str, out: &Path, head: f64) -> Result<()> {
     let d = crate::runtime::describe::describe(&serde_json::from_str(text).map_err(|e| Error(e.to_string()))?)?;
@@ -2047,6 +2071,15 @@ fn qwen35moe_draw(text: &str, out: &Path, head: f64) -> Result<()> {
         false,
         "Qwen3.5-family mixture of experts",
     )
+}
+
+/// A case that is another case's model in another stored form (the same weights): that case. `qwen35moe-st`: the Qwen3.5 layout with experts, each layer's
+/// experts stacked in two tensors as Qwen3.8-2.4T-A95B is released (`qwen35moe_stacked`).
+pub fn case_of_form(case: &str) -> &str {
+    match case {
+        "qwen35moe-st" => "qwen35moe",
+        other => other,
+    }
 }
 
 /// GLM-5.3's layout as a small random model (tests/fixtures/glm_moe_dsa_toy_config.json, `glm_moe_dsa`: four layers 256 wide of the latent attention, two heads
@@ -2403,15 +2436,6 @@ pub fn deepseek_v41_draw(out: &Path, seed: u64) -> Result<()> {
     crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
     println!("{}: a random DeepSeek-V4.1, {} tensors, {:.0} MB", out.display(), tensors.len(), tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6);
     Ok(())
-}
-
-/// The compressed vocabulary DeepSeek-V4.1's Engram hashes (`kinds::NgramForm::Engram`): the model directory's `engram_token_map.json` (a list, the compressed id of
-/// each token), which `deepseek_v41_random` writes for the random model (no loader makes one from a release's tokenizer); None where the directory has none.
-pub fn engram_token_map(dir: &Path) -> Result<Option<Vec<f32>>> {
-    let p = dir.join("engram_token_map.json");
-    let Ok(text) = std::fs::read_to_string(&p) else { return Ok(None) };
-    let v: Vec<u32> = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    Ok(Some(v.into_iter().map(|x| x as f32).collect()))
 }
 
 fn qwen35_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
@@ -3327,19 +3351,28 @@ pub fn level_check(a: &crate::args::Args) -> Result<()> {
     }
 }
 
-/// `logitsmodel CASE DIR [--servable] [--real [--layers L] [--experts E]]`: the case's random model made in DIR (`--real`: the Qwen3.5 layout with experts at its release's width) (a model to run the other checks on: `kvtest DIR`, `run DIR`); `qwen4x-rel` the
+/// `logitsmodel CASE DIR [--servable] [--real [--layers L] [--experts E]] [--stacked]`: the case's random model made in DIR (`--real`: the Qwen3.5 layout with experts at its release's width; `--stacked`: its experts stacked, `qwen35moe_stacked`) (a model to run the other checks on: `kvtest DIR`, `run DIR`); `qwen4x-rel` the
 /// family's release's form (`qwen4x_release_random`); `CASE+q4` with its tables on the host stored at 4 bits.
 pub fn make_model(a: &crate::args::Args) -> Result<()> {
     let id = a.need(1, "CASE")?;
     let (base, q4) = q4_case(id);
     let dir = Path::new(a.need(2, "DIR")?);
     // (a case of the logits checks by its own maker; another random model `random_model` makes, the release's form among them; + q4: its tables at 4 bits)
+    let (real, stacked) = (a.has("real"), a.has("stacked"));
     match find_case(base).map(|c| c.weights) {
         Ok(Weights::Hub(h)) => return err(format!("{id}: a real model ({h}), not a random one")),
-        // (`--real --layers L --experts E`: the Qwen3.5 layout with experts at its release's width, `qwen35moe_random_real`)
-        Ok(Weights::Random(_)) if a.has("real") => match base {
-            "qwen35moe" => qwen35moe_random_real(dir, a.num("layers", 8usize)?, a.num("experts", 256usize)?)?,
-            id => return err(format!("--real: the qwen35moe case's release width only (not {id})")),
+        // (`--real --layers L --experts E`: the Qwen3.5 layout with experts at its release's width, `qwen35moe_random_real`; `--stacked`: its experts stacked as
+        // Qwen3.8-2.4T-A95B holds them, `qwen35moe_stacked`)
+        Ok(Weights::Random(_)) if real || stacked => match base {
+            "qwen35moe" => {
+                let r = real.then(|| Ok::<_, Error>((a.num("layers", 8usize)?, a.num("experts", 256usize)?))).transpose()?;
+                match (stacked, r) {
+                    (true, r) => qwen35moe_stacked(dir, r)?,
+                    (false, Some((l, e))) => qwen35moe_random_real(dir, l, e)?,
+                    (false, None) => unreachable!("--real or --stacked"),
+                }
+            }
+            id => return err(format!("--real and --stacked: the qwen35moe case's (not {id})")),
         },
         Ok(Weights::Random(make)) => make(dir)?,
         Err(_) => random_model_of(base, dir)?,
@@ -4441,7 +4474,7 @@ mod tests {
         }
     }
 
-    /// The CPU's candidates usercheck holds the step's to: the largest first, equal logits by the smaller token, as the sampler's `sample_top` takes them.
+    /// The CPU's candidates usercheck holds the step's to: the largest first, equal logits by the smaller token, as a draw's candidates are ordered (`sampler::emu::top`).
     #[test]
     fn host_top_orders_by_logit_then_token() {
         let row = [0.5f32, 2.0, -1.0, 2.0, 7.0, f32::NEG_INFINITY, 0.5, 2.0];
@@ -4923,7 +4956,7 @@ mod tests {
 
 /// The case's model in `dir` on the description executor.
 pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Result<Dyn> {
-    Ok(match q4_case(case).0 {
+    Ok(match case_of_form(q4_case(case).0) {
         "gemma4" | "gemma4-kv" => {
             let c = crate::gemma4::ConfigG4::load(dir)?;
             Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
@@ -5010,6 +5043,7 @@ fn random_model_of(case: &str, dir: &Path) -> Result<()> {
         "qwen35" => qwen35_random(dir),
         "qwen35-wide" => qwen35_wide_random(dir),
         "qwen35moe" => qwen35moe_random(dir),
+        "qwen35moe-st" => qwen35moe_stacked(dir, None),
         "dense" => dense_random(dir),
         "muse" => crate::muse_ref::random(dir),
         "kimi" => crate::kimi_ref::random(dir, 1, true, 8),
@@ -6726,11 +6760,12 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `samplecheck CASE [--users N] [--tokens T] [--level L] [--vocab V]` (development, R4a #138: sampling on the GPU): the case's random model served by the scheduler to N requests at
+/// `samplecheck CASE [--users N] [--tokens T] [--level L] [--vocab V] [--split CUT --devices A,B | --tp A,B]` (development, R4a #138: sampling on the GPU; `sample_routes` for --split and --tp): the case's random model served by the scheduler to N requests at
 /// once whose draws differ (greedy and drawn with nothing on the row; a JSON schema's grammar greedy and drawn; the repetition, presence and frequency penalties; a bias; an allowed list;
-/// a least length), the rows their draws see made on the GPU (`sampler::Proc`): every request's tokens and log-probabilities against the host's draws from the whole rows of the same
-/// steps (GLYD_ENGINE_HOST_SAMPLING's), a grammar's document against its schema, the rows each request's draws read alone (none, but where a top-p or a min-p over the whole row cuts
-/// past the 64 largest), and each request at once against its run alone: token for token where a step's rows are each their own pass's bits (prompts one a pass,
+/// a least length; a flat top-p, a min-p alone, a top-k of 200, with log-probabilities), the rows their draws see made on the GPU (`sampler::Proc`) and drawn from the GPU's view of
+/// them (`sampler::View`): every request's tokens and log-probabilities against the host's draws from the whole rows of the same steps (GLYD_ENGINE_HOST_SAMPLING's), a grammar's
+/// document against its schema, no row read on the host at once or alone, and each request at once against its run alone: token for token, and its log-probabilities to the bit,
+/// where a step's rows are each their own pass's bits (prompts one a pass,
 /// GLYD_ENGINE_BATCH_PREFILL=0, as `usercheck` holds them, and 16 users or fewer: the rows a pass keeps the bits of; more are counted here), else counted (a prompt run beside others
 /// rounds its rows' values otherwise, #528, and a drawn token may then differ). Then the host's time a step both ways, on this model and for 8 and 64 rows of a vocabulary of V (262,144 by default: the rows of
 /// requests with the penalties, a bias and a top-k, half of them an allowed list of half the tokens) read and drawn on the host, or made on the GPU and drawn from their candidates.
@@ -6778,6 +6813,19 @@ pub fn sample_check(a: &crate::args::Args) -> Result<()> {
         ),
         ("an allowed list, min-p 0.1", Params { temperature: 1.0, min_p: 0.1, allowed: allowed.clone(), seed: 4, ..d.clone() }, None),
         ("a least length, repetition 1.05, the whole row", Params { temperature: 1.0, min_tokens: 10, repetition_penalty: 1.05, seed: 5, ..d.clone() }, None),
+        ("a flat top-p 0.999, log-probabilities", Params { temperature: 1.2, top_p: 0.999, seed: 6, ..d.clone() }, Some(4)),
+        ("min-p 0.05", Params { temperature: 1.0, min_p: 0.05, seed: 7, ..d.clone() }, None),
+        ("top-k 200, top-p 0.9", Params { temperature: 0.9, top_k: 200, top_p: 0.9, seed: 8, ..d.clone() }, None),
+        (
+            "a JSON schema, top-k 200, presence 0.4, min-p 0.02",
+            Params { temperature: 1.0, top_k: 200, min_p: 0.02, presence_penalty: 0.4, constraint: Some(c.clone()), seed: 9, ..d.clone() },
+            None,
+        ),
+        (
+            "top-p 0.95, frequency 0.3, a bias, log-probabilities",
+            Params { temperature: 0.8, top_p: 0.95, frequency_penalty: 0.3, logit_bias: vec![(7, 1.5)], seed: 10, ..d.clone() },
+            Some(2),
+        ),
     ];
     let prompts: Vec<Vec<u32>> =
         (0..users).map(|k| (0..(5 + 7 * (k % 9)) as u32).map(|i| 3 + (i * 7919 + k as u32 * 104_729) % (v as u32 - 3)).collect()).collect();
@@ -6831,16 +6879,16 @@ pub fn sample_check(a: &crate::args::Args) -> Result<()> {
         Ok((got, s.stats))
     };
     let all: Vec<usize> = (0..users).collect();
-    e.top.off = false;
+    e.host_sampling = false;
     let (gpu, st_gpu) = run(&mut e, &all)?;
-    e.top.off = true;
+    e.host_sampling = true;
     let (host, st_host) = run(&mut e, &all)?;
-    e.top.off = false;
+    e.host_sampling = false;
     let mut fails = 0;
     let strict = std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "0") && users <= 16;
-    // (the draws that never need their row: the largest, a top-k within the candidates, a draw over the whole row from its buckets)
-    let never = |p: &Params| p.temperature <= 0.0 || (1..=crate::kern::TOPK).contains(&p.top_k) || (p.top_k == 0 && p.top_p >= 1.0 && p.min_p == 0.0);
     let (mut like_alone, mut read_alone) = (0, 0);
+    // (a served token's log-probabilities to the bit: the token, its log-probability, and each of the likeliest tokens and theirs)
+    let bits = |l: &Lp| (l.token, l.logprob.to_bits(), l.top.iter().map(|&(t, x)| (t, x.to_bits())).collect::<Vec<_>>());
     let lp_off = |a: &Lp, b: &Lp| {
         let tops = a.top.iter().zip(&b.top).map(|(x, y)| if x.0 == y.0 { (x.1 - y.1).abs() } else { f64::INFINITY }).fold(0f64, f64::max);
         if a.token != b.token || a.top.len() != b.top.len() {
@@ -6859,7 +6907,12 @@ pub fn sample_check(a: &crate::args::Args) -> Result<()> {
         if g_.0 != a_.0 && strict {
             why.push(format!("at once {:?} against alone {:?}", g_.0, a_.0));
         }
-        if st_alone.row_reads > 0 && never(&kinds[u % kinds.len()].1) {
+        // (a row's log-probabilities are its own whatever shares its step: where the tokens are the same, the same bits)
+        if strict && g_.0 == a_.0 && g_.1.iter().map(bits).ne(a_.1.iter().map(bits)) {
+            let apart = g_.1.iter().zip(&a_.1).map(|(x, y)| lp_off(x, y)).fold(0f64, f64::max);
+            why.push(format!("log-probabilities at once not the bits alone ({apart:.2e} apart at most)"));
+        }
+        if st_alone.row_reads > 0 {
             why.push(format!("alone, {} of its draws read the row", st_alone.row_reads));
         }
         if g_.0 != h_.0 {
@@ -6918,6 +6971,17 @@ pub fn sample_check(a: &crate::args::Args) -> Result<()> {
         println!("FAIL the host's run read no row (GLYD_ENGINE_HOST_SAMPLING's draws were not the host's)");
         fails += 1;
     }
+    if st_gpu.row_reads > 0 {
+        println!("FAIL {} rows read on the host with the rows made on the GPU (none is to be)", st_gpu.row_reads);
+        fails += 1;
+    }
+    // (--split CUT [--devices A,B] or --tp A,B: the same requests on the model cut into stages or across GPUs, each against one GPU's reply alone, to the bit)
+    let (cuts, devices) = crate::dynamic::split::split_args(a)?;
+    let tp = crate::dynamic::split::tp_args(a)?;
+    if !cuts.is_empty() || tp.is_some() {
+        fails +=
+            sample_routes(case, level, &prompts, &|u| reply(u), &kinds.iter().map(|k| k.0.to_string()).collect::<Vec<_>>(), &cuts, &devices, tp.as_deref())?;
+    }
     // the host's time a step for rows of a vocabulary's size (--vocab 0: none)
     let tv: usize = a.num("vocab", 262_144usize)?;
     for rows in [8usize, 64].into_iter().filter(|_| tv > 0) {
@@ -6930,8 +6994,95 @@ pub fn sample_check(a: &crate::args::Args) -> Result<()> {
     if fails > 0 {
         return err(format!("{fails} checks failed"));
     }
-    println!("PASS samplecheck {case}: {users} requests");
+    println!("PASS samplecheck {case}: {users} requests, no row read on the host");
     Ok(())
+}
+
+/// `samplecheck`'s routes: the case's random model opened on one GPU and cut into stages (`cuts` on `devices`) or across the GPUs `tp` (`split::open`, `open_tp`), each request
+/// (`reply(u)` to `prompts[u]`) through the scheduler of each, one at a time (a stage or a group holds one sequence): on the stages or across GPUs, the tokens and
+/// log-probabilities one GPU's of the request alone, to the bit, and no row read on the host (the last stage, the group's first GPU, make the candidates and answer the draws
+/// as one GPU does). The checks failed.
+#[allow(clippy::too_many_arguments)]
+fn sample_routes(
+    case: &str,
+    level: &str,
+    prompts: &[Vec<u32>],
+    reply: &dyn Fn(usize) -> crate::sched::Reply,
+    names: &[String],
+    cuts: &[usize],
+    devices: &[i32],
+    tp: Option<&[i32]>,
+) -> Result<usize> {
+    use crate::conv::Gen;
+    use crate::sampler::Lp;
+    use crate::sched::{Ev, Sched, Submit};
+    let dir = std::env::temp_dir().join(format!("glyd-samplecheck-routes-{case}-{}", std::process::id()));
+    let r = (|| -> Result<usize> {
+        random_model(case, &dir)?;
+        let o = dyn_opts(level_layout(level)?.or(Some(Layout::Tiered)));
+        // each request alone through a step's scheduler: its tokens and log-probabilities, the rows its draws read
+        let serve = |e: &mut crate::dynamic::split::Run, u: usize| -> Result<(Vec<u32>, Vec<Lp>, u64)> {
+            let Some((k, step)) = e.as_step(1)? else { return err("no scheduler's step") };
+            let mut s = Sched::new(step, k).keeping(false);
+            let (tx, rx) = std::sync::mpsc::channel();
+            s.submit(Submit {
+                prompt: prompts[u].clone(),
+                reply: reply(u),
+                out: tx,
+                abort: Default::default(),
+                resumed: Default::default(),
+                cached: Default::default(),
+                created: Default::default(),
+                salt: 0,
+                pin: 0,
+                images: Vec::new(),
+            });
+            while !s.idle() {
+                s.tick()?;
+            }
+            let (mut toks, mut lps) = (Vec::new(), Vec::new());
+            loop {
+                match rx.recv().map_err(|_| Error("the scheduler dropped a sequence".into()))? {
+                    Ev::Token(t) => toks.push(t),
+                    Ev::Lp(l) => lps.push(l),
+                    Ev::End(f) => {
+                        f.map_err(|e| Error(e.msg))?;
+                        return Ok((toks, lps, s.stats.row_reads));
+                    }
+                }
+            }
+        };
+        let mut one = crate::dynamic::split::open(&dir, &o, &[], &devices[..1])?;
+        let want: Vec<(Vec<u32>, Vec<Lp>, u64)> = (0..prompts.len()).map(|u| serve(&mut one, u)).collect::<Result<_>>()?;
+        drop(one);
+        let (mut other, route) = match tp {
+            Some(d) => (crate::dynamic::split::open_tp(&dir, &o, d)?, format!("across GPUs {d:?}")),
+            None => (crate::dynamic::split::open(&dir, &o, cuts, devices)?, format!("cut before {cuts:?} on GPUs {devices:?}")),
+        };
+        let bits = |l: &Lp| (l.token, l.logprob.to_bits(), l.top.iter().map(|&(t, x)| (t, x.to_bits())).collect::<Vec<_>>());
+        let (mut fails, mut reads) = (0, 0);
+        for (u, w) in want.iter().enumerate() {
+            let got = serve(&mut other, u)?;
+            reads += got.2;
+            let same = got.0 == w.0 && got.1.iter().map(bits).eq(w.1.iter().map(bits));
+            let ok = same && got.2 == 0;
+            fails += !ok as usize;
+            println!(
+                "{} {case} {route}, request {u} ({}; {} tokens, {} log-probabilities): {}; {} rows read on the host (one GPU's {})",
+                if ok { "PASS" } else { "FAIL" },
+                names[u % names.len()],
+                got.0.len(),
+                got.1.len(),
+                if same { "one GPU's reply alone, to the bit".to_string() } else { format!("{:?} against one GPU's {:?}", got.0, w.0) },
+                got.2,
+                w.2
+            );
+        }
+        println!("{case} {route}: {} requests, {fails} not one GPU's, {reads} rows read on the host", want.len());
+        Ok(fails)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    r
 }
 
 /// `samplecheck`'s time: for `rows` requests of a vocabulary of `v` on `e`'s GPU, each with the repetition, presence and frequency penalties over a prompt of 2,000 tokens, a bias and a
@@ -7013,7 +7164,7 @@ fn time_rows(e: &Dyn, rows: usize, v: usize) -> Result<(f64, f64)> {
         for (r, s) in gpu_s.iter_mut().enumerate() {
             // SAFETY: the candidates were copied above, the stream synchronized since
             let cands = unsafe { crate::kern::read_candidates(host.as_ptr(), 0, 4 * rows * crate::kern::TOPK, r) };
-            toks.push(s.sample_proc(&cands, None).ok_or_else(|| Error("a draw from the candidates was not shown".into()))?);
+            toks.push(s.sample_view(&mut CandsOnly(cands)).ok_or_else(|| Error("a draw from the candidates was not shown".into()))?);
         }
         if step >= warm {
             gpu_t += t.elapsed().as_secs_f64();
@@ -7023,6 +7174,24 @@ fn time_rows(e: &Dyn, rows: usize, v: usize) -> Result<(f64, f64)> {
         }
     }
     Ok((host_t * 1e3 / steps as f64, gpu_t * 1e3 / steps as f64))
+}
+
+/// A row's candidates alone as a GPU's view of it: all a draw of a top-k within them takes (`time_rows`).
+struct CandsOnly(Vec<(u32, f32)>);
+
+impl crate::sampler::View for CandsOnly {
+    fn cands(&mut self) -> Option<Vec<(u32, f32)>> {
+        Some(self.0.clone())
+    }
+    fn bins(&mut self, _: &crate::sampler::Query) -> Option<crate::sampler::Bins> {
+        None
+    }
+    fn tokens(&mut self, _: &crate::sampler::Query, _: usize) -> Option<Vec<(u32, f32)>> {
+        None
+    }
+    fn logit(&mut self, _: u32) -> Option<f32> {
+        None
+    }
 }
 
 /// Replies' tokens and their sample logits' bits (each reply's in turn, its length first) as one SHA-256, in hex.

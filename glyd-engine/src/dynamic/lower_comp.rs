@@ -24,13 +24,15 @@ pub enum Piece {
 }
 
 /// How a product's matrix is read: a quantized matrix (FP8 with its scales; rows `rows` of it, or `groups` stacked groups each sliced on its own across GPUs), a bf16
-/// one (sliced across GPUs where `slice`), a table whose rows are looked up (held as the bf16 it is, an FP8 one decoded: exact), or none (another stage's embedding
-/// or head).
+/// one (sliced across GPUs where `slice`), a table whose rows are looked up (held as the bf16 it is, an FP8 one decoded: exact), such a table held on the host
+/// (`Rows`: its checkpoint's file mapped, the pass's rows gathered and copied up, src/dynamic/tables.rs; nothing of it on the GPU), or none (another stage's
+/// embedding or head).
 #[derive(Clone, Debug, PartialEq)]
 pub enum LinForm {
     Fp8 { rows: Option<(usize, usize)>, groups: usize },
     Bf16 { slice: bool },
     Table,
+    Rows,
     Absent,
 }
 
@@ -172,16 +174,21 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
     if ih > 64 {
         return err(format!("{what}: {ih} indexer heads: this engine runs up to 64"));
     }
-    if s0.lagged && st.layers.0 > 0 {
-        return err(format!("{what}: lagged streams on a stage after the first: the previous stage's block weights are not handed over"));
-    }
     let hpg = nh / og.max(1);
     let wo_cols = nh * hd / og.max(1);
     let (mut plan, mut n, mut rings, mut states, mut layers) = (Plan::default(), (0usize, 0usize), Vec::new(), Vec::new(), Vec::new());
     let mut made = vec![Made::default(); m.blocks.len()];
     // (the block whose pick ran last: the picks' buffer holds its rows)
     let mut picked_by = None;
-    let (mut first_lag, mut n_moe, mut overlap_any, mut engram_w) = (true, 0usize, false, (0usize, 0usize));
+    // (lagged streams: the model's first block collapses them one-hot; a stage after the first takes the weights of the block before it with the streams, `Slot::Lag`)
+    let (mut first_lag, mut n_moe, mut overlap_any) = (st.first, 0usize, false);
+    // (the n-gram blocks' slots, the model's widest whatever the stage: a cut hands every stage the same slots)
+    let engram_w = at.iter().filter_map(|x| x.0).fold((0usize, 0usize), |w, b| match &m.blocks[b].body {
+        Body::Ngram(g) => (w.0.max(g.dim), w.1.max((g.streams + 1) * d_)),
+        _ => w,
+    });
+    // (each n-gram block's table and where its kind holds it)
+    let mut tables: Vec<(usize, crate::runtime::kinds::TableAt)> = Vec::new();
     // (the smallest ratio a query reads every entry of, and an indexer's smallest: the model's, whatever the stage, as the buffers are sized by them)
     let min_nz = |a: usize, b: usize| if a == 0 { b } else { a.min(b) };
     let (mut all_ratio, mut idx_ratio) = (0usize, 0usize);
@@ -217,7 +224,7 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
         // (a part shared from a layer of another stage is not handed over)
         for b in c.share.iter().flat_map(|sh| [sh.entries, sh.picks, sh.candidates]).flatten() {
             if at.iter().position(|x| x.1 == b).is_none_or(|src| src < st.layers.0) {
-                return err(format!("{what}: layer {l} reads block {b}'s compressed attention, which this stage does not run"));
+                return err(format!("{} (block {b}'s, which this stage does not run)", split_apart_parts(l)));
             }
         }
         let mut ops = Vec::new();
@@ -225,7 +232,9 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
         if let Some(b) = ng {
             let Body::Ngram(g) = &m.blocks[b].body else { unreachable!("checked above") };
             ops.extend(ngram(&mut plan, &mut n, &mut states, vo, g, &d.blocks[b], b, d_)?);
-            engram_w = (engram_w.0.max(g.dim), engram_w.1.max((g.streams + 1) * d_));
+            if let Some(Op::NgramRows(x)) = ops.iter().rev().find(|op| matches!(op, Op::NgramRows(_))) {
+                tables.push((x.table, g.table));
+            }
         }
         let (sa, sf) = (streams(ab)?, streams(eb)?);
         let roles = &d.blocks[ab];
@@ -441,6 +450,14 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
         let norm = plan.small(vec![Piece::Tensor(d.final_norm.clone())]);
         layers.last_mut().ok_or_else(|| Error(format!("{what}: no layers")))?.push(Op::StreamsHead { mix, norm, round: s0.rounding });
     }
+    // (the tables read by rows held on the host (`tables::held`: as the kinds say, or a check's placement), each read there from its mapped file)
+    let host = super::tables::held(m, embed, lm, &tables);
+    for (k, x) in plan.lins.iter_mut().filter(|x| !x.f8).enumerate() {
+        if host.contains(&k) && matches!(x.form, LinForm::Table | LinForm::Bf16 { .. }) {
+            x.form = LinForm::Rows;
+        }
+    }
+    let host: Vec<usize> = host.into_iter().filter(|&k| plan.lins.iter().filter(|x| !x.f8).nth(k).is_some_and(|x| x.form == LinForm::Rows)).collect();
     let mut widths = [0usize; SLOTS];
     let wmax = if overlap_any || at.iter().any(|x| comp(x.1).overlap) { 2 * hd } else { hd };
     for (sl, w) in [
@@ -459,6 +476,7 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
         (Slot::Mid, og * ol),
         (Slot::M, og * ol),
         (Slot::O, d_),
+        (Slot::Lag, if s0.lagged { 8 } else { 0 }),
     ] {
         widths[sl as usize] = w;
     }
@@ -493,7 +511,7 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
         post: None,
         hc: (s0.eps, s0.sinkhorn_iters as i32),
         logit_mult: 0.0,
-        host: Vec::new(),
+        host,
         context: Vec::new(),
         v4: Some(V4Dims { heads: nh, idx_heads: ih, topk: itop, window: c0.window, all_ratio, sim: vo.sim, o_groups: og, idx_ratio }),
     };
@@ -556,7 +574,24 @@ impl super::lower::Lowered for Lowered {
                 x.form = LinForm::Absent;
             }
         }
+        let ends = [self.desc.embed, self.desc.lm];
+        self.desc.host.retain(|k| !ends.contains(k));
     }
+}
+
+/// The words for a stage whose layer `l` reads a compressed part (entries, picks, candidate blocks: `CompShare`) of a layer of another stage.
+pub(crate) fn split_apart_parts(l: usize) -> String {
+    format!("a compressed attention model: layer {l} reads a compressed part of a layer of another stage: a split must keep them together")
+}
+
+/// Whether the config.json `text` describes a compressed attention that reads parts of another layer's (`CompShare`: DeepSeek-V4.1's).
+pub(crate) fn shares_parts(text: &str) -> bool {
+    serde_json::from_str(text).ok().and_then(|v| crate::runtime::describe::describe(&v).ok()).is_some_and(|d| {
+        d.desc
+            .blocks
+            .iter()
+            .any(|b| matches!(&b.body, Body::Mixer(Mixer::Compressed(c)) if c.share.is_some_and(|s| s.entries.or(s.picks).or(s.candidates).is_some())))
+    })
 }
 
 /// The pick of an indexer of `heads` over entries of `ratio` tokens (state `keys`), its `top_k` best kept as entries, its scores the release's bf16 arithmetic.
@@ -671,6 +706,47 @@ mod tests {
         assert_eq!(plan.moe.len(), 6);
         assert_eq!(m.v4.as_ref().map(|v| (v.all_ratio, v.idx_ratio, v.sim)), Some((0, 1, false)));
         assert!(VO.sim && m.layers.iter().flatten().all(|op| !matches!(op, Op::Moe(MoeOp { fp8: true, .. }))));
+    }
+
+    /// The tiny DeepSeek-V4.1 cut into stages: a stage begins only where no layer at or after it reads a compressed part of a layer before it (its kv sources 1,
+    /// 3 and 5, index sources 1-4, candidate source 3: layers 1 and 3), which the planner's `stage_starts` says and the lowering keeps (another stage refused
+    /// in words); a stage after the first takes lagged mHC's weights of the block before it with the streams (`Slot::Lag`, handed over: none of its blocks
+    /// one-hot), the last collapses by them. Its Engram tables are read by rows on the host as the kind holds them (`LinForm::Rows`, `ModelDesc::host`).
+    #[test]
+    fn v41_stages_begin_where_no_part_is_shared_across_them() {
+        let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deepseek_v41_tiny_config.json")).unwrap();
+        let d = described("tests/fixtures/deepseek_v41_tiny_config.json");
+        let starts = crate::plan::sizing::stage_starts(&text, 6);
+        assert_eq!(starts, [true, true, false, true, false, false]);
+        for c in 1..6 {
+            let st = Stage { layers: (c, 6), first: false, last: true };
+            let r = lower(&d, vec![1], 4096, &st, &VO);
+            assert_eq!(r.is_ok(), starts[c], "a stage from layer {c}: {:?}", r.as_ref().err().map(|e| &e.msg));
+            if let Err(e) = r {
+                assert!(e.msg.starts_with(&split_apart_parts(c)), "{}", e.msg);
+                continue;
+            }
+            let (m, _) = r.unwrap();
+            let firsts: Vec<bool> = m
+                .layers
+                .iter()
+                .flatten()
+                .filter_map(|op| if let Op::StreamsPre { mix: StreamsMix::HcLagged { first, .. }, .. } = op { Some(*first) } else { None })
+                .collect();
+            assert!(firsts.len() == 2 * (6 - c) && firsts.iter().all(|f| !f), "{firsts:?}");
+            assert_eq!(m.width(Slot::Lag), 8);
+            assert!(crate::dynamic::handed_over(&m).contains(&(Slot::Lag, 8)));
+            // (what a cut hands over is the same on its two sides: the stage before, with no n-gram block of its own, sizes Engram's slots as the model)
+            let (before, _) = lower(&d, vec![1], 4096, &Stage { layers: (0, c), first: true, last: false }, &VO).unwrap();
+            assert_eq!(crate::dynamic::handed_over(&before), crate::dynamic::handed_over(&m), "a cut before {c}");
+        }
+        // (Engram's tables, before layers 1 and 4, on the host: the stage that runs each holds it there)
+        let (m, plan) = lower(&d, vec![1], 4096, &Stage::whole(6), &VO).unwrap();
+        let rows: Vec<usize> = plan.lins.iter().filter(|x| !x.f8).enumerate().filter(|(_, x)| x.form == LinForm::Rows).map(|(k, _)| k).collect();
+        assert!(rows.len() == 2 && m.host == rows, "{rows:?} {:?}", m.host);
+        assert!(plan.lins.iter().filter(|x| x.form == LinForm::Rows).all(|x| x.name.ends_with("engram.embed.weight")));
+        let (m, _) = lower(&d, vec![1], 4096, &Stage { layers: (1, 3), first: false, last: false }, &VO).unwrap();
+        assert_eq!(m.host.len(), 1);
     }
 
     /// Every tensor the plan reads is one the description says (its weight map: V4.1's shapes; DeepSeek-V4-Flash-0731's recorded header), the quantized ones with

@@ -400,9 +400,10 @@ impl Dyn {
         let n = seq.len();
         let mut io = Vec::new();
         self.verify_rows(&seq, n0, &mut io, n)?;
-        let (rows, words) = self.head_out(n, sampler.is_some())?;
+        let (rows, _) = self.head_out(n, false)?;
         let big: Vec<u32> = rows.iter().map(|r| r.0).collect();
-        let (out, kept) = super::accept(&seq, &big, &words, self.big.d.vocab, sampler);
+        // (each draft's check made of its row of the pass's head rows on the GPU: `verify_rows` marked them)
+        let (out, kept) = super::accept(&seq, &big, &mut crate::sched::Step(self), sampler)?;
         self.rewind(kept + 1)?;
         if block_of(&dr.p.d).is_some() {
             // (a block head: its context of the kept rows, the round's last token and the kept drafts)
@@ -602,6 +603,60 @@ fn drafted_run(
     Ok((got, rows, rounds))
 }
 
+/// Drafted replies with a sampler (each draft kept by its draw: `Sampler::check_draft`, the round's last token drawn): with the drafts' checks and draws made of each verify
+/// row on the GPU (`sched::check_row`: the row's candidates and its weights and tokens by range, no row read) against the same reply with every row read on the host
+/// (GLYD_ENGINE_HOST_SAMPLING's), seed for seed, at a top-p with penalties and at a min-p with a bias; and across the stages, the one GPU's. Whether every one holds, and no
+/// row was read on the host but the host's runs'.
+#[cfg(feature = "dev")]
+fn sampled_drafts(drafted: &mut Dyn, staged: Option<&mut super::split::Split>, prompts: &[&[u32]], tokens: usize) -> Result<bool> {
+    use crate::conv::Gen;
+    use crate::sampler::{Params, DRAWS};
+    use std::sync::atomic::Ordering::Relaxed;
+    let mut ok_all = true;
+    let mut staged = staged;
+    for (i, prompt) in prompts.iter().enumerate() {
+        for (what, params) in [
+            ("top-p 0.95, repetition 1.1", Params { temperature: 0.9, top_p: 0.95, repetition_penalty: 1.1, seed: 11 + i as u64, ..Params::default() }),
+            (
+                "min-p 0.05, presence 0.4, a bias",
+                Params { temperature: 1.1, min_p: 0.05, presence_penalty: 0.4, logit_bias: vec![(3, 2.0)], seed: 21 + i as u64, ..Params::default() },
+            ),
+        ] {
+            let reply = crate::sched::Reply { params, max_new: tokens, ignore_eos: true, logprobs: None, stop_ids: Vec::new() };
+            let read = || DRAWS[0].load(Relaxed);
+            let r0 = read();
+            drafted.host_sampling = false;
+            let (gpu, _) = drafted.reply(prompt, &reply, &mut |_| true)?;
+            let gpu_reads = read() - r0;
+            drafted.host_sampling = true;
+            let r1 = read();
+            let host = drafted.reply(prompt, &reply, &mut |_| true);
+            drafted.host_sampling = false;
+            let (host, _) = host?;
+            let host_reads = read() - r1;
+            let (staged_toks, staged_reads) = match staged.as_mut() {
+                Some(st) => {
+                    let r2 = read();
+                    let (t, _) = st.reply(prompt, &reply, &mut |_| true)?;
+                    (Some(t), read() - r2)
+                }
+                None => (None, 0),
+            };
+            let ok = gpu == host && gpu_reads == 0 && host_reads > 0 && staged_toks.as_ref().is_none_or(|t| *t == gpu) && staged_reads == 0;
+            ok_all &= ok;
+            println!(
+                "{} drafted with a sampler ({what}), a prompt of {}: {} tokens, {} the host's draws from the rows, seed for seed; rows read on the host {gpu_reads} (the host's run {host_reads}){}",
+                if ok { "PASS" } else { "FAIL" },
+                prompt.len(),
+                gpu.len(),
+                if gpu == host { "every token" } else { "NOT" },
+                staged_toks.map_or(String::new(), |t| format!("; across the stages {} the one GPU's, {staged_reads} rows read", if t == gpu { "every token" } else { "NOT" }))
+            );
+        }
+    }
+    Ok(ok_all)
+}
+
 /// The model of `case` in `dir` alone, and drafting with its head `k` tokens a round, each by its family's loader (`sim`: the compressed attention's model
 /// with the release's simulated quantizations, else without).
 #[cfg(feature = "dev")]
@@ -750,6 +805,7 @@ fn check_on(case: &str, dir: &std::path::Path, level: &str, k: usize, tokens: us
     // the head against the reference, a row of each pass on the state and the token it read, its experts and its indexer's picks the head's own
     let blocks = drafted.trace_block();
     let passes = drafted.trace_head(false);
+    bits_ok &= sampled_drafts(&mut drafted, staged.as_mut(), &[&short, &long], tokens)?;
     if !blocks.is_empty() {
         held_ok &= blocks_held(dir, &blocks, &fx, &bound, sim)?;
         return Ok((bits_ok, held_ok));

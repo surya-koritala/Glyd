@@ -207,6 +207,83 @@ fn plain(t: &Tokenizer) -> Tokenizer {
     t
 }
 
+/// The compressed vocabulary of a tokenizer (Engram's, `kinds::NgramForm::Engram`: DeepSeek-V4.1 hashes its n-grams over it): each of its tokens (the added ones
+/// with them, `get_vocab_size(true)`) an id there, numbered in the order of the first token of each key. A token's key is its text decoded alone (the raw
+/// tokenizer's decode, special tokens kept) normalised: NFKC, NFD, accents stripped, lowercased, each run of spaces, tabs and line ends one space, then stripped
+/// (a token that is one space after that kept as it), so that " The", "the" and "THE" share an id; a text that normalises to nothing is its own key, and a token
+/// whose text alone is not whole UTF-8 (a byte of a character: U+FFFD in its decode) is keyed by its name. The ids and their count. The release's inference
+/// code builds it so, with this library's normalizers.
+pub fn compressed_vocab(t: &Tokenizer) -> Result<(Vec<u32>, usize)> {
+    use tokenizers::normalizers::{replace::ReplacePattern, Lowercase, Replace, Sequence, Strip, StripAccents, NFD, NFKC};
+    use tokenizers::{NormalizedString, Normalizer, NormalizerWrapper as N};
+    let e = |x: tokenizers::Error| Error(format!("the compressed vocabulary's normalizer: {x}"));
+    // (a private-use character keeps a token that is one space from the strip after it)
+    let one = "\u{e000}";
+    let norm = Sequence::new(vec![
+        N::NFKC(NFKC),
+        N::NFD(NFD),
+        N::StripAccents(StripAccents),
+        N::Lowercase(Lowercase),
+        N::Replace(Replace::new(ReplacePattern::Regex("[ \t\r\n]+".into()), " ").map_err(e)?),
+        N::Replace(Replace::new(ReplacePattern::Regex("^ $".into()), one).map_err(e)?),
+        N::StripNormalizer(Strip::new(true, true)),
+        N::Replace(Replace::new(ReplacePattern::String(one.into()), " ").map_err(e)?),
+    ]);
+    let (n, mut keys) = (t.get_vocab_size(true), std::collections::HashMap::<String, u32>::new());
+    let mut map = Vec::with_capacity(n);
+    for id in 0..n as u32 {
+        let text = t.decode(&[id], false).map_err(|x| Error(format!("token {id}: {x}")))?;
+        let key = if text.contains('\u{fffd}') {
+            t.id_to_token(id).unwrap_or(text)
+        } else {
+            let mut s = NormalizedString::from(text.as_str());
+            norm.normalize(&mut s).map_err(e)?;
+            if s.get().is_empty() {
+                text
+            } else {
+                s.get().to_string()
+            }
+        };
+        let next = keys.len() as u32;
+        map.push(*keys.entry(key).or_insert(next));
+    }
+    Ok((map, keys.len()))
+}
+
+/// The compressed vocabulary of the model in `dir` for its Engram blocks, as wide as its vocabulary (`vocab`): the directory's `engram_token_map.json` where it
+/// has one (a list, each token's id: a random model's own), else its tokenizer's (`compressed_vocab` of tokenizer.json), which must number `size` ids (the
+/// config's `engram_compressed_vocab_size`: the hash's multipliers are made from it, so another count would hash every n-gram elsewhere); the ids past the
+/// tokenizer's tokens (rows of the model's no text holds) are the pad token's (`pad`). None where the directory has neither file.
+pub fn engram_map(dir: &Path, vocab: usize, size: usize, pad: u32) -> Result<Option<Vec<u32>>> {
+    let file = dir.join("engram_token_map.json");
+    let map = match std::fs::read_to_string(&file) {
+        Ok(text) => serde_json::from_str::<Vec<u32>>(&text).map_err(|e| Error(format!("{}: {e}", file.display())))?,
+        Err(_) if dir.join("tokenizer.json").exists() => {
+            let p = dir.join("tokenizer.json");
+            let bytes = std::fs::read(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+            let t = parse(&bytes).map_err(|e| Error(format!("{}: {e}", p.display())))?;
+            let (mut map, n) = compressed_vocab(&t)?;
+            if n != size {
+                return Err(Error(format!(
+                    "{}: its tokens make a compressed vocabulary of {n} ids, where the config's engram_compressed_vocab_size is {size}",
+                    p.display()
+                )));
+            }
+            if map.len() > vocab {
+                return Err(Error(format!("{}: {} tokens for a model of {vocab}", p.display(), map.len())));
+            }
+            let pad = map.get(pad as usize).copied().ok_or_else(|| Error(format!("{}: no token {pad}, Engram's pad", p.display())))?;
+            map.resize(vocab, pad);
+            map
+        }
+        Err(_) => return Ok(None),
+    };
+    if map.len() != vocab || map.iter().any(|&x| x as usize >= size) {
+        return Err(Error(format!("{}: {} ids for a vocabulary of {vocab}, each below {size}", file.display(), map.len())));
+    }
+    Ok(Some(map))
+}
+
 /// The end-of-sequence ids of the model's directory: generation_config.json's where it gives any, else config.json's (or its text_config's).
 fn ends_of(dir: &Path) -> Vec<u32> {
     let Some(config) = crate::runtime::config::ModelConfig::load(dir).ok() else {
@@ -349,6 +426,55 @@ pub(crate) mod tests {
         "normalizer":null,"pre_tokenizer":{"type":"Whitespace"},
         "post_processor":{"type":"TemplateProcessing","single":[{"SpecialToken":{"id":"<begin>","type_id":0}},{"Sequence":{"id":"A","type_id":0}}],"pair":[{"Sequence":{"id":"A","type_id":0}}],"special_tokens":{"<begin>":{"id":"<begin>","ids":[0],"tokens":["<begin>"]}}},
         "decoder":null,"model":{"type":"WordLevel","vocab":{"<begin>":0,"hello":1,"world":2,"<unk>":3},"unk_token":"<unk>"}}"#;
+
+    /// Engram's compressed vocabulary: tokens that normalise alike share an id, numbered by their first token (case, a leading space, accents, NFKC's
+    /// compatibility forms, runs of whitespace; a token of one space or of whitespace alone keeps a key of one space); a token whose decode alone is not
+    /// whole UTF-8 (a byte-level piece of a character) is keyed by its name. A directory's map is its `engram_token_map.json` where it has one, else its
+    /// tokenizer's padded to the model's vocabulary with the pad token's id; a tokenizer that makes another count than the config's is refused in words.
+    #[test]
+    fn engrams_compressed_vocabulary_is_the_tokenizers_normalised() {
+        let words = ["<unk>", "the", " The", "THE", " ", "\t", "\u{e9}", "e", "\u{fb01}", "fi", "\u{ff34}\u{ff48}\u{ff45}", "  x\n", "\n\n"];
+        let vocab: serde_json::Map<String, serde_json::Value> = words.iter().enumerate().map(|(i, w)| (w.to_string(), serde_json::json!(i))).collect();
+        let tok = |vocab: &serde_json::Map<String, serde_json::Value>, decoder: serde_json::Value| {
+            serde_json::json!({"version": "1.0", "truncation": null, "padding": null, "added_tokens": [], "normalizer": null, "pre_tokenizer": null,
+                "post_processor": null, "decoder": decoder, "model": {"type": "WordLevel", "vocab": vocab, "unk_token": "<unk>"}})
+            .to_string()
+        };
+        let plain = tok(&vocab, serde_json::Value::Null);
+        let (map, n) = compressed_vocab(&parse(plain.as_bytes()).unwrap()).unwrap();
+        assert_eq!((map, n), (vec![0, 1, 1, 1, 2, 2, 3, 3, 4, 4, 1, 5, 2], 6));
+        // (byte-level pieces: a lone lead byte of a two-byte character decodes to U+FFFD and is keyed by its name; the whole character as its normalised text)
+        let bytes: serde_json::Map<String, serde_json::Value> =
+            [("<unk>", 0), ("\u{c3}", 1), ("\u{c3}\u{a9}", 2), ("e", 3), ("\u{c4}", 4)].iter().map(|(w, i)| (w.to_string(), serde_json::json!(i))).collect();
+        let bl = tok(&bytes, serde_json::json!({"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": false, "use_regex": false}));
+        let (map, n) = compressed_vocab(&parse(bl.as_bytes()).unwrap()).unwrap();
+        assert_eq!((map, n), (vec![0, 1, 2, 2, 3], 4));
+        // (a directory: built from its tokenizer, padded with the pad's id to the model's 16; its own map file where it has one; a count not the config's refused)
+        let dir = std::env::temp_dir().join(format!("glyd-engram-map-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(engram_map(&dir, 16, 6, 4).unwrap(), None);
+        std::fs::write(dir.join("tokenizer.json"), &plain).unwrap();
+        let built = engram_map(&dir, 16, 6, 4).unwrap().unwrap();
+        assert_eq!(built, [0, 1, 1, 1, 2, 2, 3, 3, 4, 4, 1, 5, 2, 2, 2, 2]);
+        let e = engram_map(&dir, 16, 7, 4).unwrap_err().msg;
+        assert!(e.contains("compressed vocabulary of 6 ids") && e.contains("engram_compressed_vocab_size is 7"), "{e}");
+        std::fs::write(dir.join("engram_token_map.json"), serde_json::to_string(&(0..16).map(|t| t % 5).collect::<Vec<u32>>()).unwrap()).unwrap();
+        assert_eq!(engram_map(&dir, 16, 6, 4).unwrap().unwrap(), (0..16).map(|t| t % 5).collect::<Vec<u32>>());
+        assert!(engram_map(&dir, 17, 6, 4).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The release's own tokenizer (DeepSeek-V4.1-Flash-1017's tokenizer.json, public; not in the tree: GLYD_V41_TOKENIZER=its path) makes the compressed
+    /// vocabulary its config names: engram_compressed_vocab_size 99,092 ids for its 129,280 tokens, the pad (id 2) one of them.
+    #[test]
+    #[ignore = "needs the release's tokenizer.json: GLYD_V41_TOKENIZER=PATH"]
+    fn the_releases_tokenizer_makes_its_compressed_vocabulary() {
+        let Some(p) = std::env::var_os("GLYD_V41_TOKENIZER") else { return };
+        let t = parse(&std::fs::read(&p).unwrap()).unwrap();
+        let (map, n) = compressed_vocab(&t).unwrap();
+        assert_eq!((map.len(), n), (129_280, 99_092));
+        assert!(map.iter().all(|&x| (x as usize) < n));
+    }
 
     /// A syntax error inside a tokenizer.json's `decoder` was a panic of the `tokenizers` crate (it `expect`s), and a bad file is an error.
     #[test]

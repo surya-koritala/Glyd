@@ -106,7 +106,8 @@ When the design was written a model ran on one of two kinds of code:
 
 Only `model.rs` batched (up to `MAX_ROWS = 8`, `model.rs:71`) and only it had the paged lossless KV cache. Every engine sampled on the host
 from GPU top-k candidates (`TopGpu`), and synced the device every step. As built: `model.rs` is deleted, and the executor batches every
-family's rows over paged keys and values (`dynamic/rows.rs`, `dynamic/pages.rs`).
+family's rows over paged keys and values (`dynamic/rows.rs`, `dynamic/pages.rs`); `TopGpu` is deleted too, and every route (one GPU, a split's last stage, a
+tensor-parallel group's first GPU, a range worker, drafted rows) draws through `sched::draw_row` from what the GPU makes of the row (`sampler::View`), never the row.
 
 Kernels live in two places. Every `kernels/*.cu` is included into `kernels/engine.cu` (lines 1006-1021) and built into the engine's fatbin;
 the `Kern*` structs call it. The packed dense products (`mma`, `mma12` and unpack), FP8 products, the grouped MoE (`moe`, `moe_way`)
@@ -491,9 +492,10 @@ Two details the records found that the policy keeps:
 step `overlaps` and every sequence that samples in step N takes its largest logit (greedy, no log-probabilities). A decode row whose token
 step N chose names its head row (`Row::after`, the `Tok::Prev` above); the executor's `step_ids` kernel makes the step's int64 token ids
 from the host's tokens and step N's head (`tok`, the argmax), and the library's `mma_rows` looks the embedding's rows up by them on the GPU,
-bit for bit the rows `unpack` gives. A step that draws, or asks for log-probabilities, lands before the next is launched: its rows are
-read on the host; its candidates (the 64 largest logits a row, `top`) are queued with the step and copied back with its samples
-(`ModelStep::draws`), so the draw waits for nothing more. Every step of the scheduler goes through `launch` and `finish` (a model whose
+bit for bit the rows `unpack` gives. A step that draws, or asks for log-probabilities, lands before the next is launched: its draws are
+made on the host from what the GPU made of its rows; its candidates (the 64 largest logits a row, `top`) and the total of a draw's weights
+or a row's log-sum-exp (`Sum`) are queued with the step and copied back with its samples (`ModelStep::draws`), so a draw whose cut and
+point lie among the candidates waits for nothing more (one past them asks the GPU for ranges of the row: `sampler::select`). Every step of the scheduler goes through `launch` and `finish` (a model whose
 rounds are two passes launches its prompt pass and its decode step each to run at once). A sequence whose token in flight is its last by its length has no row in the next step; one that ends on a stop token
 or the end-of-sequence token has had its row in the next step run, and that row's output is not taken.
 

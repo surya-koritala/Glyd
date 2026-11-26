@@ -312,6 +312,8 @@ fn load_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store:
     // a plan's tensors loaded (the model's; a draft head's, `model` false: no hummingbird rows or expert cache for its experts, which are its own layers')
     let load_plan = |desc: &ModelDesc, plan: &super::lower_comp::Plan, model: bool| -> Result<super::Loaded> {
         let (mut mats, mut f8): (Vec<Mat>, Vec<crate::f8::F8Mat>) = Default::default();
+        // (the tables read by rows on the host: the checkpoint's files mapped, one mapping a file)
+        let (mut host, mut maps) = (Vec::new(), std::collections::HashMap::new());
         // the products' matrices, in the plan's order: the large FP8 ones held FP8 as released where the lowering says (`LinLoad::f8`: the level and their size), the rest as
         // the bf16 they are or decode to, packed lossless (or at the level asked)
         for x in &plan.lins {
@@ -359,6 +361,12 @@ fn load_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store:
                     let (rows, cols) = dims(&x.name)?;
                     mats.push(Mat::Dense(upload_bytes(as_bytes(&dense(&x.name, 0, rows)?))?, rows, cols));
                 }
+                LinForm::Rows => {
+                    let (rows, cols) = dims(&x.name)?;
+                    let it = crate::weights::Item { members: vec![x.name.clone()], rows, cols };
+                    host.push((mats.len(), super::tables::HostTable::open(&ck, &it, &mut maps)?));
+                    mats.push(Mat::Dense(Buf::new(2)?, 0, 0));
+                }
                 LinForm::Absent => mats.push(Mat::Dense(Buf::new(2)?, 0, 0)),
             }
         }
@@ -368,12 +376,20 @@ fn load_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store:
             return err(format!("{label}: {} matrices and {} FP8 ones loaded for a description of {} and {}", mats.len(), f8.len(), want.0, want.1));
         }
         // the small tensors: each its pieces one after another (a tensor as stored, zeros, the lowering's numbers, the tokenizer's compressed vocabulary)
+        // (Engram's compressed vocabulary: the directory's map, else its tokenizer's, src/tok.rs `engram_map`)
         let token_map = || -> Result<Vec<u8>> {
-            let p = dir.join("engram_token_map.json");
-            let v: Vec<i64> = serde_json::from_str(&io(std::fs::read_to_string(&p))?).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-            if v.len() != desc.vocab {
-                return err(format!("{}: {} ids for a vocabulary of {}", p.display(), v.len(), desc.vocab));
-            }
+            let g = kinds
+                .desc
+                .blocks
+                .iter()
+                .find_map(|b| match &b.body {
+                    Body::Ngram(g) if g.form == crate::runtime::kinds::NgramForm::Engram => Some(*g),
+                    _ => None,
+                })
+                .ok_or_else(|| Error(format!("{label}: a compressed vocabulary, and no Engram block reads one")))?;
+            let v = crate::tok::engram_map(dir, desc.vocab, g.vocab, g.eos)?.ok_or_else(|| {
+                Error(format!("{}: no engram_token_map.json and no tokenizer.json, of which Engram's compressed vocabulary is made", dir.display()))
+            })?;
             Ok(v.iter().flat_map(|&t| (t as i32).to_le_bytes()).collect())
         };
         let sm: Vec<Buf> = plan
@@ -425,7 +441,14 @@ fn load_with(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store:
                 &dense,
             )?);
         }
-        Ok(super::Loaded { mats, f8, small: sm, moe, ..Default::default() })
+        if host.iter().map(|h| h.0).ne(desc.host.iter().copied()) {
+            return err(format!(
+                "{label}: tables on the host {:?}, where the description holds {:?} there",
+                host.iter().map(|h| h.0).collect::<Vec<_>>(),
+                desc.host
+            ));
+        }
+        Ok(super::Loaded { mats, f8, small: sm, moe, host, ..Default::default() })
     };
     let loaded = load_plan(&desc, &plan, true)?;
     let mp = ctx + ch + 16;

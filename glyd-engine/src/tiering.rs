@@ -81,8 +81,8 @@ pub struct TieredPlaces {
 }
 
 impl TieredPlaces {
-    /// The pack `p` of `experts` experts' matrices stacked ([experts rows, cols]) cut per expert.
-    pub fn of(p: &glyd_gpu::pack::Tiered, experts: usize) -> Result<TieredPlaces> {
+    /// The pack `p` of `experts` experts' matrices stacked ([experts rows, cols]) cut per expert (its steps' bytes kept as they are, not copied).
+    pub fn of(p: glyd_gpu::pack::Tiered, experts: usize) -> Result<TieredPlaces> {
         use glyd_gpu::pack::block_start;
         if experts == 0 || !p.rows.is_multiple_of(experts) || !(p.rows / experts).is_multiple_of(64) || !p.cols.is_multiple_of(16) || p.tiers[0] >> 24 != 2 {
             return err(format!("a tiered pack of {} x {} (layout {}) as {experts} experts' places", p.rows, p.cols, p.tiers[0] >> 24));
@@ -120,7 +120,7 @@ impl TieredPlaces {
                 entries.extend(((block_start(v) - lo) as i32 | flag).to_le_bytes());
             }
         }
-        Ok(TieredPlaces { tiers: p.tiers, experts, rows, cols, steps, stride, data: p.data.clone(), blocks, entries })
+        Ok(TieredPlaces { tiers: p.tiers, experts, rows, cols, steps, stride, data: p.data, blocks, entries })
     }
 
     /// An expert's bytes of steps, of blocks, of block entries.
@@ -1220,7 +1220,7 @@ mod tests {
             .collect();
         let p = glyd_gpu::pack::pack_tiered_checked(&w, experts * rows, cols).expect("a lossless pack");
         assert!(p.block_base[..experts * rows * cols / 1024].iter().any(|&v| v < 0), "some step takes the general decode (its flag)");
-        let pl = TieredPlaces::of(&p, experts).unwrap();
+        let pl = TieredPlaces::of(p.clone(), experts).unwrap();
         assert_eq!(pl.strides(), [(pl.steps * 1280) as u64, pl.stride as u64, ((pl.steps + 1) * 4) as u64]);
         assert!(pl.stride.is_multiple_of(128) && pl.blocks.len() == experts * pl.stride);
         for e in 0..experts {
@@ -1239,6 +1239,6 @@ mod tests {
             }
         }
         // (a stack that is not whole experts' is refused)
-        assert!(TieredPlaces::of(&p, 5).is_err());
+        assert!(TieredPlaces::of(p, 5).is_err());
     }
 }
