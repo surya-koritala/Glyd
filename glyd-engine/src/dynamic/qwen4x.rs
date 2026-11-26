@@ -300,8 +300,10 @@ fn parts(snap: &Path, k: &Caching, o: &Opts, gpus: &[i32], a: &crate::args::Args
     let names = |ks: Vec<usize>| -> std::collections::HashSet<&str> { ks.into_iter().flat_map(|k| d.mats[k].members.iter().map(String::as_str)).collect() };
     let (saved, host) = (names(held_as_saved(&d, &whole).into_iter().filter(|k| !d.host.contains(k)).collect()), names(d.host.clone()));
     let bytes = |pct: u64, keep: &dyn Fn(&str) -> bool| super::split::layer_bytes_where(snap, c.layers, 100, pct, keep);
-    let (packed, base) = bytes(bf16_pct(o.layout), &|n| !n.contains(".mlp.experts.") && !saved.contains(n) && !host.contains(n))?;
-    let dense: Vec<u64> = packed.iter().zip(bytes(100, &|n| saved.contains(n))?.0).map(|(a, b)| a + b).collect();
+    // (a table stored at 4 bits by the name it stands for: `formats::stands_for`)
+    let is = |set: &std::collections::HashSet<&str>, n: &str| set.contains(crate::formats::stands_for(n).as_ref());
+    let (packed, base) = bytes(bf16_pct(o.layout), &|n| !n.contains(".mlp.experts.") && !is(&saved, n) && !is(&host, n))?;
+    let dense: Vec<u64> = packed.iter().zip(bytes(100, &|n| is(&saved, n))?.0).map(|(a, b)| a + b).collect();
     let free = gpus.iter().map(|&g| Ok((g, Dev::probe(g)?.free))).collect::<Result<Vec<_>>>()?;
     let room = crate::plan::sizing::part_rooms(&free, reserve_for(&d, k.users, &whole));
     let (cuts, devices, _) = super::split::places_plan(&dense, base, &vec![true; c.layers], &room, place, kept, 1)
@@ -504,7 +506,8 @@ pub fn get(repo: &str, dir: &Path, a: &crate::args::Args) -> Result<()> {
 }
 
 /// `glyd-engine servecheck CASE [--tokens N] [--gpus G,.. --split CUT,..]`: the family's HTTP server (`http`) on the expert cache's random case
-/// (`logits::qwen4x_cb_random`, CASE `qwen4x-cb`: its pack, a tokenizer and chat template made for it) against the common scheduler in this process on the same
+/// (`logits::qwen4x_cb_random`, CASE `qwen4x-cb`: its pack, a tokenizer and chat template made for it; or `qwen4x-rel`, the release's form: a slim checkpoint,
+/// its n-gram table at 4 bits, `logits::qwen4x_release_random`) against the common scheduler in this process on the same
 /// model, pack and places on one GPU (`load_cached` as `http` loads it): for a short prompt and one past a chunk, the served completion's tokens (greedy, N of
 /// them, by their ids) the scheduler's for the same tokens. With `--gpus` and `--split` the server cuts the layers over those GPUs (`open_cached`), which the
 /// one-GPU scheduler's tokens then hold to. An error where one differs.
@@ -513,13 +516,15 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
     use crate::sched::{Ev, Finish, Reply, Sched, Submit};
     use std::io::{Read, Write};
     let case = a.need(1, "CASE")?;
-    if case != "qwen4x-cb" {
-        return err(format!("servecheck {case}: the served case is qwen4x-cb (the family's random model with its pack of experts)"));
+    if !matches!(case, "qwen4x-cb" | "qwen4x-rel") {
+        return err(format!(
+            "servecheck {case}: the served cases are qwen4x-cb (the family's random model with its pack of experts) and qwen4x-rel (the release's form: a slim checkpoint, its n-gram table at 4 bits, its pack beside it)"
+        ));
     }
     let tokens = a.num("tokens", 16usize)?;
     let dir = std::env::temp_dir().join(format!("glyd-servecheck-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| crate::ffi::Error(e.to_string()))?;
-    crate::logits::qwen4x_cb_random(&dir)?;
+    crate::logits::random_model(case, &dir)?;
     crate::logits::write_serving_files(&dir, include_str!("../../tests/fixtures/chat_qwen38_tools.jinja"))?;
     let pack = dir.join("pack");
     let (ctx, chunk, places, users) = (1024usize, 64usize, 3usize, 2usize);

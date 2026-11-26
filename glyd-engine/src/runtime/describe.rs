@@ -120,21 +120,32 @@ impl Described {
         s
     }
 
+    /// The routed experts' tensors it reads (the Moe kind's `experts_*` roles, the draft heads' too).
+    pub fn routed_experts(&self) -> BTreeSet<String> {
+        let heads = self.mtp.iter().flat_map(|(blocks, _)| blocks.iter());
+        self.blocks.iter().chain(heads).flatten().filter(|(r, _)| r.starts_with("experts_")).flat_map(|(_, s)| s.names()).collect()
+    }
+
+    /// Whether a checkpoint of the tensor names `have` is slim: it holds none of the routed experts the description reads (in any stored form, `stored`),
+    /// where it reads some; a codes pack holds them (Glyd's release of Qwen3.8-Flash-Next: `model/` beside its packs).
+    pub fn slim(&self, have: &BTreeSet<String>) -> bool {
+        let routed = self.routed_experts();
+        !routed.is_empty() && !routed.iter().any(|n| stored(have, n, false))
+    }
+
     /// The weight map against a checkpoint's safetensors index (`have`): every tensor it reads is there; with `all`, as the config says it (a quantized
     /// matrix with its scales), and every tensor there is read but the parts the description leaves (`unread`). Without `all`, which a loader asks, a
-    /// matrix is there in either stored form (`.weight`, or compressed-tensors' `.weight_packed`) and its scales are not asked: the format is the loader's
-    /// to read from the checkpoint. An error names the convention, how many differ and the first of them.
+    /// matrix is there in any stored form (`stored`), its scales are not asked (the format is the loader's to read from the checkpoint), and a checkpoint
+    /// may hold none of the routed experts (`slim`: a codes pack holds them, which its loader is given; a loader that reads them from the checkpoint names
+    /// them missing). An error names the convention, how many differ and the first of them.
     pub fn check(&self, have: &BTreeSet<String>, all: bool) -> Result<()> {
         let few = |v: &[String]| {
             let (n, first) = (v.len(), v.iter().take(4).cloned().collect::<Vec<_>>().join(", "));
             format!("{n} tensor{}: {first}{}", if n == 1 { "" } else { "s" }, if n > 4 { ", ..." } else { "" })
         };
         let scales: BTreeSet<&String> = self.scales.values().collect();
-        let stored = |n: &String| {
-            let base = n.strip_suffix(".weight_packed").or(n.strip_suffix(".weight"));
-            have.contains(n) || (!all && base.is_some_and(|b| have.contains(&format!("{b}.weight")) || have.contains(&format!("{b}.weight_packed"))))
-        };
-        let missing: Vec<String> = self.names().into_iter().filter(|n| !stored(n) && (all || !scales.contains(n))).collect();
+        let routed = if !all && self.slim(have) { self.routed_experts() } else { BTreeSet::new() };
+        let missing: Vec<String> = self.names().into_iter().filter(|n| !stored(have, n, all) && (all || !scales.contains(n)) && !routed.contains(n)).collect();
         if !missing.is_empty() {
             return err(format!("the description reads tensors that are not in the checkpoint ({} names), {}", self.convention, few(&missing)));
         }
@@ -146,6 +157,15 @@ impl Described {
         }
         Ok(())
     }
+}
+
+/// Whether `have` holds the tensor `n` a description reads: as named, or (`!all`, a loader's check) in another stored form of a matrix: `.weight`,
+/// compressed-tensors' `.weight_packed`, or a table read by rows at 4 bits (`X.q4`, `formats::q4_name`).
+fn stored(have: &BTreeSet<String>, n: &str, all: bool) -> bool {
+    let base = n.strip_suffix(".weight_packed").or(n.strip_suffix(".weight"));
+    have.contains(n)
+        || (!all
+            && base.is_some_and(|b| have.contains(&format!("{b}.weight")) || have.contains(&format!("{b}.weight_packed")) || have.contains(&format!("{b}.q4"))))
 }
 
 /// The description of the model in `dir`, from its config.json alone, and the file's path for the words of an error. A directory in the Hub's format (its

@@ -5,7 +5,9 @@
 //! pass: the embedding's into X where the pass begins (`Dyn::embed`), an n-gram block's into its slot where its operation runs (`Op::NgramRows`: staged with
 //! the pass's tokens, the copy a node of a step's graph), their ids from the pass's tokens and each sequence's last two tokens as its state on the GPU holds
 //! them (kernels/qwen4x.cu `qx_ngram_rows`'s hash, the same ids). Nothing of such a table is on the GPU, and the planner counts its bytes in the computer's
-//! memory (`off_gpu`). GLYD_TABLES=gpu or =host (a development build's, or `force` in a check) holds every such table on the GPU, or on the host.
+//! memory (`off_gpu`), at the bytes it is stored in. A table may be stored at 4 bits (`formats::q4_name`: NF4 codes and a bf16 scale a row, Glyd's slim
+//! checkpoints' n-gram table), its rows decoded as they are gathered: the rows staged are bf16 either way (v0.34.2's decode). GLYD_TABLES=gpu or =host (a
+//! development build's, or `force` in a check) holds every such table on the GPU (a table at 4 bits as the bf16 it decodes to), or on the host.
 
 use super::ngram::NgramRows;
 use super::{Dyn, ModelDesc, Op, Part};
@@ -70,25 +72,37 @@ pub fn host_names(text: &str) -> Vec<String> {
     out
 }
 
-/// The tensors of `table` the GPUs hold (the planner's table less the tables the description of `text` holds on the host, `host_names`), and the bytes of
-/// those in the computer's memory: the checkpoint's files mapped, the page cache's.
+/// The tensors of `table` the GPUs hold (the planner's table less the tables the description of `text` holds on the host, `host_names`, in either stored
+/// form: a table at 4 bits stands for its bf16 name, `formats::stands_for`), and the bytes of those in the computer's memory as stored: the checkpoint's
+/// files mapped, the page cache's.
 pub fn off_gpu(table: &crate::sizes::Table, text: &str) -> (crate::sizes::Table, u64) {
     let names: std::collections::HashSet<String> = host_names(text).into_iter().collect();
-    let (host, gpu): (Vec<_>, Vec<_>) = table.rows.iter().cloned().partition(|r| names.contains(&r.name));
+    let (host, gpu): (Vec<_>, Vec<_>) = table.rows.iter().cloned().partition(|r| names.contains(crate::formats::stands_for(&r.name).as_ref()));
     (crate::sizes::Table { rows: gpu }, host.iter().map(|r| r.bytes).sum())
 }
 
-/// A table read by rows on the host: each member's rows in its file mapped (the mapping, the offset of its first row, the table's row it begins at), zeros past
-/// them (an item padded with zero rows).
+/// A table read by rows on the host: each member's rows in its file mapped (`Piece`), zeros past them (an item padded with zero rows). A member is stored as
+/// the description names it (bf16 rows), or at 4 bits beside that name (`formats::q4_beside`: `X.q4` for `X.weight`, a row its bf16 scale and its NF4
+/// codes), whose rows are decoded as they are gathered (`formats::nf4_row`): the rows staged are bf16 either way, `row_bytes` each.
 pub struct HostTable {
-    pieces: Vec<(Arc<Mapping>, usize, usize)>,
+    pieces: Vec<Piece>,
     held: usize,
     pub rows: usize,
     pub row_bytes: usize,
 }
 
+/// A member of a table on the host: its mapping, the offset of its first row, the table's row it begins at, its bytes a row as stored and whether at 4 bits.
+struct Piece {
+    map: Arc<Mapping>,
+    off: usize,
+    at: usize,
+    stride: usize,
+    q4: bool,
+}
+
 impl HostTable {
-    /// Item `it` of `ck` (its members bf16 matrices of its columns, stacked), the files mapped through `maps` (one mapping a file), their bytes read at random.
+    /// Item `it` of `ck` (its members matrices of its columns, stacked: each bf16, or at 4 bits beside its name), the files mapped through `maps` (one mapping
+    /// a file), their bytes read at random.
     pub(super) fn open(ck: &Checkpoint, it: &Item, maps: &mut HashMap<PathBuf, Arc<Mapping>>) -> Result<HostTable> {
         let row_bytes = it.cols * 2;
         let (mut pieces, mut at) = (Vec::new(), 0usize);
@@ -99,10 +113,16 @@ impl HostTable {
                 }
                 continue;
             }
-            let (f, t) = ck.get(m).ok_or_else(|| Error(format!("{}: no tensor {m}", ck.dir.display())))?;
-            if t.dtype != "BF16" || t.shape.len() != 2 || t.shape[1] as usize != it.cols {
-                return err(format!("{m}: {} {:?}, where a bf16 table of {} columns is read by rows on the host", t.dtype, t.shape, it.cols));
-            }
+            let q4 = crate::formats::q4_beside(ck, m);
+            let name = q4.as_deref().unwrap_or(m);
+            let (f, t) = ck.get(name).ok_or_else(|| Error(format!("{}: no tensor {m}", ck.dir.display())))?;
+            let stride = match &q4 {
+                Some(_) => crate::formats::q4_row_bytes(&t.dtype, &t.shape, it.cols).ok_or_else(|| {
+                    Error(format!("{name}: {} {:?}, where a table of {} columns at 4 bits is U8 [rows, {}]", t.dtype, t.shape, it.cols, 2 + it.cols / 2))
+                })?,
+                None if t.dtype == "BF16" && t.shape.len() == 2 && t.shape[1] as usize == it.cols => row_bytes,
+                None => return err(format!("{m}: {} {:?}, where a bf16 table of {} columns is read by rows on the host", t.dtype, t.shape, it.cols)),
+            };
             let map = match maps.get(&f.path) {
                 Some(x) => x.clone(),
                 None => {
@@ -112,11 +132,11 @@ impl HostTable {
                 }
             };
             let (off, rows) = (t.offset as usize, t.shape[0] as usize);
-            if off + rows * row_bytes > map.len {
-                return err(format!("{m}: past the end of {}", f.path.display()));
+            if off + rows * stride > map.len {
+                return err(format!("{name}: past the end of {}", f.path.display()));
             }
-            map.random(off, rows * row_bytes);
-            pieces.push((map, off, at));
+            map.random(off, rows * stride);
+            pieces.push(Piece { map, off, at, stride, q4: q4.is_some() });
             at += rows;
         }
         if pieces.is_empty() || at > it.rows {
@@ -125,24 +145,25 @@ impl HostTable {
         Ok(HostTable { pieces, held: at, rows: it.rows, row_bytes })
     }
 
-    /// Row `r` as mapped; None past the members' rows (a zero row).
-    fn row(&self, r: usize) -> Option<&[u8]> {
+    /// Row `r` as mapped (as stored) and whether at 4 bits; None past the members' rows (a zero row).
+    fn row(&self, r: usize) -> Option<(&[u8], bool)> {
         if r >= self.held {
             return None;
         }
-        let (m, off, at) = &self.pieces[self.pieces.partition_point(|p| p.2 <= r) - 1];
+        let p = &self.pieces[self.pieces.partition_point(|p| p.at <= r) - 1];
         // SAFETY: inside the mapping (checked at `open`), read-only, alive with `self`.
-        Some(unsafe { std::slice::from_raw_parts((m.ptr as *const u8).add(off + (r - at) * self.row_bytes), self.row_bytes) })
+        Some((unsafe { std::slice::from_raw_parts((p.map.ptr as *const u8).add(p.off + (r - p.at) * p.stride), p.stride) }, p.q4))
     }
 
-    /// Rows `ids` one after another into `out`.
+    /// Rows `ids` one after another into `out`, bf16 (a row at 4 bits decoded).
     pub(super) fn gather(&self, ids: &[u64], out: &mut [u8]) -> Result<()> {
         if let Some(&r) = ids.iter().find(|&&r| r as usize >= self.rows) {
             return err(format!("row {r} of a table of {}", self.rows));
         }
         let rb = self.row_bytes;
         fill(&mut out[..ids.len() * rb], rb, |i, o| match self.row(ids[i] as usize) {
-            Some(r) => o.copy_from_slice(r),
+            Some((q, true)) => crate::formats::nf4_row(q, o),
+            Some((r, false)) => o.copy_from_slice(r),
             None => o.fill(0),
         });
         Ok(())
@@ -330,9 +351,116 @@ pub(super) fn on_host(d: &ModelDesc, k: usize) -> bool {
     d.host.contains(&k)
 }
 
+/// `tablerows DIR OUT [--tokens N] [--seed S]` (development): the rows the host stages for each n-gram block of the model in DIR (its description's roles; a
+/// table at 4 bits decoded as it is gathered) for one sequence of N tokens (4,000 by default) from its start: random ids of its vocabulary from the seed, the
+/// end token every 97th (the segments cut), the hash's ids as a pass from the sequence's start reads them (`ngram_ids`, no tokens before it) and the rows
+/// gathered (`HostTable::gather`), each block's after the other, written to OUT (bf16); the tokens to OUT.tokens (u32, little-endian), for another engine to
+/// stage the same rows from. A block of a compressed vocabulary (Engram's) is refused: its map is the tokenizer's.
+#[cfg(feature = "dev")]
+pub fn rows_cmd(a: &crate::args::Args) -> Result<()> {
+    use crate::runtime::describe::Source;
+    use crate::runtime::kinds::NgramForm;
+    let (dir, out) = (std::path::Path::new(a.need(1, "DIR")?), std::path::Path::new(a.need(2, "OUT")?));
+    let (n, mut r): (usize, u64) = (a.num("tokens", 4000usize)?, a.num("seed", 5u64)?.max(1));
+    let (d, _) = crate::runtime::describe::describe_dir(dir)?;
+    let ck = Checkpoint::open(dir).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
+    let i64s = |name: &str| -> Result<Vec<u64>> {
+        let b = ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?;
+        Ok(b.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap_or_default())).collect())
+    };
+    let (mut rows, mut blocks, mut maps) = (Vec::new(), 0usize, HashMap::new());
+    let mut tokens = Vec::new();
+    for (b, roles) in d.desc.blocks.iter().zip(&d.blocks) {
+        let Body::Ngram(g) = &b.body else { continue };
+        if g.form != NgramForm::Segmented {
+            return err(format!("an n-gram block of {:?}: its compressed vocabulary is the tokenizer's map", g.form));
+        }
+        let one = |role: &str| match roles.iter().find(|x| x.0 == role).map(|x| &x.1) {
+            Some(Source::Tensor(t)) => Ok(t.clone()),
+            other => err(format!("the n-gram block's role {role} is {other:?}, where one tensor is")),
+        };
+        let Some(Source::Rows(members)) = roles.iter().find(|x| x.0 == "ngram").map(|x| &x.1) else { return err("the n-gram block has no table of shards") };
+        let shape = |m: &String| d.shapes.get(m).cloned().ok_or_else(|| Error(format!("{m}: no shape in the description")));
+        let cols = shape(&members[0])?[1];
+        let it = Item { members: members.clone(), rows: members.iter().map(|m| shape(m).map(|s| s[0])).sum::<Result<usize>>()?, cols };
+        let table = HostTable::open(&ck, &it, &mut maps)?;
+        let heads = (g.order - 1) * g.heads;
+        let (mult, sizes, offsets) = (i64s(&one("ngram_mult")?)?, i64s(&one("ngram_sizes")?)?, i64s(&one("ngram_offsets")?)?);
+        if tokens.is_empty() {
+            tokens = (0..n)
+                .map(|i| {
+                    r ^= r << 13;
+                    r ^= r >> 7;
+                    r ^= r << 17;
+                    if i % 97 == 96 {
+                        g.eos
+                    } else {
+                        (r % d.desc.vocab as u64) as u32
+                    }
+                })
+                .collect();
+        }
+        let x = NgramRows { table: 0, hash: [0; 3], hist: 0, per: g.heads, row: cols, eos: g.eos, order: g.order, map: None, segments: true };
+        let ids = ngram_ids(&x, &tokens, &vec![0; g.order - 1], &mult, &sizes[..heads], &offsets[..heads], None);
+        let at = rows.len();
+        rows.resize(at + ids.len() * table.row_bytes, 0);
+        table.gather(&ids, &mut rows[at..])?;
+        blocks += 1;
+    }
+    if blocks == 0 {
+        return err(format!("{}: its description has no n-gram block", dir.display()));
+    }
+    let io = |p: &std::path::Path, b: &[u8]| std::fs::write(p, b).map_err(|e| Error(format!("{}: {e}", p.display())));
+    io(out, &rows)?;
+    io(&out.with_extension("tokens"), &tokens.iter().flat_map(|t| t.to_le_bytes()).collect::<Vec<u8>>())?;
+    println!("{}: {blocks} n-gram block(s), {} tokens, {} bytes of rows staged into {}", dir.display(), tokens.len(), rows.len(), out.display());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A table stored at 4 bits beside its name (two shards, one bf16 and one `X.q4`, then zero rows) gathers on the host the bf16 rows the 4-bit rows decode
+    /// to (`formats::nf4_row`) and the bf16 shard's as stored, zeros past them; the GPU's reader of the same item (`weights::item_words`) gives those words
+    /// too. A 4-bit tensor of another width is refused in words.
+    #[test]
+    fn a_table_at_4_bits_gathers_the_rows_it_decodes_to() {
+        let dir = std::env::temp_dir().join(format!("glyd-tables-q4-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (rows, cols) = (37usize, 20usize);
+        let bf16: Vec<u8> = (0..2 * rows * cols).flat_map(|i| (((((i * 7919 % 211) as f32 - 105.0) / 64.0).to_bits() >> 16) as u16).to_le_bytes()).collect();
+        let (a, b) = bf16.split_at(rows * cols * 2);
+        let q: Vec<u8> = b.chunks_exact(cols * 2).flat_map(crate::formats::nf4_encode).collect();
+        let shape = |w: usize| vec![rows as u64, w as u64];
+        let wide = vec![0u8; rows * (3 + cols / 2)];
+        let t =
+            [("t.shard_0.weight", "BF16", shape(cols), a), ("t.shard_1.q4", "U8", shape(2 + cols / 2), &q[..]), ("u.q4", "U8", shape(3 + cols / 2), &wide[..])];
+        crate::pack::write_safetensors(&dir.join("model.safetensors"), &[], &t).unwrap();
+        let ck = Checkpoint::open(&dir).unwrap();
+        let it = Item { members: vec!["t.shard_0.weight".into(), "t.shard_1.weight".into(), ZERO_ROWS.into()], rows: 2 * rows + 5, cols };
+        let table = HostTable::open(&ck, &it, &mut HashMap::new()).unwrap();
+        let mut want = a.to_vec();
+        for r in q.chunks_exact(2 + cols / 2) {
+            let mut o = vec![0u8; cols * 2];
+            crate::formats::nf4_row(r, &mut o);
+            want.extend(o);
+        }
+        want.resize(it.rows * cols * 2, 0);
+        let ids: Vec<u64> = (0..it.rows as u64).rev().collect();
+        let mut got = vec![0u8; ids.len() * cols * 2];
+        table.gather(&ids, &mut got).unwrap();
+        for (k, &r) in ids.iter().enumerate() {
+            let r = r as usize;
+            assert_eq!(got[k * cols * 2..(k + 1) * cols * 2], want[r * cols * 2..(r + 1) * cols * 2], "row {r}");
+        }
+        let words = crate::weights::item_words(&ck, &it).unwrap();
+        assert!(words.iter().flat_map(|w| w.to_le_bytes()).eq(want.iter().copied()));
+        let odd = Item { members: vec!["u.weight".into()], rows, cols };
+        let e = HostTable::open(&ck, &odd, &mut HashMap::new()).err().unwrap().msg;
+        assert!(e.contains("u.q4") && e.contains("at 4 bits is U8"), "{e}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// The host's ids are the CPU reference's (`reference::ngram::context`, `ids`) for every row of passes cut anywhere in a sequence, read as the GPU's hash
     /// reads them (the sequence's last ids its state, + 1): Condor's trigrams, the end token inside the sequence cutting the n-grams after it, and Engram's

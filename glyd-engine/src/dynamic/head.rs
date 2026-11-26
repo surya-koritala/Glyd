@@ -322,10 +322,12 @@ impl Dyn {
 /// against the reference's on the head's own choices (its experts, its indexer's picks), at the bound the family is held to (the case's fixture's,
 /// tests/logits/CASE.json.gz), the figures on the reference's own choices printed beside them. With `--split` (the `qwen4x` case), (1) again with the model's
 /// layers in stages (src/dynamic/split.rs; GPU 0 for each where `--devices` is not given), its head on the last: the tokens and rows the model's alone, and
-/// each round's tokens the one-GPU drafted engine's (the head drafts there as on one GPU). An error where any fails.
+/// each round's tokens the one-GPU drafted engine's (the head drafts there as on one GPU). `CASE+q4`: the case's model with its tables on the host stored
+/// at 4 bits (the reference reads the values they decode to). An error where any fails.
 #[cfg(feature = "dev")]
 pub fn check(a: &crate::args::Args) -> Result<()> {
-    let case = a.need(1, "CASE")?;
+    // (CASE+q4: its tables on the host stored at 4 bits, `logits::tables_at_4_bits`)
+    let (case, q4) = crate::logits::q4_case(a.need(1, "CASE")?);
     let make: fn(&std::path::Path) -> Result<()> = match case {
         "qwen4x" => crate::logits::qwen4x_mtp_random,
         "glm-dsa" => |d| crate::logits::glm_dsa_mtp_random(d, false),
@@ -339,6 +341,9 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
     let split = super::split::split_args(a)?;
     let dir = std::env::temp_dir().join(format!("glyd-draftcheck-{}", std::process::id()));
     make(&dir)?;
+    if q4 {
+        crate::logits::tables_at_4_bits(&dir, &|_| true)?;
+    }
     let r = check_on(case, &dir, level, k, tokens, &split);
     std::fs::remove_dir_all(&dir).ok();
     let (bits_ok, held_ok) = r?;
@@ -349,7 +354,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
             if held_ok { "" } else { "the head is past its bound" }
         ));
     }
-    println!("PASS draftcheck {case} at {level}");
+    println!("PASS draftcheck {case}{} at {level}", if q4 { ", its tables on the host at 4 bits" } else { "" });
     Ok(())
 }
 

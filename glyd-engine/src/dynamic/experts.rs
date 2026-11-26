@@ -780,6 +780,16 @@ pub fn block(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Che
         let cache = h.cache.filter(|(cg, _)| cg.places < m.experts).map(|(cg, st)| (cg.places, st));
         return Ok(Box::new(crate::moe_hb::HbMoe::load(m, roles, hidden, ck, dense, ix.moe, cache, common)?));
     }
+    // (a slim checkpoint in the Hub's format holds none of its routed experts (src/runtime/describe.rs `Described::slim`): a codes pack serves them)
+    let routed: Vec<String> = roles.iter().filter(|(r, _)| r.starts_with("experts_")).flat_map(|(_, s)| s.names()).collect();
+    let stored = |n: &String| ck.get(n).is_some() || n.strip_suffix(".weight").is_some_and(|b| ck.get(&format!("{b}.weight_packed")).is_some());
+    if !ck.dir.join("glyd.json").exists() && !routed.is_empty() && !routed.iter().any(stored) {
+        return err(format!(
+            "layer {}'s routed experts are not in {} (a slim checkpoint: a codes pack of them serves it, at the hummingbird level: DIR:hummingbird --pack PACK)",
+            ix.layer,
+            ck.dir.display()
+        ));
+    }
     let fc = match own_latent(m) {
         Some(_) => {
             let v7 = crate::weights::v7_manifest(&ck.dir)?;
