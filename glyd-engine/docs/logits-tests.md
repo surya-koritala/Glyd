@@ -27,7 +27,7 @@ A case with pins alone is printed as `pinned only`, never as within bounds: none
 | Case | Family | Reference | Levels (bound) |
 | :--- | :--- | :--- | :--- |
 | `dense` | The plain dense kind (one attention and one gated MLP a layer, on the executor; the kind's case, no release's) | transformers, bf16 on the same random weights; pins `dense.sm89-geforce-80sm`, `dense.sm89-l4-58sm` | penguin (KL); pin: penguin (bits) |
-| `qwen35` | Qwen3.5 family (Gated DeltaNet and gated attention: Qwen3.8-27B's layout) | transformers, bf16 on the same random weights; pin `qwen35.sm89-l4-58sm` | penguin, kestrel, swift, wren (KL); pin: penguin (bits) |
+| `qwen35` | Qwen3.5 family (Gated DeltaNet and gated attention: Qwen3.8-27B's layout) | transformers, bf16 on the same random weights; pins `qwen35.sm89-geforce-80sm`, `qwen35.sm89-l4-58sm` | penguin, kestrel, swift, wren (KL); pin: penguin (bits) |
 | `qwen35-wide` | Qwen3.5 family, the wide shape (three value heads to a key head, a head of its own, the text model of a checkpoint with a vision tower) | the layer kinds' CPU reference, `src/runtime/reference` | penguin (KL) |
 | `qwen35moe` | Qwen3.5 family with experts (softmax-routed, a gated shared expert) | the layer kinds' CPU reference | penguin, kestrel, swift, wren (KL, the bounds of `qwen35`'s), on the engine's own choices |
 | `muse` | Muse Spark | the layer kinds' CPU reference | penguin (KL), on its choices |
