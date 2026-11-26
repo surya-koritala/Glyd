@@ -50,7 +50,12 @@ pub struct Config35 {
 
 impl Config35 {
     pub fn load(dir: &Path) -> Result<Config35> {
-        Ok(ModelConfig::read(dir, Config35::of)?.as_saved(dir))
+        Config35::load_of(dir, &ModelConfig::load(dir)?)
+    }
+
+    /// `load` of a config.json parsed once (`m`: `dir`'s).
+    pub fn load_of(dir: &Path, m: &ModelConfig) -> Result<Config35> {
+        Ok(m.read_with(dir, Config35::of)?.as_saved(dir))
     }
 
     /// A glyd-v7 directory (and a lossless glyd-v4 save, glyd/NAME-penguin's) holds the text model under the names transformers' causal LM gives it (`model.layers.*`,

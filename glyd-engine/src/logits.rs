@@ -1339,7 +1339,7 @@ fn gemma4_engine(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 fn gemma4_at(dir: &Path, layout: Option<Layout>) -> Result<Box<dyn Run>> {
     let c = crate::gemma4::ConfigG4::load(dir)?;
     let o = DynOpts { ctx: 1024, chunk: 64, graph: false, device: 0, layout };
-    boxed(crate::dynamic::gemma4::lowered(dir, &c).and_then(|d| Dyn::new(dir, d, None, &o)))
+    boxed(crate::dynamic::gemma4::lowered(dir, &c).and_then(|d| Dyn::new(dir, &crate::runtime::config::ModelConfig::load(dir)?, d, None, &o)))
 }
 
 /// A small Gemma 4 of the 12B's layer kinds (sliding layers, and a global one whose keys are its values), the heads the engine runs (256 and 512), a soft-capped tied head, at random (a fixed seed).
@@ -5226,7 +5226,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
     Ok(match case_of_form(q4_case(case).0) {
         "gemma4" | "gemma4-kv" => {
             let c = crate::gemma4::ConfigG4::load(dir)?;
-            Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
+            Dyn::new(dir, &crate::runtime::config::ModelConfig::load(dir)?, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
         "qwen35" | "qwen35-wide" | "qwen35moe" => crate::dynamic::qwen35::load(dir, o)?,
         "dense" => crate::dynamic::dense::load(dir, o)?,
@@ -7556,7 +7556,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         (Some(d), _) if plan.is_some() => {
             let lp = plan.as_ref().expect("a plan");
             let offload = crate::offload::Offload { mode, device: a.has("device-plan"), ..Default::default() };
-            match crate::dynamic::split::open_plan(Path::new(d), lp, offload)? {
+            match crate::dynamic::split::open_plan(Path::new(d), &crate::runtime::config::ModelConfig::load(Path::new(d))?, lp, offload)? {
                 crate::dynamic::split::Run::One(e) => {
                     // (the planner's times held where they start, so that two runs from one state plan alike: each run below starts from the cold cache, `Sched::cold`)
                     e.stores().iter().for_each(|st| st.hold_costs());

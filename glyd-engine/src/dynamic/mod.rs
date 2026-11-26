@@ -61,6 +61,7 @@ use crate::kern::{pf_kib, KernG4, NextPf};
 use crate::kern::{KernMamba2, SsdWs};
 use crate::kern35::{Kern35, Mat};
 use crate::launch;
+use crate::runtime::config::ModelConfig;
 use crate::runtime::kinds::Rounding;
 use crate::sched::Sample;
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
@@ -2015,25 +2016,35 @@ impl Dyn {
         Ok(())
     }
 
-    /// A description's model from `dir` by the generic loader (`ModelDesc::mats`, `small`, `ropes`), and a draft model's.
-    pub fn new(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, o: &Opts) -> Result<Dyn> {
+    /// A description's model from `dir` by the generic loader (`ModelDesc::mats`, `small`, `ropes`), and a draft model's. `m`: `dir`'s config.json, parsed once
+    /// (every constructor below reads the model's images from it).
+    pub fn new(dir: &Path, m: &ModelConfig, d: ModelDesc, draft: Option<DraftSpec>, o: &Opts) -> Result<Dyn> {
         let st = Stage::whole(d.layers.len());
-        Dyn::new_stage(dir, d, draft, st, o)
+        Dyn::new_stage(dir, m, d, draft, st, o)
     }
 
     /// Stage `st` of the model of `dir` (its layers, and the embedding or the head where it holds them), on `o.device`: a split model's part.
-    pub fn new_stage(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts) -> Result<Dyn> {
-        Dyn::new_with(dir, d, draft, st, o, &|_, _| Ok(Vec::new()))
+    pub fn new_stage(dir: &Path, m: &ModelConfig, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts) -> Result<Dyn> {
+        Dyn::new_with(dir, m, d, draft, st, o, &|_, _| Ok(Vec::new()))
     }
 
     /// `new_stage` of a description with experts: `experts` reads its blocks of experts (`Op::Moe`'s, in its order) from the checkpoint.
-    pub fn new_with(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts) -> Result<Dyn> {
-        Dyn::new_placed(dir, d, draft, st, o, experts, &Placing::default())
+    pub fn new_with(dir: &Path, m: &ModelConfig, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts) -> Result<Dyn> {
+        Dyn::new_placed(dir, m, d, draft, st, o, experts, &Placing::default())
     }
 
     /// `new_with`, the stage's packed matrices held as `placing` says.
     #[allow(clippy::too_many_arguments)]
-    pub fn new_placed(dir: &Path, d: ModelDesc, draft: Option<DraftSpec>, st: Stage, o: &Opts, experts: &Experts, placing: &Placing) -> Result<Dyn> {
+    pub fn new_placed(
+        dir: &Path,
+        m: &ModelConfig,
+        d: ModelDesc,
+        draft: Option<DraftSpec>,
+        st: Stage,
+        o: &Opts,
+        experts: &Experts,
+        placing: &Placing,
+    ) -> Result<Dyn> {
         // (across GPUs a draft head of the model drafts on the last stage, which holds the model's last state (`head::state`) and its LM head; a draft
         // model, or a head elsewhere, is not split)
         let head_drafts = draft.as_ref().is_some_and(|x| matches!(x.desc.first, Op::MtpIn { .. }));
@@ -2108,7 +2119,7 @@ impl Dyn {
             }),
         };
         let mut e = Dyn::build(dev, big, draft, ropes, layout, st, o)?;
-        e.see_with(dir)?;
+        e.see_with(dir, m)?;
         Ok(e)
     }
 
@@ -2116,8 +2127,8 @@ impl Dyn {
     /// rows (the first, or the model on this GPU whole; a stage after it turns its rows by the same positions), the images' bounds and token set for the
     /// requests' threads (`vision::PREP`), the step graph captured again to read the rows' positions. A tower this engine cannot run leaves the model served
     /// for text, the reason said.
-    fn see_with(&mut self, dir: &Path) -> Result<()> {
-        match images::Images::open(dir, &self.big.d, self.chunk.max(VERIFY_ROWS), &self.dev, self.stage.first) {
+    fn see_with(&mut self, dir: &Path, m: &ModelConfig) -> Result<()> {
+        match images::Images::open(dir, m, &self.big.d, self.chunk.max(VERIFY_ROWS), &self.dev, self.stage.first) {
             Ok(Some(v)) => {
                 eprintln!(
                     "images: up to {} pixels each ({} tokens)",

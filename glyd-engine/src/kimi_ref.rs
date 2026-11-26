@@ -859,7 +859,13 @@ pub fn layers(a: &crate::args::Args) -> Result<()> {
         let last = a.has("last") && l == c.layers;
         let st = crate::dynamic::Stage { layers: (0, l), first: true, last };
         // (GLYD_KIMI_PLACES: the expert cache with that many places a layer, as kimicheck's)
-        let mut e = crate::dynamic::kimi::load_with_places(dir, &o, st, crate::tune!("GLYD_KIMI_PLACES").and_then(|v| v.parse().ok()))?;
+        let mut e = crate::dynamic::kimi::load_with_places(
+            dir,
+            &crate::runtime::config::ModelConfig::load(dir)?,
+            &o,
+            st,
+            crate::tune!("GLYD_KIMI_PLACES").and_then(|v| v.parse().ok()),
+        )?;
         for (i, &t) in toks.iter().enumerate() {
             let mut io = Vec::new();
             e.stage_rows(&[t], i, &mut io, last as usize)?;

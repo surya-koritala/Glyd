@@ -13,6 +13,7 @@ use crate::ffi::{err, Result};
 use crate::kern::{MAMBA2_HEAD, MAMBA2_STATE};
 use crate::nemotron::NhKind;
 use crate::offload::ExpertStore;
+use crate::runtime::config::ModelConfig;
 use crate::runtime::describe::Described;
 use crate::weights::Layout;
 use glyd_gpu::safetensors::Checkpoint;
@@ -22,14 +23,14 @@ use std::rc::Rc;
 /// The dynamic route's stage (src/dynamic/split.rs `StageLoad`): `load_stage` with its experts at `o.layout`'s level (penguin's lossless where none is given),
 /// all on the GPU. A caching is refused: Nemotron-H's expert cache is the lossy route's (src/cli.rs gives `load_cached` its places and store), not the dynamic
 /// route's caching.
-pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+pub fn stage(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     if caching.is_some() {
         return err(format!(
             "{}: Nemotron-H's experts are cached as the lossy route plans them (src/cli.rs), not as the dynamic route's caching says",
             dir.display()
         ));
     }
-    load_stage(dir, o, o.layout.unwrap_or(Layout::Tiered), st)
+    load_cached_of(dir, m, o, o.layout.unwrap_or(Layout::Tiered), None, st)
 }
 
 /// The model in `dir` with its matrices at `layout` and its experts at `level` (the experts all on the GPU).
@@ -51,8 +52,13 @@ pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: Stage) -> Result<Dyn>
 /// scan's buffers sized from its operations; each mixture-of-experts layer's experts the Moe kind's block (`experts::block`: its matrices besides the experts at
 /// `dense_layout` of the level; its layer in the cache its number among the model's mixture-of-experts layers, so that a predictor's next is the next of them).
 pub fn load_cached(dir: &Path, o: &Opts, level: Layout, cache: Option<(usize, &Rc<ExpertStore>)>, st: Stage) -> Result<Dyn> {
-    let c = crate::nemotron::ConfigNemotronH::load(dir)?;
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    load_cached_of(dir, &ModelConfig::load(dir)?, o, level, cache, st)
+}
+
+/// `load_cached` of a config.json parsed once (`m`: `dir`'s).
+pub fn load_cached_of(dir: &Path, m: &ModelConfig, o: &Opts, level: Layout, cache: Option<(usize, &Rc<ExpertStore>)>, st: Stage) -> Result<Dyn> {
+    let c = m.read_with(dir, crate::nemotron::ConfigNemotronH::of)?;
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
     let d = lowered_of(&kinds, &label, &c, &st)?;
     let caching = cache.map(|(places, store)| crate::hbg_store::HbCaching { places, ram: store.host_memory(), offload: store.offload(), dense: 0 });
     let codebooks = Rc::new(crate::moe_hb::HbShared::default());
@@ -75,7 +81,7 @@ pub fn load_cached(dir: &Path, o: &Opts, level: Layout, cache: Option<(usize, &R
             .collect()
     };
     let o = Opts { layout: o.layout.map(crate::nemotron::dense_layout), ..o.clone() };
-    Dyn::new_placed(dir, d, None, st, &o, &experts, &Placing::default())
+    Dyn::new_placed(dir, m, d, None, st, &o, &experts, &Placing::default())
 }
 
 /// A layer's matrices and small tensors as its operations index them: a Mamba-2 layer's in and out products, its norm, conv1d's weight and bias, A_log, D,

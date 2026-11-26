@@ -62,7 +62,12 @@ impl ConfigG4 {
 
     /// `draft`: a Gemma 4 "-assistant" draft model (its layers all read the big model's keys and values: no key or value projections; its tensors under "model.").
     pub fn load_for(dir: &Path, draft: bool) -> Result<ConfigG4> {
-        ModelConfig::read(dir, |c, _, generation| ConfigG4::of(c, generation, draft))
+        ConfigG4::load_for_of(dir, &ModelConfig::load(dir)?, draft)
+    }
+
+    /// `load_for` of a config.json parsed once (`m`: `dir`'s).
+    pub fn load_for_of(dir: &Path, m: &ModelConfig, draft: bool) -> Result<ConfigG4> {
+        m.read_with(dir, |c, _, generation| ConfigG4::of(c, generation, draft))
     }
 
     /// `load_for` from the texts of config.json and generation_config.json.
@@ -502,7 +507,13 @@ fn load_dyn(dir: &Path, ctx: usize, chunk: usize, graph: bool, layout: Option<La
         }
         None => None,
     };
-    crate::dynamic::Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, spec, &crate::dynamic::Opts { ctx, chunk, graph, device: 0, layout })
+    crate::dynamic::Dyn::new(
+        dir,
+        &ModelConfig::load(dir)?,
+        crate::dynamic::gemma4::lowered(dir, &c)?,
+        spec,
+        &crate::dynamic::Opts { ctx, chunk, graph, device: 0, layout },
+    )
 }
 
 /// `g4check MODEL REF.json [--layout L] [--ctx N] [--chunk N] [--no-graph] [--split ...]`: the description executor against transformers' reference

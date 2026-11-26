@@ -42,7 +42,12 @@ pub(crate) fn attention(c: &ConfigG4, kind: KindG4, nq: usize, q_norm: usize, k_
 /// (`lower::gemma4`) and sized by the shapes it gives; `c` the same config as the family's reader takes it, for its end tokens and its context. What every loader of
 /// the executor's Gemma 4 runs (the tests hold it to `describe` below).
 pub fn lowered(dir: &std::path::Path, c: &ConfigG4) -> crate::ffi::Result<ModelDesc> {
-    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    lowered_of(dir, &crate::runtime::config::ModelConfig::load(dir)?, c)
+}
+
+/// `lowered` of a config.json parsed once (`m`: `dir`'s).
+pub fn lowered_of(dir: &std::path::Path, m: &crate::runtime::config::ModelConfig, c: &ConfigG4) -> crate::ffi::Result<ModelDesc> {
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
     super::lower::gemma4(&kinds, &|n: &str| kinds.shapes.get(n).cloned(), c.eos.clone(), c.max_pos).map_err(|e| e.context(&label))
 }
 
