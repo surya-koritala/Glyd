@@ -10,6 +10,10 @@
 //!   glyd-engine actcheck   the activations the expert cache's host computes beside the GPU (situ, the release's SiLU), the host's against the GPU kernels' on every bf16 input up to 64 (src/cpu_fp4.rs)
 //!   glyd-engine storebench MODEL [--places 16] [--rows 1,8,32] [--steps 8] [--mode auto] [--device-plan] [--out FILE]   batched decode through the expert cache: each count of rows' step time and layer statistics (bytes read for
 //!                                                             the misses against the distinct missed experts'), FILE's JSON lines for ceiling --stats (src/tiering.rs)
+//!   glyd-engine storecheck MODEL [--places 16] [--rows 1,8,32] [--steps 6] [--prompt 16] [--modes copy,auto:device] [--against resident|copy]   batched decode through the expert cache
+//!                                                             against the same calls on the model with every expert on the GPU (or the cache in copy mode planned on the host, for a model
+//!                                                             larger than the GPU): the rows bit for bit where the host computed no pair, else on their own choices at the kind's bound; each
+//!                                                             step's bytes read for its misses within 2% of the distinct missed experts'; each step's graph where the plan is on the GPU (src/tiering.rs)
 //!   glyd-engine pack MODEL OUT --layout hummingbird --usage FILE [--threads N]   a mixture of experts the description builder maps (Kimi-K3, DeepSeek-V4, GLM-5.3, Muse Spark, Qwen3.5/3.8 MoE) at the
 //!                                                             hummingbird level (src/hb_pack.rs): each expert's bits from FILE's counts (calibrate-experts), its rows coded in Rust, the rest copied
 //!   glyd-engine pack MODEL OUT --layout hummingbird --codes DIR [--threads N]   Nemotron 3 Super at the Hummingbird level (src/hbpack.rs): its routed experts' neuron rows from the export in DIR (nemotron_hbr.py --export) in codebook rows of 3 and 2 bits,
@@ -43,7 +47,7 @@
 //!   glyd-engine topkcheck                                     the sampling kernels' 64 largest logits of a row and sum of its exponentials against the host's; the rows the draws see (penalties, a bias, masks put on them) made on the GPU against the host's
 //!   glyd-engine samplecheck CASE [--users N] [--tokens T] [--vocab V]   a random model's requests of every sampling (a grammar, penalties, a bias, an allowed list, plain) at once through the scheduler, the rows their draws see made on the GPU: each against its run alone and the host's draws; the host's time a step both ways
 //!   glyd-engine sampletime DIR PROMPT [--new N] [--ctx N]     a Qwen3.5 or Nemotron-H model's decode speed by greedy steps, by sampled ones from the GPU's candidates and from the row on the host (the same tokens)
-//!   glyd-engine logitscheck [CASE...] [--fixtures DIR] [--cpu-ref] [--level L] [--list-cases]   each model's engine logits against its fixture in tests/logits (src/logits.rs); logitsrecord CASE --from cpu|engine --out FILE: a fixture made; logitsbound FIXTURE LEVEL=BOUND...: its bounds set; logitsmodel CASE DIR: the case's random model made; paritycheck [CASE...] [--level L] [--choice ROW:LAYER]: Qwen3.8-Flash-Next's cases (qwen4x, qwen4x-s2) on the description executor, held to the CPU reference of the layer kinds on its own routers' choices, its layers beside the reference's (--choice: no engine; the reference alone with the nearest other choice taken in that row's pass and layer, and what it leaves in the rows after); levelcheck [CASE...] [--level L]: each lossy level's KL from penguin on its families' random models, against the thresholds of the family and level (qwen35, gemma4 and nemotron-h at kestrel, swift and wren; deepseek-v4 and muse at hummingbird; kimi and glm at hummingbird printed as open)
+//!   glyd-engine logitscheck [CASE...] [--fixtures DIR] [--cpu-ref] [--level L] [--list-cases]   each model's engine logits against its fixture in tests/logits (src/logits.rs); logitsrecord CASE --from cpu|engine --out FILE: a fixture made; logitsbound FIXTURE LEVEL=BOUND...: its bounds set; logitsmodel CASE DIR: the case's random model made (qwen35moe --real --layers L --experts E: at its release's width); paritycheck [CASE...] [--level L] [--choice ROW:LAYER]: Qwen3.8-Flash-Next's cases (qwen4x, qwen4x-s2) on the description executor, held to the CPU reference of the layer kinds on its own routers' choices, its layers beside the reference's (--choice: no engine; the reference alone with the nearest other choice taken in that row's pass and layer, and what it leaves in the rows after); levelcheck [CASE...] [--level L]: each lossy level's KL from penguin on its families' random models, against the thresholds of the family and level (qwen35, gemma4 and nemotron-h at kestrel, swift and wren; deepseek-v4 and muse at hummingbird; kimi and glm at hummingbird printed as open)
 //!   glyd-engine packcheck [--gpu] [--record] [--engine [--scratch DIR]]   every pack format of tests/data/packs read and run on the CPU reference against its digest in tests/packs (--gpu: decoded by the GPU library; --record: the digests written); --engine: the formats the engine reads (glyd-v7 penguin, kestrel, swift, wren) made from the logits cases' random models, loaded from the saved directory, against the same model packed as it loads in the same layout (bits) and the case's reference where one bounds the level, and the Hummingbird level against this GPU generation's digest in tests/packs (--engine --record: that digest written, on a GPU of the generation); a row or a digest with nothing recorded for this GPU fails (src/packcheck.rs)
 //!   glyd-engine kcheck IN_DIR OUT_DIR                        the kernels on inputs tools/kcheck.py wrote
 //!   glyd-engine usercheck CASE [--users N] [--tokens T] [--dir DIR --prompt-tokens P [--places N [--mode M] [--device-plan]]] [--stagger D]       a random model of the case (gemma4, qwen35, qwen35-wide, qwen35moe, dense, muse, kimi, glm, nemotron, deepseek-v4, qwen4x), or the model in DIR, on the description executor: each reply through the scheduler alone and all at once, against the reply alone; with GLYD_ENGINE_PAGES too few for all at once, at once again swapping sequences sent back for room always, by cost, and never (R4d), each run's first-token and between-token times
@@ -102,6 +106,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "calibrate-experts" => cmd_calibrate_experts(a),
         "tiercheck" => glyd_engine::tiering::check(a),
         "storebench" => glyd_engine::tiering::bench(&a),
+        "storecheck" => glyd_engine::tiering::rows_check(&a),
         "chat" => std::process::exit(glyd_engine::cli::run(&Args::from(std::env::args().skip(1).chain(["--chat".to_string()])))),
         "generate" => cmd_run(a),
         "check" => cmd_check(a),
@@ -199,7 +204,13 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "hubslice" => glyd_engine::hub::slice_cmd(&a),
         "dlrate" => glyd_engine::hub::rate_cmd(&a),
         "dsv4random" => {
-            glyd_engine::dsv4_ref::random(Path::new(a.need(1, "OUT")?), if a.has("real") { Some((a.num("layers", 3)?, a.num("experts", 32)?)) } else { None })
+            let out = Path::new(a.need(1, "OUT")?);
+            glyd_engine::dsv4_ref::random(out, if a.has("real") { Some((a.num("layers", 3)?, a.num("experts", 32)?)) } else { None })?;
+            // (`--servable`: a tokenizer, the family's chat template (DeepSeek-V4.1's) and the end token, for `serve` to answer through)
+            if a.has("servable") {
+                glyd_engine::logits::write_serving_files(out, include_str!("../tests/fixtures/chat_deepseek_v41.jinja"))?;
+            }
+            Ok(())
         }
         "dsv4prof" => glyd_engine::dsv4_ref::prof(&a),
         "dsv4ref" => glyd_engine::dsv4_ref::cmd(&a),
