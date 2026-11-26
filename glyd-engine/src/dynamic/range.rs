@@ -1538,7 +1538,7 @@ fn like_one_gpu(what: &str, one: &(Vec<u32>, Vec<Vec<f32>>), got: &(Vec<u32>, Ve
 }
 
 /// The first of `texts` that `tok` gives back as it was given (a random model's character-level tokenizer spells ASCII, a release's tokenizer every text).
-#[cfg(any(test, feature = "dev"))]
+#[cfg(feature = "dev")]
 fn spelled<'a>(tok: &Tok, texts: &[&'a str]) -> Option<&'a str> {
     texts.iter().copied().find(|t| tok.encode(t).and_then(|ids| tok.decode_with(&ids, true)).is_ok_and(|back| back == *t))
 }
