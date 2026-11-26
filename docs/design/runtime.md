@@ -256,24 +256,29 @@ sample on the device -> sampled-ids ring, token ids to pinned host memory
 record the step's fence
 ```
 
-The executor captures this as a graph per row-count bucket where the backend supports capture and every block is capturable
-(`LayerImpl::capturable`). Prompt chunks vary in length; the executor captures decode-only steps by row bucket and runs mixed steps
-eagerly or piecewise (attention outside the graph, products inside), as vLLM's piecewise mode does. A block that must read the router's
-choices on the host (an expert store without a device path) splits the graph at that layer; `dynamic/mod.rs:1201` already refuses to
-capture such a step.
+The executor captures this as a graph per row-count bucket where every operation of the description is capturable (the layer kind's word,
+`dynamic/rows.rs` `capturable`, per operation of the executor). Prompt chunks vary in length; the executor captures decode-only steps by row
+bucket and runs mixed steps eagerly or piecewise (attention outside the graph, products inside), as vLLM's piecewise mode does. A block that
+must read the router's choices on the host (an expert store without a device path) takes no graph at all (`Dyn::rgraph_on`).
 
-Built (#329): a decode-only step's rows are padded to 2, 4, 8, ... and replay one graph where every operation acts row by row, is an
-attention layer, or is a recurrent layer's convolution or recurrence (Gated DeltaNet, Mamba-2), each row through its own block table and
-its own state (a table of the rows' state addresses the host writes per step, as vLLM's state indices; a padding row's entry is 0 and
-touches no state). Every other pass (a prompt's chunk, prompts together, decode rows with prompt chunks, decode rows of a description with
-no whole graph) runs in pieces (`dynamic/pieces.rs`): the runs of row-wise operations between the attention and recurrent operations are
-graphs, the rest eager between them. Pieces are captured for a pass's exact row count, not a padded bucket, because a product's kernel
-(the library's route, cuBLAS's algorithm) turns on its rows: a replay is the eager pass bit for bit. The one size captured is a full
-pass's (the chunk's rows: the prompt budget fills a mixed step to it), when the scheduler's step is made, as the decode graphs are, and for
-descriptions whose decode steps take no whole graph (latent attention, picked attention, DeepSeek-V4) the decode steps' of 2 to 16, 32 and 64
-rows; the step's metadata (positions, slots, the state table) is one buffer written in one copy, which every graph reads. A pass of another
-size runs eager, and so does a pass whose products take cuBLAS (on an A10, 2026-11-23, in a run whose record was not kept, full
-gemma-4-12B passes in pieces took 0.7% more GPU time than eager; whether cuBLAS keeps its eager algorithm in a capture is not measured).
+Built (#329): a decode-only step's rows are padded to 2, 4, 8, ... and replay one graph. Every operation is capturable: it acts row by row,
+or it takes the step's rows that decode at once, each row through its own block tables and its own states (a table of the rows' state
+addresses the host writes per step, as vLLM's state indices; a padding row is at position -1, its slot -1 and its state entry 0, and reads
+and writes no cache row and no state): the attention kind (picked or not), the latent attention kind (its latents, indexer keys and pools,
+its attention over the latents cut into runs as a decode row's is), the compressed attention's window, compressors, indexer and attention,
+the mean-pooled indexer, the recurrent layers' convolutions and recurrences (Gated DeltaNet, Kimi delta attention, Mamba-2) and the n-gram
+embedding's state. Each row's kernels and sums are its own sequence's pass's on its one token. The ladder's top is the head's rows; where a
+block of experts is in the expert cache planned on the GPU it is that plan's 8 rows (`devplan::DEV_ROWS`): a call of more rows is planned on
+the host, which reads the router's choices, so such a step runs eager. A latent attention whose ring is in 12-bit pages takes no whole graph:
+each sequence's pages are unpacked into the one staging ring by itself. Every other pass (a prompt's chunk, prompts together, decode rows
+with prompt chunks, decode rows of a description with no whole graph) runs in pieces (`dynamic/pieces.rs`): the runs of row-wise operations
+between the attention and recurrent operations are graphs, the rest eager between them. Pieces are captured for a pass's exact row count,
+not a padded bucket, because a product's kernel (the library's route, cuBLAS's algorithm) turns on its rows: a replay is the eager pass bit
+for bit. The one size captured is a full pass's (the chunk's rows: the prompt budget fills a mixed step to it), when the scheduler's step is
+made, as the decode graphs are, and for descriptions whose decode steps take no whole graph the decode steps' of 2 to 16, 32 and 64 rows;
+the step's metadata (positions, slots, the state table) is one buffer written in one copy, which every graph reads. A pass of another size
+runs eager, and so does a pass whose products take cuBLAS (on an A10, 2026-11-23, in a run whose record was not kept, full gemma-4-12B
+passes in pieces took 0.7% more GPU time than eager; whether cuBLAS keeps its eager algorithm in a capture is not measured).
 
 ## 3. The layer-kind interface
 
@@ -346,7 +351,6 @@ pub trait Backend: Send + Sync {
 
 pub trait LayerImpl<B: Backend>: Send {
     fn workspace(&self, shape: &StepShape) -> u64;            // bytes of the step arena it needs at this shape
-    fn capturable(&self) -> bool;
     fn run(&mut self, cx: &mut StepCx<B>, x: &mut B::Tensor) -> Result<()>;  // enqueue only; never waits on the device
 }
 ```

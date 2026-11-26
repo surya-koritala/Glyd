@@ -6514,9 +6514,10 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let swapped = s.stats.swapped;
     s.stop_rows();
     drop(s);
-    // (decode steps of several rows replay a CUDA graph of their padded rows where the description takes one (src/dynamic/rows.rs `rows_bucket`): with prompts one a pass, a
-    // description with experts decodes a sequence a step)
-    let (replays, late) = (e.rows_replays.get(), e.rows_late.get());
+    // (decode steps of several rows replay a CUDA graph of their padded rows where the description takes one (src/dynamic/rows.rs `rows_bucket`), every kind's (`capturable`),
+    // up to the ladder's top (`rows_top`: the head's rows, or the expert cache's plan on the GPU's, 8); with prompts one a pass, a description with experts decodes a
+    // sequence a step. A step of one row replays its sequence's own graph)
+    let (replays, late, eager, top, ones) = (e.rows_replays.get(), e.rows_late.get(), e.rows_eager.get(), e.rows_graph_top(), e.one_replays.get());
     // (steps launched ahead, GLYD_ENGINE_OVERLAP=1, run as passes of parts: no graph of rows and no pieces there yet)
     let ahead = crate::sched::ModelStep::overlaps(&e);
     if crate::sched::overlap_asked() {
@@ -6524,11 +6525,21 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     }
     let graphs = e.rows_graphs() && !(one_a_pass && !e.rows_exact()) && !ahead;
     println!(
-        "decode steps of several rows replayed from a CUDA graph: {replays}, graphs captured in a request's step: {late}{}",
+        "decode steps of several rows replayed from a CUDA graph: {replays}, run eager: {eager} (graphs up to {top} rows), graphs captured in a request's step: {late}{}; \
+         decode steps of one row replayed from their sequence's graph: {ones}",
         if graphs { "" } else { " (this description's steps of several rows run eager)" }
     );
     if graphs && batchable && k > 1 && steps[2..].iter().any(|&x| x > 0) && replays == 0 {
         println!("FAIL no decode step of several rows replayed a graph");
+        fails += 1;
+    }
+    // (every step of several rows that decode within the ladder replays its graph: where the users fit it, none runs eager)
+    if graphs && k <= top && eager > 0 {
+        println!("FAIL {eager} decode steps of several rows ran eager, where the graphs of up to {top} rows hold them");
+        fails += 1;
+    }
+    if e.graphs_taken() && !ahead && steps[1] > 0 && ones == 0 {
+        println!("FAIL no decode step of one row replayed its sequence's graph");
         fails += 1;
     }
     // (every size captured before the first request (rows.rs `capture_rows`): no step waits on a capture)

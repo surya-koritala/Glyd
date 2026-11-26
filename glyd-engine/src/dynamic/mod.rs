@@ -1481,16 +1481,20 @@ pub struct Dyn {
     parts: Vec<rows::Part>,
     at: std::cell::Cell<Option<usize>>,
     head_rows: Vec<usize>,
-    /// In such a pass: its first rows that decode, a token of a sequence each, whose attention runs as one (`attn::Dyn::attn_lead`, through `rows::RowTabs`); 0: none.
+    /// In such a pass: its first rows that decode, a token of a sequence each, whose operations on their caches and states run as one for all of them (`Dyn::op_lead`,
+    /// `attn::Dyn::attn_lead`, `Dyn::mla`, through `rows::RowTabs`); 0: none.
     lead: std::cell::Cell<usize>,
     /// The CUDA graphs of steps of rows that decode, one for each padded row count met so far (`rows::Dyn::rows_replay`), whether such graphs may be captured (graphs on, and
-    /// no block of experts that reads the host), the last one replayed (for `prof_take`), the replays and the captures made in a request's step rather than before the
-    /// first (`usercheck` counts them).
+    /// no block of experts that reads the host), the last one replayed (for `prof_take`), the replays, the captures made in a request's step rather than before the first,
+    /// and the steps of several rows that decode that ran eager (`usercheck` counts them).
     rgraphs: Vec<RowsGraph>,
     rgraph_on: bool,
     rplayed: std::cell::Cell<Option<usize>>,
     pub(crate) rows_replays: std::cell::Cell<u64>,
     pub(crate) rows_late: std::cell::Cell<u64>,
+    pub(crate) rows_eager: std::cell::Cell<u64>,
+    /// The steps of one row that replayed their sequence's own graph (`usercheck` counts them).
+    pub(crate) one_replays: std::cell::Cell<u64>,
     /// Piecewise graphs of the passes no whole graph takes (src/dynamic/pieces.rs): the sets captured, how `forward` runs the pass being made, the pieces a capture makes,
     /// whether a piece's capture is open (to end it on an error), the set the last pass replayed and where its pieces' events go among the eager ones (`prof_take`), the
     /// pieces the last pass replayed, and the passes replayed so (`usercheck` counts them).
@@ -2309,6 +2313,8 @@ impl Dyn {
             rgraph_on: false,
             rplayed: std::cell::Cell::new(None),
             rows_replays: std::cell::Cell::new(0),
+            rows_eager: std::cell::Cell::new(0),
+            one_replays: std::cell::Cell::new(0),
             pieces: Default::default(),
             pmode: std::cell::Cell::new(pieces::Mode::Eager),
             pcap: Default::default(),
@@ -2984,6 +2990,22 @@ impl Dyn {
         }
     }
 
+    /// An operation on a sequence's caches or states (`rows::takes_lead`, the attention kind's apart: `attn_lead`, `attn_picked_lead`) on the pass's first `rows.0` rows of its
+    /// `rows.1`, each a decode row of its own sequence, at positions `pos`: one launch of each kernel for all of them, each row through its own block tables and states
+    /// (`rows::RowTabs`); each row's arithmetic is its own sequence's pass's on its one token.
+    unsafe fn op_lead(&self, p: &Part, op: &Op, rows: (usize, usize), pos: u64) -> Result<()> {
+        match op {
+            op if rows::rows_state(op) => self.state_lead(p, op, rows),
+            Op::IdxMean { heads, dim, block, q_norm, k_norm, rope, keys, pools } => {
+                self.idx_mean_lead(p, (*heads, *dim, *block), (*q_norm, *k_norm, *rope), (*keys, *pools), rows.0, pos)
+            }
+            Op::IdxPick(x) if matches!(x.keys, IdxKeys::Pools(_)) => self.pick_pools_lead(p, x, rows.0, pos),
+            Op::NgramRows(x) => self.ngram_rows_lead(p, x, rows.0),
+            Op::NgramAdd(x) => self.ngram_add_lead(p, x, rows.0),
+            op => self.comp_lead(p, op, rows, pos),
+        }
+    }
+
     /// A mixture of experts (`MoeOp`) on n rows.
     unsafe fn moe(&self, p: &Part, m: &MoeOp, n: usize) -> Result<()> {
         let s = self.dev.stream;
@@ -3132,11 +3154,7 @@ impl Dyn {
                     // (the pass's first rows that decode, a token of a sequence each: an attention layer's, or a recurrent layer's operation that takes them (`rows::rows_state`),
                     // for all of them at once, each through its own table or state, which is what each row's own pass computes, bit for bit (the decode's plan is a sequence's
                     // own; the recurrent kernels the one-sequence ones' on a token))
-                    let lead = match op {
-                        Op::Attn(a) if !a.picked => self.lead.get(),
-                        op if rows::rows_state(op) => self.lead.get(),
-                        _ => 0,
-                    };
+                    let lead = if rows::takes_lead(op) { self.lead.get() } else { 0 };
                     let mut r = Ok(());
                     if let Op::Attn(a) = op {
                         if a.writes && self.pages12(p, a.ring).is_some() {
@@ -3144,10 +3162,13 @@ impl Dyn {
                             self.prepped.set(true);
                         }
                         if lead > 0 {
-                            r = self.attn_lead(p, l, i, a, (lead, n), pos, head);
+                            r = match a.picked {
+                                true => self.attn_picked_lead(p, a, (lead, n), pos.0),
+                                false => self.attn_lead(p, l, i, a, (lead, n), pos, head),
+                            };
                         }
                     } else if lead > 0 {
-                        r = self.state_lead(p, op, lead);
+                        r = self.op_lead(p, op, (lead, n), pos.0);
                     }
                     // (an operation on a sequence's cache or state: each sequence's rows by themselves, as a pass of that sequence alone runs them)
                     for (k, part) in self.parts.iter().enumerate().skip(lead) {
@@ -3407,6 +3428,7 @@ impl Dyn {
                 Some(g) if one && !self.graphs_off.get() && !self.tracing() => {
                     g.launch(self.dev.stream)?;
                     self.replayed.set(true);
+                    self.one_replays.set(self.one_replays.get() + 1);
                     self.rplayed.set(None);
                     self.dcalls.set(self.gcalls);
                 }

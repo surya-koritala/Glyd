@@ -685,9 +685,6 @@ impl LayerImpl<Ref> for RefLayer {
     fn workspace(&self, _: &StepShape) -> u64 {
         0
     }
-    fn capturable(&self) -> bool {
-        false
-    }
     fn run(&mut self, cx: &mut StepCx<Ref>, x: &mut Vec<f32>) -> Result<()> {
         self.forward(cx.positions, cx.seqs, cx.tokens, x)
     }

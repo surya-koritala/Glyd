@@ -1718,7 +1718,7 @@ pub fn qcheck_rows(n: usize) -> Result<()> {
         let (kb, wb, pb, ring) = (up(&kv)?, up(&w)?, upi(&pos)?, Buf::new(n * hd * 2)?);
         let k: crate::kt::v4_kv_prep = dev.typed()?;
         // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
-        unsafe { launch!(k, [n as u32, 1, 1], [128, 1, 1], s; kb.ptr, wb.ptr, csb.ptr, snb.ptr, pb.ptr, ring.ptr, n as i32, 0u64, 0f32, 1i32) }?;
+        unsafe { launch!(k, [n as u32, 1, 1], [128, 1, 1], s; kb.ptr, wb.ptr, csb.ptr, snb.ptr, pb.ptr, ring.ptr, n as i32, 0u64, 0i64, 0f32, 1i32) }?;
         let mut want = Vec::with_capacity(n * hd);
         for (t, r) in kv.chunks(hd).enumerate() {
             let mut o = rms(r, &w, 0.0);
@@ -1737,7 +1737,7 @@ pub fn qcheck_rows(n: usize) -> Result<()> {
         let k: crate::kt::v4_comp_out = dev.typed()?;
         // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
         unsafe {
-            launch!(k, [(n + 1) as u32, 1, 1], [128, 1, 1], s; pb.ptr, wb.ptr, csb.ptr, snb.ptr, posb.ptr, n as i32, cache.ptr, 0u64, 1i32, d as i32, mode, 0f32, 1i32, 0u64)
+            launch!(k, [(n + 1) as u32, 1, 1], [128, 1, 1], s; pb.ptr, wb.ptr, csb.ptr, snb.ptr, posb.ptr, n as i32, cache.ptr, 0u64, 0i64, 1i32, d as i32, mode, 0f32, 1i32, 0u64)
         }?;
         let mut want = Vec::with_capacity(n * d);
         for (g, r) in pooled.chunks(d).enumerate() {

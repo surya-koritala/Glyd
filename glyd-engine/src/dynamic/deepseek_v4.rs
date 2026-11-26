@@ -26,6 +26,7 @@ pub(crate) struct KernV4 {
     pub(crate) lin32: crate::kt::v4_lin32,
     pub(crate) lin32_1: crate::kt::v4_lin32_1,
     pub(crate) comp_pool: crate::kt::v4_comp_pool,
+    pub(crate) comp_pool_rows: crate::kt::v4_comp_pool_rows,
     pub(crate) comp_out: crate::kt::v4_comp_out,
     pub(crate) idx_q: crate::kt::v4_idx_q,
     pub(crate) attn_scores: crate::kt::v4_attn_scores,
@@ -44,6 +45,7 @@ impl KernV4 {
             lin32: dev.typed()?,
             lin32_1: dev.typed()?,
             comp_pool: dev.typed()?,
+            comp_pool_rows: dev.typed()?,
             comp_out: dev.typed()?,
             idx_q: dev.typed()?,
             attn_scores: dev.typed()?,
@@ -55,7 +57,8 @@ impl KernV4 {
     }
 }
 
-/// The executor's DeepSeek-V4 buffers: the attention's scores and softmax sums (`ra` rows at a time), the indexer's scores, picks and their counts, a compressor's pooled entries.
+/// The executor's DeepSeek-V4 buffers: the attention's scores and softmax sums (`ra` rows at a time), the indexer's scores, picks and their counts, a compressor's pooled entries (a
+/// chunk's windows, or an entry a row for a step's rows that decode: `Dyn::comp_lead`).
 pub(crate) struct V4Run {
     pub k: KernV4,
     pub dims: V4Dims,
@@ -114,7 +117,7 @@ impl V4Run {
             isc: Buf::zeroed(ra * emax * 4)?,
             sel: Buf::zeroed(ch * dims.topk.max(1) * 4)?,
             cnt: Buf::zeroed(ch * 4)?,
-            pooled: Buf::zeroed((ch / minr + 2) * 512 * 4)?,
+            pooled: Buf::zeroed((ch / minr + 2).max(ch) * 512 * 4)?,
             gids,
             gplan: Buf::zeroed((2 + 2 * g + ch * g) * 4)?,
             ox: Buf::new(if ch > crate::f8::MOE_TOKENS { crate::f8::MOE_TOKENS * dims.heads * 512 * 2 } else { 16 })?,

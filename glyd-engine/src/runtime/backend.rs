@@ -154,7 +154,6 @@ pub trait Backend: Send + Sync {
 pub trait LayerImpl<B: Backend + ?Sized>: Send {
     /// Bytes of the step arena it needs at this shape.
     fn workspace(&self, shape: &StepShape) -> u64;
-    fn capturable(&self) -> bool;
     /// Enqueue the block on `x` (the residual stream of the step's tokens); never waits on the device.
     fn run(&mut self, cx: &mut StepCx<B>, x: &mut B::Tensor) -> Result<()>;
 }

@@ -558,13 +558,15 @@ impl MlaRun {
 }
 
 /// Where an indexer's pick reads and writes for `rows` rows: their queries (heads dim a row), head weights (heads a row), the entries' keys (`keys`, a ring's through
-/// `tab`, rows `stride` apart), the rows' positions, the scores' room (`emax` a row), the picks (`sk` a row) and their counts.
+/// `tab`, rows `stride` apart; row r's table at `tab` + r `ts` entries where a step's rows that decode each read their own sequence's, `rows::RowTabs`; 0: one table),
+/// the rows' positions, the scores' room (`emax` a row), the picks (`sk` a row) and their counts.
 pub(crate) struct PickAt {
     pub q: u64,
     pub w: u64,
     pub keys: u64,
     pub stride: usize,
     pub tab: u64,
+    pub ts: usize,
     pub pos: u64,
     pub rows: usize,
     pub scores: u64,
@@ -695,14 +697,14 @@ impl Dyn {
                 let (pstep, poff) = if matches!(x.keys, IdxKeys::Pools(_)) { (1, 0) } else { (x.ratio as i32, x.ratio as i32 - 1) };
                 let wsr = if x.weighted { x.heads as i32 } else { 0 };
                 launch!(k.score, [(at.emax as u32).div_ceil(8), n, 1], [256, 1, 1], smem smem, s;
-                    at.q, (x.heads * dim) as i32, at.w, wsr, at.keys, at.stride as i32, pstep, poff, at.tab, at.pos, at.scores, at.emax as i32, x.heads as i32,
+                    at.q, (x.heads * dim) as i32, at.w, wsr, at.keys, at.stride as i32, pstep, poff, at.tab, at.ts as i64, at.pos, at.scores, at.emax as i32, x.heads as i32,
                     dim as i32, x.ratio as i32, x.top_k as i32, scale, x.wscale)?;
             }
             IdxScore::Release => {
                 // (the queries and weights, then idx_score_bf16's warps' terms: at most 64 heads)
                 let smem = (x.heads * 129 * 4 + 8 * 64 * 4) as u32;
                 launch!(k.score_bf16, [n, (at.emax as u32).div_ceil(8), 1], [256, 1, 1], smem smem, s;
-                    at.q, at.w, x.wscale, at.keys, at.tab, at.pos, at.scores, x.heads as i32, x.ratio as i32, at.emax as i32)?;
+                    at.q, at.w, x.wscale, at.keys, at.tab, at.ts as i64, at.pos, at.scores, x.heads as i32, x.ratio as i32, at.emax as i32)?;
             }
         }
         // (the candidate source: the best blocks of its scores published; an index source after it: its scores outside them out of its candidates)
@@ -725,12 +727,20 @@ impl Dyn {
     /// `Op::Mla` (of part `p`) on n rows at positions `pos`: the input products, the q latent's norm and q's product; each sequence's key-value latents normed into its
     /// cache; with an indexer its queries, head weights, keys and gate scores (into its cache) and the pools the call completes; then for each sequence, the rows
     /// the attention takes at a time, the absorbed queries, the indexer's pick or every position, the attention over the latents and the values; the gate and o.
+    /// A pass's first rows that decode, a token of a sequence each (`Dyn::lead`), take each of these at once, each row through its own block tables (`rows::RowTabs`):
+    /// each row's kernels and sums are its own sequence's pass's on its one token (the attention cut into runs as a decode row's is, `FEW` rows a launch). Not where the
+    /// latents' ring is in 12-bit pages: each sequence's pages are unpacked into the one staging ring by itself.
     pub(super) unsafe fn mla(&self, p: &Part, a: &MlaOp, n: usize, pos: u64) -> Result<()> {
         let r = self.mla.as_ref().ok_or_else(|| Error("a latent attention in a model loaded without its buffers".into()))?;
         let (s, k) = (self.dev.stream, &self.km);
         let (nh, kr, ks, qw, nr) = (a.heads, a.kv_rank, a.kv_rank + a.rope, a.nope + a.rope, n as u32);
         let h = p.slot(Slot::H);
-        let seqs = self.seq_parts(n);
+        // (12-bit pages: a row of the call to its staging row, `pw` wide, the channels past the latent's zero; then the rows into their pages)
+        let staged = self.pages12(p, a.ring).map(|rp| (rp.shape.heads * rp.shape.channels, self.lossless.as_ref().expect("pages").rows_k.ptr));
+        // (the rows that decode taken at once, and the pass's other sequences, each by itself)
+        let lead = if staged.is_some() || self.parts.is_empty() { 0 } else { self.lead.get() };
+        let seqs: Vec<(usize, usize, u64, usize)> = self.seq_parts(n).into_iter().skip(lead).collect();
+        let lr = lead as u32;
         // the q latent (and, fused, the gate and the key-value latent) product, its norm, q
         let (q_at, q_row) = match a.input {
             MlaIn::Fused { w } => (w, p.mats[w].whole_rows()),
@@ -742,7 +752,7 @@ impl Dyn {
         if a.q_round == kinds::Rounding::Twice {
             launch!(k.rms2_512, [nr, 1, 1], [512, 1, 1], s; x, q_row as i32, qn, r.qr.ptr, a.q_rank as i32, a.q_rank as i32, a.eps)?;
         } else {
-            launch!(k.rms2, [nr, 1, 1], [256, 1, 1], s; x, q_row as i32, qn, r.qr.ptr, a.q_rank as i32, 0u64, 0u64, a.q_rank as i32, a.eps)?;
+            launch!(k.rms2, [nr, 1, 1], [256, 1, 1], s; x, q_row as i32, qn, r.qr.ptr, a.q_rank as i32, 0u64, 0u64, 0i64, a.q_rank as i32, a.eps)?;
         }
         self.lin(&p.mats[a.q_b], r.qr.ptr, n, r.q.ptr)?;
         // (a rotary: each head's rope channels, after its nope ones, turned at the row's position)
@@ -762,10 +772,15 @@ impl Dyn {
         if let Some(rt) = a.rot {
             self.mla_rope(kv, kv_row, (1, 0), kr, pos, rt.table, a.rope / 2, n)?;
         }
-        // (12-bit pages: a row of the call to its staging row, `pw` wide, the channels past the latent's zero; then the rows into their pages)
-        let staged = self.pages12(p, a.ring).map(|rp| (rp.shape.heads * rp.shape.channels, self.lossless.as_ref().expect("pages").rows_k.ptr));
         if let Some((pw, rows)) = staged.filter(|x| x.0 > ks) {
             crate::dev::memset_async(rows, 0, n * pw * 2, s)?;
+        }
+        if lead > 0 {
+            let (lat, tab, ts) = self.lead_ring(a.ring);
+            launch!(k.rms2, [lr, 1, 1], [256, 1, 1], s; kv, kv_row as i32, p.small[a.kv_norm].ptr, lat, ks as i32, pos, tab, ts as i64, kr as i32, a.eps)?;
+            if a.rope > 0 {
+                launch!(k.scatter, [lr, 1, 1], [256, 1, 1], s; kv + (kr * 2) as u64, kv_row as i32, lat + (kr * 2) as u64, ks as i32, pos, tab, ts as i64, a.rope as i32)?;
+            }
         }
         for &(r0, m, kc, slot) in &seqs {
             let (xr, p0, mr) = (kv + (r0 * kv_row * 2) as u64, pos + (r0 * 4) as u64, m as u32);
@@ -776,9 +791,9 @@ impl Dyn {
                     (lat, tab, ks, p0)
                 }
             };
-            launch!(k.rms2, [mr, 1, 1], [256, 1, 1], s; xr, kv_row as i32, p.small[a.kv_norm].ptr, lat, ys as i32, at, tab, kr as i32, a.eps)?;
+            launch!(k.rms2, [mr, 1, 1], [256, 1, 1], s; xr, kv_row as i32, p.small[a.kv_norm].ptr, lat, ys as i32, at, tab, 0i64, kr as i32, a.eps)?;
             if a.rope > 0 {
-                launch!(k.scatter, [mr, 1, 1], [256, 1, 1], s; xr + (kr * 2) as u64, kv_row as i32, lat + (kr * 2) as u64, ys as i32, at, tab, a.rope as i32)?;
+                launch!(k.scatter, [mr, 1, 1], [256, 1, 1], s; xr + (kr * 2) as u64, kv_row as i32, lat + (kr * 2) as u64, ys as i32, at, tab, 0i64, a.rope as i32)?;
             }
         }
         if staged.is_some() {
@@ -800,46 +815,51 @@ impl Dyn {
                 self.mla_rope(r.iq.ptr, ih * id, (ih, id), 0, pos, rt.table, rt.index / 2, n)?;
                 match ix.key {
                     KeyNorm::Layer(eps) => {
-                        launch!(k.layernorm, [nr, 1, 1], [128, 1, 1], s; r.ix.ptr, id as i32, sm(ix.k_norm), sm(ix.k_bias), r.ix.ptr, id as i32, 0u64, 0u64, id as i32, eps)?
+                        launch!(k.layernorm, [nr, 1, 1], [128, 1, 1], s; r.ix.ptr, id as i32, sm(ix.k_norm), sm(ix.k_bias), r.ix.ptr, id as i32, 0u64, 0u64, 0i64, id as i32, eps)?
                     }
                     KeyNorm::Rms(eps) => {
-                        launch!(k.rms2, [nr, 1, 1], [256, 1, 1], s; r.ix.ptr, id as i32, sm(ix.k_norm), r.ix.ptr, id as i32, 0u64, 0u64, id as i32, eps)?
+                        launch!(k.rms2, [nr, 1, 1], [256, 1, 1], s; r.ix.ptr, id as i32, sm(ix.k_norm), r.ix.ptr, id as i32, 0u64, 0u64, 0i64, id as i32, eps)?
                     }
                 }
                 self.mla_rope(r.ix.ptr, id, (1, 0), 0, pos, rt.table, rt.index / 2, n)?;
             }
-            // (each token's key normed into its cache's row, as the kind's form says: a LayerNorm with its bias, or the weighted RMS norm)
-            for &(r0, m, kc, slot) in &seqs {
+            // (each token's key normed into its cache's row, as the kind's form says: a LayerNorm with its bias, or the weighted RMS norm; the rows that decode at once,
+            // each through its own table, then each other sequence's rows)
+            let lead_keys = (lead > 0).then(|| self.lead_ring(a.ring + 1));
+            let keyed = lead_keys.map(|(ring, tab, ts)| (0usize, lead, ring, tab, ts)).into_iter().chain(seqs.iter().map(|&(r0, m, kc, slot)| {
                 let (ring, tab) = self.ring_at(kc, slot, a.ring + 1);
-                let (x, at) = (r.ix.ptr + (r0 * id * 2) as u64, pos + (r0 * 4) as u64);
+                (r0, m, ring, tab, 0)
+            }));
+            for (r0, m, ring, tab, ts) in keyed.clone() {
+                let (x, at, ts) = (r.ix.ptr + (r0 * id * 2) as u64, pos + (r0 * 4) as u64, ts as i64);
                 if turn.is_some() {
-                    launch!(k.scatter, [m as u32, 1, 1], [256, 1, 1], s; x, id as i32, ring, (2 * id) as i32, at, tab, id as i32)?;
+                    launch!(k.scatter, [m as u32, 1, 1], [256, 1, 1], s; x, id as i32, ring, (2 * id) as i32, at, tab, ts, id as i32)?;
                     continue;
                 }
                 match ix.key {
                     KeyNorm::Layer(eps) => {
-                        launch!(k.layernorm, [m as u32, 1, 1], [128, 1, 1], s; x, id as i32, sm(ix.k_norm), sm(ix.k_bias), ring, (2 * id) as i32, at, tab, id as i32, eps)?
+                        launch!(k.layernorm, [m as u32, 1, 1], [128, 1, 1], s; x, id as i32, sm(ix.k_norm), sm(ix.k_bias), ring, (2 * id) as i32, at, tab, ts, id as i32, eps)?
                     }
                     KeyNorm::Rms(eps) => {
-                        launch!(k.rms2, [m as u32, 1, 1], [256, 1, 1], s; x, id as i32, sm(ix.k_norm), ring, (2 * id) as i32, at, tab, id as i32, eps)?
+                        launch!(k.rms2, [m as u32, 1, 1], [256, 1, 1], s; x, id as i32, sm(ix.k_norm), ring, (2 * id) as i32, at, tab, ts, id as i32, eps)?
                     }
                 }
             }
-            // (pools: each token's gate scores beside its key, then the keys of the pools these rows complete; a key a token is its entry's as it is)
+            // (pools: each token's gate scores beside its key, then the keys of the pools these rows complete; a key a token is its entry's as it is. A row that decodes
+            // completes its pool alone, a call of one row: grid y its rows)
             if ix.pooled() {
                 k.small_linear(s, h, hid, wt(ix.gate), r.ix.ptr, id, n, id, hid)?;
-                for &(r0, m, kc, slot) in &seqs {
-                    let (ring, tab) = self.ring_at(kc, slot, a.ring + 1);
-                    launch!(k.scatter, [m as u32, 1, 1], [256, 1, 1], s; r.ix.ptr + (r0 * id * 2) as u64, id as i32, ring + (id * 2) as u64, (2 * id) as i32, pos + (r0 * 4) as u64, tab, id as i32)?;
+                for (r0, m, ring, tab, ts) in keyed.clone() {
+                    launch!(k.scatter, [m as u32, 1, 1], [256, 1, 1], s; r.ix.ptr + (r0 * id * 2) as u64, id as i32, ring + (id * 2) as u64, (2 * id) as i32, pos + (r0 * 4) as u64, tab, ts as i64, id as i32)?;
                 }
             }
             k.small_linear(s, h, hid, wt(ix.weights), r.wts.ptr, ih, n, ih, hid)?;
             if ix.pooled() {
-                for &(r0, m, kc, slot) in &seqs {
-                    let (ring, tab) = self.ring_at(kc, slot, a.ring + 1);
-                    let w2 = (2 * id) as i32;
-                    launch!(k.pool, [(m as u32).div_ceil(kp as u32) + 1, 1, 1], [128, 1, 1], s;
-                        ring, w2, ring + (id * 2) as u64, w2, sm(ix.ape), ring, w2, kp as i32, kp as i32 - 1, tab, pos + (r0 * 4) as u64, m as i32, id as i32, kp as i32)?;
+                for (r0, m, ring, tab, ts) in keyed {
+                    // (the rows that decode (their tables `ts` apart): a call of one row each, grid y; a sequence's rows: one call)
+                    let (w2, (calls, rows)) = ((2 * id) as i32, if ts > 0 { (1, m) } else { (m, 1) });
+                    launch!(k.pool, [(calls as u32).div_ceil(kp as u32) + 1, rows as u32, 1], [128, 1, 1], s;
+                        ring, w2, ring + (id * 2) as u64, w2, sm(ix.ape), ring, w2, kp as i32, kp as i32 - 1, tab, ts as i64, pos + (r0 * 4) as u64, calls as i32, id as i32, kp as i32)?;
                 }
             }
             self.mark("latent attention: the indexer's products and pools")?;
@@ -848,12 +868,60 @@ impl Dyn {
         let (sub, tmax, pmax) = (a.rows_at_once(self.chunk, self.ctx), a.tmax(self.ctx), a.pmax(self.ctx));
         // (kv_b_proj, and its fp32 block scales where it is released in FP8: each value times its block's scale once, kernels/mla.cu)
         let (wkv, wsc) = (p.small[a.kv_b].ptr, p.scales(a.kv_b));
+        // (the rows of the pass from `r0`, m of them: their absorbed queries, the indexer's picks (its keys through `itab`, `its` apart) or every position, the attention over the
+        // latents `lat` (rows `ls` apart, through `tab`; row j of them through the table `ts` entries on, where they are rows that decode), the values)
+        let block = |r0: usize, m: usize, (lat, ls): (u64, usize), (tab, ts): (u64, usize), (keys, itab, its): (u64, u64, usize)| -> Result<()> {
+            let p0 = pos + (r0 * 4) as u64;
+            // (the rows' picks and counts at their rows' places in the pass: a layer whose indexer is shared reads the ones the latent attention before it left)
+            let (sel_at, cnt_at) = (r.sel.ptr + (r0 * tmax * 4) as u64, r.cnt.ptr + (r0 * 4) as u64);
+            launch!(k.absorb, [nh as u32, (m as u32).div_ceil(8), 1], [256, 1, 1], s;
+                r.q.ptr + (r0 * nh * qw * 2) as u64, (nh * qw) as i32, qw as i32, wkv, wsc, r.qa.ptr, m as i32, nh as i32, a.nope as i32, a.v as i32, kr as i32, ks as i32)?;
+            let sel = match &a.indexer {
+                Some(ix) => {
+                    let (ih, id) = (ix.pick.heads, ix.dim);
+                    let at = PickAt {
+                        q: r.iq.ptr + (r0 * ih * id * 2) as u64,
+                        w: r.wts.ptr + (r0 * ih * 2) as u64,
+                        keys,
+                        stride: 2 * id,
+                        tab: itab,
+                        ts: its,
+                        pos: p0,
+                        rows: m,
+                        scores: r.scores.ptr,
+                        emax: pmax,
+                        sel: sel_at,
+                        sk: tmax,
+                        cnt: cnt_at,
+                        cand: CandAt::default(),
+                    };
+                    self.idx_pick(&ix.pick, &at)?;
+                    sel_at
+                }
+                None if a.lent.is_some() => sel_at,
+                None => {
+                    launch!(k.dense_cnt, [(m as u32).div_ceil(256), 1, 1], [256, 1, 1], s; p0, cnt_at, m as i32)?;
+                    0
+                }
+            };
+            self.mla_attn(r, (lat, ls), (tab, ts), (sel, cnt_at), tmax, a, m)?;
+            launch!(k.expand, [nh as u32, (m as u32).div_ceil(4), 1], [256, 1, 1], smem (4 * kr * 4) as u32, s;
+                r.olat.ptr, wkv, wsc, r.ov.ptr + (r0 * nh * a.v * 2) as u64, m as i32, nh as i32, a.nope as i32, a.v as i32, kr as i32)
+        };
+        if lead > 0 {
+            // (the rows that decode, `FEW` at a time: each row's attention cut into runs as a decode row's of its own sequence is)
+            let ((lat, tab, ts), keys) = (self.lead_ring(a.ring), if a.indexer.is_some() { self.lead_ring(a.ring + 1) } else { (0, 0, 0) });
+            for r0 in (0..lead).step_by(sub.min(FEW as usize)) {
+                let m = sub.min(FEW as usize).min(lead - r0);
+                block(r0, m, (lat, ks), (super::rows::tab_at(tab, ts, r0), ts), (keys.0, super::rows::tab_at(keys.1, keys.2, r0), keys.2))?;
+            }
+        }
         // (12-bit pages: each sequence's rows' positions end here at most: its part's, or the selected sequence's from its length or the pass's start; a step's graph
         // being captured, the context)
         let ends: Vec<usize> = match (self.capturing.get(), self.parts.is_empty()) {
             (true, _) => vec![self.ctx; seqs.len()],
             (false, true) => vec![self.start.get().max(self.n) + n],
-            (false, false) => self.parts.iter().map(|q| q.start + q.rows).collect(),
+            (false, false) => self.parts.iter().skip(lead).map(|q| q.start + q.rows).collect(),
         };
         for (&(first, rows, kc, slot), &end) in seqs.iter().zip(&ends) {
             let (lat, tab, ls) = match staged {
@@ -863,45 +931,11 @@ impl Dyn {
                     (lat, tab, ks)
                 }
             };
+            let (keys, itab) = if a.indexer.is_some() { self.ring_at(kc, slot, a.ring + 1) } else { (0, 0) };
             let mut r0 = first;
             while r0 < first + rows {
                 let m = sub.min(first + rows - r0);
-                let p0 = pos + (r0 * 4) as u64;
-                // (the rows' picks and counts at their rows' places in the pass: a layer whose indexer is shared reads the ones the latent attention before it left)
-                let (sel_at, cnt_at) = (r.sel.ptr + (r0 * tmax * 4) as u64, r.cnt.ptr + (r0 * 4) as u64);
-                launch!(k.absorb, [nh as u32, (m as u32).div_ceil(8), 1], [256, 1, 1], s;
-                    r.q.ptr + (r0 * nh * qw * 2) as u64, (nh * qw) as i32, qw as i32, wkv, wsc, r.qa.ptr, m as i32, nh as i32, a.nope as i32, a.v as i32, kr as i32, ks as i32)?;
-                let sel = match &a.indexer {
-                    Some(ix) => {
-                        let (ih, id) = (ix.pick.heads, ix.dim);
-                        let (keys, itab) = self.ring_at(kc, slot, a.ring + 1);
-                        let at = PickAt {
-                            q: r.iq.ptr + (r0 * ih * id * 2) as u64,
-                            w: r.wts.ptr + (r0 * ih * 2) as u64,
-                            keys,
-                            stride: 2 * id,
-                            tab: itab,
-                            pos: p0,
-                            rows: m,
-                            scores: r.scores.ptr,
-                            emax: pmax,
-                            sel: sel_at,
-                            sk: tmax,
-                            cnt: cnt_at,
-                            cand: CandAt::default(),
-                        };
-                        self.idx_pick(&ix.pick, &at)?;
-                        sel_at
-                    }
-                    None if a.lent.is_some() => sel_at,
-                    None => {
-                        launch!(k.dense_cnt, [(m as u32).div_ceil(256), 1, 1], [256, 1, 1], s; p0, cnt_at, m as i32)?;
-                        0
-                    }
-                };
-                self.mla_attn(r, (lat, ls), tab, (sel, cnt_at), tmax, a, m)?;
-                launch!(k.expand, [nh as u32, (m as u32).div_ceil(4), 1], [256, 1, 1], smem (4 * kr * 4) as u32, s;
-                    r.olat.ptr, wkv, wsc, r.ov.ptr + (r0 * nh * a.v * 2) as u64, m as i32, nh as i32, a.nope as i32, a.v as i32, kr as i32)?;
+                block(r0, m, (lat, ls), (tab, 0), (keys, itab, 0))?;
                 r0 += m;
             }
         }
@@ -926,7 +960,7 @@ impl Dyn {
     /// olat [m, heads, kv_rank] fp32: each row's and head's softmax attention over the tokens the counts (and picks, `sel`; 0: every position up to the row's) give,
     /// of the latents `lat.0` (rows `lat.1` apart: the ring's, through `tab`, or a 12-bit ring's pages unpacked, position p at row p). A few rows (at most `FEW`) cut
     /// their tokens into 8 runs over blocks and merge them; more rows are parallel enough by themselves.
-    unsafe fn mla_attn(&self, r: &MlaRun, lat: (u64, usize), tab: u64, (sel, cnt): (u64, u64), tmax: usize, a: &MlaOp, m: usize) -> Result<()> {
+    unsafe fn mla_attn(&self, r: &MlaRun, lat: (u64, usize), (tab, ts): (u64, usize), (sel, cnt): (u64, u64), tmax: usize, a: &MlaOp, m: usize) -> Result<()> {
         let (s, k) = (self.dev.stream, &self.km);
         let (nh, kr, ks) = (a.heads as i32, a.kv_rank as i32, (a.kv_rank + a.rope) as i32);
         let splits: i32 = if m as u32 <= FEW { 8 } else { 1 };
@@ -942,7 +976,7 @@ impl Dyn {
         }
         let smem = ((ks + 2 * tile) * 4) as u32;
         launch!(k.attn, [nh as u32, m as u32, splits as u32], [256, 1, 1], smem smem, s;
-            r.qa.ptr, lat.0, lat.1 as i32, tab, sel, cnt, r.olat.ptr, r.part.ptr, tmax, nh, kr, ks, a.scale, splits, tile)?;
+            r.qa.ptr, lat.0, lat.1 as i32, tab, ts as i64, sel, cnt, r.olat.ptr, r.part.ptr, tmax, nh, kr, ks, a.scale, splits, tile)?;
         if splits > 1 {
             launch!(k.merge, [nh as u32, m as u32, 1], [256, 1, 1], s; r.part.ptr, r.olat.ptr, nh, kr, splits)?;
         }

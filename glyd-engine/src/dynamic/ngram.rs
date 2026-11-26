@@ -99,4 +99,41 @@ impl Dyn {
         }
         self.mark("n-gram embedding: gate and convolution")
     }
+
+    /// `Op::NgramRows` on the pass's first `rows` rows, each a decode row of its own sequence (`Dyn::lead`): one launch for all of them, each row's last tokens its own
+    /// sequence's state (`rows::RowTabs`), moved on past the row.
+    pub(super) unsafe fn ngram_rows_lead(&self, p: &Part, x: &NgramRows, rows: usize) -> Result<()> {
+        let k = self.kqx.as_ref().ok_or_else(|| Error("an n-gram embedding in a model loaded without its kernels".into()))?;
+        let tok = self.tok.as_ref().ok_or_else(|| Error("an n-gram embedding without the tokens' buffer".into()))?;
+        let crate::kern35::Mat::Dense(table, ..) = &p.mats[x.table] else { return Err(Error("the n-gram table is not held as saved".into())) };
+        let hash = x.hash.map(|i| p.small[i].ptr);
+        let map = x.map.map_or(0, |m| p.small[m].ptr);
+        let h = (x.order - 1) * x.per;
+        let e = p.slot(Slot::In);
+        k.ngram_lead(self.dev.stream, tok.ptr, self.lead_states(x.hist), hash, table.ptr, e, rows, h, x.per, x.row, x.eos, (x.order, map, x.segments))?;
+        self.mark("n-gram embedding: rows")
+    }
+
+    /// `Op::NgramAdd` on the pass's first `rows` rows, each a decode row of its own sequence (`Dyn::lead`): the gate on their rows, then (the segmented form's) the
+    /// convolution, one launch for all of them, each row's last inputs its own sequence's state (`rows::RowTabs`).
+    pub(super) unsafe fn ngram_add_lead(&self, p: &Part, x: &NgramAdd, rows: usize) -> Result<()> {
+        let k = self.kqx.as_ref().ok_or_else(|| Error("an n-gram embedding in a model loaded without its kernels".into()))?;
+        let (s, d) = (self.dev.stream, p.d.hidden);
+        let w = 4 * d;
+        let (kv, st, gv, gvn) = (p.slot(Slot::Gu), p.slot(Slot::S), p.slot(Slot::D), p.slot(Slot::M));
+        let (q, kn) = (p.small[x.q].ptr, p.small[x.k].ptr);
+        match x.conv {
+            Some(cv) if x.plus_one => {
+                k.ple_gate(s, kv, st, kn, q, p.small[cv.norm].ptr, gv, gvn, rows, d, p.d.eps, false)?;
+                k.ple_conv_rows(s, gvn, gv, p.small[cv.taps].ptr, self.lead_states(cv.state), st, rows, w, (cv.taps_n, cv.dilation))?;
+            }
+            None if !x.plus_one => k.ple_gate(s, kv, st, kn, q, 0, gv, gvn, rows, d, x.eps, true)?,
+            _ => {
+                return Err(Error(format!(
+                    "an n-gram block of {x:?}: the kernels take the segmented form (the convolution, (1 + w) norms) or Engram's (plain norms, no convolution)"
+                )))
+            }
+        }
+        self.mark("n-gram embedding: gate and convolution")
+    }
 }

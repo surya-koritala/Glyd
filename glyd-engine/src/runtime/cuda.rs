@@ -46,10 +46,6 @@ impl LayerImpl<Cuda> for MlpBlock {
         (s.tokens * (2 * self.hidden + 3 * self.inter) * 4) as u64
     }
 
-    fn capturable(&self) -> bool {
-        false
-    }
-
     fn run(&mut self, cx: &mut StepCx<Cuda>, x: &mut Vec<f32>) -> Result<()> {
         let (q, d, i) = (&*cx.queue, self.hidden, self.inter);
         if x.len() % d != 0 {
