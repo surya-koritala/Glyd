@@ -204,6 +204,25 @@ impl Dyn {
             self.dev.sync()?;
             keys.push(k);
         }
+        // (a pick inside a candidate source's blocks: each row's entries in the blocks published for it, `V4Run`'s cand and ncand)
+        let inside: Vec<Option<Vec<usize>>> = match x.cand {
+            Some(super::mla::Cand::Inside { block, .. }) => {
+                let (mut nb, mut blocks) = (vec![0i32; n], vec![0i32; n * v.ctop]);
+                v.ncand.read(0, &mut nb)?;
+                v.cand.read(0, &mut blocks)?;
+                (0..n)
+                    .map(|t| {
+                        let seen = (at[t] as usize + 1) / ratio;
+                        let c = (nb[t].max(0) as usize).min(v.ctop);
+                        let mut b: Vec<usize> = blocks[t * v.ctop..][..c].iter().map(|&x| x.max(0) as usize).collect();
+                        b.sort_unstable();
+                        b.dedup();
+                        Some(b.into_iter().flat_map(|k| k * block..((k + 1) * block).min(seen)).collect())
+                    })
+                    .collect()
+            }
+            _ => vec![None; n],
+        };
         let f = |v: &[u16]| v.iter().map(|&h| f32::from_bits((h as u32) << 16)).collect::<Vec<f32>>();
         let rec = super::mla::PickTrace {
             layer: l,
@@ -212,6 +231,7 @@ impl Dyn {
             q: q.chunks(ih * 128).map(f).collect(),
             w: w.chunks(ih).map(f).collect(),
             keys: keys.iter().map(|k| f(k)).collect(),
+            inside,
         };
         if let Some(t) = self.pick_trace.borrow_mut().as_mut() {
             t.push(rec);

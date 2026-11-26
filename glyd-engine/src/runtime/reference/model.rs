@@ -207,7 +207,7 @@ impl RefModel {
             if let Residual::Streams(s @ StreamsP { lagged: true, .. }) = l.block.residual {
                 for (t, xt) in x.chunks_mut(n * d).enumerate() {
                     let (pre, post, comb) = super::hc_weights(&s, &l.p, xt)?;
-                    let input: Vec<f32> = (0..d).map(|i| (0..n).map(|j| lag[t][j] * xt[j * d + i]).sum()).collect();
+                    let input = super::collapse(&s, &lag[t], xt, d);
                     let o = l.output_with(store, seqs[t], pos[t], tokens[t], &input)?;
                     l.post(xt, &o, Some((post, comb)))?;
                     lag[t] = pre;
@@ -262,9 +262,13 @@ impl RefModel {
             .collect())
     }
 
-    /// Block `b`'s body on one token's normed input `h`, with the block whose keys and values it shares where it does (`Attn::kv_from`), and a per-layer
-    /// input's branch with its token's input.
+    /// Block `b`'s body on one token's normed input `h`, with the block whose keys and values it shares where it does (`Attn::kv_from`), a compressed
+    /// attention with the parts it reads of other blocks (`CompShare`), and a per-layer input's branch with its token's input.
     pub fn body(&mut self, b: usize, seq: u32, pos: u32, token: u32, h: &[f32]) -> Result<Vec<f32>> {
+        // (V4.1's compressed attention reading other blocks' parts: theirs as they stand, which ran before it)
+        if matches!(self.layers.get(b).map(|l| &l.block.body), Some(Body::Mixer(Mixer::Compressed(Comp { share: Some(_), .. })))) {
+            self.share_into(b, seq)?;
+        }
         if let Some(Body::PerLayer(pl)) = self.layers.get(b).map(|l| l.block.body.clone()) {
             let dim = self.desc.embed.per_layer.map_or(0, |p| p.dim);
             let input = self.per_layer_input(token)?;
@@ -336,6 +340,18 @@ impl RefModel {
         self.final_h_with(xt, depth, &[])
     }
 
+    /// The model's streams' kind (its blocks' first; the final collapse rounds as they do), or none's (F32) where it has no streams.
+    fn streams_p(&self) -> StreamsP {
+        self.desc.blocks.iter().find_map(|b| if let Residual::Streams(s) = b.residual { Some(s) } else { None }).unwrap_or(StreamsP {
+            streams: 1,
+            sinkhorn_iters: 0,
+            eps: 0.0,
+            norm_eps: 0.0,
+            rounding: crate::runtime::kinds::Rounding::F32,
+            lagged: false,
+        })
+    }
+
     /// `final_h` with lagged mHC's last input weights `pre` (`Collapse::LastPre`).
     pub fn final_h_with(&self, xt: &[f32], depth: Option<&Depth>, pre: &[f32]) -> Result<Vec<f32>> {
         let (d, n) = (self.desc.hidden, self.desc.embed.streams.max(1));
@@ -354,13 +370,13 @@ impl RefModel {
                 let flat: Vec<f32> = xt.iter().map(|v| v * r).collect();
                 let mixes = super::matvec(f, flat.len(), &flat);
                 let pre: Vec<f32> = (0..n).map(|j| super::sigmoid(mixes[j] * sc + base[j]) + eps).collect();
-                (0..d).map(|i| (0..n).map(|j| pre[j] * xt[j * d + i]).sum()).collect()
+                super::collapse(&self.streams_p(), &pre, xt, d)
             }
             Collapse::DepthMix => {
                 let dp = depth.ok_or_else(|| Error("the depth mix's collapse without its sources".into()))?;
                 dp.mix(self.p.vec("out_mix_norm")?, self.p.vec("out_mix_proj")?)
             }
-            Collapse::LastPre if pre.len() == n => (0..d).map(|i| (0..n).map(|j| pre[j] * xt[j * d + i]).sum()).collect(),
+            Collapse::LastPre if pre.len() == n => super::collapse(&self.streams_p(), pre, xt, d),
             Collapse::LastPre => return err(format!("lagged mHC's collapse with {} weights for {n} streams", pre.len())),
             // (the streams normed by the final norm before the mix, none after it)
             Collapse::GatedMix => {
@@ -457,6 +473,34 @@ mod tests {
         let m = model(s, Collapse::Mean);
         let mean: Vec<f32> = (0..D).map(|i| bf16((0..N).map(|j| x[j * D + i]).sum::<f32>() / N as f32)).collect();
         assert_eq!(m.final_h_with(&x, None, &[]).unwrap(), norm(&m.desc.final_norm, &mean, Some(&m.final_norm), None));
+    }
+
+    /// Streams that round `Once` (DeepSeek-V4's and V4.1's release: fp32 mixing of bf16 streams, `.to(x.dtype)` and `.type_as(x)`): the collapse summed in fp32 and
+    /// rounded once, each stream's update post o + sum of comb x in fp32 rounded once, the streams staying bf16; lagged mHC's collapse and the head's last one
+    /// (`Collapse::LastPre`) so too. By hand against the block and the model.
+    #[test]
+    fn streams_that_round_once_round_as_the_release() {
+        use crate::runtime::reference::{bf16, collapse};
+        let s = StreamsP { rounding: Rounding::Once, ..streams(false) };
+        let l = block(0, s);
+        let x: Vec<f32> = fill("once.x", N * D, -2.0, 2.0).into_iter().map(bf16).collect();
+        let o = fill("once.o", D, -1.0, 1.0);
+        let (pre, post, comb) = hc_weights(&s, &l.p, &x).unwrap();
+        let (input, hc) = l.pre(&x).unwrap();
+        let want: Vec<f32> = (0..D).map(|i| bf16((0..N).map(|j| pre[j] * x[j * D + i]).sum::<f32>())).collect();
+        assert_eq!((input, collapse(&s, &pre, &x, D)), (want.clone(), want), "the collapse rounded once");
+        let mut got = x.clone();
+        l.post(&mut got, &o, hc).unwrap();
+        for k in 0..N {
+            for i in 0..D {
+                assert_eq!(got[k * D + i], bf16(post[k] * o[i] + (0..N).map(|j| comb[j][k] * x[j * D + i]).sum::<f32>()), "stream {k}, column {i}");
+            }
+        }
+        // (lagged: the head's collapse by the last weights, rounded once before the final norm)
+        let m = model(StreamsP { lagged: true, ..s }, Collapse::LastPre);
+        let w = [0.4f32, 0.3, 0.2, 0.1];
+        let folded: Vec<f32> = (0..D).map(|i| bf16((0..N).map(|j| w[j] * x[j * D + i]).sum::<f32>())).collect();
+        assert_eq!(m.final_h_with(&x, None, &w).unwrap(), norm(&m.desc.final_norm, &folded, Some(&m.final_norm), None));
     }
 
     /// Lagged mHC (DeepSeek-V4.1): a block's input is the streams weighed by the previous block's own input weights, the first block's by

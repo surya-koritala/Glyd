@@ -3084,13 +3084,27 @@ pub mod sizing {
 
     /// `layer_bytes_where` of a table of tensors (src/sizes.rs: a directory's, or the Hub's by ranges before the files are here).
     pub fn layer_bytes_table(table: &crate::sizes::Table, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool) -> (Vec<u64>, u64) {
+        // (an FP8 matrix whose E8M0 scales are of blocks other than 128 x 128 (DeepSeek-V4.1's 32 x 32), which the library's FP8 products do not take: the loader
+        // holds its values in bf16, packed as a bf16 matrix is; one with a scale a row's run (an n-gram table, whose rows are looked up), as the bf16 it decodes to)
+        let shapes: std::collections::HashMap<&str, &[u64]> = table.rows.iter().map(|r| (r.name.as_str(), &r.shape[..])).collect();
+        let held_bf16 = |r: &crate::sizes::Row| -> Option<bool> {
+            let sc = shapes.get(r.name.replace(".weight", ".scale").as_str()).filter(|_| r.name.ends_with(".weight") && r.shape.len() == 2)?;
+            let b = crate::formats::scale_block(r.shape[0] as usize, r.shape[1] as usize, sc)?;
+            (b != [128, 128]).then_some(b[0] == 1)
+        };
         table.per_layer(nl, &|r| keep(&r.name), &|r| {
             let matrix = r.shape.len() == 2 && r.shape.iter().all(|&d| d >= 256);
             match r.dtype.as_str() {
                 // (a latent attention's kv_b_proj and indexer products released in FP8: the loader holds their E4M3 values in bf16, `Part::scales`)
                 "F8_E4M3" if crate::dynamic::mla::f8_small_name(&r.name) => r.bytes * 2,
+                "F8_E4M3" => match held_bf16(r) {
+                    Some(true) => r.bytes * 2,
+                    Some(false) if matrix => r.bytes * 2 * bf16_pct / 100,
+                    Some(false) => r.bytes * 2,
+                    None if matrix => r.bytes * f8_pct / 100,
+                    None => r.bytes,
+                },
                 "BF16" if matrix => r.bytes * bf16_pct / 100,
-                "F8_E4M3" if matrix => r.bytes * f8_pct / 100,
                 _ => r.bytes,
             }
         })

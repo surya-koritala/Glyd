@@ -637,6 +637,21 @@ mod tests {
         assert_eq!(c.render(&q, true, Some(true)).unwrap(), "<｜begin▁of▁sentence｜><｜User｜>What is 2+2?<｜Assistant｜><think>");
     }
 
+    /// DeepSeek-V4.1's release's own template (tests/fixtures/chat_deepseek_v41.jinja, its chat_template.jinja: thinking by default) renders on this engine's
+    /// templates: a question's prompt, with thinking and without, and a turn with its reasoning.
+    #[test]
+    fn deepseek_v41_releases_template_renders() {
+        let c = Chat::from_template(include_str!("../tests/fixtures/chat_deepseek_v41.jinja")).unwrap();
+        let q = vec![Message::new("user", "What is 2+2?")];
+        for thinking in [None, Some(true), Some(false)] {
+            let t = c.render(&q, true, thinking).unwrap();
+            assert!(t.starts_with("<｜begin▁of▁sentence｜>") && t.contains("What is 2+2?") && t.contains("<｜Assistant｜>"), "{thinking:?}: {t}");
+        }
+        let m = json::parse(r#"[{"role": "user", "content": "Hello"}, {"role": "assistant", "reasoning_content": "Greet back.", "content": "Hi!"}]"#).unwrap();
+        let t = c.render_json(&m, &Options::new(false)).unwrap();
+        assert!(t.contains("Hello") && t.contains("Hi!"), "{t}");
+    }
+
     /// DeepSeek-V4 with tools: the tools after the system's text, a call as a DSML block (a string as it is, other values as JSON), the tool's result in the
     /// next user turn, and every turn's reasoning kept.
     #[test]
