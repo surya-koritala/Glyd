@@ -859,11 +859,13 @@ fn block_head<L: Lowered>(d: &Described, eos: Vec<i64>, max_pos: usize, blocks: 
     }
     let m = l.desc();
     let lin = |(w, f8): (usize, bool), x: Slot, y: Slot, name: &'static str| if f8 { Op::F8Lin { w, x, y, name } } else { Op::Linear { w, x, y, name } };
+    // (the products' inputs to E4M3 in the release's blocks, as the head's blocks' are: `lower_comp::lower`)
+    let fb = d.fp8_block.unwrap_or(128);
     let mut context = vec![
-        Op::Fp8 { x: Slot::Hid, y: Slot::In, block: 128 },
+        Op::Fp8 { x: Slot::Hid, y: Slot::In, block: fb },
         lin(main, Slot::In, Slot::X, "draft head: main projection"),
         Op::RmsNorm { x: Slot::X, w: main_norm, y: Slot::H, weight: NormW::Plain, eps: n.eps },
-        Op::Fp8 { x: Slot::H, y: Slot::Hq, block: 128 },
+        Op::Fp8 { x: Slot::H, y: Slot::Hq, block: fb },
     ];
     // (each layer: its key product of Hq and its key operation, as the layer's own; its attention over the window alone)
     for (i, ops) in m.layers.iter().enumerate() {

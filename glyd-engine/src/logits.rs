@@ -908,6 +908,28 @@ fn ref_drive_with(
     picks: Option<&Picks>,
     edit: fn(&mut crate::runtime::describe::Described),
 ) -> Result<RefRun> {
+    ref_drive_by(dir, fx, take, picks, &|d| ref_model_with(d, edit))
+}
+
+/// `ref_drive` of the kinds' reference simulating the release's quantizations of its activations in the form of its FP8 blocks (`RefModel::simulate`):
+/// DeepSeek-V4.1's third part's (`dsv41_also`).
+fn ref_drive_sim(dir: &Path, fx: &Fixture, take: Option<&Choices>, picks: Option<&Picks>) -> Result<RefRun> {
+    ref_drive_by(dir, fx, take, picks, &|d| {
+        let mut m = ref_model(d)?;
+        let (desc, _) = crate::runtime::describe::describe_dir(d)?;
+        m.simulate(&desc, desc.fp8_block.unwrap_or(128))?;
+        Ok(m)
+    })
+}
+
+/// `ref_drive` of the reference `load` makes of the model's directory (a fresh one for each sequence).
+fn ref_drive_by(
+    dir: &Path,
+    fx: &Fixture,
+    take: Option<&Choices>,
+    picks: Option<&Picks>,
+    load: &dyn Fn(&Path) -> Result<crate::runtime::reference::model::RefModel>,
+) -> Result<RefRun> {
     let first: Vec<u32> = fx.prompt.iter().chain(&fx.decode).copied().collect();
     let mut out = RefRun { rows: Vec::new(), routed: Vec::new(), picked: Vec::new(), indexers: Vec::new() };
     let mut at = 0usize;
@@ -915,7 +937,7 @@ fn ref_drive_with(
         if tokens.is_empty() {
             continue;
         }
-        let mut m = ref_model_with(dir, edit)?;
+        let mut m = load(dir)?;
         let (moe, mla) = (ref_moe_blocks(&m), ref_indexed_blocks(&m));
         if let Some(t) = take {
             if t.len() != moe.len() || t.iter().any(|l| l.len() < at + tokens.len()) {
@@ -1272,8 +1294,21 @@ pub fn held_on_choices(
 ///      (the Mac, 2026-11-25: KL mean 7.75e-4, max 1.04e-3), and an engine that is not the reference bit for bit before each quantizer cannot be held to the
 ///      kind's bound by it. What the printed figures say is where it stands, not a verdict.
 fn dsv4_also(dir: &Path, fx: &Fixture, lb: &LevelBound) -> Result<bool> {
+    sim_also(dir, fx, lb, crate::cpu_fp4::Sim::B128, dsv4_drive_sim)
+}
+
+/// DeepSeek-V4.1's case's second and third parts, as `dsv4_also`'s for its release's form of FP8 blocks of 32 (src/cpu_fp4.rs `Sim::B32`: activations to E4M3 in
+/// 32s, the window's key E4M3 in 32s and the entries E2M1 in 16s at E4M3 scales after their rotary, the indexer's E2M1 unrotated, the output E4M3 before its
+/// grouped low rank): its quantizing operations bit for bit on the reference's own input, and the whole model with them against the kinds' reference that
+/// simulates them (`RefModel::simulate`), printed. The first part, the case's verdict, is the engine and the kinds' reference both without them.
+fn dsv41_also(dir: &Path, fx: &Fixture, lb: &LevelBound) -> Result<bool> {
+    sim_also(dir, fx, lb, crate::cpu_fp4::Sim::B32, ref_drive_sim)
+}
+
+/// A compressed attention case's parts 2 and 3 (`dsv4_also`) for the simulation's form `sim`, its reference with the simulation driven by `forced`.
+fn sim_also(dir: &Path, fx: &Fixture, lb: &LevelBound, sim: crate::cpu_fp4::Sim, forced: Forced) -> Result<bool> {
     println!("     the quantizing operations on the reference's own input, bit for bit:");
-    let ops = match crate::dsv4_ref::qcheck_rows(64) {
+    let ops = match crate::dsv4_ref::qcheck_rows(sim, 64) {
         Ok(()) => true,
         Err(e) => {
             println!("FAIL {}", e.msg);
@@ -1281,17 +1316,17 @@ fn dsv4_also(dir: &Path, fx: &Fixture, lb: &LevelBound) -> Result<bool> {
         }
     };
     let mut run = dsv4_engine_sim(dir, &lb.level)?;
-    let own = dsv4_drive_sim(dir, fx, None, None)?;
+    let own = forced(dir, fx, None, None)?;
     let fx = Fixture { rows: own.rows.iter().map(|r| Row::from_logits(r)).collect::<Result<_>>()?, ..fx.clone() };
     run.choices(true)?;
     let rows = drive(run.as_mut(), &fx.prompt, &fx.decode, &fx.long)?;
-    let Some(routing) = run.choices(false)? else { return err("deepseek-v4: its engine gives no view of its routers' choices") };
+    let Some(routing) = run.choices(false)? else { return err("the compressed attention's engine gives no view of its routers' choices") };
     let v = compare(&fx, &lb.bound, &rows);
     println!(
         "     the whole model with the release's simulated quantizations (information, never a pass or fail): the engine against the reference that simulates them, on the reference's own choices KL mean {:.2e} max {:.2e}, best token {}/{} with a lead",
         v.mean_kl, v.max_kl, v.top1.0, v.top1.1
     );
-    held_on_choices("the engine with the simulation", dir, &fx, &lb.bound, &rows, &routing, &own, dsv4_drive_sim)?;
+    held_on_choices("the engine with the simulation", dir, &fx, &lb.bound, &rows, &routing, &own, forced)?;
     Ok(ops)
 }
 
@@ -2652,14 +2687,15 @@ pub fn cases() -> Vec<Case> {
             id: "deepseek-v41",
             family: "DeepSeek-V4.1 (CSA2's shared compressed attention, lagged mHC, Engram, mixture of experts)",
             weights: Weights::Random(deepseek_v41_random),
-            // (the compressed attention's executor, held to the kinds' reference on its own routers' and indexers' choices at the kind's bound. Without
-            // simulated quantizations: the kernels simulate DeepSeek-V4's release's (FP8 in blocks of 128), and V4.1's release quantizes otherwise
-            // (`lower_comp::lower`), so its engine runs its weights' arithmetic, which is what is held)
+            // (held in three parts as deepseek-v4 is, `dsv41_also` has the second and third: the compressed attention's executor and the kinds' reference both
+            // WITHOUT the release's simulated quantizations, on the engine's own routers' and indexers' choices at the kind's bound; the quantizing operations of
+            // its release's form (FP8 blocks of 32) bit for bit on the reference's own input; and the whole model with them against the reference simulating them,
+            // printed)
             engine: dsv4_engine,
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: Some(ref_drive),
-            also: None,
+            also: Some(dsv41_also),
         },
         Case {
             id: "glm",
