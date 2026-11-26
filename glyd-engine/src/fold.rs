@@ -3449,8 +3449,9 @@ fn kv_check(dev: &crate::dev::Dev, lib: &crate::ffi::Lib) -> Result<(usize, Vec<
                 bad.push(format!("{h} x {d}: the engine's write read back by the library: {d2} bf16 differ from the library's write"));
             }
         }
-        // the same values as a bf16 cache [places][h][d], the places the pages' tokens
-        let (kc, vc) = (Buf::new(2 * k.len())?, Buf::new(2 * v.len())?);
+        // the same values as a bf16 cache [places][h][d], the places the pages' tokens: whole pages, as a cache read through its table is (the kernels read
+        // a page's 16 places at once; a cache of the 149 tokens alone was read past its end, which compute-sanitizer's memcheck reported), zeros past the tokens
+        let (kc, vc) = (Buf::zeroed(2 * blocks * 16 * h * d)?, Buf::zeroed(2 * blocks * 16 * h * d)?);
         kc.write(0, &k)?;
         vc.write(0, &v)?;
         dev.sync()?;
