@@ -129,7 +129,10 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
             report::l2check(&dev, &mibs, a.num("reps", 20usize)?, a.num("gap-us", 10u64)?)
         }
         "topkcheck" => {
-            if !glyd_engine::kcheck::topk_check(&glyd_engine::dev::Dev::new(0)?)? {
+            let dev = glyd_engine::dev::Dev::new(0)?;
+            // (the candidates, the rows the draws see and a draw's questions of them; the draw's weights of every float, the GPU's against the host's)
+            let (rows, weights) = (glyd_engine::kcheck::topk_check(&dev)?, glyd_engine::kcheck::weights_check(&dev)?);
+            if !(rows && weights) {
                 std::process::exit(1);
             }
             Ok(())
@@ -481,12 +484,18 @@ fn cmd_sampletime(a: &Args) -> Result<()> {
     if let Some(dir) = nemotron_dir(a) {
         let (mut e, load, _store, _) = open_nh(a, &dir)?;
         eprintln!("loaded in {load:.1} s: {}", e.describe());
-        return time_replies(&mut e, |e, host| e.top.off = host, &Tok::load(&dir)?.encode(prompt)?, &glyd_engine::sampler::generation_defaults(&dir), new);
+        return time_replies(
+            &mut e,
+            |e, host| e.host_sampling = host,
+            &Tok::load(&dir)?.encode(prompt)?,
+            &glyd_engine::sampler::generation_defaults(&dir),
+            new,
+        );
     }
     let dir = exec_dir(a)?;
     let (mut e, load) = open35(a, &dir)?;
     eprintln!("loaded in {load:.1} s: {}", e.describe());
-    time_replies(&mut e, |e, host| e.top.off = host, &Tok::load(&dir)?.encode(prompt)?, &glyd_engine::sampler::generation_defaults(&dir), new)
+    time_replies(&mut e, |e, host| e.host_sampling = host, &Tok::load(&dir)?.encode(prompt)?, &glyd_engine::sampler::generation_defaults(&dir), new)
 }
 
 /// `new` tokens after `ids` by `Gen::reply` with `params` (the end token ignored): the tokens and the decode speed from the first token on, tokens a second.

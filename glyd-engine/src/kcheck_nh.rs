@@ -15,7 +15,6 @@ use crate::kern::{KernMamba2, SsdWs, MAMBA2_HEAD, MAMBA2_STATE};
 use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
 use crate::offload::{CachePlan, HostMemory, Mode, Offload};
 use crate::qwen35::Pack35;
-use crate::sampler::Need;
 use crate::weights::{read_pack, v7_manifest, Layout};
 use glyd_gpu::json::{self, Value};
 use glyd_gpu::pack::{rows_bits, transpose, unpack_int3, unpack_int4, unpack_int5, unpack_int6, unpack_rows, Tiered, INT4_TAG, INT5_TAG, INT6_TAG};
@@ -302,13 +301,13 @@ pub fn toy(dir: &Path, outd: &Path, cache: Option<(&str, Offload)>) -> Result<()
         println!("{tag}: {}", e.describe());
         e.reset()?;
         let (mut logits, mut tokens) = (Vec::<u16>::new(), Vec::<String>::new());
-        // the sampler's candidates for each step, as `Gen::reply` asks for them with a top-p alone (the 64 largest logits and the sum of the exponentials, at temperature 0.7), against the row the step left
-        e.top.ask = Some(Need { temperature: 0.7, mass: true });
+        // the sampler's candidates for each step, as `Gen::reply` asks for them with a top-p alone (the 64 largest logits and the total of the weights, at temperature 0.7), against the row the step left
         let mut tops = 0usize;
-        let mut grab = |e: &crate::dynamic::Dyn, logits: &mut Vec<u16>| -> Result<()> {
+        let mut grab = |e: &mut crate::dynamic::Dyn, logits: &mut Vec<u16>| -> Result<()> {
             let row: Vec<u16> = e.logits()?.into_iter().map(|f| (f.to_bits() >> 16) as u16).collect();
-            if let Some(top) = e.top.read() {
-                top_vs_row(&top, &row, 0.7)
+            if let Some(c) = crate::sched::ModelStep::top(e, 0) {
+                let total = crate::sched::ModelStep::total(e, 0, c[0].1, 0.7).map(|t| (t, 0.7));
+                top_vs_row(&c, total, &row)
                     .map_err(|m| Error(format!("{tag}: row {}: the sampler's candidates are not the logits' largest: {m}", logits.len() / row.len())))?;
                 tops += 1;
             }
@@ -318,13 +317,13 @@ pub fn toy(dir: &Path, outd: &Path, cache: Option<(&str, Offload)>) -> Result<()
         let t0 = Instant::now();
         let s = e.prefill(&ids[..p])?;
         tokens.push(s.token.to_string());
-        grab(&e, &mut logits)?;
+        grab(&mut e, &mut logits)?;
         let pre = t0.elapsed().as_secs_f64();
         let t1 = Instant::now();
         for &id in &ids[p..total] {
             let s = e.step(id)?;
             tokens.push(s.token.to_string());
-            grab(&e, &mut logits)?;
+            grab(&mut e, &mut logits)?;
         }
         println!(
             "{tag}: prefill of {p} tokens {:.1} ms, {} steps {:.2} ms each",
@@ -338,9 +337,7 @@ pub fn toy(dir: &Path, outd: &Path, cache: Option<(&str, Offload)>) -> Result<()
         if tops == 0 {
             println!("{tag}: candidates: none made (the vocabulary of {} is not a multiple of 8 of at least 64)", cfg.vocab);
         } else {
-            println!(
-                "{tag}: candidates: the 64 largest logits and the sum of their exponentials, as the sampler is given them, are the row's in all {tops} rows"
-            );
+            println!("{tag}: candidates: the 64 largest logits and the total of the weights, as the sampler is given them, are the row's in all {tops} rows");
         }
         save_bytes(outd, &format!("toy_{tag}_logits.bin"), &logits)?;
         io(std::fs::write(outd.join(format!("toy_{tag}_tokens.txt")), tokens.join(" ")))?;
