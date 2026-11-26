@@ -446,6 +446,7 @@ fn prepare(a: &Args, ui: &RefCell<Ui>) -> Done<PathBuf> {
         if !matches!(layout, Layout::Tiered | Layout::Hummingbird) {
             return Err(penguin_only(&name, family, &model));
         }
+        crate::plan::sizing::name_pack(&a);
         let dir = dynamic_dir(&model, &name, family, layout == Layout::Hummingbird, ui)?;
         dynamic_plan(&a, &name, family, &dir, layout == Layout::Hummingbird)?;
         return Ok(dir);
@@ -1568,7 +1569,7 @@ fn hb_dir_for(model: &str, name: &str, family: &str, ui: Option<&RefCell<Ui>>) -
     // (a family whose experts come from a codes pack at the hummingbird level: the model's own directory, its pack beside its weights)
     if codes_row(family) {
         let dir = if Path::new(model).join("config.json").exists() { Some(PathBuf::from(model)) } else { Source::find(model).ok().map(|s| s.dir) };
-        return dir.filter(|d| crate::plan::sizing::codes_beside(d).is_some()).ok_or_else(|| crate::plan::sizing::no_codes_pack(name, family, model));
+        return dir.filter(|d| crate::plan::sizing::codes_of(d).is_some()).ok_or_else(|| crate::plan::sizing::no_codes_pack(name, family, model));
     }
     let is_hb = |d: &Path| matches!(crate::hb_pack::HbDir::open(d), Ok(Some(_)));
     if Path::new(model).join("glyd.json").exists() && is_hb(Path::new(model)) {
@@ -1653,6 +1654,7 @@ fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCe
     }
     let hb = layout == Layout::Hummingbird;
     let level = if hb { "hummingbird" } else { "penguin" };
+    crate::plan::sizing::name_pack(a);
     let (gpus, _) = dynamic_gpus()?;
     crate::ffi::Lib::find().map_err(cannot)?;
     let room = rooms(&gpus);
@@ -1765,7 +1767,7 @@ fn dynamic_plan(a: &Args, name: &str, family: &str, dir: &Path, hb: bool) -> Don
 fn plan_in(a: &Args, name: &str, family: &str, dir: &Path, text: &str, hb: bool, targets: &[Target]) -> Done<LoadPlan> {
     let table = crate::sizes::Table::from_dir(dir).map_err(cannot)?;
     let host = crate::offload::host_memory();
-    match crate::plan::sizing::codes_beside(dir).filter(|_| hb && codes_row(family)) {
+    match crate::plan::sizing::codes_of(dir).filter(|_| hb && codes_row(family)) {
         Some(pack) => {
             let row = crate::support::row_named(family).ok_or_else(|| cannot(format!("no family named {family}")))?;
             crate::plan::sizing::codes_plan(a, name, &table, text, row, &pack, targets, host)
@@ -1791,6 +1793,7 @@ fn load_dynamic(
         return Err(penguin_only(&name, family, model));
     }
     let hb = layout == Layout::Hummingbird;
+    crate::plan::sizing::name_pack(a);
     let dir = dynamic_dir(model, &name, family, hb, ui)?;
     let (text, gpus, first, plan) = dynamic_plan(a, &name, family, &dir, hb)?;
     let nl = crate::dynamic::split::config_num(&text, "num_hidden_layers").unwrap_or(0);

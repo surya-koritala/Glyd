@@ -50,7 +50,7 @@ pub fn experts_at(layout: Option<Layout>) -> Layout {
 
 /// The dynamic route's stage loader of the family (`split::loader`: the gated residuals' streams): stage `st` (the whole model on one GPU, or its layers
 /// `st.layers` of a model split across GPUs: src/dynamic/split.rs), its experts all on its GPU at the level `o.layout` names (`load_stage`); with `caching`
-/// (the hummingbird level's plan, `plan::sizing::codes_plan`), the codes pack beside its weights (`DIR/pack`, `codes_beside`) in the expert cache's places,
+/// (the hummingbird level's plan, `plan::sizing::codes_plan`), the codes pack beside its weights (`DIR/pack`) or `--pack`'s (`codes_of`) in the expert cache's places,
 /// `caching.places` a layer, its misses as `caching.offload` says (`load_cached_stage`). A caching that asks for layers' matrices in the computer's memory is
 /// refused in words: the family's stay on the GPU.
 pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
@@ -61,8 +61,11 @@ pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store:
             c.dense
         ));
     }
-    let pack = crate::plan::sizing::codes_beside(dir).ok_or_else(|| {
-        crate::ffi::Error(format!("{FAMILY}: its experts in the expert cache are a codes pack beside its weights ({}/pack), and there is none", dir.display()))
+    let pack = crate::plan::sizing::codes_of(dir).ok_or_else(|| {
+        crate::ffi::Error(format!(
+            "{FAMILY}: its experts in the expert cache are a codes pack beside its weights ({}/pack) or named by --pack, and there is none",
+            dir.display()
+        ))
     })?;
     // (the pack's experts exact: none of a call's pairs skipped unless `caching.offload` says so)
     let k = Caching { pack: pack.clone(), mode: PackMode::of(&pack, false), places: Some(c.places), offload: c.offload, users: 1 };
