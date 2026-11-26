@@ -77,6 +77,7 @@ const SWITCHES: &[&str] = &[
     "expect-apart",
     "tables",
     "decoded",
+    "stacked",
 ];
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] = &[
