@@ -1511,12 +1511,14 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
         // the executor (GLY-354): Nemotron-H's description, its blocks of experts the Moe kind's, in the expert cache of the plan's places where it has one
         let layers = crate::nemotron::ConfigNemotronH::load(dir).map_err(cannot)?.layers;
         let cache = plan.experts.map(|c| (c.slots, &store));
-        let e = crate::dynamic::nemotron::load_cached(dir, &o, plan.layout, cache, crate::dynamic::Stage::whole(layers)).map_err(oom)?;
+        let mut e = crate::dynamic::nemotron::load_cached(dir, &o, plan.layout, cache, crate::dynamic::Stage::whole(layers)).map_err(oom)?;
+        twelve_bit_pages(&mut e, plan, dir, name, ui)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     } else {
         // the dynamic engine (GLY-326): Qwen3.5's description
-        let e = crate::dynamic::qwen35::load(dir, &o).map_err(oom)?;
+        let mut e = crate::dynamic::qwen35::load(dir, &o).map_err(oom)?;
+        twelve_bit_pages(&mut e, plan, dir, name, ui)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     };
@@ -1525,8 +1527,9 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, gpu: &Gpu, name: &str, ui: 
     Ok((e, bytes, vocab))
 }
 
-/// The 12-bit lossless KV pages for `e` where its plan has them (`LoadPlan::kv12`: GLYD_KV=lossless asked for them, and they reserve no more than bf16 for the
-/// plan; off unless asked for): the tables made on the model's first run and kept in the cache.
+/// The 12-bit lossless KV pages for `e` where its plan has them (`LoadPlan::kv12`: GLYD_KV=lossless asked for them for a server, its description's attention kinds
+/// have rings they take, and they reserve no more than bf16 for the plan; off unless asked for), on every path that loads a plan on the executor: the tables made
+/// on the model's first run and kept in the cache (`kv12::tables_for`).
 fn twelve_bit_pages(e: &mut crate::dynamic::Dyn, plan: &LoadPlan, dir: &Path, name: &str, ui: &RefCell<Ui>) -> Done<()> {
     if !plan.kv12 {
         return Ok(());
@@ -1855,6 +1858,12 @@ fn load_dynamic(
             cannot(e.msg)
         }
     })?;
+    // (its keys and values in 12-bit pages where the plan has them: a server's pools with the whole model on one GPU, `size_dynamic_at`)
+    match &mut e {
+        crate::dynamic::split::Run::One(d) => twelve_bit_pages(d, &plan, &dir, &name, ui)?,
+        _ if plan.kv12 => return Err(cannot("a plan of 12-bit KV pages holds the whole model on one GPU")),
+        _ => {}
+    }
     // (the weights the engine holds on one GPU; stages and layers across GPUs hold theirs on their own threads and say none: 0)
     let weights = crate::conv::Gen::held(&e).map_or(0, |h| h.weights);
     loaded_report(model, &plan, &gpus.iter().filter(|g| devices.contains(&g.ordinal)).collect::<Vec<_>>(), weights);

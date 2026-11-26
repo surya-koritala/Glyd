@@ -3290,16 +3290,18 @@ pub fn make_model(a: &crate::args::Args) -> Result<()> {
         tables_at_4_bits(dir, &|_| true)?;
     }
     // (`--servable`: the files a server needs besides the weights, for a client to talk to it: a tokenizer, the chat template and the end token; the
-    // family's chat template where one is made: Qwen's for the Qwen3.5 layout's and Qwen3.8-Flash-Next's cases, GLM-5.3's for its layout's, DeepSeek-V4.1's
-    // release's own (tests/fixtures/chat_deepseek_v41.jinja, its chat_template.jinja) for its case)
+    // family's chat template where one is made: Qwen's for the Qwen3.5 layout's and Qwen3.8-Flash-Next's cases, GLM-5.3's for its layout's and
+    // GLM-5.3-Flash's, Kimi-K3's own (src/chat.rs `KIMI_CHAT`) for its cases, DeepSeek-V4.1's release's own (tests/fixtures/chat_deepseek_v41.jinja, its
+    // chat_template.jinja) for its case)
     if a.has("servable") {
         let template = match base {
-            "qwen35" | "qwen35moe" | "qwen4x" | "qwen4x-s2" | "qwen4x-cb" | "qwen4x-rel" => include_str!("../tests/fixtures/chat_qwen38_tools.jinja"),
-            "glm-dsa" | "glm-dsa-f8" => include_str!("../tests/fixtures/chat_glm53_tools.jinja"),
+            "qwen35" | "qwen35-wide" | "qwen35moe" | "qwen4x" | "qwen4x-s2" | "qwen4x-cb" | "qwen4x-rel" => include_str!("../tests/fixtures/chat_qwen38_tools.jinja"),
+            "glm" | "glm-dsa" | "glm-dsa-f8" => include_str!("../tests/fixtures/chat_glm53_tools.jinja"),
+            "kimi" | "kimi-dsa" => crate::chat::KIMI_CHAT,
             "deepseek-v41" => include_str!("../tests/fixtures/chat_deepseek_v41.jinja"),
             id => {
                 return err(format!(
-                    "--servable: only the cases whose family's chat template is made (qwen35, qwen35moe, qwen4x, qwen4x-s2, qwen4x-cb, qwen4x-rel, glm-dsa, glm-dsa-f8, deepseek-v41; not {id})"
+                    "--servable: only the cases whose family's chat template is made (qwen35, qwen35-wide, qwen35moe, qwen4x, qwen4x-s2, qwen4x-cb, qwen4x-rel, glm, glm-dsa, glm-dsa-f8, kimi, kimi-dsa, deepseek-v41; not {id})"
                 ))
             }
         };
@@ -6037,7 +6039,7 @@ fn sizes_done(case: &str, fails: usize) -> Result<()> {
     Ok(())
 }
 
-/// `keepcheck CASE [--level L] [--dir MODEL --ctx N --chunk N]` (gemma4, qwen35, muse, kimi, glm; R4c's first step): a finished sequence kept in its slot and gone on with, as a
+/// `keepcheck CASE [--level L] [--dir MODEL --ctx N --chunk N] [--kv12]` (gemma4, qwen35, muse, kimi, glm; R4c's first step; `--kv12`: the pools in 12-bit pages): a finished sequence kept in its slot and gone on with, as a
 /// conversation's next turn does (`ModelStep::resume` and `mark`, src/dynamic/rows.rs), on the case's random model, or the model in MODEL (a real one). Every comparison is of logits, bit for bit, against a second slot that ran the same tokens
 /// in the same passes and was never resumed (where the engine computes experts on the host, at the kind's lossless bound: `host_experts`, `Beside`):
 ///   - the whole of a sequence (a prompt, then tokens a step at a time) gone on with a further chunk: every family;
@@ -6067,6 +6069,14 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
         }
         None => random_dyn_routed(case, level, level_layout(level)?, "keepcheck", None)?,
     };
+    // (--kv12: the pools in 12-bit lossless pages, of tables made on prompts of the model's tokens, as a server's that takes them)
+    if a.has("kv12") {
+        let v = e.desc().vocab as u32;
+        let prompts: Vec<Vec<u32>> = (0..4u32).map(|k| (0..320u32).map(|i| 3 + (i * 7919 + k * 104_729) % (v - 3)).collect()).collect();
+        let t = crate::dynamic::kv12::calibrate(&mut e, &prompts, "keepcheck")?;
+        e.set_kv12(Some(t));
+    }
+    let twelve = Gen::held(&e).is_some_and(|h| h.kv_type == crate::plan::kv_format_of(true));
     let (vocab, cuts, marks, window, host) = (e.desc().vocab as u32, e.cuts(), e.can_mark(), e.least_window(), host_experts(&e));
     // (a model with recurrent states keeps them at boundaries (src/dynamic/snaps.rs); this check's prompts are short, so at boundaries 32 tokens apart, or as far apart as the
     // largest blocks: DeepSeek-V4's compressed entries' are found by name whole)
@@ -6223,11 +6233,12 @@ pub fn keep_check(a: &crate::args::Args) -> Result<()> {
             s.release(&[0, 1])?;
         }
     }
-    // a start shared with an empty slot: of a sequence of a prompt (marked at its end) and 24 steps, what a request that has its first 50 tokens can have
+    // a start shared with an empty slot: of a sequence of a prompt (marked at its end) and 24 steps, what a request that has its first 50 tokens can have (none where the mark
+    // is inside a block of rings in 12-bit pages, which `share` does not copy: the prompt runs whole)
     {
         let should = if cuts {
             cut / 16 * 16
-        } else if marks {
+        } else if marks && !(twelve && p.len() % 16 != 0) {
             p.len()
         } else {
             0
@@ -6927,8 +6938,9 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     // (--ctx plan: the plan `serve` makes of the random model for these users on this GPU, which the load takes (its context, chunk, layout, sequences and their bytes:
     // `take_plan`); the GPU's memory the load and the step's sequences take is held to the plan's figure, and the users to the plan's)
     let plan = if a.flag("ctx") == Some("plan") { Some(planned_for(case, level, users)?) } else { None };
-    // (whether the plan is of the pages this run holds. The planner plans no 12-bit pages for some routes (`plan::takes_twelve`): there --kv12 runs them at the
-    // bf16 plan's context in pools of what the GPU has free, and its memory is not held to that plan, which is of other pages)
+    // (whether the plan is of the pages this run holds. The planner plans no 12-bit pages where the description has no ring in pools they take (heads of 64, the
+    // compressed attention's entries: `rows::twelve_bit_rings`): there --kv12 runs them at the bf16 plan's context in pools of what the GPU has free, and its
+    // memory is not held to that plan, which is of other pages)
     let own_plan = plan.as_ref().is_some_and(|lp| !kv12 || lp.kv_format() == "12-bit");
     let mib = |b: u64| b as f64 / (1u64 << 20) as f64;
     if let Some(lp) = &plan {
@@ -7381,11 +7393,13 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
             fails += 1;
         }
     }
-    // (decode steps of several rows where the replies' decoding can meet: a sequence decodes its tokens while the next prompt's passes run, so where every next prompt
-    // takes more passes than the tokens made (prompts that fill a long planned context, `--ctx plan`), no two of them decode alone together)
-    let meet = (1..users).any(|k| (len(k) - len(k - 1)).div_ceil(chunk.max(1)) < tokens);
+    // (decode steps of several rows where the replies' decoding can meet: the scheduler runs the prompts' chunks in the order they came (a step's `chunk` tokens, the
+    // oldest prompt first: `Sched`'s picks), so a sequence decodes its tokens, one a pass, while the next prompt's passes run, all of them: where every next prompt takes
+    // more passes than the tokens made (prompts that fill a long planned context, `--ctx plan`), no two of them decode together. On an A10, 8 users of qwen35 at its
+    // planned 32,768 tokens (prompts of 4,089 to 32,712, each 4,089 past the one before) decoded one row a step, bf16 and 12-bit pages alike)
+    let meet = (1..users).any(|k| len(k).div_ceil(chunk.max(1)) + 1 < tokens);
     if batchable && k > 1 && !meet {
-        println!("decode steps of several rows: not asked (each prompt is more passes past the one before than the {tokens} tokens made)");
+        println!("decode steps of several rows: not asked (each prompt after the first takes more passes than the {tokens} tokens made)");
     }
     if batchable && k > 1 && meet && steps[2..].iter().all(|&x| x == 0) {
         println!("FAIL no decode step had more than one row");
