@@ -5962,7 +5962,7 @@ mod tests {
     #[test]
     fn the_planner_and_the_command_line_name_no_family() {
         // (a line that stays, by a part of it, and why)
-        let allowed: [(&str, &str, &str); 14] = [
+        let allowed: [(&str, &str, &str); 15] = [
             ("plan.rs", "use crate::qwen35::Pack35;", "the save's pack: every description's matrices (`pack::described`), the type named where it began"),
             ("plan.rs", "kept: Vec<crate::qwen35::Tensor35>,", "the save's kept tensor: every description's, as above"),
             ("plan.rs", "kind: Kind::Qwen3,", "`dense_fit`, the one sizer of the rows sized `Sizing::Dense`: its plans' engine is the plain dense kind's"),
@@ -5970,6 +5970,7 @@ mod tests {
             ("plan.rs", "let expert = crate::dynamic::kimi::expert_bytes(&c)", "as above: an expert as that loader packs it"),
             ("plan.rs", "mode: crate::qwen4x::PackMode::of(pack, false),", "`codes_plan`, the rows whose experts come from a codes pack (`ExpertCache::Codes`): the pack's modes, its format's"),
             ("plan.rs", "pub mode: crate::qwen4x::PackMode,", "as above"),
+            ("plan.rs", "sides: crate::qwen4x::PackMode::of(pack, false).side(pack)", "as above: the sidecars the pack's mode names"),
             ("cli.rs", "if plan.kind == Kind::Gemma4 {", "`open_lossy`: the one-GPU route's loader by the plan's engine (its row's `Lossy::kind`), each arm a family's weight map; a seam of that route's loaders is its own piece"),
             ("cli.rs", "crate::dynamic::gemma4::load_of(", "as above"),
             ("cli.rs", "} else if plan.kind == Kind::Qwen3 {", "as above"),
