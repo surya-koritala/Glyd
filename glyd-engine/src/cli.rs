@@ -1419,12 +1419,14 @@ fn load_lossy(
     if let Some(t) = a.flag("temp") {
         defaults.temperature = t.parse().map_err(|_| Refusal::new(format!("--temp {t}: not a number"), ""))?;
     }
+    // (served, the users it holds are said once its step is made: `serve_lossy`)
     let line = format!(
-        "Ready in {}: {name} on the {}, {} of weights, {} tokens of context, one user at a time.",
+        "Ready in {}: {name} on the {}, {} of weights, {} tokens of context{}.",
         fmt_time(t0.elapsed().as_secs_f64()),
         gpu.name,
         gib(bytes as u64),
-        plan.context
+        plan.context,
+        if served.is_empty() { ", one user at a time" } else { "" }
     );
     // (what /v1/glyd/info says of it, where it is served)
     let info = (!served.is_empty()).then(|| {
@@ -1758,7 +1760,7 @@ fn codes_row(family: &str) -> bool {
 /// The plan of the dynamic route's model in `dir` over this machine's GPUs (`size_dynamic` on its files' headers; at the hummingbird level (`hb`) of a family
 /// whose experts come from a codes pack, that pack's beside its weights: `codes_plan`), or its refusal: the directory's config.json, the GPUs, the first of
 /// them and the plan.
-fn dynamic_plan(a: &Args, name: &str, family: &str, dir: &Path, hb: bool) -> Done<(String, Vec<Gpu>, Gpu, LoadPlan)> {
+pub(crate) fn dynamic_plan(a: &Args, name: &str, family: &str, dir: &Path, hb: bool) -> Done<(String, Vec<Gpu>, Gpu, LoadPlan)> {
     let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| cannot(format!("{}: {e}", dir.display())))?;
     let (gpus, first) = dynamic_gpus()?;
     let targets: Vec<Target> = gpus.iter().map(target).collect();
@@ -1882,11 +1884,13 @@ fn load_dynamic(
     }
     let distinct = devices.iter().collect::<std::collections::BTreeSet<_>>().len();
     let on = if distinct == 1 { format!("the {}", gpu_name(devices[0])) } else { format!("{distinct} GPUs") };
+    // (served, the users it holds are said once its step is made: `serve_lossy`)
     let line = format!(
-        "Ready in {}: {name} on {on}, {} of weights, {} tokens of context, one user at a time.",
+        "Ready in {}: {name} on {on}, {} of weights, {} tokens of context{}.",
         fmt_time(t0.elapsed().as_secs_f64()),
         gib(total),
-        e.capacity()
+        e.capacity(),
+        if served.is_empty() { ", one user at a time" } else { "" }
     );
     let info = (!served.is_empty()).then(|| {
         let held = e.held();
@@ -2329,7 +2333,7 @@ fn h_endpoint() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::sizing::{expert_cache_for, hb_cache, held_in_memory, lossy_plan_with, release_cache};
+    use crate::plan::sizing::{expert_cache, expert_cache_for, hb_dir_experts, held_in_memory, lossy_plan_with, release_experts};
     use crate::plan::{GEMMA_CHUNK, LOSSY_MIN_CTX, LOSSY_WORK};
 
     /// `serve --with`'s two models in step: what one tells the other arrives in order, and a model that fails (its thread ended, its end of the pair gone) ends the other's wait at
@@ -2354,7 +2358,7 @@ mod tests {
         assert!(t.elapsed() < std::time::Duration::from_secs(1));
     }
 
-    /// R12: a release's expert cache on the dynamic route (`release_cache`), a tiny DeepSeek-V4's: with the GPU's room for its weights besides the experts and a third of the experts, places for some of each layer's on one
+    /// R12: a release's expert cache on the dynamic route (`release_experts`, `expert_cache`), a tiny DeepSeek-V4's: with the GPU's room for its weights besides the experts and a third of the experts, places for some of each layer's on one
     /// GPU and every expert in memory; with less memory than its experts, refused (the disk tier is hummingbird's).
     #[test]
     fn a_releases_experts_are_cached_in_memory() {
@@ -2372,14 +2376,15 @@ mod tests {
         let kv = ((sh.kv_full * 16.0 + sh.kv_sliding * 16f64.min(sh.window.max(1) as f64) + sh.state) / nl as f64) as u64 * nl as u64;
         let room = vec![(0, dense.iter().sum::<u64>() + base + kv + all / 3)];
         let table = crate::sizes::Table::from_dir(&dir).unwrap();
-        let (cuts, devices, places, on_gpus, got_all, experts, dense) =
-            release_cache(&table, &text, nl, &room, "tiny", &[], false, Some(all + HOST_MARGIN + (1 << 30))).unwrap();
+        let src = release_experts(&table, &text, nl, false).unwrap();
+        let k = expert_cache(&src, &text, &room, "tiny", &[], Some(all + HOST_MARGIN + (1 << 30))).unwrap();
+        let experts = k.experts;
         // (room for a token's experts beside the layers' weights: no dense layer in the computer's memory; DeepSeek-V4's loader keeps none there)
-        assert_eq!(dense, (0, 0));
-        assert!(cuts.is_empty() && devices == vec![0] && places[0] > 0 && places[0] < experts, "{places:?} of {experts}");
-        assert_eq!(got_all, all);
-        assert!(on_gpus <= room[0].1);
-        let e = release_cache(&table, &text, nl, &room, "tiny", &[], false, Some(all / 2 + HOST_MARGIN)).unwrap_err();
+        assert_eq!(k.dense, (0, 0));
+        assert!(k.cuts.is_empty() && k.devices == vec![0] && k.places[0] > 0 && k.places[0] < experts, "{:?} of {experts}", k.places);
+        assert_eq!((k.all, k.ram), (all, all));
+        assert!(k.on_gpus <= room[0].1);
+        let e = expert_cache(&src, &text, &room, "tiny", &[], Some(all / 2 + HOST_MARGIN)).unwrap_err();
         assert!(e.what.contains("keeps the experts its GPUs do not hold in the computer's memory"), "{}", e.what);
         // (the plan `run` loads and `fit` prints, on a GPU of that room: the cache's layers are the model's layers of experts, and its bytes all the experts')
         let free = (0..40).fold((0u64, 64u64 << 30), |(lo, hi), _| {
@@ -2399,7 +2404,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A hummingbird directory's expert cache on the dynamic route (`hb_cache`), a tiny GLM-5.3-Flash's: with the GPU's room for its weights besides the experts and a third of the experts, places for some of each layer's
+    /// A hummingbird directory's expert cache on the dynamic route (`hb_dir_experts`, `expert_cache`), a tiny GLM-5.3-Flash's: with the GPU's room for its weights besides the experts and a third of the experts, places for some of each layer's
     /// on one GPU and every expert in memory where the computer has room for them; its memory less than all of them, the rest on the disk; less than a token's experts in every layer, refused.
     #[test]
     fn a_hummingbird_directory_is_cached_in_memory_and_on_the_disk() {
@@ -2429,18 +2434,18 @@ mod tests {
         let room = vec![(0, dense.iter().sum::<u64>() + base + kv + all / 3)];
         // (each layer's sequences beside its weights: here the room's share of them)
         let kv_layers = vec![kv / nl as u64; nl];
-        let (cuts, devices, places, on_gpus, got_all, experts, ram, dense) =
-            hb_cache(&out, &text, nl, &room, "tiny", &kv_layers, false, Some(all + HOST_MARGIN + (1 << 30))).unwrap();
-        assert_eq!(dense, (0, 0));
-        assert!(cuts.is_empty() && devices == vec![0] && places.len() == 1, "{cuts:?} {devices:?} {places:?}");
-        assert!(places[0] > 0 && places[0] < experts, "{places:?} of {experts}");
-        assert_eq!((got_all, ram), (all, all));
-        assert!(on_gpus <= room[0].1);
+        let src = hb_dir_experts(&out, &text, nl, false).unwrap();
+        let k = expert_cache(&src, &text, &room, "tiny", &kv_layers, Some(all + HOST_MARGIN + (1 << 30))).unwrap();
+        assert_eq!(k.dense, (0, 0));
+        assert!(k.cuts.is_empty() && k.devices == vec![0] && k.places.len() == 1, "{:?} {:?} {:?}", k.cuts, k.devices, k.places);
+        assert!(k.places[0] > 0 && k.places[0] < k.experts, "{:?} of {}", k.places, k.experts);
+        assert_eq!((k.all, k.ram), (all, all));
+        assert!(k.on_gpus <= room[0].1);
         // memory for half of them: the rest on the disk
-        let (.., ram, _) = hb_cache(&out, &text, nl, &room, "tiny", &kv_layers, false, Some(all / 2 + HOST_MARGIN)).unwrap();
-        assert_eq!(ram, all / 2);
+        let k = expert_cache(&src, &text, &room, "tiny", &kv_layers, Some(all / 2 + HOST_MARGIN)).unwrap();
+        assert_eq!(k.ram, all / 2);
         // none to give: refused
-        let e = hb_cache(&out, &text, nl, &room, "tiny", &kv_layers, false, Some(HOST_MARGIN)).unwrap_err();
+        let e = expert_cache(&src, &text, &room, "tiny", &kv_layers, Some(HOST_MARGIN)).unwrap_err();
         assert!(e.what.contains("in the computer's memory and on the disk"), "{}", e.what);
         std::fs::remove_dir_all(&dir).unwrap();
     }

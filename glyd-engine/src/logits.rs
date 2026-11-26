@@ -5150,6 +5150,17 @@ fn users_drafted(case: &str, level: &str, users: usize, tokens: usize, k: usize)
 
 /// The plan `serve` makes of the case's random model at `level` on this GPU for `users` sequences, its draft model off (`plan::planned`): the plan the load takes,
 /// its context, prompt chunk, layout, sequences and their bytes; or why it gives none (a refusal is the planner's word that it would not load).
+/// The plan `serve DIR --users N` makes of the dynamic route's model in `dir` on this machine (src/cli.rs `dynamic_plan`, what `serve` loads), with the run's flags:
+/// `usercheck --dir DIR --ctx plan`'s.
+fn planned_dir(dir: &Path, users: usize) -> Result<crate::plan::LoadPlan> {
+    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
+    let family = crate::dynamic::split::family(&text).ok_or_else(|| Error(format!("{}: not a model of the dynamic route", dir.display())))?;
+    let words = ["serve".to_string(), dir.display().to_string(), "--users".into(), users.to_string()];
+    crate::cli::dynamic_plan(&crate::args::Args::from(words), &crate::cli::short_name(&dir.display().to_string()), family, dir, false)
+        .map(|p| p.3)
+        .map_err(|r| Error(format!("the planner: {} ({})", r.what, r.fix)))
+}
+
 fn planned_for(case: &str, level: &str, users: usize) -> Result<crate::plan::LoadPlan> {
     let dir = std::env::temp_dir().join(format!("glyd-planned-{case}-{}", std::process::id()));
     let got = (|| -> Result<crate::plan::LoadPlan> {
@@ -6945,8 +6956,8 @@ fn replies_digest(tokens: &[Vec<u32>], logits: &[Vec<u32>]) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device-plan]] | --ctx C] [--prompt-tokens P] [--stagger D] [--pack P [--precise]]` (gemma4, qwen35, muse, kimi, glm, qwen4x, qwen4x-s2): the case's random model on the
-/// description executor (or the model in DIR, with `--places` its experts in the expert cache, with `--pack` Condor's from its pack of codebook experts; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
+/// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device-plan] | --ctx plan]] | --ctx C] [--prompt-tokens P] [--stagger D] [--pack P [--precise]]` (gemma4, qwen35, muse, kimi, glm, qwen4x, qwen4x-s2): the case's random model on the
+/// description executor (or the model in DIR, with `--places` its experts in the expert cache, with `--ctx plan` as `serve --users N` plans and loads it (a model larger than the GPU: its experts in the expert cache, every user's keys, values and states first), with `--pack` Condor's from its pack of codebook experts; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
 /// bits: `roundcheck` measures the logits); their tokens and sample logits are printed as one digest, which runs held to the same bits compare (GLYD_TABLES=gpu against
@@ -6989,7 +7000,13 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     }
     // (--ctx plan: the plan `serve` makes of the random model for these users on this GPU, which the load takes (its context, chunk, layout, sequences and their bytes:
     // `take_plan`); the GPU's memory the load and the step's sequences take is held to the plan's figure, and the users to the plan's)
-    let plan = if a.flag("ctx") == Some("plan") { Some(planned_for(case, level, users)?) } else { None };
+    // (with --dir DIR, the plan `serve DIR --users N` makes of that model on this machine, which the load takes too: its experts in the expert cache where the GPU
+    // does not hold them, every user's keys, values and states first and the places what is left)
+    let plan = match (a.flag("ctx") == Some("plan"), a.flag("dir")) {
+        (true, Some(d)) => Some(planned_dir(Path::new(d), users)?),
+        (true, None) => Some(planned_for(case, level, users)?),
+        _ => None,
+    };
     // (whether the plan is of the pages this run holds. The planner plans no 12-bit pages where the description has no ring in pools they take (heads of 64, the
     // compressed attention's entries: `rows::twelve_bit_rings`): there --kv12 runs them at the bf16 plan's context in pools of what the GPU has free, and its
     // memory is not held to that plan, which is of other pages)
@@ -6997,7 +7014,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let mib = |b: u64| b as f64 / (1u64 << 20) as f64;
     if let Some(lp) = &plan {
         println!(
-            "the random {case} model at the planner's plan for this GPU{}: {} tokens of context for each of {} users ({:.1} MiB of keys, values and states planned in {}{}), prompts of up to {} and {tokens} made",
+            "{} at the planner's plan for this GPU{}: {} tokens of context for each of {} users ({:.1} MiB of keys, values and states planned in {}{}), prompts of up to {} and {tokens} made",
+            a.flag("dir").map_or(format!("the random {case} model"), |d| format!("the model in {d}")),
             if kv12 { " with GLYD_KV=lossless" } else { "" },
             lp.context,
             lp.users,
@@ -7028,6 +7046,29 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         None => crate::offload::Mode::Copy,
     };
     let (mut e, routers): (Dyn, Option<Routers>) = match (a.flag("dir"), places) {
+        // (`--dir DIR --ctx plan`: the model in DIR as `serve` loads it, by its plan (src/dynamic/split.rs `open_plan`: the plan's places, sequences and their bytes;
+        // `--mode` the misses', copy by default): its GPU memory held to the plan below, its users to the plan's)
+        (Some(d), _) if plan.is_some() => {
+            let lp = plan.as_ref().expect("a plan");
+            let offload = crate::offload::Offload { mode, device: a.has("device-plan"), ..Default::default() };
+            match crate::dynamic::split::open_plan(Path::new(d), lp, offload)? {
+                crate::dynamic::split::Run::One(e) => {
+                    // (the planner's times held where they start, so that two runs from one state plan alike: each run below starts from the cold cache, `Sched::cold`)
+                    e.stores().iter().for_each(|st| st.hold_costs());
+                    println!(
+                        "{d}: as `serve` loads it by its plan, {}, mode {}",
+                        lp.experts.map_or("every expert on the GPU".to_string(), |c| format!(
+                            "its experts in the expert cache, {} places a layer of {}",
+                            c.slots, c.experts
+                        )),
+                        mode.name()
+                    );
+                    let r = routers_of(Path::new(d), &e)?;
+                    (e, r)
+                }
+                _ => return err("the plan cuts the model over GPUs or across them: --dir with --ctx plan checks a plan on one GPU"),
+            }
+        }
         // (`--places N`: the model in DIR with its experts in the expert cache, N places a layer and every expert in the computer's memory (src/offload.rs; `--mode`, copy by default, `--device-plan`: the
         // decode calls planned on the GPU, src/devplan.rs): a model larger than the GPU, its replies alone against its replies at once)
         (Some(d), places) if places > 0 => {
