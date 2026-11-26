@@ -59,7 +59,7 @@ pub fn load_stage_hb(dir: &Path, o: &Opts, level: Layout, st: Stage, caching: Op
             })
             .collect()
     };
-    let placing = Placing { across: true, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, caching.map_or(0, |x| x.dense)) };
+    let placing = Placing { across: true, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, caching.map_or(0, |x| x.dense)), hi: None };
     Dyn::new_placed(dir, d, None, st, o, &experts, &placing)
 }
 
@@ -154,7 +154,7 @@ fn plain(dir: &Path, o: &Opts, st: Option<Stage>, draft: Option<usize>, caching:
             .collect()
     };
     let spec = head.zip(draft).map(|(h, k)| super::DraftSpec { dir, desc: h, k, experts: Some(&head_experts) });
-    let placing = Placing { across: false, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, caching.map_or(0, |x| x.dense)) };
+    let placing = Placing { across: false, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, caching.map_or(0, |x| x.dense)), hi: None };
     Dyn::new_placed(dir, d, spec, st, o, &experts, &placing)
 }
 

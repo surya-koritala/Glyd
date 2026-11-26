@@ -68,7 +68,7 @@ pub fn stage(dir: &Path, o: &Opts, st: Stage, caching: Option<&crate::hbg_store:
         ))
     })?;
     // (the pack's experts exact: none of a call's pairs skipped unless `caching.offload` says so)
-    let k = Caching { pack: pack.clone(), mode: PackMode::of(&pack, false), places: Some(c.places), offload: c.offload, users: 1 };
+    let k = Caching { places: Some(c.places), offload: c.offload, ..Caching::new(&pack, PackMode::of(&pack, false), 1) };
     load_cached_stage(dir, o, &k, st)
 }
 
@@ -161,13 +161,18 @@ pub fn open_split(dir: &Path, o: &Opts, level: Layout, cuts: &[usize], devices: 
     super::split::Run::new(c.layers, c.eos, cuts, devices, o, std::sync::Arc::new(move |st, o: &Opts| load_stage(&owned, o, level, st, draft)))
 }
 
-/// The routed experts from a codes pack (glyd-hbr-codes/2: each expert cb2, cb3, cb4, ternary, q, q3 or q4, the pack's mode's sidecar over them) in the
+/// The routed experts from a codes pack (glyd-hbr-codes/2: each expert cb2, cb3, cb4, ternary, q, q3 or q4, sidecars' copies over some of them) in the
 /// shared expert store (src/offload.rs): a layer's places on the GPU, the pack's file mapped as their host tier, the misses computed by the host or copied in as
 /// `offload` says. A model split across GPUs has an expert cache a stage, each of these settings (`open_cached`).
 #[derive(Clone, Debug)]
 pub struct Caching {
     pub pack: std::path::PathBuf,
     pub mode: PackMode,
+    /// the sidecars whose copies of some experts the places hold in place of the pack's, a later one's over an earlier one's (`PackMode::side`'s by
+    /// default; Condor's server's `--side A,B`, none with `--no-side`: `Form`)
+    pub sides: Vec<std::path::PathBuf>,
+    /// the layout of the attention blocks' own matrices and the LM head where it is not the stage's (`Placing::hi`: Condor's server's `--hi`)
+    pub hi: Option<Layout>,
     /// places a layer (the plan's; None: what the GPU has free after the always-on matrices, less the reserve, over the layers, a development check's
     /// alone: `free_sized`)
     pub places: Option<usize>,
@@ -177,12 +182,117 @@ pub struct Caching {
 }
 
 impl Caching {
-    /// The pack in `pack` served as `mode`, its places sized by the room the GPU has, its misses computed by the host, the mode's skipping, room kept for `users`
-    /// sequences.
+    /// The pack in `pack` served as `mode` (its sidecar, `PackMode::side`), its places sized by the room the GPU has, its misses computed by the host, the
+    /// mode's skipping, room kept for `users` sequences; the matrices all at the stage's layout.
     pub fn new(pack: &Path, mode: PackMode, users: usize) -> Caching {
         let offload = Offload { mode: crate::offload::Mode::Cpu, skip_rank: mode.skip_rank(), async_copies: true, ..Offload::default() };
-        Caching { pack: pack.to_path_buf(), mode, places: None, offload, users }
+        Caching { pack: pack.to_path_buf(), mode, sides: mode.side(pack).into_iter().collect(), hi: None, places: None, offload, users }
     }
+
+    /// `new` as Condor's server's flags select it (`Form`): their sidecars and second layout.
+    pub fn of_form(pack: &Path, f: &Form, users: usize) -> Caching {
+        Caching { sides: f.sides.clone(), hi: f.hi, ..Caching::new(pack, f.mode, users) }
+    }
+}
+
+/// What Condor's server's flags select, flag for flag as v0.34.2's engine read them (its `qwen4x_serve::load`): the pack's mode (`--precise`; else `best` where
+/// the pack's folder is named so, else `fast`: its skipping and the Monitor's name), the sidecars over the pack's experts (`--side A,B`; none with `--no-side`;
+/// else the mode's, `PackMode::side`), the always-on matrices' layout (`--layout`, four bits where none is given) and the layout of the attention blocks' own
+/// matrices and the LM head (`--hi i6 | i5 | i4 | none`; where none is given five bits beside a layout of four, else the layout's), None where it is the
+/// layout's. tools/serve.sh: precise `--precise --layout i6 --hi i6`, best `--no-side --layout i6 --hi i6`, fast none of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Form {
+    pub mode: PackMode,
+    pub sides: Vec<std::path::PathBuf>,
+    pub layout: Layout,
+    pub hi: Option<Layout>,
+}
+
+/// The flags `qwenserve` reads (`http`, `serve_plan`, `form_of`, `users_of`, `gpus`, `plan::sizing::host_flag`), and `--hf-token`, which every command takes.
+pub const SERVE_FLAGS: &[&str] = &[
+    "port",
+    "host",
+    "page",
+    "name",
+    "users",
+    "gpus",
+    "split",
+    "ctx",
+    "context",
+    "chunk",
+    "places",
+    "host-memory",
+    "image-pixels",
+    "precise",
+    "layout",
+    "hi",
+    "side",
+    "no-side",
+    "insecure-no-auth",
+    "allowed-origins",
+    "allowed-hosts",
+    "drain-timeout",
+    "hf-token",
+];
+
+/// v0.34.2's `qwenserve` flags that set its own engine, which the executor does not have: each refused with what holds its place now.
+const GONE: &[(&str, &str)] = &[
+    ("skip", "the misses' skipping is the mode's (--precise, or the pack's folder: best, fast)"),
+    ("skip-rank", "the misses' skipping is the mode's (--precise, or the pack's folder: best, fast)"),
+    ("skip-rank-later", "the misses' skipping is the mode's (--precise, or the pack's folder: best, fast)"),
+    ("mode", "the misses are computed by the host"),
+    ("cpu-threads", "the host's threads are the computer's"),
+    ("no-async-copies", "the copies are made on a thread of their own"),
+    ("no-pin", "the pack's files are mapped as the expert cache's host tier"),
+    ("pin-pack", "the pack's files are mapped as the expert cache's host tier"),
+    ("whole", "a prompt is read in chunks of --chunk rows"),
+    ("cache-gb", "the places are the plan's (--places N a layer)"),
+    ("headroom-gb", "the places are the plan's (--places N a layer)"),
+    ("no-stream", "a prompt's experts are the expert cache's"),
+    ("no-mtp", "the draft head does not draft over the expert cache on the executor"),
+    ("draft-vocab", "the draft head does not draft over the expert cache on the executor"),
+    ("draft-min-p", "the draft head does not draft over the expert cache on the executor"),
+    ("no-skinny", "the products' kernels are the executor's"),
+    ("no-segmented", "the products' kernels are the executor's"),
+    ("p2p", "the layers cut over GPUs hand their rows over through the computer's memory"),
+    ("lock", "a development build's GPU lock of the JSON-lines protocol, which is gone"),
+];
+
+/// Every flag `a` gives that `qwenserve` does not read is refused in words (none is ignored): one of v0.34.2's engine's own with what holds its place
+/// now, any other with the flags the server takes.
+pub fn check_flags(a: &crate::args::Args) -> Result<()> {
+    for (f, _) in &a.flags {
+        if SERVE_FLAGS.contains(&f.as_str()) {
+            continue;
+        }
+        return match GONE.iter().find(|g| g.0 == f) {
+            Some((_, now)) => err(format!("qwenserve --{f}: a setting of v0.34.2's own engine for this model, which is gone; {now}")),
+            None => err(format!("qwenserve --{f}: not a flag of the server (its flags: --{})", SERVE_FLAGS.join(", --"))),
+        };
+    }
+    Ok(())
+}
+
+/// The `Form` `a`'s flags select of the pack in `pack`; a layout `--hi` does not name, and `--side` beside `--no-side`, refused in words.
+pub fn form_of(a: &crate::args::Args, pack: &Path) -> Result<Form> {
+    let mode = PackMode::of(pack, a.has("precise"));
+    let layout = a.layout()?.unwrap_or(Layout::Int4);
+    let hi = match a.flag("hi") {
+        Some("i6") => Some(Layout::Int6),
+        Some("i5") => Some(Layout::Int5),
+        Some("i4") => Some(Layout::Int4),
+        Some("none") => None,
+        // (by default with i4 the attention layers and the LM head at five bits, as v0.34.2 served them: i4 alone moved a long prompt's first token)
+        None => (layout == Layout::Int4).then_some(Layout::Int5),
+        Some(x) => return err(format!("--hi {x}: i6, i5, i4 or none")),
+    };
+    let sides = match (a.flag("side"), a.has("no-side")) {
+        (Some(_), true) => return err("--side and --no-side: sidecars named, or none"),
+        (Some(list), false) => list.split(',').filter(|x| !x.is_empty()).map(std::path::PathBuf::from).collect(),
+        (None, true) => Vec::new(),
+        (None, false) => mode.side(pack).into_iter().collect(),
+    };
+    Ok(Form { mode, sides, layout, hi: hi.filter(|&h| h != layout) })
 }
 
 /// The GPU memory the places of stage `st` of a model leave for its sequences and the executor's scratch (`plan::sizing::cache_reserve`, the planner's: #239).
@@ -206,8 +316,8 @@ pub fn load_cached_stage(dir: &Path, o: &Opts, k: &Caching, st: impl Into<Option
     let st = st.into().unwrap_or(Stage::whole(c.layers));
     let d = lowered(dir, o.ctx + o.chunk + 16)?.staged(&st);
     let mut pack = CbPack::open_dims(&k.pack, c.hidden, c.inter)?;
-    if let Some(side) = k.mode.side(&k.pack) {
-        pack = pack.with_side(&side)?;
+    for side in &k.sides {
+        pack = pack.with_side(side)?;
     }
     let layers = st.layers.0..st.layers.1;
     if let Some(l) = layers.clone().find(|&l| !pack.has(l)) {
@@ -239,7 +349,7 @@ pub fn load_cached_stage(dir: &Path, o: &Opts, k: &Caching, st: impl Into<Option
             })
             .collect()
     };
-    let e = Dyn::new_placed(dir, d, None, st, o, &blocks, &super::Placing::default())?;
+    let e = Dyn::new_placed(dir, d, None, st, o, &blocks, &super::Placing { hi: k.hi, ..Default::default() })?;
     common.fill_page_tables();
     Ok(e)
 }
@@ -290,18 +400,16 @@ pub fn open_planned(dir: &Path, o: &Opts, k: &Caching, cuts: &[usize], devices: 
     super::split::Run::new(c.layers, c.eos, cuts, devices, o, std::sync::Arc::new(make))
 }
 
-/// Condor's server's plan (`plan::sizing::codes_plan_with`, the planned route's rule): the model in `snap` with the pack `pack` served as `mode`, its always-on
-/// matrices at `layout`, `ctx` tokens of context for `users` at once in prompt chunks of `chunk`, on the GPUs `devs` (the layers cut over them in their order
-/// where there are several, at `--split CUT,..` where given), `--places N` a layer where given, `--host-memory` the experts' share of the computer's memory.
-/// Refused in the planner's words where it does not fit.
-#[allow(clippy::too_many_arguments)]
+/// Condor's server's plan (`plan::sizing::codes_plan_with`, the planned route's rule): the model in `snap` with the pack `pack` served as the flags select
+/// (`Form`: its sidecars, the always-on matrices' layout and the attention's and the LM head's), `ctx` tokens of context for `users` at once in prompt chunks
+/// of `chunk`, on the GPUs `devs` (the layers cut over them in their order where there are several, at `--split CUT,..` where given), `--places N` a layer
+/// where given, `--host-memory` the experts' share of the computer's memory. Refused in the planner's words where it does not fit.
 pub(crate) fn serve_plan(
     snap: &Path,
     pack: &Path,
-    mode: PackMode,
+    form: &Form,
     a: &crate::args::Args,
     (ctx, users, chunk): (usize, usize, usize),
-    layout: Layout,
     devs: &[crate::plan::Target],
     host: Option<u64>,
 ) -> Result<crate::plan::LoadPlan> {
@@ -333,14 +441,27 @@ pub(crate) fn serve_plan(
         Some(p) => Some(p.parse::<usize>().ok().filter(|&n| n > 0).ok_or_else(|| Error(format!("--places {p}: a number of places a layer")))?),
     };
     let host_memory = crate::plan::sizing::host_flag(a).map_err(|r| Error(r.to_string()))?;
-    let ask = crate::plan::sizing::CodesAsk { ctx, users, served: true, chunk, layout, mode, cut: devs.len() > 1, split, places, host_memory };
+    let ask = crate::plan::sizing::CodesAsk {
+        ctx,
+        users,
+        served: true,
+        chunk,
+        layout: form.layout,
+        hi: form.hi,
+        sides: form.sides.clone(),
+        cut: devs.len() > 1,
+        split,
+        places,
+        host_memory,
+    };
     crate::plan::sizing::codes_plan_with(FAMILY, &table, &c, row, pack, devs, host, &ask).map_err(|r| Error(r.to_string()))
 }
 
 /// `qwenserve CKPT PACK --port P [--host H] [--page DIR] [--name NAME] [--users N] [--gpus G,..] [--split CUT,..] [--ctx N | --context N] [--chunk N] [--places N] [--precise]
-/// [--layout L] [--image-pixels N]`: the HTTP server (src/server.rs: the chat page, the OpenAI and Anthropic APIs, the Monitor's numbers) on the description
-/// executor, the model's routed experts from its pack of codebook rows in the expert cache, the always-on matrices at the level asked (four bits where none
-/// is), loaded by its plan (`serve_plan`, the planned route's rule: the users' keys, values and states at the context first, the places a layer what is left, or
+/// [--layout L] [--hi L] [--side A,B | --no-side] [--image-pixels N]`: the HTTP server (src/server.rs: the chat page, the OpenAI and Anthropic APIs, the Monitor's numbers) on the description
+/// executor, the model's routed experts from its pack of codebook rows in the expert cache (the sidecars the flags select over them: `Form`), the always-on
+/// matrices at the level asked (four bits where none is; the attention blocks' own and the LM head at `--hi`'s, five bits beside four where none is given),
+/// any flag it does not read refused in words (`check_flags`), loaded by its plan (`serve_plan`, the planned route's rule: the users' keys, values and states at the context first, the places a layer what is left, or
 /// `--places N`; refused in the planner's words where it does not fit), its requests through the common scheduler (`server::work_with`), up to N (1 to 64:
 /// the plan's) at once. It listens while the model loads (/health is 503 until it is loaded). Thinking is off where a request does not ask for it; the sampling defaults are
 /// the model's, at a temperature of 0.5 at most with min-p 0.1. `--gpus 0,1`: the layers cut over those GPUs through the generic split (`open_planned`: each
@@ -352,18 +473,27 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     use crate::server;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    check_flags(a)?;
     let name = a.flag("name").unwrap_or("qwen3.8-flash-next").to_string();
     let ctx = a.either("context", "ctx", 33536usize)?;
     let users = users_of(a)?;
     let gpus = gpus(a)?;
-    let mode = PackMode::of(pack, a.has("precise"));
-    // (the plan, before anything listens or loads: the GPUs named, the always-on matrices at four bits by default as the release has been served, `--layout`
-    // another level's)
-    let (chunk, layout) = (a.num("chunk", 1024usize)?, a.layout()?.unwrap_or(Layout::Int4));
+    // (the plan, before anything listens or loads: the GPUs named, the pack's sidecars and the matrices' layouts as the flags select them (`Form`: four bits
+    // with the attention and the LM head at five by default, as the release has been served))
+    let form = form_of(a, pack)?;
+    let (mode, layout) = (form.mode, form.layout);
+    let chunk = a.num("chunk", 1024usize)?;
     let host_free = crate::offload::host_memory();
     let devs = gpus.iter().map(|&g| Ok(crate::plan::sizing::target(&Dev::probe(g)?))).collect::<Result<Vec<_>>>()?;
-    let plan = serve_plan(snap, pack, mode, a, (ctx, users, chunk), layout, &devs, host_free)?;
+    let plan = serve_plan(snap, pack, &form, a, (ctx, users, chunk), &devs, host_free)?;
     println!("Plan: {}.", plan.text());
+    let sides: Vec<String> = form.sides.iter().map(|p| p.display().to_string()).collect();
+    println!(
+        "Mode: {}; the experts' sidecars: {}; the matrices at {layout:?}{}.",
+        mode.name(),
+        if sides.is_empty() { "none".to_string() } else { sides.join(", ") },
+        form.hi.map_or(String::new(), |h| format!(", the attention's and the LM head at {h:?}"))
+    );
     if let Some(p) = a.flag("image-pixels") {
         let n = p.parse::<usize>().ok().filter(|&n| n > 0).ok_or_else(|| crate::ffi::Error(format!("--image-pixels {p}: a number of pixels")))?;
         let _ = super::images::MAX_PIXELS.set(n);
@@ -406,7 +536,7 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
             }
         );
     }
-    let mut e = open_planned(snap, &o, &Caching::new(pack, mode, plan.users), &sp.cuts, &sp.devices, &sp.places)?;
+    let mut e = open_planned(snap, &o, &Caching::of_form(pack, &form, plan.users), &sp.cuts, &sp.devices, &sp.places)?;
     // (its sequences' keys, values and states the plan's: on one GPU the pools take its bytes, no more)
     crate::conv::Gen::take_plan(&mut e, plan.users, plan.kv);
     let vocab = crate::qwen4x::ConfigQx::load(snap)?.vocab;
@@ -724,6 +854,78 @@ mod tests {
         }
     }
 
+    /// tools/serve.sh's modes select what v0.34.2's engine served (`form_of`): precise its pack's `hot` sidecar and every matrix at six bits; best no sidecar
+    /// (`--no-side`) where the pack has one, six bits; fast the pack's `fast` sidecar, four bits with the attention blocks' own matrices and the LM head at five
+    /// (`--hi`'s default beside four). `--hi none` / `--hi` of the layout's own bits are the layout; `--side` names the sidecars; a layout `--hi` does not take,
+    /// and `--side` beside `--no-side`, are refused in words.
+    #[test]
+    fn the_servers_modes_select_the_releases_sidecars_and_layouts() {
+        use crate::weights::Layout::{Int4, Int5, Int6};
+        let root = std::env::temp_dir().join(format!("glyd-form-{}", std::process::id()));
+        let (precise, best, fast) = (root.join("precise-v2"), root.join("best-v2"), root.join("fast"));
+        for d in [precise.join("hot"), best.join("hot"), fast.join("fast"), fast.join("hot")] {
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("meta.json"), "{}").unwrap();
+        }
+        let form = |pack: &std::path::Path, w: &[&str]| {
+            let a = crate::args::Args::from(["qwenserve", "ckpt", pack.to_str().unwrap(), "--port", "8080"].iter().chain(w).map(|x| x.to_string()));
+            super::check_flags(&a).and_then(|_| super::form_of(&a, pack))
+        };
+        let f = |mode, sides: Vec<std::path::PathBuf>, layout, hi| super::Form { mode, sides, layout, hi };
+        // (serve.sh's words, mode by mode)
+        assert_eq!(form(&precise, &["--precise", "--layout", "i6", "--hi", "i6"]).unwrap(), f(super::PackMode::Precise, vec![precise.join("hot")], Int6, None));
+        assert_eq!(form(&best, &["--no-side", "--layout", "i6", "--hi", "i6"]).unwrap(), f(super::PackMode::Best, vec![], Int6, None));
+        assert_eq!(form(&fast, &[]).unwrap(), f(super::PackMode::Fast, vec![fast.join("fast")], Int4, Some(Int5)));
+        // (each flag moves what it names: best's sidecar without --no-side, the attention at the layout with --hi none or i4, at six with --hi i6)
+        assert_eq!(form(&best, &["--layout", "i6"]).unwrap().sides, [best.join("hot")]);
+        assert_eq!([&["--hi", "none"][..], &["--hi", "i4"], &["--hi", "i6"]].map(|w| form(&fast, w).unwrap().hi), [None, None, Some(Int6)]);
+        assert_eq!(form(&fast, &["--layout", "i5"]).unwrap().hi, None);
+        assert_eq!(form(&fast, &["--side", "/a,/b"]).unwrap().sides, [std::path::PathBuf::from("/a"), std::path::PathBuf::from("/b")]);
+        let e = form(&fast, &["--hi", "i7"]).unwrap_err().to_string();
+        assert!(e.contains("--hi i7: i6, i5, i4 or none"), "{e}");
+        let e = form(&best, &["--side", "/a", "--no-side"]).unwrap_err().to_string();
+        assert!(e.contains("--side and --no-side"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `qwenserve` refuses every flag it does not read, in words (none is accepted and ignored): v0.34.2's engine's own settings with what holds their place,
+    /// any other with the flags it takes; the flags tools/serve.sh, servecheck and the stage scripts pass are its own.
+    #[test]
+    fn the_server_refuses_a_flag_it_does_not_read() {
+        let check = |w: &[&str]| super::check_flags(&crate::args::Args::from(["qwenserve", "ckpt", "pack"].iter().chain(w).map(|x| x.to_string())));
+        let serve_sh = ["--no-side", "--layout", "i6", "--hi", "i6", "--ctx", "32768", "--port", "8080", "--page", "p", "--users", "4", "--gpus", "0,1"];
+        check(&serve_sh).unwrap();
+        check(&["--precise", "--side", "a", "--context", "4096", "--chunk", "64", "--places", "3", "--split", "1", "--host", "h", "--name", "n"]).unwrap();
+        check(&["--host-memory", "20", "--image-pixels", "9", "--insecure-no-auth", "--allowed-origins", "x", "--allowed-hosts", "y", "--drain-timeout", "3"])
+            .unwrap();
+        let e = check(&["--port", "1", "--draft-min-p", "0.5"]).unwrap_err().to_string();
+        assert!(e.contains("qwenserve --draft-min-p: a setting of v0.34.2's own engine") && e.contains("draft head"), "{e}");
+        let e = check(&["--skip-rank", "2"]).unwrap_err().to_string();
+        assert!(e.contains("skipping is the mode's"), "{e}");
+        let e = check(&["--hi6"]).unwrap_err().to_string();
+        assert!(e.contains("qwenserve --hi6: not a flag of the server") && e.contains("--hi, --side, --no-side"), "{e}");
+    }
+
+    /// `--hi` takes the attention blocks' own matrices and the LM head (`Described::attention_and_head`, `at_hi`), as v0.34.2's engine did: in the tiny model, each
+    /// indexed attention layer's q, k and v product, its indexer's product and its o product, and the LM head; none of a Gated DeltaNet layer's, none of the gated
+    /// residuals' bottlenecks or inject, not the embedding or the n-gram block's (the shared expert is the codes block's, as int8 rows at any level).
+    #[test]
+    fn the_second_layout_takes_the_attentions_own_matrices_and_the_head() {
+        let d = describe(&tiny()).unwrap();
+        let m = super::super::lower::qwen4x(&d, vec![2000], 1100).unwrap();
+        let hi = super::super::at_hi(&m, &d.attention_and_head());
+        let attn = d.desc.blocks.iter().filter(|b| matches!(b.body, crate::runtime::kinds::Body::Mixer(crate::runtime::kinds::Mixer::Attention(_)))).count();
+        let picked: Vec<&str> = (0..m.mats.len()).filter(|&k| hi[k]).map(|k| m.mats[k].members[0].as_str()).collect();
+        assert!(attn > 0 && picked.len() == 3 * attn + 1, "{attn} attention layers: {picked:?}");
+        assert!(hi[m.lm] && !hi[m.embed], "the LM head, not the embedding");
+        for k in (0..m.mats.len()).filter(|&k| hi[k] && k != m.lm) {
+            assert!(m.mats[k].members.iter().all(|n| n.contains(".self_attn.")), "{:?}", m.mats[k].members);
+        }
+        let others = (0..m.mats.len()).filter(|&k| !hi[k]).flat_map(|k| m.mats[k].members.iter());
+        assert!(others.clone().all(|n| !n.contains(".self_attn.")), "an attention matrix left at the layout");
+        assert!(others.clone().any(|n| n.contains("hyper_connection")) && others.clone().any(|n| n.contains("linear_attn")));
+    }
+
     /// A block layout's share of a matrix's bf16 bytes is its step's: four bits about 28%, five 35%, six 41%; penguin's are its own.
     #[test]
     fn a_layouts_share_of_the_bf16_bytes_is_its_steps() {
@@ -975,7 +1177,7 @@ mod tests {
     fn a_width_the_codebook_kernels_do_not_take_is_refused() {
         let dir = std::env::temp_dir().join(format!("glyd-qwen4x-cb-width-{}", std::process::id()));
         crate::logits::qwen4x_random(&dir).unwrap();
-        let k = super::Caching { pack: dir.join("pack"), mode: super::PackMode::Fast, places: Some(1), offload: crate::offload::Offload::default(), users: 1 };
+        let k = super::Caching { places: Some(1), offload: crate::offload::Offload::default(), ..super::Caching::new(&dir.join("pack"), super::PackMode::Fast, 1) };
         let o = super::super::Opts { ctx: 256, chunk: 64, graph: false, device: 0, layout: None };
         let e = super::load_cached(&dir, &o, &k).err().map(|e| e.msg).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&dir);

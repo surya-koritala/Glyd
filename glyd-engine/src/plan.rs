@@ -4835,7 +4835,8 @@ pub mod sizing {
             served: served(a),
             chunk: DYN_CHUNK,
             layout: Layout::Tiered,
-            mode: crate::qwen4x::PackMode::of(pack, false),
+            hi: None,
+            sides: crate::qwen4x::PackMode::of(pack, false).side(pack).into_iter().collect(),
             cut: false,
             split: None,
             places: None,
@@ -4845,9 +4846,10 @@ pub mod sizing {
     }
 
     /// What a codes pack's plan is asked (`codes_plan_with`): the context, the users (a server's: `served`), the prompt chunk, the always-on matrices' layout
-    /// (penguin's lossless tiered one for `run`; Condor's server's level, four bits by default), the pack's mode (its sidecar, whose places the GPU holds),
-    /// whether the layers may be cut over the GPUs given in their order (Condor's server's `--gpus 0,1`; else the GPU with the most free memory holds them),
-    /// the cuts asked (`--split`), the places a layer asked (`--places`), and the computer's memory `--host-memory` gives the experts.
+    /// (penguin's lossless tiered one for `run`; Condor's server's level, four bits by default) and that of the attention blocks' own matrices and the LM head
+    /// where it differs (`hi`: Condor's server's `--hi`), the sidecars over the pack's experts whose copies the GPU's places hold (its mode's, `--side`'s, or
+    /// none: `--no-side`), whether the layers may be cut over the GPUs given in their order (Condor's server's `--gpus 0,1`; else the GPU with the most free
+    /// memory holds them), the cuts asked (`--split`), the places a layer asked (`--places`), and the computer's memory `--host-memory` gives the experts.
     #[derive(Clone, Debug)]
     pub(crate) struct CodesAsk {
         pub ctx: usize,
@@ -4855,7 +4857,8 @@ pub mod sizing {
         pub served: bool,
         pub chunk: usize,
         pub layout: Layout,
-        pub mode: crate::qwen4x::PackMode,
+        pub hi: Option<Layout>,
+        pub sides: Vec<std::path::PathBuf>,
         pub cut: bool,
         pub split: Option<Vec<usize>>,
         pub places: Option<usize>,
@@ -4881,12 +4884,26 @@ pub mod sizing {
     /// as released with the rest; a table read by rows held there, as saved), every layer's experts the pack's (`cb`, opened as the loader opens it, with its
     /// mode's sidecar), a place the largest expert's
     /// of a layer (`CbPack::place_bytes`), a layer's experts the fewest any layer keeps, all of them in the pack's files mapped, those the computer's memory does
-    /// not hold read as the router asks (the disk). `c`: its config, parsed once.
-    pub(crate) fn codes_experts(on_gpu: &crate::sizes::Table, c: &ModelConfig, cb: &crate::cb_pack::CbPack, nl: usize, pct: u64) -> Done<CacheOf> {
+    /// not hold read as the router asks (the disk). `c`: its config, parsed once. `hi`: the share and the tensors of the matrices at a second layout (the
+    /// attention blocks' own and the LM head: `Described::attention_and_head`), counted at it.
+    pub(crate) fn codes_experts(
+        on_gpu: &crate::sizes::Table,
+        c: &ModelConfig,
+        cb: &crate::cb_pack::CbPack,
+        nl: usize,
+        pct: u64,
+        hi: Option<(u64, &std::collections::BTreeSet<String>)>,
+    ) -> Done<CacheOf> {
         // (a table read by rows that a check holds on the GPU is held as saved: its bytes whole)
         let tables: std::collections::HashSet<String> = crate::dynamic::tables::ngram_names(c).into_iter().collect();
         let table = |n: &str| tables.contains(crate::formats::stands_for(n).as_ref());
-        let (mut dense, mut base) = crate::dynamic::split::layer_bytes_table(on_gpu, nl, 100, pct, &|n| !n.contains(".experts.") && !table(n));
+        let at_hi = |n: &str| hi.is_some_and(|h| h.1.contains(n));
+        let (mut dense, mut base) = crate::dynamic::split::layer_bytes_table(on_gpu, nl, 100, pct, &|n| !n.contains(".experts.") && !table(n) && !at_hi(n));
+        if let Some((hp, _)) = hi {
+            let (more, rest) = crate::dynamic::split::layer_bytes_table(on_gpu, nl, 100, hp, &at_hi);
+            dense.iter_mut().zip(&more).for_each(|(d, s)| *d += s);
+            base += rest;
+        }
         let (saved, rest) = crate::dynamic::split::layer_bytes_table(on_gpu, nl, 100, 100, &table);
         dense.iter_mut().zip(&saved).for_each(|(d, s)| *d += s);
         base += rest;
@@ -4929,8 +4946,8 @@ pub mod sizing {
         let (ctx, chunk) = (k.ctx, k.chunk);
         let (nl, hidden, inter) = (c.num("num_hidden_layers").unwrap_or(0), c.num("hidden_size").unwrap_or(0), c.num("moe_intermediate_size").unwrap_or(0));
         let mut cb = crate::cb_pack::CbPack::open_dims(pack, hidden, inter).map_err(cannot)?;
-        if let Some(side) = k.mode.side(pack) {
-            cb = cb.with_side(&side).map_err(cannot)?;
+        for side in &k.sides {
+            cb = cb.with_side(side).map_err(cannot)?;
         }
         if let Some(l) = (0..nl).find(|&l| !cb.has(l)) {
             return Err(Refusal::unsupported(
@@ -4940,7 +4957,13 @@ pub mod sizing {
         }
         // (the always-on matrices as the loader holds them; the tables its description reads on the host and the routed experts none of the GPU's)
         let (on_gpu, tables) = crate::dynamic::tables::off_gpu(table, c);
-        let src = codes_experts(&on_gpu, c, &cb, nl, layout_pct(k.layout))?;
+        // (the attention blocks' own matrices and the LM head at `k.hi` where it is another layout: the loader's `Placing::hi`)
+        let hi_names = match k.hi.filter(|&h| h != k.layout) {
+            Some(_) => Some(crate::runtime::describe::describe_config(c).map_err(cannot)?.attention_and_head()),
+            None => None,
+        };
+        let hi = k.hi.zip(hi_names.as_ref()).map(|(h, n)| (layout_pct(h), n));
+        let src = codes_experts(&on_gpu, c, &cb, nl, layout_pct(k.layout), hi)?;
         let always = src.dense.iter().sum::<u64>() + src.base;
         // (the sequences' keys, values and states, the description's as the loader lowers it, by the executor's rule: a server's users each their whole context
         // as its pools hold them where one GPU holds the model; one sequence, each layer its share, where it is cut or run)
@@ -7499,7 +7522,7 @@ mod tests {
         let l4 = [free_gpu(0, 22, host)];
         let p = sizing::codes_plan(&args(&["serve", name, "--users", "4"]), name, &table, &c, row, &pack, &l4, Some(host)).unwrap();
         let cb = crate::cb_pack::CbPack::open_dims(&pack, 2560, 640).unwrap();
-        let src = sizing::codes_experts(&crate::dynamic::tables::off_gpu(&table, &c).0, &c, &cb, nl, crate::dynamic::split::TIERED_PCT).unwrap();
+        let src = sizing::codes_experts(&crate::dynamic::tables::off_gpu(&table, &c).0, &c, &cb, nl, crate::dynamic::split::TIERED_PCT, None).unwrap();
         let mut kv = vec![0; nl];
         kv[0] = p.kv;
         let room = [(0, (22u64 << 30) - CONTEXT_FLOOR - sizing::CACHE_SCRATCH)];
@@ -7518,7 +7541,8 @@ mod tests {
             served: true,
             chunk: 1024,
             layout: crate::weights::Layout::Int4,
-            mode: crate::qwen4x::PackMode::Precise,
+            hi: None,
+            sides: Vec::new(),
             cut: true,
             split,
             places,
@@ -7551,7 +7575,8 @@ mod tests {
             args(&w)
         };
         let serve_for = |users: usize, a: &crate::args::Args, devs: &[Target], layout: crate::weights::Layout| {
-            crate::dynamic::qwen4x::serve_plan(&dir, &pack, crate::qwen4x::PackMode::Precise, a, (32768, users, 1024), layout, devs, Some(host))
+            let form = crate::dynamic::qwen4x::Form { mode: crate::qwen4x::PackMode::Precise, sides: Vec::new(), layout, hi: None };
+            crate::dynamic::qwen4x::serve_plan(&dir, &pack, &form, a, (32768, users, 1024), devs, Some(host))
         };
         let serve = |a: &crate::args::Args, devs: &[Target], layout: crate::weights::Layout| serve_for(4, a, devs, layout);
         let l4 = [free_gpu(0, 22, host)];
@@ -7583,6 +7608,52 @@ mod tests {
         assert!(four > g, "one user and four fit from {g} GiB");
         let r = serve(&words(&[]), &[free_gpu(0, four - 1, host)], int4).unwrap_err().msg;
         assert!(r.contains("Ask for fewer users (--users "), "{r}");
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    /// Condor's server's `--hi` is planned where the loader puts it (`Placing::hi`): the release's attention blocks' own matrices and its LM head
+    /// (`Described::attention_and_head`: the head and each full-attention layer's q, k, v, o and indexer products, nothing of a Gated DeltaNet layer, a gated
+    /// residual or the experts) at the second layout's share of their bf16 bytes, every other at the layout's; the default form's plan (four bits, five for
+    /// those) holds those bytes more and no more places than four bits alone. The plan opens the sidecars the form names (`--no-side`: none).
+    #[test]
+    fn condors_server_plans_its_second_layout_and_sidecars() {
+        use crate::weights::Layout::{Int4, Int5};
+        let (dir, c, table, pack) = qx_release("qx-hi");
+        let (nl, every) = (c.num("num_hidden_layers").unwrap(), c.num("full_attention_interval").unwrap());
+        let names = crate::runtime::describe::describe_config(&c).unwrap().attention_and_head();
+        let products: Vec<&String> = names.iter().filter(|n| n.ends_with("_proj.weight") || *n == "lm_head.weight").collect();
+        assert_eq!(products.len(), nl / every * 5 + 1, "{products:?}");
+        assert!(names.contains("lm_head.weight") && names.iter().all(|n| n == "lm_head.weight" || n.contains(".self_attn.")), "{names:?}");
+        let cb = crate::cb_pack::CbPack::open_dims(&pack, 2560, 640).unwrap();
+        let on_gpu = crate::dynamic::tables::off_gpu(&table, &c).0;
+        let (p4, p5) = (sizing::layout_pct(Int4), sizing::layout_pct(Int5));
+        let always = |hi| {
+            let s = sizing::codes_experts(&on_gpu, &c, &cb, nl, p4, hi).unwrap();
+            s.dense.iter().sum::<u64>() + s.base
+        };
+        let matrix = |r: &crate::sizes::Row| r.dtype == "BF16" && r.shape.len() == 2 && r.shape.iter().all(|&d| d >= 256);
+        let more: u64 = on_gpu.rows.iter().filter(|r| names.contains(&r.name) && matrix(r)).map(|r| r.bytes * p5 / 100 - r.bytes * p4 / 100).sum();
+        assert!(more > 100 << 20 && always(Some((p5, &names))) == always(None) + more, "{more}");
+        let host = 64u64 << 30;
+        let a = args(&["qwenserve", dir.to_str().unwrap(), pack.to_str().unwrap(), "--port", "8080"]);
+        let plan = |hi, sides: Vec<std::path::PathBuf>| {
+            let form = crate::dynamic::qwen4x::Form { mode: crate::qwen4x::PackMode::Fast, sides, layout: Int4, hi };
+            crate::dynamic::qwen4x::serve_plan(&dir, &pack, &form, &a, (32768, 4, 1024), &[free_gpu(0, 22, host)], Some(host)).unwrap()
+        };
+        let (with, without) = (plan(Some(Int5), Vec::new()), plan(None, Vec::new()));
+        assert_eq!(with.weights, without.weights + more);
+        assert!(with.spread.as_ref().unwrap().places[0] <= without.spread.as_ref().unwrap().places[0]);
+        // (a sidecar the form names is opened: one that is not there is refused, none is the pack's own)
+        let r = crate::dynamic::qwen4x::serve_plan(
+            &dir,
+            &pack,
+            &crate::dynamic::qwen4x::Form { mode: crate::qwen4x::PackMode::Fast, sides: vec![pack.join("hot")], layout: Int4, hi: None },
+            &a,
+            (32768, 4, 1024),
+            &[free_gpu(0, 22, host)],
+            Some(host),
+        );
+        assert!(r.unwrap_err().msg.contains("meta.json"));
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 

@@ -102,7 +102,7 @@ fn load_experts(dir: &Path, o: &Opts, st: Stage, kinds: &Described, caching: Opt
             })
             .collect()
     };
-    let placing = Placing { across: false, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, caching.map_or(0, |x| x.dense)) };
+    let placing = Placing { across: false, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, caching.map_or(0, |x| x.dense)), hi: None };
     Dyn::new_placed(dir, d, None, st, o, &experts, &placing)
 }
 

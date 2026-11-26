@@ -760,6 +760,20 @@ pub enum Residual {
     AddThenScale,
 }
 
+impl Residual {
+    /// The roles the residual reads around its block's body (the block's norms `norm_in` and `norm_out` beside them).
+    pub fn roles(&self) -> &'static [&'static str] {
+        match self {
+            Residual::Add | Residual::AddScaled(_) => &[],
+            Residual::Gated(_) => &["res_gate"],
+            Residual::Streams(_) => &["hc_fn", "hc_base", "hc_scale"],
+            Residual::GatedStreams(_) => &["mix_down", "mix_up", "inject"],
+            Residual::DepthMix(_) => &["mix_norm", "mix_proj"],
+            Residual::AddThenScale => &["res_scale"],
+        }
+    }
+}
+
 /// Norm roles in a block: `norm_in`, `norm_out`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Block {
