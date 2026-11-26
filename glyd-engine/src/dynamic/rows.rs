@@ -790,15 +790,6 @@ impl Dyn {
             Some((_, kv)) => {
                 let sr = SeqRoom::of(&self.big.d, self.ctx, self.chunk);
                 let b = sr.pool_budget(users, kv, once as u64);
-                // (one sequence's context in every group, at the pools' own bytes a token (bf16, or the 12-bit pages'): a plan that gives less promised more than its pools hold)
-                let one: usize = keep.iter().zip(&covers).zip(&per).map(|((&k, &c), &p)| seq_blocks(k, self.ctx, c) * c * p).sum();
-                if b < one {
-                    return err(format!(
-                        "the plan gives the keys, values and states of {users} sequences {:.1} MiB, and their pools take {:.1} MiB more for one sequence's context",
-                        kv as f64 / (1u64 << 20) as f64,
-                        (one - b) as f64 / (1u64 << 20) as f64
-                    ));
-                }
                 let later = (users - 1) * self.states.iter().map(|s| s.bytes).sum::<usize>();
                 let zero: usize = sr.block.iter().sum::<u64>() as usize;
                 if self.share >= 1.0 && b + zero + later > room {
@@ -815,6 +806,20 @@ impl Dyn {
         // as many tokens' blocks in every group (a block of a group is its `covers` tokens of every layer in it), the sliding groups capped and what they leave to the full ones
         let least: Vec<usize> = keep.iter().zip(&covers).map(|(&k, &c)| seq_blocks(k, self.ctx, c)).collect();
         let mut blocks = pool_blocks(budget, &per, &covers, &keep, &most, &least);
+        // (a plan's pools hold one sequence's context in every group: a sliding group's window and a chunk and the block it straddles, a full group's every token. A
+        // plan that gives less promised more than its pools hold)
+        if let Some((_, kv)) = self.planned {
+            let need = |g: usize| if keep[g].is_some() { least[g] } else { self.ctx.div_ceil(covers[g]) };
+            if let Some(g) = (0..blocks.len()).find(|&g| blocks[g] < need(g)) {
+                return err(format!(
+                    "the plan gives the keys, values and states of {users} sequences {:.1} MiB, where their pools hold {} blocks of {} tokens of a group whose one sequence takes {}",
+                    kv as f64 / (1u64 << 20) as f64,
+                    blocks[g],
+                    covers[g],
+                    need(g)
+                ));
+            }
+        }
         // (a development build's GLYD_ENGINE_PAGES: at most that many blocks a group, to run the memory out on purpose)
         if let Some(cap) = crate::tune!("GLYD_ENGINE_PAGES").and_then(|v| v.parse::<usize>().ok()) {
             blocks.iter_mut().for_each(|b| *b = (*b).min(cap));

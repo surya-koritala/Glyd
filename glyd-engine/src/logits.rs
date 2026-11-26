@@ -6357,6 +6357,8 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
     let one_a_pass = std::env::var_os("GLYD_ENGINE_BATCH_PREFILL").is_some_and(|v| v == "0");
     let strict = one_a_pass && !squeezed;
     let steps: Vec<u64> = s.context().sched[18..27].iter().map(|x| x.load(std::sync::atomic::Ordering::Relaxed)).collect();
+    // (and the steps that held a prompt's chunk beside their rows that decode, which no graph of rows takes: `Dyn::pass` replays one for rows that decode alone)
+    let mixed = s.context().sched[28].load(std::sync::atomic::Ordering::Relaxed);
     let resumed = s.context().sched[2].load(std::sync::atomic::Ordering::Relaxed);
     // (and of them those swapped to the host and copied back, whose copies' pages land in the pools' counts while others step)
     let swapped = s.context().sched[29].load(std::sync::atomic::Ordering::Relaxed);
@@ -6585,7 +6587,13 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         "decode steps of several rows replayed from a CUDA graph: {replays}, graphs captured in a request's step: {late}{}",
         if graphs { "" } else { " (this description's steps of several rows run eager)" }
     );
-    if graphs && batchable && k > 1 && steps[2..].iter().any(|&x| x > 0) && replays == 0 {
+    // (a step of several rows that decode and nothing else: more of them than steps that held a prompt's chunk beside; else every one may have held one, as where each
+    // prompt runs while the one before decodes, prompts that fill a long planned context)
+    let alone_rows = steps[2..].iter().sum::<u64>() > mixed;
+    if graphs && batchable && k > 1 && steps[2..].iter().any(|&x| x > 0) && !alone_rows {
+        println!("decode steps of several rows alone: not asked (no more of them than the {mixed} steps that held a prompt's chunk beside)");
+    }
+    if graphs && batchable && k > 1 && alone_rows && replays == 0 {
         println!("FAIL no decode step of several rows replayed a graph");
         fails += 1;
     }
