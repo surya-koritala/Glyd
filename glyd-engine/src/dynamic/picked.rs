@@ -87,7 +87,7 @@ impl Dyn {
             cand: super::mla::CandAt::default(),
         };
         self.idx_pick(x, &at)?;
-        self.trace_row_picks(p, l, x.ratio, n, row0)?;
+        self.trace_row_picks(p, l, x, n, row0)?;
         self.mark("indexer: picks")
     }
 
