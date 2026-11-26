@@ -1851,41 +1851,49 @@ impl Dyn {
         }
     }
 
-    /// `trace_row_routes`' record of an indexer's pick of pools of `ratio` tokens (`Op::IdxPick` with `IdxKeys::Pools`) of layer `l` on n rows of one sequence,
-    /// the first at `row0` of the pass (`picked::PickRun`'s room): each row's pools picked (its picked tokens' whole pools, not the open one) and the scores of
-    /// the whole pools it could pick.
-    fn trace_row_picks(&self, p: &Part, l: usize, x: &mla::IdxPick, n: usize, row0: usize) -> Result<()> {
-        let ratio = x.ratio;
+    /// `trace_row_routes`' record of an indexer's pick `x` (`Op::IdxPick`) of layer `l` on the rows `at` names, rows `first` on of the operation's `rows` (their
+    /// sequences and places `row_tags`'), from the pick's own room as it left it: each row's whole pools of `x.ratio` tokens picked (`tokens`: a pick of tokens, each
+    /// taken as its pool, the open one not; else of entries, an entry a pool: a compressed attention's, DeepSeek-V4's) and the scores of every whole pool it could pick
+    /// (`at.scores`, `at.emax` a row). A row's picks and scores are read as far as its pick wrote them: its count of picks and the scores of its whole pools; the
+    /// rooms past them hold nothing a pick wrote. A row with no more whole pools than a pick takes has every one of them and no scores where the scores are fp32's
+    /// (kernels/mla.cu `idx_score` computes none there; the release's arithmetic, `idx_score_bf16`, writes every row's): its record says so, and a choice apart
+    /// there is no near tie.
+    fn trace_row_picked(&self, p: &Part, l: usize, x: &mla::IdxPick, at: &mla::PickAt, (rows, first): (usize, usize), tokens: bool) -> Result<()> {
         if !std::ptr::eq(p, &self.big) || self.row_routes.borrow().is_none() {
             return Ok(());
         }
-        let r = self.picks.as_ref().ok_or_else(|| Error("an indexer's pick in a model loaded without its room".into()))?;
-        self.dev.sync()?;
+        let tags: Vec<(usize, usize)> = self.row_tags(rows).into_iter().skip(first).take(at.rows).collect();
+        let n = tags.len();
         let mut cnt = vec![0i32; n];
-        r.cnt.read(row0 * 4, &mut cnt)?;
-        let tags = self.row_tags(n);
-        // (a row's picks and scores read as far as its pick wrote them: its `cnt` picks and the scores of its whole pools. The rooms past them hold nothing a
-        // pick wrote, and are not read. A row with no more whole pools than a pick takes has every one of them and no scores: kernels/mla.cu `idx_score`
-        // computes none there (the release's arithmetic, `idx_score_bf16`, writes every row's), so its record says so, and a choice apart there is no near tie)
+        self.dev.sync()?;
+        // SAFETY: the pick's counts of its rows into host memory of that size; synchronized after.
+        unsafe { crate::dev::copy_d2h_async(cnt.as_mut_ptr() as *mut _, at.cnt, cnt.len() * 4, self.dev.stream)? };
+        self.dev.sync()?;
+        let (ratio, div) = (x.ratio.max(1), if tokens { x.ratio.max(1) as i64 } else { 1 });
         let scored = |whole: usize| !matches!(x.score, mla::IdxScore::F32 { .. }) || whole > x.top_k;
-        let mut rows = Vec::with_capacity(n);
+        let mut read = Vec::with_capacity(n);
         for (i, &(_, pos)) in tags.iter().enumerate() {
-            let whole = ((pos + 1) / ratio.max(1)).min(r.emax);
-            let taken = (cnt[i].max(0) as usize).min(r.sk);
+            let whole = ((pos + 1) / ratio).min(at.emax);
+            let taken = (cnt[i].max(0) as usize).min(at.sk);
             let (mut sel, mut sc) = (vec![0i32; taken], vec![0f32; whole]);
-            if taken > 0 {
-                r.sel.read((row0 + i) * r.sk * 4, &mut sel)?;
+            // SAFETY: row i's picks as far as its count and its whole pools' scores, of the pick's room (`sk` picks and `emax` scores a row), into host memory of
+            // those sizes, which lives in `read` until the copies are synchronized below.
+            unsafe {
+                if taken > 0 {
+                    crate::dev::copy_d2h_async(sel.as_mut_ptr() as *mut _, at.sel + (i * at.sk * 4) as u64, taken * 4, self.dev.stream)?;
+                }
+                if whole > 0 && scored(whole) {
+                    crate::dev::copy_d2h_async(sc.as_mut_ptr() as *mut _, at.scores + (i * at.emax * 4) as u64, whole * 4, self.dev.stream)?;
+                } else {
+                    sc.fill(f32::NAN);
+                }
             }
-            if whole > 0 && scored(whole) {
-                r.scores.read(i * r.emax * 4, &mut sc)?;
-            } else {
-                sc.fill(f32::NAN);
-            }
-            rows.push((whole, sel, sc));
+            read.push((whole, sel, sc));
         }
+        self.dev.sync()?;
         if let Some(m) = self.row_routes.borrow_mut().as_mut() {
-            for ((slot, pos), (whole, sel, sc)) in tags.into_iter().zip(rows) {
-                let mut pools: Vec<i64> = sel.iter().map(|&t| t as i64 / ratio.max(1) as i64).filter(|&q| q >= 0 && (q as usize) < whole).collect();
+            for ((slot, pos), (whole, sel, sc)) in tags.into_iter().zip(read) {
+                let mut pools: Vec<i64> = sel.iter().map(|&t| t as i64 / div).filter(|&q| q >= 0 && (q as usize) < whole).collect();
                 (pools.sort_unstable(), pools.dedup());
                 let v = m.entry((slot, pos)).or_default();
                 v.retain(|c| !(c.layer == l && c.kind == ChoiceKind::Pick));
@@ -2586,6 +2594,11 @@ impl Dyn {
         self.graph.is_some()
     }
 
+    /// Whether the model's arithmetic simulates its release's quantizations (DeepSeek-V4's, `V4Dims::sim`); None for a model that has none to simulate.
+    pub fn simulates(&self) -> Option<bool> {
+        self.v4.as_ref().map(|v| v.dims.sim)
+    }
+
     pub fn reset(&mut self) -> Result<()> {
         self.n = 0;
         self.pending = None;
@@ -3196,23 +3209,23 @@ impl Dyn {
             | Op::IdxPick(_)
             | Op::CompAttn { .. }
             | Op::OGroupLora { .. }
-            | Op::OGroupLoraStack { .. } => self.op_comp(p, op, n, pos.0),
+            | Op::OGroupLoraStack { .. } => self.op_comp(p, l, op, n, pos.0),
         }
     }
 
     /// An operation on a sequence's caches or states (`rows::takes_lead`, the attention kind's apart: `attn_lead`, `attn_picked_lead`) on the pass's first `rows.0` rows of its
     /// `rows.1`, each a decode row of its own sequence, at positions `pos`: one launch of each kernel for all of them, each row through its own block tables and states
     /// (`rows::RowTabs`); each row's arithmetic is its own sequence's pass's on its one token.
-    unsafe fn op_lead(&self, p: &Part, op: &Op, rows: (usize, usize), pos: u64) -> Result<()> {
+    unsafe fn op_lead(&self, p: &Part, l: usize, op: &Op, rows: (usize, usize), pos: u64) -> Result<()> {
         match op {
             op if rows::rows_state(op) => self.state_lead(p, op, rows),
             Op::IdxMean { heads, dim, block, q_norm, k_norm, rope, keys, pools } => {
                 self.idx_mean_lead(p, (*heads, *dim, *block), (*q_norm, *k_norm, *rope), (*keys, *pools), rows.0, pos)
             }
-            Op::IdxPick(x) if matches!(x.keys, IdxKeys::Pools(_)) => self.pick_pools_lead(p, x, rows.0, pos),
+            Op::IdxPick(x) if matches!(x.keys, IdxKeys::Pools(_)) => self.pick_pools_lead(p, l, x, rows.0, pos),
             Op::NgramRows(x) => self.ngram_rows_lead(p, x, rows.0),
             Op::NgramAdd(x) => self.ngram_add_lead(p, x, rows.0),
-            op => self.comp_lead(p, op, rows, pos),
+            op => self.comp_lead(p, l, op, rows, pos),
         }
     }
 
@@ -3378,7 +3391,7 @@ impl Dyn {
                             };
                         }
                     } else if lead > 0 {
-                        r = self.op_lead(p, op, (lead, n), pos.0);
+                        r = self.op_lead(p, l, op, (lead, n), pos.0);
                     }
                     // (an operation on a sequence's cache or state: each sequence's rows by themselves, as a pass of that sequence alone runs them)
                     for (k, part) in self.parts.iter().enumerate().skip(lead) {

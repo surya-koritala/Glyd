@@ -158,6 +158,8 @@ pub mod service;
 pub mod ship;
 pub mod sizes;
 pub mod skinny;
+#[cfg(feature = "dev")]
+pub mod stacked;
 pub mod status;
 pub mod store;
 pub mod support;

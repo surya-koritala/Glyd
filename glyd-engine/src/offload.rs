@@ -2709,6 +2709,12 @@ impl ExpertStore {
         Ok(())
     }
 
+    /// (development) Whether layer `layer`'s host half is FP4 experts (src/cpu_fp4.rs).
+    #[cfg(feature = "dev")]
+    pub fn host_fp4(&self, layer: usize) -> bool {
+        self.inner.borrow().layers.get(layer).and_then(Option::as_ref).is_some_and(|ly| matches!(ly.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Fp4 { .. })))
+    }
+
     /// (development) Layer `layer`'s places emptied where they are (the copies queued waited for): its next call finds no expert in one (`moe::PAIRS`: every pair the host's in
     /// cpu mode). Not for a layer the GPU plans.
     #[cfg(feature = "dev")]
