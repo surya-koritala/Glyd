@@ -2,7 +2,7 @@
 # The chat page and the API (OpenAI and Anthropic) on http://127.0.0.1:PORT (default 8080).
 #   tools/serve.sh [--fast | --best] [PORT]   precise mode by default; --fast or --best uses those experts (tools/download.sh --fast or --best)
 #   GLYD_CTX=65536 tools/serve.sh         the context in tokens (default 32768, up to 262144)
-#   GLYD_USERS=2 tools/serve.sh           requests answered at once (default 4, 1 to 8)
+#   GLYD_USERS=2 tools/serve.sh           requests answered at once (default 4, 1 to 64: as many as the card holds)
 #   GLYD_GPUS=0,1 tools/serve.sh          cut the layers over two cards (each holds its layers and more of their experts; one request at a time)
 #   GLYD_GPUS=1 tools/serve.sh            the second card alone (default: the first)
 # It loads by its plan, printed first (Plan: ...): a context or users the card does not hold are refused in words, with what fits.

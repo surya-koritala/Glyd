@@ -7563,6 +7563,10 @@ mod tests {
         assert!(lossless.spread.as_ref().unwrap().places[0] < sp.places[0], "{lossless:?}");
         let held = serve(&words(&["--places", "7"]), &l4, crate::weights::Layout::Int4).unwrap();
         assert_eq!(held.spread.as_ref().unwrap().places, [7]);
+        // (sixteen users, past the release's eight: the plan holds them where the GPU does (a 48 GiB one), and names the most a 22 GiB one holds)
+        assert_eq!(serve_for(16, &words(&[]), &[free_gpu(0, 48, host)], crate::weights::Layout::Int4).unwrap().users, 16);
+        let r = serve_for(16, &words(&[]), &l4, crate::weights::Layout::Int4).unwrap_err().msg;
+        assert!(r.contains("Ask for fewer users (--users "), "{r}");
         // (one GPU named twice: two parts, each half of its memory past the floor)
         let twice = serve(&words(&["--split", "24"]), &[free_gpu(0, 22, host), free_gpu(0, 22, host)], crate::weights::Layout::Int4).unwrap();
         let t = twice.spread.as_ref().unwrap();

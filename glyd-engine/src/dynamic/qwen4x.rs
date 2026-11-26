@@ -268,6 +268,16 @@ pub fn gpus(a: &crate::args::Args) -> Result<Vec<i32>> {
     })
 }
 
+/// The requests `qwenserve` answers at once, `--users N` (4 where none is given): 1 to `sched::MAX_USERS`, the most a step runs; the plan then holds them or
+/// refuses them in its words, with the most the GPU holds (`serve_plan`). No other bound: the release's 8 was its engine's rows a step.
+pub fn users_of(a: &crate::args::Args) -> Result<usize> {
+    let users = a.num("users", 4usize)?;
+    if !(1..=crate::sched::MAX_USERS).contains(&users) {
+        return err(format!("--users {users}: 1 to {} requests at once", crate::sched::MAX_USERS));
+    }
+    Ok(users)
+}
+
 /// The model in `dir` with its routed experts in the expert cache (`k`) as a plan spreads it: its layers cut before each of `cuts` over `devices`, part i's
 /// places a layer `places[i]` (`load_cached_stage`; a part the plan gives none is refused where no development check said to size it from free memory).
 pub fn open_planned(dir: &Path, o: &Opts, k: &Caching, cuts: &[usize], devices: &[i32], places: &[usize]) -> Result<super::split::Run> {
@@ -331,8 +341,8 @@ pub(crate) fn serve_plan(
 /// [--layout L] [--image-pixels N]`: the HTTP server (src/server.rs: the chat page, the OpenAI and Anthropic APIs, the Monitor's numbers) on the description
 /// executor, the model's routed experts from its pack of codebook rows in the expert cache, the always-on matrices at the level asked (four bits where none
 /// is), loaded by its plan (`serve_plan`, the planned route's rule: the users' keys, values and states at the context first, the places a layer what is left, or
-/// `--places N`; refused in the planner's words where it does not fit), its requests through the common scheduler (`server::work_with`), up to N (1 to 8) at
-/// once. It listens while the model loads (/health is 503 until it is loaded). Thinking is off where a request does not ask for it; the sampling defaults are
+/// `--places N`; refused in the planner's words where it does not fit), its requests through the common scheduler (`server::work_with`), up to N (1 to 64:
+/// the plan's) at once. It listens while the model loads (/health is 503 until it is loaded). Thinking is off where a request does not ask for it; the sampling defaults are
 /// the model's, at a temperature of 0.5 at most with min-p 0.1. `--gpus 0,1`: the layers cut over those GPUs through the generic split (`open_planned`: each
 /// part's experts in a cache of its own, the cut the plan's), one request at a time (each part would hold its share of every sequence). Images (PNG, JPEG)
 /// come as OpenAI image_url parts (a data: URL or an http(s) one) and Anthropic image blocks, read by the model's vision tower on one GPU (src/dynamic/images.rs),
@@ -344,10 +354,7 @@ pub fn http(snap: &Path, pack: &Path, a: &crate::args::Args) -> Result<()> {
     use std::sync::Arc;
     let name = a.flag("name").unwrap_or("qwen3.8-flash-next").to_string();
     let ctx = a.either("context", "ctx", 33536usize)?;
-    let users = a.num("users", 4usize)?;
-    if !(1..=crate::sched::MAX_ROWS).contains(&users) {
-        return err(format!("--users {users}: 1 to {} requests at once", crate::sched::MAX_ROWS));
-    }
+    let users = users_of(a)?;
     let gpus = gpus(a)?;
     let mode = PackMode::of(pack, a.has("precise"));
     // (the plan, before anything listens or loads: the GPUs named, the always-on matrices at four bits by default as the release has been served, `--layout`
@@ -704,6 +711,16 @@ mod tests {
         for bad in ["", "x", "0,", "1.5", "-1"] {
             let e = gpus(&["--gpus", bad]).unwrap_err().to_string();
             assert!(e.contains(&format!("--gpus {bad}: GPU numbers")) && e.contains("--gpus 0,1 to cut the layers over two"), "{bad:?}: {e}");
+        }
+    }
+
+    /// `--users` (`GLYD_USERS` of tools/serve.sh) is 1 to the most a step runs (64), 4 where none is given: no 8-row bound (the plan holds them or refuses).
+    #[test]
+    fn the_users_are_one_to_the_most_a_step_runs() {
+        let users = |u: &[&str]| super::users_of(&crate::args::Args::from(["qwenserve", "ckpt", "pack"].iter().chain(u).map(|w| w.to_string())));
+        assert_eq!((users(&[]).unwrap(), users(&["--users", "16"]).unwrap(), users(&["--users", "64"]).unwrap()), (4, 16, 64));
+        for bad in ["0", "65"] {
+            assert!(users(&["--users", bad]).unwrap_err().to_string().contains(&format!("--users {bad}: 1 to 64 requests at once")), "{bad}");
         }
     }
 
