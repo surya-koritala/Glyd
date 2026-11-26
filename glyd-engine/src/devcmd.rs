@@ -227,7 +227,13 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "f8stat" => glyd_engine::dsv4_ref::f8_stat(&a),
         "dsv4gen" => glyd_engine::dsv4_ref::gen(&a),
         "kimirandom" if a.has("real") => {
-            glyd_engine::kimi_ref::random_real(Path::new(a.need(1, "OUT")?), a.num("layers", 4usize)?, a.num("experts", 320usize)?, a.has("mla"))
+            let out = Path::new(a.need(1, "OUT")?);
+            glyd_engine::kimi_ref::random_real(out, a.num("layers", 4usize)?, a.num("experts", 320usize)?, a.has("mla"))?;
+            // (`--servable`: a tokenizer, the family's chat template (ours: its release's is in Python) and the end token, for `serve` to answer through)
+            if a.has("servable") {
+                glyd_engine::logits::write_serving_files(out, glyd_engine::chat::KIMI_CHAT)?;
+            }
+            Ok(())
         }
         "kimirandom" => glyd_engine::kimi_ref::random(Path::new(a.need(1, "OUT")?), a.num("dense", 1usize)?, !a.has("no-mla"), a.num("layers", 8usize)?),
         "kimiref" => glyd_engine::kimi_ref::cmd(&a),
@@ -284,12 +290,20 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
                 layers.split(',').map(|x| x.trim().parse().map_err(|_| Error(format!("--layers {x}: not a number")))).collect::<Result<_>>()?;
             glyd_engine::kcheck_nh::decode(Path::new(a.need(1, "DIR")?), Path::new(a.need(2, "OUT_DIR")?), &layers, a.num("tokens", 333usize)?)
         }
-        "glmrandom" => glyd_engine::glm::random_seeded(
-            Path::new(a.need(1, "OUT")?),
-            a.has("fp8"),
-            if a.has("real") { Some((a.num("layers", 4)?, a.num("experts", 32)?)) } else { None },
-            a.num("seed", glyd_engine::glm::RANDOM_SEED)?,
-        ),
+        "glmrandom" => {
+            let out = Path::new(a.need(1, "OUT")?);
+            glyd_engine::glm::random_seeded(
+                out,
+                a.has("fp8"),
+                if a.has("real") { Some((a.num("layers", 4)?, a.num("experts", 32)?)) } else { None },
+                a.num("seed", glyd_engine::glm::RANDOM_SEED)?,
+            )?;
+            // (`--servable`: a tokenizer, the GLM chat template and the end token, for `serve` to answer through)
+            if a.has("servable") {
+                glyd_engine::logits::write_serving_files(out, include_str!("../tests/fixtures/chat_glm53_tools.jinja"))?;
+            }
+            Ok(())
+        }
         "g4check" => glyd_engine::gemma4::check(a),
         "i4xcheck" => glyd_engine::gemma4::i4x_check(a),
         "g4spec" => glyd_engine::gemma4::spec_check(a),
