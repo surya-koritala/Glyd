@@ -23,8 +23,8 @@ GLYD_ENGINE=target/release/glyd-engine GGUF_DIR=~/gguf bash scripts/consumer_ben
   are its level's.
 - **The measurement:** `glyd-engine bench` ([docs/bench.md](../../docs/bench.md)) against each server, the same prompts and loads (`short:1`, `short:4`,
   `4k:1`, 3 runs, 256 tokens a reply), greedy, thinking off. Glyd runs with `--no-draft` and llama.cpp with no draft model, so neither drafts. llama.cpp
-  is started with `--fit on` (it sets its own GPU layers and experts on the CPU to fit the card), 4 slots and an 8,192-token context; Ollama with 4
-  parallel requests and flash attention. Peak GPU memory is sampled from `nvidia-smi` while each runs.
+  is started with `--fit on` (it sets its own GPU layers and experts on the CPU to fit the card) and 4 slots of 8,192 tokens each (`-c 32768 -np 4`: its
+  context is shared by its slots); Ollama with 4 parallel requests of 8,192 tokens and flash attention. Peak GPU memory is sampled from `nvidia-smi` while each runs.
 - **The page:** `glyd-engine bench --report DIR` (the script runs it last): per GPU, each engine's largest model at 20 tokens/s or more, then every
   model's runs side by side with the files that hold them.
 - **Automated:** `.github/workflows/consumer-bench.yml` runs the script on the project's GPU machine when a release is published (or by hand) and keeps
