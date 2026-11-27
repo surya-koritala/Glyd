@@ -6310,7 +6310,7 @@ pub const BESIDE_KL: (f64, f64) = (1e-4, 2.5e-4);
 /// codebook cache's misses). The host and the GPU sum a pair in different orders, and which share of a call the host takes turns on what shares the call and on
 /// the places' state, so a row's last bits turn on the rows beside it and on the calls before it. There the batch checks (`usercheck` with prompts one a pass,
 /// `keepcheck`, `roundcheck`) hold a row beside others to the row alone at the kind's lossless bound (`Beside::held`), not bit for bit; everywhere else (every
-/// expert on the GPU, copy mode, resident) bit for bit (the lead's ruling, 2026-11-25).
+/// expert on the GPU, copy mode, resident) bit for bit (the rule since 2026-11-25).
 pub(crate) fn host_experts(e: &Dyn) -> bool {
     e.stores().iter().any(|s| s.wants_cpu())
 }
