@@ -1094,6 +1094,12 @@ pub fn lowered_described(d: &crate::runtime::describe::Described, nl: usize, max
     if d.desc.blocks.iter().any(|b| matches!(b.residual, crate::runtime::kinds::Residual::AddThenScale)) {
         return lower::gemma4(d, &|n: &str| d.shapes.get(n).cloned(), Vec::new(), max_pos);
     }
+    // (layers of plain attention with a plain or a scaled add: the dense lowering, the one-GPU route's too: `support::Family::Layers`)
+    use crate::runtime::kinds::{Body, Mixer, Residual};
+    let plain_attention = |b: &crate::runtime::kinds::Block| !matches!(b.body, Body::Mixer(_)) || matches!(b.body, Body::Mixer(Mixer::Attention(_)));
+    if d.desc.blocks.iter().all(|b| plain_attention(b) && matches!(b.residual, Residual::Add | Residual::AddScaled(_))) {
+        return lower::dense(d, Vec::new(), max_pos);
+    }
     let st = Stage::whole(nl);
     match lowering(d)? {
         Lowering::Compressed => lower::deepseek_v4(d, Vec::new(), max_pos, &st, &super::deepseek_v4::V4Opts::of(crate::weights::Layout::Tiered, max_pos)),

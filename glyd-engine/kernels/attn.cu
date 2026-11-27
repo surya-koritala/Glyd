@@ -27,6 +27,7 @@ struct AttnArgs {
     const bf16* gate;  // the output gate's values, head h of row t at t gs + h g_step (null: no gate)
     float* part;       // a decode step's parts [(t nq + h) S + z][d + 2]
     const int* rpos;   // each row's M-RoPE position (t, h, w) at 6 r (src/dynamic/images.rs), each angle turning by the one `rax` names; null: qpos alone
+    const bf16* sink;  // a learned logit a query head [nq] that joins each row's softmax and attends to nothing (`kinds::Attn::sinks`); null: none
     long long tstride; // row t's table at tab + t tstride (a pass's decode rows of several sequences: src/dynamic/rows.rs `RowTabs`); 0: one table for every row
     unsigned long long rax; // two bits an angle: the position (0 t, 1 h, 2 w) of rpos its M-RoPE section turns by
     int d, stride, q_step, k_off, v_off;
@@ -50,6 +51,7 @@ __device__ __forceinline__ float at_rs(float ss, int d, float eps, int round) { 
 
 // A score in log2 units: the scaled dot product, soft-capped (cap tanh(s / cap)) where the kind is; with `sbf16` (transformers' eager bf16) the dot product,
 // its scale and its cap each rounded to bf16.
+// (The prompt kernel attn_pf_t and the GPU library's kernels have no sink: an attention with sinks takes attn_rows_t and the parts kernel with attn_merge.)
 __device__ __forceinline__ float at_score(const AttnArgs& a, float s) {
     if (a.sbf16) {
         s = b2f(f2b(b2f(f2b(s)) * a.scale));
@@ -59,6 +61,10 @@ __device__ __forceinline__ float at_score(const AttnArgs& a, float s) {
     if (a.softcap > 0.f) return a.softcap * tanhf(s * a.scale / a.softcap) * 1.4426950408889634f;
     return s * a.sl2;
 }
+
+// A sink's share of a row's softmax sum, the sum being of 2^(score - m) (m the row's largest score, log2 units): 2^(sink log2(e) - m). The sink is a logit as the
+// scores are after their scale, so it is not scaled. A row with no key (m = -inf) is all sink: the sum is then infinite and the output 0.
+__device__ __forceinline__ float at_sink(const AttnArgs& a, int h, float m) { return a.sink ? exp2f(b2f(a.sink[h]) * 1.4426950408889634f - m) : 0.f; }
 
 // ---- the preparation --------------------------------------------------------------------------------------------------------------------------------------------------
 // Row r's head hh (a query head below nq, else key head hh - nq with its values): the norm (one block sum), the queries' scale, the rotary (value j < span with
@@ -263,8 +269,9 @@ __device__ __forceinline__ void attn_rows_t(const AttnArgs& a, int R) {
         return;
     }
     bf16* o = a.out + (size_t)t * a.os + h * D + lane * PER;
+    const float den = l_run + at_sink(a, h, m_run);
 #pragma unroll
-    for (int e = 0; e < PER; e++) o[e] = f2b(acc[e] / l_run);
+    for (int e = 0; e < PER; e++) o[e] = f2b(acc[e] / den);
 }
 
 extern "C" __global__ void __launch_bounds__(512) attn_rows64(AttnArgs a, int R) { attn_rows_t<64, false>(a, R); }
@@ -301,6 +308,7 @@ extern "C" __global__ void attn_merge(AttnArgs a) {
         acc = fmaf(pp[z * (D + 2) + d], wz, acc);
     }
     bf16* o = a.out + (size_t)t * a.os + h * D + d;
+    if (mx > -INFINITY) l += at_sink(a, h, mx);
     const float v = l > 0.f ? acc / l : 0.f;
     *o = a.gate ? f2b(at_gated(a, b2f(f2b(v)), t, h, d)) : f2b(v);
 }

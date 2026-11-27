@@ -6388,6 +6388,72 @@ mod tests {
         assert_eq!(checked.len(), 16, "{checked:?}");
     }
 
+    /// #641: a family its description is the whole of (`Family::Layers`: Domyn Edge, Granite Swash, Mellum 2) is sized from that description as every
+    /// one-GPU row is, with no reader of its own: from each one's released config (its recorded header), `level_of` gives its weights at each level (fewer
+    /// bytes at each lower one, penguin's under bf16's), a ring a layer of that layer's own head width and window (Domyn Edge's 12 layers of 256 over the whole
+    /// context and 24 of 64 in a window, where one head width for every layer would be wrong), no state, and the dense engine as its loader; Mellum 2's experts
+    /// are placed. The plain dense kind's own models keep their row.
+    #[test]
+    fn a_described_family_is_sized_from_its_description() {
+        use crate::weights::Layout;
+        let level = |name: &str, layout: Layout| {
+            let (text, _) = recorded_release(name);
+            assert_eq!(crate::support::family(&text, name).unwrap(), crate::support::Family::Layers, "{name}");
+            sizing::level_of(&args(&["run", "m"]), "m", name, layout, &mc(&text), None, None, Some(LOSSY_CTX))
+        };
+        for (name, layers, moe) in
+            [("Domyn-Edge-Base", 36, false), ("granite-swash-2b", 24, false), ("Mellum2.1-12B-A2.5B-Instruct", 28, true), ("Aion-1.0-Instruct-2.3B", 28, false)]
+        {
+            // (a mixture of experts on the one-GPU route holds its experts at the block levels: at penguin it is refused in that route's words for now)
+            let levels: &[Layout] = if moe { &[Layout::Int6, Layout::Int5, Layout::Int4] } else { &[Layout::Tiered, Layout::Int6, Layout::Int5, Layout::Int4] };
+            let by_level: Vec<u64> = levels
+                .iter()
+                .map(|&l| {
+                    let lv = level(name, l).unwrap_or_else(|e| panic!("{name} at {l:?}: {e:?}"));
+                    assert_eq!((lv.kind, lv.row.name, lv.state, lv.draft), (Kind::Qwen3, "described layers", 0, None), "{name}");
+                    assert_eq!(lv.layers.as_ref().unwrap().low.layers.len(), layers, "{name}");
+                    assert_eq!(lv.experts.is_some(), moe, "{name}");
+                    if let Some(e) = &lv.experts {
+                        let c = e.as_ref().unwrap_or_else(|m| panic!("{name}: its experts at {l:?}: {m}"));
+                        assert_eq!((c.experts, c.top_k, c.moe.iter().filter(|x| **x).count()), (64, 8, 28), "{name}");
+                    }
+                    assert!(lv.weights < lv.bf16, "{name} at {l:?}: {} of bf16 {}", lv.weights, lv.bf16);
+                    lv.weights
+                })
+                .collect();
+            assert!(by_level.windows(2).all(|w| w[0] > w[1]) && *by_level.last().unwrap() > 0, "{name}: {by_level:?}");
+        }
+        let e = level("Mellum2.1-12B-A2.5B-Instruct", Layout::Tiered).err().expect("a mixture's penguin on this route");
+        assert!(format!("{e:?}").contains("kestrel"), "{e:?}");
+        let lv = level("Domyn-Edge-Base", Layout::Tiered).unwrap();
+        let low = &lv.layers.as_ref().unwrap().low;
+        let rings: Vec<(usize, usize, usize)> = low.rings.iter().map(|r| (r.d, r.nk, r.window)).collect();
+        assert_eq!(rings.iter().filter(|r| **r == (256, 8, 0)).count(), 12, "{rings:?}");
+        assert_eq!(rings.iter().filter(|r| **r == (64, 8, 1025)).count(), 24, "{rings:?}");
+        // (a window's ring is a sequence's fixed cost, the whole-context layers' a token's: both counted)
+        assert!(lv.rings[0] > 0 && lv.per[0] == 12 * 2 * 8 * 256 * 2, "{:?} {:?}", lv.rings, lv.per);
+        let dense: serde_json::Value = serde_json::from_str(&fixture("dense_tiny_manifest.json")).unwrap();
+        assert_eq!(crate::support::family(dense["config"].as_str().unwrap(), "q").unwrap(), crate::support::Family::Qwen3);
+        // (and `fit` plans them as it plans every family: on an RTX 4080 SUPER, Domyn Edge and Granite Swash lossless, Mellum 2 at kestrel, the level `run` loads)
+        for (name, want) in [
+            ("Domyn-Edge-Base", "penguin"),
+            ("granite-swash-2b", "penguin"),
+            ("Mellum2.1-12B-A2.5B-Instruct", "kestrel"),
+            ("Aion-1.0-Instruct-2.3B", "penguin"),
+        ] {
+            let (text, _) = recorded_release(name);
+            let dir = model_dir("described", name, &text);
+            let words = ["fit", dir.to_str().unwrap(), "--machine", "rtx4080s"];
+            let p = planned(&args(&words))
+                .unwrap_or_else(|e| panic!("{name}: {e:?}"))
+                .plan
+                .chosen
+                .and_then(|c| c.load)
+                .unwrap_or_else(|| panic!("{name}: no plan"));
+            assert_eq!((p.level, p.kind), (want, Kind::Qwen3), "{name}: {p:?}");
+        }
+    }
+
     /// Both formats of the keys and values are lossless, so a plan takes the 12-bit pages GLYD_KV=lossless asks for only where they reserve no more than bf16
     /// (`sizing::one_gpu_pages`). One user at gemma-4-12B's whole context (262,144 tokens) reserves more in them than in bf16 (their worst case beside the tokens:
     /// a raw slab for every page of the sequence and the rows a pass unpacks): on an L4 and an RTX 4080 SUPER the plan is bf16's, its level bf16's (penguin on

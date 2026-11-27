@@ -40,7 +40,25 @@ pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
     load_of(dir, &ModelConfig::load(dir)?, o)
 }
 
-/// `load` of a config.json parsed once (`m`: `dir`'s).
+/// `load` of a config.json parsed once (`m`: `dir`'s). A model whose feed-forwards are mixtures of experts (Mellum's) loads each layer's as the Moe kind's
+/// block (`experts::block`: its router, its experts and a shared expert where it has one, at the level of the other matrices), every expert on the GPU.
 pub fn load_of(dir: &Path, m: &ModelConfig, o: &Opts) -> Result<Dyn> {
-    Dyn::new(dir, m, lowered_of(dir, m)?, None, o)
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
+    let (eos, max_pos) = ends(dir, m);
+    let d = super::lower::dense(&kinds, eos, max_pos).map_err(|e| e.context(&label))?;
+    if super::experts::of_layers(&kinds, (0, d.layers.len()), 2).next().is_none() {
+        return Dyn::new(dir, m, d, None, o);
+    }
+    let st = super::Stage::whole(d.layers.len());
+    let held = super::experts::Held { hb: None, cache: None, ordinal: o.device, f8: None, dense: None, codebooks: None, codes: None };
+    let hidden = kinds.desc.hidden;
+    let experts = |ck: &glyd_gpu::safetensors::Checkpoint, level: crate::weights::Layout| -> Result<Vec<Box<dyn super::experts::MoeBlock>>> {
+        super::experts::of_layers(&kinds, st.layers, 2)
+            .map(|(ix, moe, roles)| {
+                crate::status::STATUS.beat(); // (a block of experts takes seconds to read)
+                super::experts::block(moe, roles, hidden, ck, level, (ix, &held))
+            })
+            .collect()
+    };
+    Dyn::new_placed(dir, m, d, None, st, o, &experts, &super::Placing::default()).map_err(|e| e.context(&label))
 }

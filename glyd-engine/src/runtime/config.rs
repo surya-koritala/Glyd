@@ -274,6 +274,8 @@ fn family_by(arch: &str, model_type: &str, nested: Option<&str>) -> Option<Famil
         _ if m.starts_with("gemma4") || nested.is_some_and(|t| t.starts_with("gemma4")) => Family::Gemma4,
         // (the plain dense kind: every model type the description builder's `llama` reading takes, whatever the release calls its architecture)
         _ if super::describe::LLAMA.contains(&nested.unwrap_or(m)) => Family::Qwen3,
+        // (the families a description is the whole of: Domyn Edge, Granite Swash, Mellum 2)
+        _ if crate::runtime::describe::LAYERS.contains(&m) => Family::Layers,
         // (the Qwen3.5 layout, dense or with experts: one family, its loader the one for both, src/dynamic/qwen35.rs)
         _ if matches!(a, "Qwen3_5ForCausalLM" | "Qwen3_5ForConditionalGeneration" | "Qwen3_5MoeForCausalLM" | "Qwen3_5MoeForConditionalGeneration") => {
             Family::Qwen35

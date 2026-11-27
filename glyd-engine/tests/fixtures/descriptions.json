@@ -167,6 +167,14 @@
     "plan": "f9d4f83870b03b00",
     "family": "FlashNext"
   },
+  "headers/Aion-1.0-Instruct-2.3B.json": {
+    "blocks": 56,
+    "tensors": 310,
+    "kinds": "65f43919c4501857",
+    "weights": "ce737b0d091ada50",
+    "plan": "d3757f57a63ea8bf",
+    "family": "Layers"
+  },
   "headers/DeepSeek-V4-Flash-0731.json": {
     "blocks": 86,
     "tensors": 72317,
@@ -197,7 +205,7 @@
     "kinds": "71d898e75055f703",
     "weights": "79d34a1836df6db2",
     "plan": "95218d17f177b31e",
-    "family": "refused: m is a DomynEdgeForCausalLM model, which this engine has no description of yet"
+    "family": "Layers"
   },
   "headers/GLM-5.3.json": {
     "blocks": 156,
@@ -229,7 +237,7 @@
     "kinds": "cd3b2f387aca00a2",
     "weights": "6f5858688a341580",
     "plan": "a0bdbb7edb873bf4",
-    "family": "refused: m is a MellumForCausalLM model, which this engine has no description of yet"
+    "family": "Layers"
   },
   "headers/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.json": {
     "blocks": 52,
@@ -269,7 +277,7 @@
     "kinds": "a0eafeab9bfb45a0",
     "weights": "d8f8a3787630c0f0",
     "plan": "d471c2ec3f600fbb",
-    "family": "refused: m is a GraniteSWAForCausalLM model, which this engine has no description of yet"
+    "family": "Layers"
   },
   "runtime/dsv4_model.json": {
     "blocks": 6,

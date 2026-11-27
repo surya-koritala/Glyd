@@ -488,6 +488,10 @@ fn shape_roles(shapes: &mut std::collections::BTreeMap<String, Vec<usize>>, r: &
 /// The model types the `llama` builder reads: the pre-norm dense decoders of one attention and one gated MLP a layer.
 pub const LLAMA: &[&str] = &["llama", "mistral", "qwen2", "qwen3"];
 
+/// The model types of the families whose description is the whole of them (`support::Family::Layers`): each has a builder here whose blocks the dense
+/// lowering takes, and nothing else of its own in the engine. A new family of that kind adds its builder and its model type to this list.
+pub const LAYERS: &[&str] = &["domynedge", "granite_swa", "mellum", "aion_instruct"];
+
 /// The description of the model whose `config.json` is `cfg`.
 pub fn describe(cfg: &Value) -> Result<Described> {
     describe_config(&ModelConfig::from_value(cfg)?)
@@ -578,7 +582,8 @@ pub fn describe_config_in(c: &ModelConfig, have: Option<&BTreeSet<String>>) -> R
         "gemma4_text" | "gemma4_unified_text" => gemma4(tc, prefix, mt, tied_top),
         "domynedge" => domyn_edge(tc, prefix, mt, tied_top),
         "granite_swa" => granite_swa(tc, prefix, mt, tied_top),
-        "mellum" => mellum(tc, prefix, mt, tied_top),
+        "mellum" => layer_typed(tc, prefix, mt, tied_top, &MELLUM),
+        "aion_instruct" => layer_typed(tc, prefix, mt, tied_top, &AION),
         "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
         "" => err("config.json names no model_type"),
         m => err(format!("model_type {m} has no description builder yet")),
@@ -963,6 +968,22 @@ fn granite_swa(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option
     Ok(out)
 }
 
+/// What a family of layers by type leaves unsaid, and whether some layers' feed-forward is a mixture of experts (`layer_typed`).
+struct LayerTyped {
+    heads: usize,
+    kv: usize,
+    inter: usize,
+    window: usize,
+    /// The rotary's base on the layers over the whole context and on the windowed ones, where a config has no `rope_parameters`: None where the class's
+    /// own default is a scaled rotary, which a config must then say.
+    thetas: Option<(f64, f64)>,
+    experts: bool,
+}
+
+const MELLUM: LayerTyped = LayerTyped { heads: 32, kv: 4, inter: 7168, window: 1024, thetas: Some((500_000.0, 10_000.0)), experts: true };
+/// Aion 1.0 Instruct (`aion_instruct`): the same attention a layer type, a gated MLP in every layer, no draft layers.
+const AION: LayerTyped = LayerTyped { heads: 24, kv: 8, inter: 8192, window: 2048, thetas: None, experts: false };
+
 /// Mellum 2 (`mellum`, MellumForCausalLM): a pre-norm decoder of Qwen3-style attention (queries and keys normed a head, each norm with a weight,
 /// before the rotation) and, a layer, a mixture of experts or a gated MLP.
 ///  - `layer_types` says a layer "full_attention" or "sliding_attention" (unsaid: every layer full); a sliding layer's query sees `sliding_window`
@@ -975,24 +996,26 @@ fn granite_swa(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option
 ///    unsaid, every layer sparse.
 /// The defaults are transformers' configuration class's. The draft layers of the releases that have them (`num_mtp_layers`, `mtp.`) are counted and
 /// left unread. `use_sliding_window` and `max_window_layers`, which the releases still write, are an earlier class's keys and select nothing here.
-fn mellum(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
+fn layer_typed(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, f: &LayerTyped) -> Result<Described> {
     let k = Keys::new(tc, mt);
     let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
-    let (heads, kv) = (k.opt_usize("num_attention_heads")?.unwrap_or(32), k.opt_usize("num_key_value_heads")?.unwrap_or(4));
+    let (heads, kv) = (k.opt_usize("num_attention_heads")?.unwrap_or(f.heads), k.opt_usize("num_key_value_heads")?.unwrap_or(f.kv));
     let hd = k.opt_usize("head_dim")?.unwrap_or(128);
     let max_pos = k.opt_usize("max_position_embeddings")?;
     k.expect("attention_bias", &Value::Bool(false))?;
     let act = act(k.str("hidden_act")?.unwrap_or("silu"))?;
-    let (inter, moe_inter) = (k.opt_usize("intermediate_size")?.unwrap_or(7168), k.opt_usize("moe_intermediate_size")?.unwrap_or(896));
-    let experts = k.opt_usize("num_experts")?.unwrap_or(64);
+    let inter = k.opt_usize("intermediate_size")?.unwrap_or(f.inter);
+    // (the experts' keys are read where the family has experts: elsewhere a config that names them is refused, by its unknown keys)
+    let (moe_inter, experts) =
+        if f.experts { (k.opt_usize("moe_intermediate_size")?.unwrap_or(896), k.opt_usize("num_experts")?.unwrap_or(64)) } else { (0, 0) };
     let moe = Moe {
         router: Router {
             score: RouterScore::Softmax,
             logit_scale: 1.0,
             bias: false,
             groups: None,
-            top_k: k.opt_usize("num_experts_per_tok")?.unwrap_or(8),
-            renorm: k.bool("norm_topk_prob", true)?,
+            top_k: if f.experts { k.opt_usize("num_experts_per_tok")?.unwrap_or(8) } else { 0 },
+            renorm: !f.experts || k.bool("norm_topk_prob", true)?,
             scale: 1.0,
             hash: false,
         },
@@ -1002,7 +1025,7 @@ fn mellum(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         shared_gate: false,
         latent: None,
     };
-    let window = k.opt_usize("sliding_window")?.unwrap_or(1024);
+    let window = k.opt_usize("sliding_window")?.unwrap_or(f.window);
     // (an earlier class's keys, still in the releases' configs; the class reads `layer_types`)
     k.raw("use_sliding_window");
     k.raw("max_window_layers");
@@ -1020,10 +1043,14 @@ fn mellum(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                 .collect(),
         }
     };
-    let (sliding, sparse) = (list("layer_types", "full_attention", "sliding_attention", false)?, list("mlp_layer_types", "dense", "sparse", true)?);
+    let sliding = list("layer_types", "full_attention", "sliding_attention", false)?;
+    let sparse = if f.experts { list("mlp_layer_types", "dense", "sparse", true)? } else { vec![false; layers] };
     let plain = |theta: f64| Map::from_iter([("rope_type".to_string(), Value::from("default")), ("rope_theta".to_string(), Value::from(theta))]);
     let (full_rope, sliding_rope) = match k.raw("rope_parameters") {
-        None => (plain(500_000.0), plain(10_000.0)),
+        None => match f.thetas {
+            Some((full, sliding)) => (plain(full), plain(sliding)),
+            None => return err(format!("{mt}: no rope_parameters, where the class's own are a scaled rotary: the config must say them")),
+        },
         Some(Value::Object(o)) => {
             let of = |ty: &str, needed: bool, unsaid: f64| match o.get(ty) {
                 Some(Value::Object(p)) => Ok(p.clone()),
@@ -1033,7 +1060,8 @@ fn mellum(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             if let Some(other) = o.keys().find(|t| !matches!(t.as_str(), "full_attention" | "sliding_attention")) {
                 return err(format!("{mt}: rope_parameters.{other} is not a layer type (full_attention, sliding_attention)"));
             }
-            (of("full_attention", sliding.iter().any(|s| !s), 500_000.0)?, of("sliding_attention", sliding.iter().any(|s| *s), 10_000.0)?)
+            let (full, slid) = f.thetas.unwrap_or((10_000.0, 10_000.0));
+            (of("full_attention", sliding.iter().any(|s| !s), full)?, of("sliding_attention", sliding.iter().any(|s| *s), slid)?)
         }
         Some(v) => return err(format!("{mt}: rope_parameters = {v} is not the rotary of each layer type")),
     };
@@ -1042,9 +1070,11 @@ fn mellum(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         rope(&sliding_rope, hd, max_pos, &format!("{mt} rope_parameters.sliding_attention"))?,
     );
     // (the draft layers' count under the class's name, or the one the -MTP releases write)
-    let mtp_layers = k.opt_usize("num_mtp_layers")?.or(k.opt_usize("num_nextn_predict_layers")?).unwrap_or(0);
-    k.raw("mtp_layer_types");
-    k.raw("mtp_mlp_layer_types");
+    let mtp_layers = if f.experts { k.opt_usize("num_mtp_layers")?.or(k.opt_usize("num_nextn_predict_layers")?).unwrap_or(0) } else { 0 };
+    if f.experts {
+        k.raw("mtp_layer_types");
+        k.raw("mtp_mlp_layer_types");
+    }
     let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
     for l in 0..layers {
         let a = Attn {
