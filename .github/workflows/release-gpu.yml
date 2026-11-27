@@ -539,7 +539,9 @@ jobs:
           ls -l libs engine
           read -ra tools <<< "$BUILD_TOOLS"
           "$py" -m pip install --quiet "${tools[@]}"
-          PATH="$(dirname "$py"):$PATH" GLYD_GPU_LIBS="$PWD/libs" GLYD_GPU_ENGINE="$PWD/engine/glyd-engine" GLYD_GPU_BUILD_ARGS=--no-isolation bash glyd-gpu-py/build.sh
+          # (the wheel holds the two GPU libraries and no engine: the engine carries the libraries' kernels too since the one kernel build, and a wheel with
+          # both was 124 MB, past PyPI's 100 MB. The installer puts the engine on the PATH, where glyd_gpu.engine finds it)
+          PATH="$(dirname "$py"):$PATH" GLYD_GPU_LIBS="$PWD/libs" GLYD_GPU_NO_ENGINE=1 GLYD_GPU_BUILD_ARGS=--no-isolation bash glyd-gpu-py/build.sh
       - name: "Tag (auditwheel: at most manylinux_2_28)"
         env:
           ARCH: ${{ matrix.arch }}
@@ -565,6 +567,7 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
+          chmod 755 engine/glyd-engine  # (the engine job's program, an artifact: the install check runs its engine half against it)
           for v in $(python3 -c 'import json, sys; print(" ".join(json.loads(sys.argv[1])))' "$PYTHONS"); do
             echo "::group::CPython $v"
             py=/opt/python/cp${v/./}-cp${v/./}/bin/python
@@ -573,7 +576,7 @@ jobs:
             /tmp/t/bin/python -m pip install --quiet glyd-gpu-py/dist/*.whl
             (cd glyd-gpu-py/tests && /tmp/t/bin/python test_gpu.py)
             # from outside the source tree, so it is the installed wheel that is looked at
-            (cd / && /tmp/t/bin/python -I "$OLDPWD/glyd-gpu-py/check_install.py" "$VERSION")
+            (cd / && /tmp/t/bin/python -I "$OLDPWD/glyd-gpu-py/check_install.py" "$VERSION" --engine "$OLDPWD/engine/glyd-engine")
             /tmp/t/bin/python -m glyd_gpu --help | head -5
             echo "::endgroup::"
           done

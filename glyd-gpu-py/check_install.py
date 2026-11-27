@@ -5,7 +5,9 @@ looked for at the first call) and answer the C API version of the header the whe
 test_gpu.py's header tests tie the two; a stale library does not) and export the functions the package calls by their names; the engine's program (glyd-engine) is executable, is this
 version, finds the library beside it and says which models it runs (with no GPU, and no network); vLLM's entry point is registered.
 
-    python -I check_install.py VERSION [--no-libs]        (--no-libs: a wheel built without the CUDA libraries)"""
+    python -I check_install.py VERSION [--no-libs | --engine PATH]
+        --no-libs: a wheel built without the CUDA libraries (and so without the engine)
+        --engine PATH: a wheel with the libraries and no engine (the release's): the engine's checks are of the program at PATH"""
 import ctypes
 import ctypes.util
 import glob
@@ -37,10 +39,14 @@ else:
         print(os.path.basename(f), os.path.getsize(f), "bytes, CUDA runtime", lib.glyd_gpu_cuda_version(), "C API", lib.glyd_gpu_api_version())
         assert lib.glyd_gpu_api_version() == api, f"{f}: its C API is not the header's ({api})"
         assert hasattr(lib, "glyd_gpu_cuda_version") and hasattr(lib, "glyd_gpu_mma_gemm"), f"{f}: a function of the C API is not exported by its name"
-eng = os.path.join(d, "glyd-engine")
-if "--no-libs" in sys.argv:
-    assert not os.path.exists(eng), "an engine's program in a wheel built without the libraries"
-else:
+# The engine's program: beside the libraries where the wheel holds it; --engine PATH where the wheel is built without one (GLYD_GPU_NO_ENGINE=1: the
+# release's wheel, whose engine is the installer's), and then the checks below are of the program at PATH.
+beside = os.path.join(d, "glyd-engine")
+given = sys.argv[sys.argv.index("--engine") + 1] if "--engine" in sys.argv else None
+eng = given or beside
+if "--no-libs" in sys.argv or given:
+    assert not os.path.exists(beside), "an engine's program in a wheel built without one"
+if "--no-libs" not in sys.argv:
     assert os.path.isfile(eng) and os.access(eng, os.X_OK), f"{eng} is not an executable program"
     env = dict(os.environ, HF_HUB_OFFLINE="1")  # (the engine looks at nothing on the network)
     said = subprocess.run([eng, "--version"], capture_output=True, text=True, env=env).stdout.strip()
@@ -75,6 +81,10 @@ else:
             assert r.returncode == 1 and r.stderr == "" and open(why).read() == "no prompt: standard input is empty\n", (r.returncode, r.stderr)
     from glyd_gpu import engine  # (the hand-off's own reading of where the program is, in the compiled module: beside the library, not on any PATH)
 
-    assert engine.find() == eng and engine.model_of(["Qwen/Qwen3.8-27B", "--prompt", "hi"]) == "Qwen/Qwen3.8-27B", engine.find()
+    if given:  # (none beside the library: the PATH's, and here there is none on it; one named is the one used)
+        assert engine.find() != beside and engine.find(given) == given, engine.find()
+    else:
+        assert engine.find() == eng, engine.find()
+    assert engine.model_of(["Qwen/Qwen3.8-27B", "--prompt", "hi"]) == "Qwen/Qwen3.8-27B"
     print("glyd-engine", said.split()[1], "runs here:", os.path.getsize(eng), "bytes")
 print("glyd-gpu", want, "installed in", d)
