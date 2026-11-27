@@ -31,7 +31,7 @@ jobs:
           source /opt/rh/gcc-toolset-13/enable
           time bash gpu/build_lib.sh lib
           ls -la lib
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gpu-check-lib
           path: lib/libglyd_gpu_cuda13.so
@@ -59,7 +59,7 @@ jobs:
           printf '%s\n' "$GITHUB_SHA" > $B/COMMIT
           cd $B && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum -c --quiet SHA256SUMS
           tar -cf /tmp/gpu-check.tar . && cd /tmp && sha256sum gpu-check.tar > gpu-check.tar.sha256 && cat gpu-check.tar.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gpu-check
           path: |
