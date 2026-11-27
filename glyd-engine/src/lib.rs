@@ -89,6 +89,8 @@ pub mod hbg_store;
 pub mod hbpack;
 pub mod hub;
 #[cfg(feature = "dev")]
+pub mod intake;
+#[cfg(feature = "dev")]
 pub mod kcheck;
 #[cfg(feature = "dev")]
 pub mod kcheck35;

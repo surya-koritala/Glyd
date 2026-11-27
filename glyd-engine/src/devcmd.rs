@@ -1,5 +1,8 @@
 //! The commands of a development build (`--features dev`, the default): the checks, the proofs and the measurements. A release build has none of them.
 //!
+//!   glyd-engine intake MODEL [--record DIR]   the first step of adding a model family, or of meeting a new release (src/intake.rs): MODEL (a Hub repo, read by ranges with no weights;
+//!                                                             a directory; a recorded header) against the description builders: whether it describes, every config key not understood, every tensor
+//!                                                             not read or missing, a new family's keys and tensor groups, signs of the layer kinds it needs; --record writes the header fixture
 //!   glyd-engine pack MODEL OUT [--threads N] [--layout auto|mma|mma12|i6|i5|i4]   pack a checkpoint (every matrix, the embedding too); i6, i5 and i4: a lossy level's glyd-v7 directory (Qwen3.5, Nemotron 3 Super: at i4 its experts in four-bit codes, every other matrix in six-bit ones; GLM-5.3-Flash)
 //!   glyd-engine calibrate-experts MODEL OUT [--tokens 32768] [--devices 0,1 --split CUTS] [--context 4096] [--synthetic]   hummingbird's corpus pass (src/hb_usage.rs): the model on the engine over the
 //!                                                             calibration corpus, each MoE layer's router choices counted per expert into the usage file OUT
@@ -218,6 +221,12 @@ pub fn run(cmd: &str, a: &Args) -> Result<()> {
         "museref" => glyd_engine::muse_ref::cmd(&a),
         "musecheck" => glyd_engine::muse_ref::check(&a),
         "hubslice" => glyd_engine::hub::slice_cmd(&a),
+        "intake" => {
+            if !glyd_engine::intake::run(&a)? {
+                std::process::exit(3);
+            }
+            Ok(())
+        }
         "dlrate" => glyd_engine::hub::rate_cmd(&a),
         "dsv4random" => {
             let out = Path::new(a.need(1, "OUT")?);
