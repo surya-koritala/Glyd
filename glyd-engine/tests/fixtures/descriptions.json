@@ -255,6 +255,14 @@
     "plan": "554563afe378e6b5",
     "family": "Gemma4"
   },
+  "headers/granite-swash-2b.json": {
+    "blocks": 48,
+    "tensors": 242,
+    "kinds": "a0eafeab9bfb45a0",
+    "weights": "d8f8a3787630c0f0",
+    "plan": "d471c2ec3f600fbb",
+    "family": "refused: m is a GraniteSWAForCausalLM model, which this engine has no description of yet"
+  },
   "runtime/dsv4_model.json": {
     "blocks": 6,
     "tensors": 155,

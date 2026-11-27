@@ -577,6 +577,7 @@ pub fn describe_config_in(c: &ModelConfig, have: Option<&BTreeSet<String>>) -> R
         "qwen4_exp_text" => qwen4x(tc, prefix, mt, tied_top).and_then(|d| with_tower(d, c)),
         "gemma4_text" | "gemma4_unified_text" => gemma4(tc, prefix, mt, tied_top),
         "domynedge" => domyn_edge(tc, prefix, mt, tied_top),
+        "granite_swa" => granite_swa(tc, prefix, mt, tied_top),
         "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
         "" => err("config.json names no model_type"),
         m => err(format!("model_type {m} has no description builder yet")),
@@ -820,6 +821,133 @@ fn domyn_edge(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<
         blocks,
         final_norm: Norm::rms(eps),
         head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32 },
+        mtp: Vec::new(),
+        vision: None,
+        rope: first_rope,
+    };
+    let mut out = finish(&k, desc, &names::HF, prefix, roles, 0)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    out.shapes = shapes;
+    Ok(out)
+}
+
+/// Granite Swash, dense (`granite_swa`, GraniteSWAForCausalLM): a Llama-style decoder with Granite's four multipliers and, a layer, a window and a sink.
+///  - `embedding_multiplier` scales the embedding, `residual_multiplier` each part's output before it is added, `attention_multiplier` is the scores'
+///    factor (in place of 1 / sqrt(head width)), and the logits are divided by `logits_scaling`; each is 1 where the config does not say;
+///  - `layer_types` says a layer "full_attention" or "sliding_attention" (unsaid: every fourth layer, from the first, is full); a sliding layer's query
+///    sees `sliding_window` positions, its own among them (128 unsaid);
+///  - every layer has a learned logit a head, `sinks`, that takes part in the softmax and attends to nothing (transformers scales the output by
+///    sigmoid(logsumexp(scores) - sink), which is that softmax);
+///  - `layer_rope_theta`, where a config has it, is the rotary base a layer, 0 for a layer with no positions; unsaid, every layer has the model's.
+/// The defaults are transformers' configuration class's (`rms_norm_eps` 1e-5, the head tied to the embedding, as many key heads as heads where unsaid).
+/// No biases (`attention_bias`, `mlp_bias` false). The mixture of experts of the family (`granitemoe_swa`) is another model type, not read here.
+fn granite_swa(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, _, tied) = common(&k, tied_top.or(Some(true)))?;
+    let eps = k.opt_f64("rms_norm_eps")?.unwrap_or(1e-5) as f32;
+    let heads = k.usize("num_attention_heads")?;
+    let kv = k.opt_usize("num_key_value_heads")?.unwrap_or(heads);
+    if heads == 0 || d % heads != 0 {
+        return err(format!("{mt}: hidden_size {d} is not num_attention_heads {heads} heads of one width"));
+    }
+    let hd = d / heads;
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    k.expect("attention_bias", &Value::Bool(false))?;
+    k.expect("mlp_bias", &Value::Bool(false))?;
+    let act = act(k.str("hidden_act")?.unwrap_or("silu"))?;
+    let inter = k.usize("intermediate_size")?;
+    let mult = |key: &str| -> Result<f32> { Ok(k.opt_f64(key)?.unwrap_or(1.0) as f32) };
+    let (embed_x, residual_x, attn_x, logits_div) =
+        (mult("embedding_multiplier")?, mult("residual_multiplier")?, mult("attention_multiplier")?, mult("logits_scaling")?);
+    if logits_div == 0.0 {
+        return err(format!("{mt}: logits_scaling = 0"));
+    }
+    let window = k.opt_usize("sliding_window")?.unwrap_or(128);
+    let types: Vec<bool> = match k.raw("layer_types") {
+        None => (0..layers).map(|l| l % 4 != 0).collect(),
+        Some(_) => per_layer(&k, "layer_types", layers)?
+            .iter()
+            .enumerate()
+            .map(|(l, t)| match t.as_str() {
+                Some("full_attention") => Ok(false),
+                Some("sliding_attention") => Ok(true),
+                _ => err(format!("{mt}: layer_types[{l}] = {t} is not supported (full_attention or sliding_attention)")),
+            })
+            .collect::<Result<_>>()?,
+    };
+    // (the model's rotary: `rope_parameters`, or the earlier keys a release may still write, `rope_theta` among them)
+    let top_theta = k.opt_f64("rope_theta")?;
+    let model_rope: Map<String, Value> = match k.raw("rope_parameters") {
+        Some(Value::Object(o)) => o.clone(),
+        _ => Map::from_iter([("rope_type".to_string(), Value::from("default")), ("rope_theta".to_string(), Value::from(top_theta.unwrap_or(10000.0)))]),
+    };
+    let thetas: Option<&Vec<Value>> = if k.raw("layer_rope_theta").is_some() { Some(per_layer(&k, "layer_rope_theta", layers)?) } else { None };
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
+    let mut first_rope = None;
+    for l in 0..layers {
+        let theta = match thetas {
+            None => None,
+            Some(t) => Some(t[l].as_f64().filter(|x| *x >= 0.0).ok_or_else(|| Error(format!("{mt}: layer_rope_theta[{l}] = {} is not a base", t[l])))?),
+        };
+        let rope = match theta {
+            Some(0.0) => None,
+            _ => {
+                let mut p = model_rope.clone();
+                if let Some(t) = theta {
+                    p.insert("rope_theta".to_string(), Value::from(t));
+                }
+                Some(rope(&p, hd, max_pos, &format!("{mt} rope_parameters"))?)
+            }
+        };
+        first_rope = first_rope.or(rope.clone());
+        let a = Attn {
+            heads,
+            kv_heads: kv,
+            head_dim: hd,
+            v_head_dim: hd,
+            window: types[l].then_some(window),
+            sinks: true,
+            rope,
+            q_norm: None,
+            k_norm: None,
+            v_norm: None,
+            gate: None,
+            softcap: None,
+            bias: false,
+            scale: attn_x,
+            k_eq_v: false,
+            indexer: None,
+            rounding: AttnRounding::F32,
+            kv_from: None,
+        };
+        let p = names::HF.layer(prefix, l);
+        let mut ar = names::roles(part::ATTN, &p, 0, |r| !r.ends_with("_bias") && !matches!(r, "q_norm" | "k_norm"));
+        ar.extend(names::roles(part::GRANITE_SINKS, &p, 0, all));
+        let fr = names::roles(part::MLP, &p, 0, all);
+        let (q, kvw) = (heads * hd, kv * hd);
+        shape_roles(
+            &mut shapes,
+            &ar,
+            &[("norm_in", vec![d]), ("q", vec![q, d]), ("k", vec![kvw, d]), ("v", vec![kvw, d]), ("o", vec![d, q]), ("sinks", vec![heads])],
+        );
+        shape_roles(&mut shapes, &fr, &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
+        let residual = if residual_x == 1.0 { Residual::Add } else { Residual::AddScaled(residual_x) };
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Attention(a)), norm_out: None, residual: residual.clone() });
+        roles.push(ar);
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: None, residual });
+        roles.push(fr);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: embed_x, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: Norm::rms(eps),
+        head: Head { tied, softcap: None, scale: 1.0 / logits_div, collapse: Collapse::None, rounding: Rounding::F32 },
         mtp: Vec::new(),
         vision: None,
         rope: first_rope,
