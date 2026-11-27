@@ -79,7 +79,7 @@ _ARGS = {  # each function's arguments before its stream
     "f8h_linear": [_P, _P, _P, _I64, _I64, _I64, _P, _I64, _P, _I64, _I64, _P, _I64, _P, _SZ, _P],  # layout H: as f8_'s
     "f8h_moe": [_P, _P, _P, _I64, _I64, _I64, _P, _I64, _P, _I64, _P, _I64, _I64, _I64, _I64, _P, _I64, _P, _SZ, _P],  # layout H: as f8_'s
 }
-_SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_gemm_x1": 4, "mma12_gemm_x1": 4, "mma12_gemm_x2": 3, "mma12_gemm_x3": 3, "attn_decode": 4, "mma_moe": 7, "mma12_moe": 7, "mma_linear": 4, "mma12_linear": 4, "kv_decode": 5, "f8_size": 2, "f8_linear": 3, "f8_moe": 4}  # their workspace queries' sizes
+_SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_gemm_x1": 4, "mma12_gemm_x1": 4, "mma12_gemm_x2": 3, "mma12_gemm_x3": 3, "attn_decode": 4, "mma_moe": 7, "mma12_moe": 7, "mma_linear": 4, "mma12_linear": 4, "kv_decode": 5, "f8_size": 2, "f8_linear": 3, "f8_moe": 4, "mma_moe_as": 9, "mma12_moe_as": 9}  # their workspace queries' sizes
 _PLAIN = {"gpu": [_P], "mma_way": [_I64] * 4 + [_P, _P], "mma12_way": [_I64] * 4 + [_P, _P], "mma12_part_cus": [_I64] * 4 + [_P], "kv_leaf_bytes": [_I64] * 3 + [_P], "kv_image_bytes": [_I64] * 3 + [_P], "kv_extra_bytes": [_I64, _P], "kv_second_bytes": [_I64, _I64, _P], "kv_decode_shares": [_I64] * 3 + [_P], "kv_floor_set": [ctypes.c_int], "f8h_plain": [ctypes.c_int]}  # the calls with no stream
 _AUX = {  # the route SPLIT's ring (glyd_gpu.h), each call's arguments whole (a stream last where it takes one)
     "aux_create": [_P, _SZ, _SZ, _P],
@@ -88,6 +88,10 @@ _AUX = {  # the route SPLIT's ring (glyd_gpu.h), each call's arguments whole (a 
     "aux_reset": [_P, _P],
     "mma12_aux_queue": [_P, _I64] + _PACK + [_I64, _I64],
     "mma12_aux_linear": [_P, _I64] + _PACK + [_I64, _I64, _P, _I64, _P, _P, _P, _P],
+    # the experts' products of a part of a layer (the engine's calls: the stream, then the whole layer's rows an expert and its experts)
+    "mma_moe_as": _ARGS["mma_moe"] + [_P, _I64, _I64],
+    "mma_moe_placed_as": _ARGS["mma_moe_placed"] + [_P, _I64, _I64],
+    "mma12_moe_as": _ARGS["mma12_moe"] + [_P, _I64, _I64],
 }
 
 
