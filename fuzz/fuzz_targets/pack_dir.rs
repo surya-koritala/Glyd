@@ -1,14 +1,14 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 
-use glyd_engine::weights;
+use glyd_engine::{dynamic::dense, weights};
 
 thread_local! {
     static DIR: glyd_fuzz::Scratch = glyd_fuzz::Scratch::new("pack_dir");
 }
 
 // A packed model directory as the engine loads it: config.json, glyd.json (the manifest), the checkpoint's shard and engine.safetensors (the embedding's sidecar), parts of the input, each after a line holding a
-// NUL. Its plan is made from the manifest and the files' headers alone.
+// NUL. What the loader reads first of it: its description from config.json (and, of a Hub-format directory, the checkpoint's index), and the manifest of either save format.
 fuzz_target!(|data: &[u8]| {
     let p = glyd_fuzz::parts(data, 4);
     DIR.with(|d| {
@@ -17,7 +17,8 @@ fuzz_target!(|data: &[u8]| {
         d.put("model.safetensors", p[2]);
         d.put("engine.safetensors", p[3]);
         let _ = weights::v7_manifest(d.path());
-        let _ = weights::plan(d.path());
+        let _ = dense::lowered(d.path());
+        let _ = weights::lossless_manifest(d.path());
         let _ = weights::earlier_format(d.path());
     });
 });
