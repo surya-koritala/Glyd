@@ -160,6 +160,9 @@ pub struct AttnOp {
     /// The attention over the tokens the indexer's pick before it took (`Op::IdxPick`, its picks' run: src/dynamic/picked.rs), its keys and values in its ring as
     /// any attention's: a sparse attention (`Attn::indexer`). Heads of 256, the gate in the query.
     pub picked: bool,
+    /// The kind's sinks (`kinds::Attn::sinks`): the small tensor of a logit a query head that joins every row's softmax and attends to nothing. Such an attention
+    /// runs on the kind's warp kernels and the parts kernel with its merge, which add the sink to a row's sum: not on the prompt kernel nor the GPU library's.
+    pub sinks: Option<usize>,
 }
 
 impl AttnOp {
@@ -249,7 +252,18 @@ impl AttnOp {
             round,
             sbf16,
             picked: false,
+            sinks: None,
         })
+    }
+
+    /// `of` for a kind with sinks, the small tensor `sinks` holding them [heads].
+    pub fn of_sinks(a: &kinds::Attn, src: Slot, ring: usize, table: Option<usize>, qk: Option<(usize, usize)>, sinks: usize) -> Result<AttnOp> {
+        if !a.sinks {
+            return err("sinks named for an attention that has none");
+        }
+        let mut op = AttnOp::of(&kinds::Attn { sinks: false, ..a.clone() }, src, ring, table, qk)?;
+        op.sinks = Some(sinks);
+        Ok(op)
     }
 
     /// The operation of a sparse attention (`a` with an indexer: Condor's, `IndexForm::Mean`) whose keys and values are ring `ring`, over the indexer's picks
@@ -309,7 +323,7 @@ impl AttnOp {
     /// (its query heads in calls of 8), no soft-cap; the shapes the 12-bit pages take.
     pub(crate) fn lib_decode(&self) -> bool {
         let g = self.nq / self.nk;
-        self.d % 128 == 0 && self.d <= 512 && self.d != 384 && (g <= MAX_DG || (self.nk == 1 && g % MAX_DG == 0)) && self.softcap == 0.0
+        self.d % 128 == 0 && self.d <= 512 && self.d != 384 && (g <= MAX_DG || (self.nk == 1 && g % MAX_DG == 0)) && self.softcap == 0.0 && self.sinks.is_none()
     }
 
     /// The decode's calls a row's query heads take (8 at most each).
@@ -352,6 +366,8 @@ pub(crate) struct AttnArgs {
     pub part: u64,
     /// Each row's M-RoPE position (t, h, w) at 6 r i32s (src/dynamic/images.rs `Dyn::rope3`); 0: the row's position alone.
     pub rpos: u64,
+    /// The sinks, a bf16 logit a query head (`AttnOp::sinks`); 0: none.
+    pub sink: u64,
     /// Row t's table at tab + t tstride entries (a step's rows that decode, each its sequence's: `rows::RowTabs`); 0: one table for every row.
     pub tstride: i64,
     /// Two bits an angle: the position of `rpos` its M-RoPE section turns by.
@@ -492,7 +508,8 @@ impl KernAttn {
     /// As `prep`; the rows are at positions `start` .. `start + a.n` (`a.kpos` holds them).
     pub(crate) unsafe fn prompt(&self, lib: &crate::ffi::Lib, s: Stream, a: &AttnArgs, start: usize) -> Result<()> {
         let (n, d, g, nk) = (a.n as usize, a.d as usize, (a.nq / a.nk) as usize, a.nk as i64);
-        if !self.fa {
+        // (an attention with sinks: the warp kernels, which add the sink to each row's sum)
+        if !self.fa || a.sink != 0 {
             return self.rows(s, a);
         }
         if KernAttn::own_prompt(d) {
@@ -628,6 +645,7 @@ impl Dyn {
         if let Some(g) = a.gate {
             x.gate = p.slot(a.src) + (g.off * 2) as u64;
         }
+        x.sink = self.sink_of(p, a)?;
         if let Some(rp) = self.pages12(p, a.ring) {
             self.kv12_decode_at(a.ring, k, a.nq, x.qo, x.out, (tab, dup / rp.parts * t), 0)?;
             self.ka.gate(s, &x)?;
@@ -679,6 +697,18 @@ impl Dyn {
         self.mark("attention: preparation (norms, rotary, cache write)")
     }
 
+    /// The sinks of `a` for its kernels' arguments (0: none). The 12-bit pages' decode and prompt attention are the GPU library's, which has no sink: an
+    /// attention with sinks over such a ring is refused, named.
+    fn sink_of(&self, p: &Part, a: &AttnOp) -> Result<u64> {
+        match a.sinks {
+            None => Ok(0),
+            Some(_) if self.pages12(p, a.ring).is_some() => {
+                err("attention with sinks over 12-bit pages: the pages' attention has no sink (serve it with bf16 pages)")
+            }
+            Some(i) => Ok(p.small[i].ptr),
+        }
+    }
+
     /// The attention of the prepared queries over the ring into Att: a decode row's (n up to the step's rows, or a verify pass's) in parts, a prompt chunk's whole.
     unsafe fn attn_read(&self, p: &Part, a: &AttnOp, n: usize, pos: (u64, u64)) -> Result<()> {
         let s = self.dev.stream;
@@ -689,6 +719,7 @@ impl Dyn {
         if let Some(g) = a.gate {
             x.gate = p.slot(a.src) + self.rows_before(a.stride) + (g.off * 2) as u64;
         }
+        x.sink = self.sink_of(p, a)?;
         let decode = n <= self.split_rows || self.verifying.get();
         // (a ring of 12-bit pages: decode rows read the pages, then the gate; a prompt chunk's are unpacked to a bf16 ring the kernels below read, with no table)
         let twelve = self.pages12(p, a.ring).is_some();

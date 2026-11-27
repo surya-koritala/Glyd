@@ -2103,6 +2103,20 @@ pub fn domynedge_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/domynedge_tiny_manifest.json"), out, 0x2026_1127_0000_0041, true, "Domyn Edge model")
 }
 
+/// Granite Swash's small model, dense (the plain dense kind with Granite's multipliers: the embedding times 12, each block's output times 0.28 before it is
+/// added, the scores times 1/128, the logits over 10; a sink a head on every layer; four layers, the two in the middle windowed to 8 positions; 4 query and 2
+/// key-value heads of 128, a vocabulary of 4096): the family's case, no release's.
+pub fn granite_swa_random(out: &Path) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/granite_swa_tiny_manifest.json"), out, 0x2026_1127_0000_0042, true, "Granite Swash model")
+}
+
+/// Mellum 2's small model (Qwen3-style attention, queries and keys normed with a weight; four layers, two windowed to 8 positions with the plain rotary and two
+/// over the whole context with a yarn rotary; three of them a mixture of 8 experts, the best 2 of the router's softmax divided by their sum, and one a gated
+/// MLP; 4 query and 2 key-value heads of 128, a head of its own, a vocabulary of 4096): the family's case, no release's.
+pub fn mellum_random(out: &Path) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/mellum_tiny_manifest.json"), out, 0x2026_1127_0000_0043, true, "Mellum model")
+}
+
 /// A small Qwen3.5-family text model (Qwen3_5ForCausalLM: three Gated DeltaNet layers and a gated full-attention one, 1024 wide, a vocabulary of 4096): the layout of Qwen3.8-27B and the releases of its family at 0.8B's widths.
 /// Drawn by `manifest_random`'s rules, then the final norm's (1 + w) times `QWEN35_HEAD` (`head_scaled`): its head's logits that much smaller, which every row's
 /// KL from a last-place difference goes as a power of. As first drawn, the GPU against itself (each prompt served alone against all 64 at once, its sums in another
@@ -2687,6 +2701,26 @@ pub fn cases() -> Vec<Case> {
             id: "domynedge",
             family: "Domyn Edge (the plain dense kind with a norm after each block, a head width and a rotary of the layer's own, on the executor)",
             weights: Weights::Random(domynedge_random),
+            engine: dense_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            on_choices: None,
+            also: None,
+        },
+        Case {
+            id: "granite-swa",
+            family: "Granite Swash, dense (the plain dense kind with a scaled embedding, residual and logits, and a sink a head, on the executor)",
+            weights: Weights::Random(granite_swa_random),
+            engine: dense_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            on_choices: None,
+            also: None,
+        },
+        Case {
+            id: "mellum",
+            family: "Mellum 2 (Llama-style attention with a rotary a layer type, scaled on some, and a mixture of experts a layer, on the executor)",
+            weights: Weights::Random(mellum_random),
             engine: dense_engine,
             cpu: Some(described_cpu),
             vocab: 4096,
@@ -5771,7 +5805,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
             Dyn::new(dir, &crate::runtime::config::ModelConfig::load(dir)?, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
         "qwen35" | "qwen35-wide" | "qwen35moe" => crate::dynamic::qwen35::load(dir, o)?,
-        "dense" | "domynedge" => crate::dynamic::dense::load(dir, o)?,
+        "dense" | "domynedge" | "granite-swa" | "mellum" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" | "kimi-dsa" => crate::dynamic::kimi::load(dir, o)?,
         "glm-dsa" | "glm-dsa-f8" => crate::dynamic::glm::load_plain(dir, o)?,
@@ -5855,6 +5889,8 @@ fn random_model_of(case: &str, dir: &Path) -> Result<()> {
         "qwen35moe-st" => qwen35moe_stacked(dir, None),
         "dense" => dense_random(dir),
         "domynedge" => domynedge_random(dir),
+        "granite-swa" => granite_swa_random(dir),
+        "mellum" => mellum_random(dir),
         "muse" => crate::muse_ref::random(dir),
         "kimi" => crate::kimi_ref::random(dir, 1, true, 8),
         "kimi-dsa" => crate::kimi_ref::random_dsa(dir),

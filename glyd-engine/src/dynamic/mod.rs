@@ -597,6 +597,9 @@ pub struct Rope {
     pub pairs: usize,
     /// Each angle (fp32) through f64 trig, rounded to fp32 then bf16 (transformers' cos and sin in the activations' type, Muse Spark's); else fp32 trig.
     pub trig64: bool,
+    /// A scaled rotary's own frequency a pair and its factor on cos and sin (`kinds::RopeScaling` of a form that does not change with the sequence's length:
+    /// linear, yarn, llama3), as `runtime::reference::rope::inv_freq` makes them; None: theta's.
+    pub scaled: Option<(Vec<f32>, f32)>,
 }
 
 /// A layer's keys and values, `nk` heads of `d`: a ring of the window and a chunk where `window` > 0, else the whole context. `values` false: keys alone, in kc
@@ -773,6 +776,8 @@ pub struct Opts {
 pub enum SmallForm {
     /// `n` ones, no tensor read (a weightless norm's weight).
     Ones(usize),
+    /// `n` times the value, fp32, no tensor read (a scaled residual's two factors as a gated residual's: `Op::GatedResidual` of 1 and the scale).
+    Const(f32, usize),
     /// 1 + w (a centered norm's factors, as transformers adds them: `muse::plus_one`).
     PlusOne,
     /// A residual gate's two factors of its parameter (bf16 or fp32 as stored) at temperature T, in fp32 as transformers' fp32 gate makes them
@@ -1140,9 +1145,23 @@ fn rotary64(theta: f64, dim: usize, pairs: usize, max_pos: usize) -> (Vec<u16>, 
     (c, s)
 }
 
+/// cos and sin [positions, pairs] of a scaled rotary: each angle the position times the pair's own frequency `inv` (fp32), through f64 trig, times the factor
+/// `af`, to bf16: the arithmetic of the reference's rope (`runtime::reference::rope`, transformers' cos and sin times its attention factor).
+fn rotary_scaled(inv: &[f32], af: f32, max_pos: usize) -> (Vec<u16>, Vec<u16>) {
+    let (mut c, mut s) = (Vec::with_capacity(max_pos * inv.len()), Vec::with_capacity(max_pos * inv.len()));
+    for p in 0..max_pos {
+        for &f in inv {
+            let (s_, c_) = ((p as f32 * f) as f64).sin_cos();
+            c.push(crate::weights::bf16_bits(c_ as f32 * af));
+            s.push(crate::weights::bf16_bits(s_ as f32 * af));
+        }
+    }
+    (c, s)
+}
+
 /// Whether form `f` makes fp32 values (a residual gate's factors), not bf16.
 fn form_f32(f: SmallForm) -> bool {
-    matches!(f, SmallForm::GateAlpha(_) | SmallForm::GateBeta(_))
+    matches!(f, SmallForm::GateAlpha(_) | SmallForm::GateBeta(_) | SmallForm::Const(..))
 }
 
 /// Small tensor `name` made in form `f` from its checkpoint's values (bf16; a residual gate's parameter bf16 or fp32): its bytes, bf16 words or, where the
@@ -1159,6 +1178,7 @@ fn small_of(ck: &Checkpoint, name: &str, f: SmallForm) -> Result<Vec<u8>> {
     };
     let v = match f {
         SmallForm::Ones(n) => vec![1.0; n],
+        SmallForm::Const(c, n) => vec![c; n],
         SmallForm::PlusOne => crate::muse::plus_one(&vals()?),
         SmallForm::GateAlpha(t) => crate::runtime::reference::residual_gate(&vals()?, t).0,
         SmallForm::GateBeta(t) => crate::runtime::reference::residual_gate(&vals()?, t).1,
@@ -2148,7 +2168,11 @@ impl Dyn {
             .ropes
             .iter()
             .map(|r| {
-                let (c, s) = if r.trig64 { rotary64(r.theta, r.dim, r.pairs, mp) } else { rotary(r.theta, r.dim, r.pairs, mp) };
+                let (c, s) = match &r.scaled {
+                    Some((inv, af)) => rotary_scaled(&inv[..r.pairs.min(inv.len())], *af, mp),
+                    None if r.trig64 => rotary64(r.theta, r.dim, r.pairs, mp),
+                    None => rotary(r.theta, r.dim, r.pairs, mp),
+                };
                 Ok((upload_bytes(crate::weights::as_bytes(&c))?, upload_bytes(crate::weights::as_bytes(&s))?))
             })
             .collect::<Result<_>>()?;
