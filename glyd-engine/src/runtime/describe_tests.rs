@@ -1991,3 +1991,135 @@ fn deepseek_v41s_tiny_model_runs_on_the_reference() {
     assert_eq!(a, b);
     assert!(a.len() == 12 && a.iter().flatten().all(|v| v.is_finite()));
 }
+
+/// #549, Domyn Edge: the released Domyn-Edge-Base (its recorded header) describes as its two sorts of layers: 12 over the whole context with no positions
+/// and heads 256 wide, 24 with rotary positions, heads 64 wide and a window of 1,025 (the query's own position and 1,024 before it); every layer's queries
+/// normed with no weight and its keys with one, each part between two norms; the head is the embedding. Every shape the description gives is the
+/// checkpoint's, and the checkpoint is read whole.
+#[test]
+fn domyn_edge_base_describes_its_two_sorts_of_layers() {
+    use super::kinds::{Body, Ffn, Mixer, NormWeight};
+    let h = fixture("headers/Domyn-Edge-Base.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((d.desc.blocks.len(), d.desc.head.tied, d.head.is_none(), d.desc.hidden), (72, true, true, 2560));
+    let (mut whole, mut windowed) = (0, 0);
+    for (i, b) in d.desc.blocks.iter().enumerate() {
+        assert!(b.norm_out.is_some(), "block {i}: a norm after the part");
+        match &b.body {
+            Body::Mixer(Mixer::Attention(a)) => {
+                assert_eq!((a.heads, a.kv_heads, a.bias, a.sinks), (32, 8, false, false), "block {i}");
+                assert_eq!((a.q_norm.unwrap().weight, a.k_norm.unwrap().weight), (NormWeight::None, NormWeight::Plain), "block {i}");
+                assert_eq!(a.scale, (a.head_dim as f32).powf(-0.5), "block {i}");
+                match (a.head_dim, a.window, a.rope.is_some()) {
+                    (256, None, false) => whole += 1,
+                    (64, Some(1025), true) => windowed += 1,
+                    other => panic!("block {i}: {other:?}"),
+                }
+            }
+            Body::Ffn(Ffn::Mlp(_)) => {}
+            _ => panic!("block {i} is neither attention nor an MLP"),
+        }
+    }
+    assert_eq!((whole, windowed), (12, 24));
+    // (every tensor read has the checkpoint's shape, and no q norm is read: it has no weight)
+    let table = crate::sizes::Table::expand(&crate::sizes::groups_of(&h).unwrap());
+    let have = header_names(&h);
+    assert_eq!(d.names().len(), have.len());
+    assert!(!d.names().iter().any(|n| n.contains("q_norm")));
+    for r in &table.rows {
+        let want: Vec<usize> = r.shape.iter().map(|&x| x as usize).collect();
+        assert_eq!(d.shapes.get(&r.name), Some(&want), "{}", r.name);
+    }
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+}
+
+/// A small config of the Domyn Edge layout: `sorts` gives each layer as (whole context: head 8, no positions) or (windowed: head 4, rotary, `left` keys
+/// before the query's own).
+fn domyn_tiny(sorts: &[bool], left: i64) -> serde_json::Value {
+    let per = |whole: serde_json::Value, windowed: serde_json::Value| -> Vec<serde_json::Value> {
+        sorts.iter().map(|&w| if w { whole.clone() } else { windowed.clone() }).collect()
+    };
+    serde_json::json!({
+        "architectures": ["DomynEdgeForCausalLM"], "model_type": "domynedge", "hidden_size": 32, "num_hidden_layers": sorts.len(), "vocab_size": 61,
+        "num_attention_heads": 4, "num_key_value_heads": 2, "intermediate_size": 48, "hidden_act": "silu", "rms_norm_eps": 1e-6, "tie_word_embeddings": true,
+        "max_position_embeddings": 4096, "rope_parameters": {"rope_type": "default", "rope_theta": 10000.0}, "sliding_window": left + 1,
+        "position_layers": per("nope".into(), "rope".into()),
+        "window_sizes": per(serde_json::json!([-1, 0]), serde_json::json!([left, 0])),
+        "head_sizes": per(8.into(), 4.into()),
+        "layer_types": per("full_attention".into(), "sliding_attention".into()),
+    })
+}
+
+/// A setting of the Domyn Edge layout the builder does not know is refused in words that name the list, the layer and the value, and a list of another
+/// length than the layers is refused.
+#[test]
+fn domyn_edge_refuses_what_it_does_not_know() {
+    let ok = domyn_tiny(&[true, false], 2);
+    describe(&ok).unwrap_or_else(|e| panic!("{}", e.msg));
+    let with = |path: &str, i: usize, v: serde_json::Value| {
+        let mut c = ok.clone();
+        c[path][i] = v;
+        describe(&c).err().map(|e| e.msg).unwrap_or_default()
+    };
+    let e = with("position_layers", 1, "learned".into());
+    assert!(e.contains("position_layers[1]") && e.contains("learned"), "{e}");
+    let e = with("window_sizes", 1, serde_json::json!([2, 1]));
+    assert!(e.contains("window_sizes[1]") && e.contains("[2,1]"), "{e}");
+    let e = with("layer_types", 0, "sliding_attention".into());
+    assert!(e.contains("layer_types[0]") && e.contains("does not agree"), "{e}");
+    let e = with("window_sizes", 1, serde_json::json!([5, 0]));
+    assert!(e.contains("a window of 6") && e.contains("sliding_window says 3"), "{e}");
+    let mut short = ok.clone();
+    short["head_sizes"] = serde_json::json!([8]);
+    let e = describe(&short).unwrap_err().msg;
+    assert!(e.contains("head_sizes has 1 entries for 2 layers"), "{e}");
+    let mut more = ok.clone();
+    more["new_gate"] = true.into();
+    more["other_width"] = 3.into();
+    let e = describe(&more).unwrap_err().msg;
+    assert!(e.contains("config keys new_gate, other_width are not understood"), "{e}");
+}
+
+/// The Domyn Edge layout on the CPU reference, a random model of each small config (every tensor of the shape its description gives): it runs, a token at
+/// a time gives the rows a whole prompt gives, and the window is the layout's. With every layer windowed to the query's own position and 2 before it, two
+/// layers see 4 positions back: the last row of a prompt of six does not change, to the bit, when the first token does, and it changes when the second
+/// does. With one layer over the whole context it changes with the first token too.
+#[test]
+fn domyn_edge_on_the_reference_keeps_its_windows() {
+    let run = |cfg: &serde_json::Value, toks: &[u32]| -> Vec<Vec<f32>> {
+        let d = describe(cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        let src = |n: &str| {
+            let shape = d.shapes.get(n)?.clone();
+            let len: usize = shape.iter().product();
+            // (a fixed draw a tensor: its name's bytes seed it; a norm's weights near 1)
+            let mut s = n.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |a, b| (a ^ b as u64).wrapping_mul(0x0100_0000_01B3));
+            let norm = n.contains("norm");
+            let v = (0..len)
+                .map(|_| {
+                    s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                    let u = ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5;
+                    if norm {
+                        1.0 + 0.2 * u
+                    } else {
+                        0.6 * u
+                    }
+                })
+                .collect();
+            Some((shape, v))
+        };
+        let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg));
+        m.forward(toks, 0).unwrap_or_else(|e| panic!("{}", e.msg))
+    };
+    let (a, first, second): ([u32; 6], [u32; 6], [u32; 6]) = ([5, 9, 13, 17, 21, 25], [44, 9, 13, 17, 21, 25], [5, 50, 13, 17, 21, 25]);
+    let windowed = domyn_tiny(&[false, false], 2);
+    let rows = run(&windowed, &a);
+    assert_eq!((rows.len(), rows[5].len()), (6, 61));
+    assert!(rows.iter().flatten().all(|x| x.is_finite()) && rows[5].iter().any(|&x| x != rows[5][0]), "finite, and not one value");
+    assert_eq!(rows[5], run(&windowed, &first)[5], "four positions back is as far as two windowed layers see");
+    assert_ne!(rows[5], run(&windowed, &second)[5], "the second token is inside the two layers' reach");
+    let mixed = domyn_tiny(&[false, true], 2);
+    assert_ne!(run(&mixed, &a)[5], run(&mixed, &first)[5], "a layer over the whole context sees the first token");
+    // (a wider window is another answer: the window is read, not ignored)
+    assert_ne!(rows[5], run(&domyn_tiny(&[false, false], 4), &a)[5]);
+}

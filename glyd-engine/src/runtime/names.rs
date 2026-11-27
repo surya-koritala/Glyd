@@ -159,6 +159,26 @@ pub mod part {
     pub const MLP: Roles =
         &[("norm_in", "post_attention_layernorm.weight"), ("gate", "mlp.gate_proj.weight"), ("up", "mlp.up_proj.weight"), ("down", "mlp.down_proj.weight")];
 
+    // ---- Domyn Edge: Llama-style parts under its own names, a norm after each part as well as before it
+    /// Attention between its two norms; the q norm has no weight.
+    pub const DOMYN_ATTN: Roles = &[
+        ("norm_in", "pre_attention_norm.weight"),
+        ("q", "attention.q_proj.weight"),
+        ("k", "attention.k_proj.weight"),
+        ("v", "attention.v_proj.weight"),
+        ("o", "attention.o_proj.weight"),
+        ("k_norm", "attention.k_norm.weight"),
+        ("norm_out", "post_attention_norm.weight"),
+    ];
+    /// The gated MLP between its two norms.
+    pub const DOMYN_MLP: Roles = &[
+        ("norm_in", "pre_feedforward_norm.weight"),
+        ("gate", "feedforward.gate_proj.weight"),
+        ("up", "feedforward.up_proj.weight"),
+        ("down", "feedforward.down_proj.weight"),
+        ("norm_out", "post_feedforward_norm.weight"),
+    ];
+
     // ---- Qwen3.5 / 3.8
     /// Gated DeltaNet.
     pub const QWEN_LINEAR: Roles = &[
