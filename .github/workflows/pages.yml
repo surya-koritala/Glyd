@@ -3,7 +3,9 @@ name: Pages
 # The site: docs/index.html and the pages beside it at the root, and the user guide (docs/guide, mdBook) at /guide/.
 # The guide's models page is generated from glyd-engine/src/support.rs on every build, so it cannot drift.
 # Main is built to /guide/; each v* tag that has docs/guide is built to /guide/vX.Y.Z/ (that tag's own text and generator).
-# A pull request that touches the site is built and not deployed. A push to main, a release and a run by hand deploy.
+# A pull request that touches the site is built and not deployed. A push to main and a run by hand (on main) deploy. A release builds the
+# site and does not deploy it: its run's ref is the tag, which the github-pages environment's rule does not let deploy (every release's run
+# failed there); RELEASING.md runs this workflow by hand on main once the release is out, which puts the tag's guide at /guide/vX.Y.Z/.
 # Deploy runs only where the repository variable PAGES_FROM_ACTIONS is 'true'. Set it after the Pages source is switched to
 # "GitHub Actions" (Settings, Pages, Build and deployment). Until then every run builds the site, so a broken page fails here,
 # and the old Pages build keeps serving.
@@ -97,7 +99,7 @@ jobs:
           path: _site
 
   deploy:
-    if: github.event_name != 'pull_request' && vars.PAGES_FROM_ACTIONS == 'true'
+    if: github.event_name != 'pull_request' && github.event_name != 'release' && vars.PAGES_FROM_ACTIONS == 'true'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
