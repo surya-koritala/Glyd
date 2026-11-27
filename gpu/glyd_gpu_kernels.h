@@ -6508,12 +6508,13 @@ __device__ __forceinline__ void mma_gemm_big_body(Fmt f, int64_t O, int64_t K, i
                     }
                 };
                 int xr[MOE ? C::CHUNKS : 1];  // MOE: X's row of each of this thread's chunks (-1: past the pairs)
-                if constexpr (MOE)
+                if constexpr (MOE) {  // (in braces: nvcc with MSVC took the declaration after the loop into this `if`, and `copy_x` was not known below)
 #pragma unroll
                     for (int i = 0; i < C::CHUNKS; i++) {
                         int64_t m = tile * C::TM + ((pt + 32 * PW * i) >> 3);
                         xr[i] = m < M ? (int)(moe.gather ? __ldg(order + p0 + m) / moe.k : p0 + m) : -1;
                     }
+                }
                 auto copy_x = [&](int64_t j, int b) {  // X's tile of stage j into buffer b
                     uint32_t slot = a_base + (uint32_t)b * C::A_BYTES;
                     int64_t col = (st0 + j) * BIG_KK * 16;

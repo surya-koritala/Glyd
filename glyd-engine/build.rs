@@ -194,6 +194,11 @@ fn main() {
         }
         cmd.args(["-fatbin", "-O3", "-std=c++17", "--expt-relaxed-constexpr", "-o"]).arg(out);
         cmd.arg(format!("-DGLYD_TENSOR_MAP_ALIGN={}", map_align(nvcc)));
+        if cfg!(windows) {
+            // (MSVC says C++98 in `__cplusplus` whatever /std is, and cuda.h gives CUtensorMap its alignas only from C++11 on: without this a Windows compile
+            // aligns the map to 8 and kernels/fold.cu's assertion of the alignment said above fails)
+            cmd.args(["-Xcompiler", "/Zc:__cplusplus"]);
+        }
         if env::var_os("GLYD_ENGINE_LINEINFO").is_some() {
             cmd.arg("-lineinfo"); // (for a profiler: it makes the fatbin several times larger)
         }
