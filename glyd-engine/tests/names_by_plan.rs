@@ -193,7 +193,7 @@ fn run_qwen35_takes_the_size_fit_predicts_on_each_preset() {
         "dgx-spark",
         "strix-halo-128g",
     ];
-    let mut seen = std::collections::BTreeSet::new();
+    let mut can_run = std::collections::BTreeSet::new();
     for preset in presets {
         let o = glyd(&d, &["run", "qwen3.5", "--machine", preset]);
         let err = String::from_utf8_lossy(&o.stderr).into_owned();
@@ -214,19 +214,17 @@ fn run_qwen35_takes_the_size_fit_predicts_on_each_preset() {
             .map(|x| x.0)
             .or_else(|| plans.iter().filter_map(|(s, p)| p.map(|p| (*s, p.0))).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).map(|x| x.0));
         assert_eq!(Some(size.as_str()).filter(|s| !s.is_empty()), want, "{preset}: {plans:?}\n{err}");
-        match want {
-            Some(s) => {
-                seen.insert(s);
-            }
-            None => assert!(err.contains("no size fits"), "{preset}: {err}"),
+        if want.is_none() {
+            assert!(err.contains("no size fits"), "{preset}: {err}");
         }
+        can_run.insert(plans.iter().filter(|(_, p)| p.is_some()).map(|x| x.0).collect::<Vec<_>>());
         // (the mixture of experts is planned as the other sizes are: where a card of 80 GB holds it, it has a plan)
         if preset == "a100-80g" {
             assert!(plans.iter().any(|(s, p)| *s == "35b-a3b" && p.is_some()), "{preset}: {plans:?}");
         }
     }
-    // (machines of different memory take different sizes)
-    assert!(seen.len() >= 2, "{seen:?}");
+    // (machines of different memory can run different sizes. Not the size they take: the family's largest, the 35B-A3B, has 3B parameters active, and every preset reaches the floors with it)
+    assert!(can_run.len() >= 2, "{can_run:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
