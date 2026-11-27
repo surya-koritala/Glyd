@@ -44,6 +44,8 @@ bird: penguin, kestrel, swift, wren, hummingbird.
    PyPI's trusted publisher for `glyd-gpu` must name this repository and `release-gpu.yml` (environment `pypi`).
 4. Check the release page has the CLI tarballs, the wheels and the engine bundles (the Linux tarballs, and the Windows zip where its job succeeded), each tarball's `.sigstore.json`, `SHA256SUMS`, `SHA256SUMS-engine` and the two SBOMs
    (`*.spdx.json`), and verify one tarball as a user would (docs/verify-releases.md).
+   Then run the site's workflow by hand on main, so that the guide of this tag is published at `/guide/vX.Y.Z/`:
+   `gh workflow run pages.yml --ref main` (the release's own run builds the site and does not deploy it: a tag may not deploy to Pages).
 5. getglyd.com: the owner puts the tag's `scripts/install.sh` and `scripts/install.ps1` at the site's root (content type
    `text/plain`, `Cache-Control: no-cache`) and invalidates `/install.sh` and `/install.ps1` in its CDN; the site does not follow
    the repository, so `curl -LsSf https://getglyd.com/install.sh | sh` installs the last version uploaded. Then check both:
