@@ -318,11 +318,32 @@ impl<'a> Keys<'a> {
     }
     fn finish(&self) -> Result<()> {
         let used = self.used.borrow();
-        match self.m.keys().find(|k| !used.contains(*k) && !inert(k)) {
-            Some(k) => err(format!("{}: config key {k} is not understood by the description builder", self.what)),
-            None => Ok(()),
-        }
+        not_understood(&self.what, self.m.keys().filter(|k| !used.contains(*k) && !inert(k)))
     }
+}
+
+/// The refusal of a config whose keys `keys` no builder read: every one of them named, so that a new release is read once and not a key a run
+/// (`keys_named` reads them back out of the words).
+fn not_understood<'k>(what: &str, keys: impl Iterator<Item = &'k String>) -> Result<()> {
+    let keys: Vec<&str> = keys.map(String::as_str).collect();
+    match keys[..] {
+        [] => Ok(()),
+        [k] => err(format!("{what}: config key {k} is not understood by the description builder")),
+        _ => err(format!("{what}: config keys {} are not understood by the description builder", keys.join(", "))),
+    }
+}
+
+/// The keys a refusal of `not_understood` names (none where the words are another refusal's).
+pub fn keys_named(refusal: &str) -> Vec<String> {
+    let Some(rest) = refusal.split_once(": config key").map(|(_, r)| r.strip_prefix('s').unwrap_or(r)) else { return Vec::new() };
+    let Some((keys, _)) = rest.split_once(" not understood by the description builder") else { return Vec::new() };
+    let keys = keys.trim().trim_end_matches(" is").trim_end_matches(" are");
+    keys.split(", ").map(str::to_string).filter(|k| !k.is_empty()).collect()
+}
+
+/// Whether a config key says nothing of the model's shape (`inert`), for a reader of a config no builder takes.
+pub fn is_inert(k: &str) -> bool {
+    inert(k)
 }
 
 fn act(name: &str) -> Result<Act> {
@@ -1983,12 +2004,7 @@ const FP8_ROLES: &[&str] = &[
 
 /// The top-level keys of a multimodal config that the text model does not read.
 fn top_keys(top: &Map<String, Value>, what: &str, known: &[&str]) -> Result<()> {
-    for k in top.keys() {
-        if !known.contains(&k.as_str()) && !inert(k) {
-            return err(format!("{what}: config key {k} is not understood by the description builder"));
-        }
-    }
-    Ok(())
+    not_understood(what, top.keys().filter(|k| !known.contains(&k.as_str()) && !inert(k)))
 }
 
 /// Kimi-K3 (`kimi_k3`, a `kimi_linear` text model; Kimi-K3.1's `kimi_k31` is the same layout with the latent attention's sparse indexer, `dsa_config`): Kimi
