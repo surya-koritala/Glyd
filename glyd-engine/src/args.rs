@@ -82,6 +82,7 @@ const SWITCHES: &[&str] = &[
     "no-weights",
     "ref",
     "sidecar",
+    "ties",
 ];
 #[cfg(not(feature = "dev"))]
 const SWITCHES: &[&str] = &[

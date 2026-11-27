@@ -426,6 +426,7 @@ pub(crate) struct KernMla {
     scatter: crate::kt::scatter_rows,
     small: crate::kt::small_linear,
     small_f8: crate::kt::small_linear_f8s,
+    small_f32: crate::kt::small_linear_f32,
     absorb: crate::kt::mla_absorb,
     pool: crate::kt::idx_pool,
     score: crate::kt::idx_score,
@@ -457,6 +458,7 @@ impl KernMla {
             scatter: dev.typed()?,
             small: dev.typed()?,
             small_f8: dev.typed()?,
+            small_f32: dev.typed()?,
             absorb: dev.typed()?,
             pool: dev.typed()?,
             score: dev.typed()?,
@@ -499,10 +501,32 @@ impl KernMla {
         }
         launch!(self.small, grid, [256, 1, 1], s; x, xs as i32, w.0, y, ys as i32, rows as i32, cols as i32)
     }
+
+    /// `small_linear` into fp32 rows, its sums unrounded (kernels/mla.cu `small_linear_f32`, the same grid and order of sums): an indexer's head weights.
+    ///
+    /// # Safety
+    /// Live device buffers of those sizes, y of fp32 rows, on the engine's stream.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn small_linear_f32(
+        &self,
+        s: crate::ffi::Stream,
+        x: u64,
+        xs: usize,
+        w: (u64, u64),
+        y: u64,
+        ys: usize,
+        m: usize,
+        rows: usize,
+        cols: usize,
+    ) -> Result<()> {
+        let grid = [m as u32, (rows.max(1) as u32).div_ceil(8), 1];
+        launch!(self.small_f32, grid, [256, 1, 1], s; x, xs as i32, w.0, w.1, y, ys as i32, rows as i32, cols as i32)
+    }
 }
 
 /// The latent attentions' scratch, one for every layer, sized for the largest: the input products (`x`, a row as wide as the widest), the normed q latent, the
-/// queries, the values' output, the indexer's key or gate product, its queries and head weights (bf16, a chunk's rows); for the rows the attention takes at a time
+/// queries, the values' output, the indexer's key or gate product and its queries (bf16), its head weights (fp32, as the kind's reference holds them: a near
+/// tie of the scores goes their way), a chunk's rows; for the rows the attention takes at a time
 /// the absorbed queries and the latent outputs (fp32), the indexer's scores, the picked tokens and their counts, and a few rows' partial results.
 pub(crate) struct MlaRun {
     x: Buf,
@@ -545,7 +569,7 @@ impl MlaRun {
             ov: b(ch * most(&|a| a.heads * a.v) * 2)?,
             ix: b(ch * most(&|a| ix(a, &|x| x.dim)) * 2)?,
             iq: b(ch * most(&|a| ix(a, &|x| x.pick.heads * x.dim)) * 2)?,
-            wts: b(ch * most(&|a| ix(a, &|x| x.pick.heads)) * 2)?,
+            wts: b(ch * most(&|a| ix(a, &|x| x.pick.heads)) * 4)?,
             qa: b(sub * most(&|a| a.heads * (a.kv_rank + a.rope)) * 4)?,
             olat: b(sub * most(&|a| a.heads * a.kv_rank) * 4)?,
             scores: b(sub * most(&|a| a.pmax(ctx)) * 4)?,
@@ -557,12 +581,13 @@ impl MlaRun {
     }
 }
 
-/// Where an indexer's pick reads and writes for `rows` rows: their queries (heads dim a row), head weights (heads a row), the entries' keys (`keys`, a ring's through
+/// Where an indexer's pick reads and writes for `rows` rows: their queries (heads dim a row), head weights (heads a row, fp32 where `w32`, else bf16), the entries' keys (`keys`, a ring's through
 /// `tab`, rows `stride` apart; row r's table at `tab` + r `ts` entries where a step's rows that decode each read their own sequence's, `rows::RowTabs`; 0: one table),
 /// the rows' positions, the scores' room (`emax` a row), the picks (`sk` a row) and their counts.
 pub(crate) struct PickAt {
     pub q: u64,
     pub w: u64,
+    pub w32: bool,
     pub keys: u64,
     pub stride: usize,
     pub tab: u64,
@@ -579,7 +604,8 @@ pub(crate) struct PickAt {
 }
 
 /// One latent attention's indexer in a pass `Dyn::trace_picks` traced: its layer, each row's position and picks (the positions its query attends to, in order),
-/// and the indexer's inputs as the GPU held them (bf16): each row's queries [heads dim] and head weights' product [heads] (before heads^-0.5), and the key of
+/// and the indexer's inputs as the GPU held them: each row's queries [heads dim] (bf16) and head weights' product [heads] (before heads^-0.5; fp32 where the GPU
+/// holds it so, a latent attention's, else bf16), and the key of
 /// each complete entry the pass's last row sees, in order (a pool's as pooled; a token's own where an entry is a token); and where a row picks inside a
 /// candidate source's published blocks (`Cand::Inside`), the entries those blocks hold (`inside`, None: every entry it sees). What a check runs the reference's
 /// choice on (`runtime::reference::mla::choose_among`) where the engine's picks are not the reference's own.
@@ -639,7 +665,7 @@ impl Dyn {
         }
         let r = self.mla.as_ref().ok_or_else(|| Error("a latent attention in a model loaded without its buffers".into()))?;
         let (tmax, ih, id, kp) = (a.tmax(self.ctx), ix.pick.heads, ix.dim, ix.pick.ratio);
-        let (mut cnt, mut sel, mut q, mut w, mut at) = (vec![0i32; n], vec![0i32; n * tmax], vec![0u16; n * ih * id], vec![0u16; n * ih], vec![0i32; n]);
+        let (mut cnt, mut sel, mut q, mut w, mut at) = (vec![0i32; n], vec![0i32; n * tmax], vec![0u16; n * ih * id], vec![0f32; n * ih], vec![0i32; n]);
         self.dev.sync()?;
         // SAFETY: the n positions the operation read (a buffer of the pass's), into host memory of n of them; the stream is synchronized after.
         unsafe { crate::dev::copy_d2h_async(at.as_mut_ptr() as *mut _, pos, n * 4, self.dev.stream)? };
@@ -675,7 +701,7 @@ impl Dyn {
             inside: vec![None; picks.len()],
             picks,
             q: q.chunks(ih * id).map(f).collect(),
-            w: w.chunks(ih).map(f).collect(),
+            w: w.chunks(ih).map(<[f32]>::to_vec).collect(),
             keys: (0..entries).map(|j| f(&ring[(j * kp + kp - 1) * 2 * id..][..id])).collect(),
         };
         if let Some(t) = self.pick_trace.borrow_mut().as_mut() {
@@ -697,8 +723,8 @@ impl Dyn {
                 let (pstep, poff) = if matches!(x.keys, IdxKeys::Pools(_)) { (1, 0) } else { (x.ratio as i32, x.ratio as i32 - 1) };
                 let wsr = if x.weighted { x.heads as i32 } else { 0 };
                 launch!(k.score, [(at.emax as u32).div_ceil(8), n, 1], [256, 1, 1], smem smem, s;
-                    at.q, (x.heads * dim) as i32, at.w, wsr, at.keys, at.stride as i32, pstep, poff, at.tab, at.ts as i64, at.pos, at.scores, at.emax as i32, x.heads as i32,
-                    dim as i32, x.ratio as i32, x.top_k as i32, scale, x.wscale)?;
+                    at.q, (x.heads * dim) as i32, at.w, wsr, at.w32 as i32, at.keys, at.stride as i32, pstep, poff, at.tab, at.ts as i64, at.pos, at.scores, at.emax as i32,
+                    x.heads as i32, dim as i32, x.ratio as i32, x.top_k as i32, scale, x.wscale)?;
             }
             IdxScore::Release => {
                 // (the queries and weights, then idx_score_bf16's warps' terms: at most 64 heads)
@@ -853,7 +879,7 @@ impl Dyn {
                     launch!(k.scatter, [m as u32, 1, 1], [256, 1, 1], s; r.ix.ptr + (r0 * id * 2) as u64, id as i32, ring + (id * 2) as u64, (2 * id) as i32, pos + (r0 * 4) as u64, tab, ts as i64, id as i32)?;
                 }
             }
-            k.small_linear(s, h, hid, wt(ix.weights), r.wts.ptr, ih, n, ih, hid)?;
+            k.small_linear_f32(s, h, hid, wt(ix.weights), r.wts.ptr, ih, n, ih, hid)?;
             if ix.pooled() {
                 for (r0, m, ring, tab, ts) in keyed {
                     // (the rows that decode (their tables `ts` apart): a call of one row each, grid y; a sequence's rows: one call)
@@ -881,7 +907,8 @@ impl Dyn {
                     let (ih, id) = (ix.pick.heads, ix.dim);
                     let at = PickAt {
                         q: r.iq.ptr + (r0 * ih * id * 2) as u64,
-                        w: r.wts.ptr + (r0 * ih * 2) as u64,
+                        w: r.wts.ptr + (r0 * ih * 4) as u64,
+                        w32: true,
                         keys,
                         stride: 2 * id,
                         tab: itab,

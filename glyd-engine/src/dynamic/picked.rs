@@ -97,6 +97,7 @@ impl Dyn {
         let at = super::mla::PickAt {
             q: p.slot(Slot::Iq) + self.rows_before(x.heads * x.dim()),
             w: if x.weighted { p.slot(Slot::Iw) + self.rows_before(x.heads) } else { r.ones.ptr },
+            w32: false,
             keys: self.cache(pools).0,
             stride: x.dim(),
             tab: self.table(pools),
@@ -125,6 +126,7 @@ impl Dyn {
         let at = super::mla::PickAt {
             q: p.slot(Slot::Iq),
             w: if x.weighted { p.slot(Slot::Iw) } else { r.ones.ptr },
+            w32: false,
             keys,
             stride: x.dim(),
             tab,

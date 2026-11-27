@@ -343,6 +343,63 @@ fn indexer_apart(ix: &Indexer, picked: Vec<Picked>, rows: Vec<crate::logits::Pic
     bad
 }
 
+/// A latent attention's head weights, held where the reference of the kind holds them: within this of the largest weight of the reference's fp32 product
+/// (the order of an fp32 sum moves a weight by some 2^-20 of it; one rounded to bf16 by up to 2^-9).
+const WEIGHTS: f32 = 1e-4;
+
+/// Picks of a latent attention apart from the reference's choice on the same queries, keys and fp32 head weights by less than this (`Picked::margin_between`)
+/// are the order of fp32 sums; bf16 head weights move a choice by up to some 2^-9 of a score, which `logitsmodel glm-dsa DIR --ties` makes the decisive part.
+const ORDER: f32 = 1e-4;
+
+/// A latent attention's indexer where its head weights decide (GLM-5.3's `weights_proj`, which transformers keeps in float32 and the reference of the kind
+/// computes in fp32): each row's head weights' product as the engine held it against the reference's product of the same input row (`h`, the GPU's own, `d`
+/// a row), and its picks against the reference's choice (`mla::choose_among`) on the engine's own queries and keys with the reference's fp32 weights; printed
+/// with the rows where the weights rounded to bf16 would pick another set (near ties the fp32 weights decide). Returned: a weight past `WEIGHTS`, and the
+/// rows whose picks are apart by `ORDER` or more (or by a choice no tie explains), each named.
+fn head_weights(
+    ix: &Indexer,
+    p: &crate::runtime::reference::Params,
+    (h, d): (&[f32], usize),
+    rows: &[crate::logits::PickRow],
+    at: usize,
+    (l, b): (usize, usize),
+) -> Result<Vec<String>> {
+    use crate::runtime::reference::mla::choose_among;
+    let blk = ix.block.max(1);
+    let (mut worst, mut alike, mut flips, mut bad) = (0f32, 0usize, 0usize, Vec::new());
+    for (t, r) in rows.iter().enumerate() {
+        let w = p.prod("indexer_weights", &h[t * d..][..d])?;
+        let top = w.iter().fold(0f32, |m, x| m.max(x.abs())).max(1e-30);
+        if w.len() != r.w.len() {
+            return Err(Error(format!("L{l} B{b}: {} head weights traced, the reference has {}", r.w.len(), w.len())));
+        }
+        worst = worst.max(w.iter().zip(&r.w).fold(0f32, |m, (a, e)| m.max((a - e).abs())) / top);
+        let (keys, seen) = (&r.keys[..((r.pos + 1) / blk).min(r.keys.len())], (0..=r.pos).collect::<Vec<usize>>());
+        let want = choose_among(ix, &r.q, &w, keys, &seen, r.inside.as_deref());
+        let rounded: Vec<f32> = w.iter().map(|&x| bf16(x)).collect();
+        flips += (choose_among(ix, &r.q, &rounded, keys, &seen, r.inside.as_deref()).own != want.own) as usize;
+        if r.picks == want.own {
+            alike += 1;
+            continue;
+        }
+        let margin = want.margin_between(&r.picks);
+        let line = format!("position {}: the engine's picks {margin:.1e} from the reference's choice on its queries and keys with fp32 head weights", at + t);
+        println!("     L{l} B{b} {line}");
+        if !(margin < ORDER) {
+            bad.push(line);
+        }
+    }
+    println!(
+        "     L{l} B{b} indexer: head weights within {worst:.1e} of the reference's fp32 product; picks the reference's on {alike} of {} rows; bf16 head \
+         weights would pick another set on {flips}",
+        rows.len()
+    );
+    if !(worst < WEIGHTS) {
+        bad.push(format!("head weights {worst:.1e} from the reference's fp32 product"));
+    }
+    Ok(bad)
+}
+
 /// What one pass of a layer compares: the comparisons' (where, kind, class, value, the rows near a tie, the indexer's choices apart).
 type Got = Vec<(String, String, Class, f32, Vec<String>, Vec<String>)>;
 
@@ -713,7 +770,13 @@ fn pass(
                 let (take, picked) = picks_of(&mut m.layers[b], 0)?;
                 let picked = picked.take().unwrap_or_default();
                 take.clear();
-                indexer_apart(ix, picked, rows_picked, at, l, b)
+                // (a latent attention's: its head weights and its picks where they decide, `head_weights`)
+                let mut held = match &m.layers[b].block.body {
+                    Body::Mixer(Mixer::Mla(_)) => head_weights(ix, &m.layers[b].p, (&h, d), &rows_picked, at, (l, b))?,
+                    _ => Vec::new(),
+                };
+                held.extend(indexer_apart(ix, picked, rows_picked, at, l, b));
+                held
             }
             None => Vec::new(),
         };

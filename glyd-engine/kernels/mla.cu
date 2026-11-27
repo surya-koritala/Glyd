@@ -247,11 +247,12 @@ extern "C" __global__ void __launch_bounds__(128) idx_pool(const bf16* ik, int i
 }
 
 // scores [n, Pmax] fp32: for each row i (a query at pos[i]) and each complete pool p < P_i = (pos[i] + 1) / kp: sum over the indexer's heads h of w_h relu(scale iq[i][h] . pk[p]), w_h = wscale wts[i][h] (iq rows iqs
-// apart, IH heads of D channels; pool p's key at pk's row of position p pstep + poff, pks apart, through tab: as idx_pool wrote it). Rows with P_i <= ksel take every pool and need no scores. A block of GM_IDX_W pools
-// (a warp each) of a row, grid (ceil(Pmax / GM_IDX_W), n), 256 threads; the lanes are heads (IH > 32: a lane takes several), so a lane's sum is over its head's D channels and a warp_sum adds the heads. Dynamic shared
-// memory (IH (D + 1) + IH + GM_IDX_W D) floats. Row i's keys through its table (ml_row_tab).
-extern "C" __global__ void __launch_bounds__(256) idx_score(const bf16* iq, int iqs, const bf16* wts, int wsr, const bf16* pk, int pks, int pstep, int poff, const int* tab, long long ts, const int* pos, float* scores,
-                                                            int Pmax, int IH, int D, int kp, int ksel, float scale, float wscale) {
+// apart, IH heads of D channels; pool p's key at pk's row of position p pstep + poff, pks apart, through tab: as idx_pool wrote it). The head weights wts fp32 where wf32 (a latent attention's, small_linear_f32's
+// product), else bf16 (a slot's, or the unweighted indexer's ones). Rows with P_i <= ksel take every pool and need no scores. A block of GM_IDX_W pools (a warp each) of a row, grid (ceil(Pmax / GM_IDX_W), n), 256
+// threads; the lanes are heads (IH > 32: a lane takes several), so a lane's sum is over its head's D channels and a warp_sum adds the heads. Dynamic shared memory (IH (D + 1) + IH + GM_IDX_W D) floats. Row i's keys
+// through its table (ml_row_tab).
+extern "C" __global__ void __launch_bounds__(256) idx_score(const bf16* iq, int iqs, const void* wts, int wsr, int wf32, const bf16* pk, int pks, int pstep, int poff, const int* tab, long long ts, const int* pos,
+                                                            float* scores, int Pmax, int IH, int D, int kp, int ksel, float scale, float wscale) {
     GM_DYN_FLOATS(smi)
     const int i = blockIdx.y, tid = threadIdx.x, lane = tid & 31, w = tid >> 5;
     tab = ml_row_tab(tab, ts, i);
@@ -261,7 +262,10 @@ extern "C" __global__ void __launch_bounds__(256) idx_score(const bf16* iq, int 
     float* wh = qs + IH * (D + 1);        // [IH]
     float* pkw = wh + IH;                 // [GM_IDX_W][D]
     for (int e = tid; e < IH * D; e += blockDim.x) qs[(e / D) * (D + 1) + e % D] = b2f(iq[(size_t)i * iqs + e]);
-    for (int h = tid; h < IH; h += blockDim.x) wh[h] = b2f(wts[(size_t)i * wsr + h]) * wscale;
+    for (int h = tid; h < IH; h += blockDim.x) {
+        const size_t at = (size_t)i * wsr + h;
+        wh[h] = (wf32 ? static_cast<const float*>(wts)[at] : b2f(static_cast<const bf16*>(wts)[at])) * wscale;
+    }
     const int p = blockIdx.x * GM_IDX_W + w;
     if (p < P) {
         const bf16* key = pk + ml_place(tab, p * pstep + poff) * pks;
@@ -622,6 +626,41 @@ extern "C" __global__ void __launch_bounds__(256) small_linear_f8s(const bf16* x
         }
         s = warp_sum(s);
         if (lane == 0) y[(size_t)blockIdx.x * ys + o] = f2b(s);
+    }
+}
+
+// y [m, N] fp32 (rows ys apart) = x [m, K] (rows xs apart) W^T, fp32 sums kept as they are, unrounded: a latent attention's indexer's head weights, which the
+// reference of the kind holds in fp32 (and transformers' GlmMoeDsaIndexer, whose weights_proj it keeps in float32): a near tie of the pools' scores goes the
+// way the fp32 weights take it. W bf16; where wsc is not null its E4M3 values (exact in bf16) times their fp32 scales of 128 x 128 blocks, each once
+// (small_linear_f8s's). small_linear's grid and order of sums (a warp an output, 8 a block; grid m x ceil(N / 8)), 256 threads.
+extern "C" __global__ void __launch_bounds__(256) small_linear_f32(const bf16* x, int xs, const bf16* W, const float* wsc, float* y, int ys, int N, int K) {
+    const bf16* xr = x + (size_t)blockIdx.x * xs;
+    const int w = threadIdx.x >> 5, lane = threadIdx.x & 31, nw = blockDim.x >> 5, gc = (K + 127) >> 7;
+    const bool wide = (K & 7) == 0 && ((reinterpret_cast<uintptr_t>(xr) | reinterpret_cast<uintptr_t>(W)) & 15) == 0;
+    for (int o = blockIdx.y * nw + w; o < N; o += nw * gridDim.y) {
+        const bf16* wr = W + (size_t)o * K;
+        const float* rsc = wsc ? wsc + (size_t)(o >> 7) * gc : nullptr;
+        float s = 0.f;
+        if (wide) {
+            const uint4* xv = reinterpret_cast<const uint4*>(xr);
+            const uint4* wv = reinterpret_cast<const uint4*>(wr);
+            for (int k = lane; k < (K >> 3); k += 32) {
+                const uint4 a = xv[k], b = wv[k];
+                const float c = rsc ? rsc[k >> 4] : 1.f;  // (columns 8k .. 8k + 7: one block's; times 1 is exact)
+                const __nv_bfloat162* a2 = reinterpret_cast<const __nv_bfloat162*>(&a);
+                const __nv_bfloat162* b2 = reinterpret_cast<const __nv_bfloat162*>(&b);
+#pragma unroll
+                for (int j = 0; j < 4; j++) {
+                    const float2 fa = __bfloat1622float2(a2[j]), fb = __bfloat1622float2(b2[j]);
+                    s = fmaf(fa.x, __fmul_rn(fb.x, c), s);
+                    s = fmaf(fa.y, __fmul_rn(fb.y, c), s);
+                }
+            }
+        } else {
+            for (int k = lane; k < K; k += 32) s = fmaf(b2f(xr[k]), __fmul_rn(b2f(wr[k]), rsc ? rsc[k >> 7] : 1.f), s);
+        }
+        s = warp_sum(s);
+        if (lane == 0) y[(size_t)blockIdx.x * ys + o] = s;
     }
 }
 

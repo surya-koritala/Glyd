@@ -1635,10 +1635,28 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     } else {
         types
     };
-    let bound = match lac.and_then(|o| o.get("gate_lower_bound")) {
-        Some(v) => v.as_f64(),
-        None => k.opt_f64("linear_lower_bound")?,
+    // (the forget gate's lower bound by transformers' rule, `glm::gate_bound`: a key absent and a key null are told apart; none: the softplus decay)
+    let given = |v: Option<&Value>, what: &str| -> Result<crate::runtime::config::Given<f64>> {
+        use crate::runtime::config::Given;
+        match v {
+            None => Ok(Given::Missing),
+            Some(Value::Null) => Ok(Given::Null),
+            Some(x) => x.as_f64().map(Given::Some).ok_or_else(|| Error(format!("{mt}: {what} is not a number"))),
+        }
     };
+    k.raw("linear_lower_bound");
+    let flat = given(k.m.get("linear_lower_bound"), "linear_lower_bound")?;
+    let block = match lac {
+        Some(o) => {
+            let safe = match o.get("safe_gate") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.as_bool().ok_or_else(|| Error(format!("{mt}: linear_attn_config.safe_gate is not true or false")))?),
+            };
+            Some((given(o.get("gate_lower_bound"), "linear_attn_config.gate_lower_bound")?, safe))
+        }
+        None => None,
+    };
+    let bound = crate::glm::gate_bound(&flat, block.as_ref().map(|(b, s)| (b, *s)));
     let lin = Linear {
         kind: LinearKind::KimiDelta,
         k_heads: lin_num("num_heads", "linear_num_heads")?.unwrap_or(0),
@@ -1689,10 +1707,26 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     }
     let mla_eps = if flash { eps } else { 1e-6 };
     let (ih, idim, itop) = (k.opt_usize("index_n_heads")?, k.opt_usize("index_head_dim")?, k.opt_usize("index_topk")?);
-    let pool = k.opt_usize("index_kpool")?.unwrap_or(1);
-    // (the release's flags that its model's code has no other way of: transformers' GlmMoeDsaIndexer and attention turn interleaved pairs whatever they say)
-    for x in ["index_kpool_always_select_tail", "index_kpool_compress", "index_share_for_mtp_iteration", "indexer_rope_interleave", "rope_interleave"] {
-        k.bool(x, true)?;
+    // (GLM-5.3-Flash's pools: transformers' Glm5NextTextConfig has 16 where the key is absent; GLM-5.3's indexer keys a token each)
+    let pool = k.opt_usize("index_kpool")?.unwrap_or(if flash { 16 } else { 1 });
+    // (the releases' flags of the one form this builder describes: the rotary of the attention and of the indexer in interleaved pairs (2i, 2i + 1), as
+    // transformers' GlmMoeDsaAttention and GlmMoeDsaIndexer turn them whatever the flags say; the pools' keys the gated softmax of their tokens' keys, and
+    // the open pool's tokens attended to beside the picked pools (Glm5NextTextIndexer). A flag of another form is refused where it changes what is computed:
+    // no rotary, no rotated indexer channels, keys a token each. index_share_for_mtp_iteration is the draft head's: drafting only, either way)
+    k.bool("index_share_for_mtp_iteration", true)?;
+    for (x, applies, form) in [
+        ("rope_interleave", rope.is_some(), "a rotary in halves (i, i + d/2): the latent attention turns interleaved pairs (2i, 2i + 1)"),
+        (
+            "indexer_rope_interleave",
+            rope.is_some() && idim.is_some(),
+            "an indexer's rotary in halves (i, i + d/2): the indexer turns interleaved pairs (2i, 2i + 1)",
+        ),
+        ("index_kpool_compress", pool > 1, "pools whose keys are not the gated softmax of their tokens' keys"),
+        ("index_kpool_always_select_tail", pool > 1, "picks without the open pool's tokens"),
+    ] {
+        if !k.bool(x, true)? && applies {
+            return err(format!("{mt}: {x} = false ({form}) is not supported: the engine runs {x} = true"));
+        }
     }
     let itypes = indexer_types(&k, layers, mt)?;
     // the feed-forward
@@ -1847,10 +1881,11 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         shape_roles(&mut shapes, &r, &[vec![("norm_in", vec![d])], hc_shapes.to_vec()].concat());
         blocks.push(Block { norm_in: n, body: Body::Mixer(mixer), norm_out: None, residual: res });
         roles.push(r);
+        // (with neither key, transformers' first three layers dense: GlmMoeDsaConfig's first_k_dense_replace of 3, Glm5NextTextConfig's three)
         let sparse = match (&mlp_types, first_dense) {
             (Some(t), _) => t.get(l).copied().unwrap_or(true),
             (None, Some(f)) => l >= f,
-            (None, None) => true,
+            (None, None) => l >= 3,
         };
         let mut r = names::roles(part::NORM_POST, &p, 0, all);
         let body = if sparse {
@@ -2404,8 +2439,11 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     let (ih, idim, itop) = (k.usize("index_n_heads")?, k.usize("index_head_dim")?, k.usize("index_topk")?);
     let (ne, top_k) = (k.usize("n_routed_experts")?, k.usize("num_experts_per_tok")?);
     k.usize("moe_intermediate_size")?;
-    let limit = k.opt_f64("swiglu_limit")?.filter(|&l| l > 0.0).map(|l| l as f32);
-    let scale = k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32;
+    // (keys a config leaves out take transformers' DeepseekV4Config defaults: the SwiGLU clamp at 10, the routed weights times 1.5, the first three layers
+    // routed by the token (below); a limit of 0 or less clamps nothing)
+    let limit = Some(k.opt_f64("swiglu_limit")?.unwrap_or(10.0)).filter(|&l| l > 0.0).map(|l| l as f32);
+    let scale = k.opt_f64("routed_scaling_factor")?.unwrap_or(1.5) as f32;
+    let hash_layers = k.opt_usize("num_hash_layers")?.unwrap_or(3);
     let streams = StreamsP {
         lagged: false,
         streams: k.usize("hc_mult")?,
@@ -2423,7 +2461,6 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
             return err(format!("{mt}: {} compress_ratios for {layers} layers", r.len()));
         }
         let r = r[..layers].to_vec();
-        let nh = k.opt_usize("num_hash_layers")?.unwrap_or(0);
         let mut main = Rope::plain(k.opt_f64("rope_theta")?.unwrap_or(10_000.0), rd);
         main.style = RopeStyle::Interleaved;
         let mut comp_m = Map::new();
@@ -2437,7 +2474,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         }
         let mut comp = rope(&comp_m, rd, max_pos, &format!("{mt} rope_scaling"))?;
         comp.style = RopeStyle::Interleaved;
-        (r.clone(), r.iter().map(|&x| x == 4).collect(), (0..layers).map(|l| l < nh).collect(), main, comp)
+        (r.clone(), r.iter().map(|&x| x == 4).collect(), (0..layers).map(|l| l < hash_layers).collect(), main, comp)
     } else {
         let rates = match k.raw("compress_rates") {
             Some(Value::Object(o)) => o.clone(),
@@ -2459,8 +2496,9 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
                 o => return err(format!("{mt}: layer type {o}")),
             });
         }
-        let mlp: Vec<String> =
-            k.raw("mlp_layer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect()).unwrap_or_default();
+        // (no mlp_layer_types: transformers' schedule, the first num_hash_layers (3) routed by the token)
+        let mlp: Option<Vec<String>> =
+            k.raw("mlp_layer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect());
         let rp = match k.raw("rope_parameters") {
             Some(Value::Object(o)) => o.clone(),
             _ => return err(format!("{mt}: no rope_parameters")),
@@ -2478,11 +2516,18 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         (
             r,
             types.iter().take(layers).map(|t| t == "compressed_sparse_attention").collect(),
-            (0..layers).map(|l| mlp.get(l).is_some_and(|m| m == "hash_moe")).collect(),
+            (0..layers).map(|l| mlp.as_ref().map_or(l < hash_layers, |m| m.get(l).is_some_and(|m| m == "hash_moe"))).collect(),
             one("main")?,
             one("compress")?,
         )
     };
+    // (a ratio of 1 is no DeepSeek-V4 layer's: its layers compress by 4 or 128, or not at all (0, the window alone); vLLM and TensorRT-LLM read a 1 as the
+    // window alone, transformers maps 0, 4 and 128 only, and this builder's ratio of 1 is DeepSeek-V4.1's compressor of a token: refused, never computed)
+    if let Some(l) = ratios.iter().position(|&r| r == 1) {
+        return err(format!(
+            "{mt}: layer {l} compresses by 1, which no DeepSeek-V4 layer does (a ratio of 4 or 128, or 0 for the window alone): not supported"
+        ));
+    }
     let cv = if released { &names::DEEPSEEK } else { &names::DEEPSEEK_HF };
     // (the release's quantized matrices, each with its `.scale`: the FP8 products of the attention and the shared experts, the FP4 routed experts)
     let mut scales = std::collections::BTreeMap::new();
@@ -2743,11 +2788,28 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         Some(_) => Some((k.usize("candidate_block_size")?, k.usize("candidate_topk_blocks")?)),
         None => None,
     };
-    // (each compressing layer's sources: the most recent at or below it, which compresses by the same ratio)
-    let source = |ids: &[usize], l: usize| ids.iter().copied().filter(|&s| s <= l).max().filter(|&s| ratios[s] == ratios[l]);
+    // (each compressing layer's sources: the most recent at or below it, which compresses by the same ratio. The layouts described are the release's: a
+    // source of another ratio is refused (vLLM takes the most recent of any ratio), and so is an index source that keeps no entries of its own whose kv
+    // source is no index source: its indexer keys are its entries' source's, which keeps none (exo takes them from the most recent layer that is both))
+    let latest = |ids: &[usize], l: usize| ids.iter().copied().filter(|&s| s <= l).max();
+    let source = |ids: &[usize], l: usize| latest(ids, l).filter(|&s| ratios[s] == ratios[l]);
     for l in (0..layers).filter(|&l| ratios[l] > 0) {
-        if source(&kv_src, l).is_none() || source(&idx_src, l).is_none() {
-            return err(format!("{mt}: layer {l} compresses by {}, and the most recent kv or index source at or below it does not", ratios[l]));
+        for (key, ids) in [("kv_source_layer_ids", &kv_src), ("index_source_layer_ids", &idx_src)] {
+            match latest(ids, l) {
+                None => return err(format!("{mt}: layer {l} compresses by {}, and {key} {ids:?} has no layer at or below it", ratios[l])),
+                Some(s) if ratios[s] != ratios[l] => {
+                    return err(format!(
+                        "{mt}: layer {l} compresses by {}, and its source in {key}, layer {s} (the most recent at or below it), by {}: a source of another ratio is not supported",
+                        ratios[l], ratios[s]
+                    ))
+                }
+                _ => {}
+            }
+        }
+        if let Some(s) = latest(&kv_src, l).filter(|s| idx_src.contains(&l) && !kv_src.contains(&l) && !idx_src.contains(s)) {
+            return err(format!(
+                "{mt}: index source {l} takes its entries from kv source {s}, which is not in index_source_layer_ids and so keeps no indexer keys for them: not supported"
+            ));
         }
         // (a candidate block is a span of positions of the candidate source's ratio: an index source of another ratio is not described)
         if let Some(c) = cand.filter(|&c| c < l && idx_src.contains(&l) && ratios[c] != ratios[l]) {
