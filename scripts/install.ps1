@@ -9,7 +9,7 @@
 #   $env:GLYD_HOME         the folder to install into (default %LOCALAPPDATA%\Glyd)
 #   $env:GLYD_NO_PATH      1: leave the PATH alone
 $ErrorActionPreference = 'Stop'
-$GlydVersion = if ($env:GLYD_VERSION) { $env:GLYD_VERSION } else { '0.34.2' }
+$GlydVersion = if ($env:GLYD_VERSION) { $env:GLYD_VERSION } else { '0.35.0' }
 $Repo = 'https://github.com/surya-koritala/Glyd'
 
 function Say($m) { Write-Host "==> $m" }

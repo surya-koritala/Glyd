@@ -1,1 +1,0 @@
-- On Windows a model in a local directory is named by the directory's name in the engine's words (a refusal names `glm`, not the whole path), as on Linux and macOS; `bench --report` names its files with `/` on every system.

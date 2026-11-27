@@ -1,1 +1,0 @@
-- DeepSeek-V4, GLM-5.3-Flash, Kimi-K3 and Muse Spark run the description executor's operations of their layer kinds for the residual streams (mHC), the depth mix, the gated residual, the RMS norms, the gated MLP activation and the mixture of experts: one operation a kind, the families differing only in the kinds' parameters, each keeping its own rounding points. Part of #135.

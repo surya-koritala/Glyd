@@ -1,6 +1,6 @@
 [package]
 name = "glyd-engine"
-version = "0.34.2"
+version = "0.35.0"
 edition = "2021"
 rust-version = "1.89"
 description = "Glyd's own inference engine: Qwen3 on CUDA from Glyd-packed weights, every matrix compressed, the lossless KV cache, a chat and an OpenAI-compatible API"
