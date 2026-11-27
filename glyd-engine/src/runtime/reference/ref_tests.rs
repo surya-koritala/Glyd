@@ -363,7 +363,9 @@ fn muse_moe_against_muse_ref() {
     assert_close(&got, &want, BF16_TOL, "Muse latent MoE against muse_ref");
 }
 
-/// Kimi-K3's depth mix against `kimi_ref`'s, over one to five sources.
+/// Kimi-K3's depth mix against `kimi_ref`'s, over one to five sources, at Kimi-K3's eps and another; the scores' norm takes the model's eps (vLLM's score
+/// norm's `variance_epsilon`, the config's rms_norm_eps), not a constant: on sources of a small RMS, an eps of 1e-2 gives another mix than 1e-5 in both, each
+/// the softmax over the sources of u . v / sqrt(mean v^2 + eps) weighing their sum.
 #[test]
 fn depth_mix_against_kimi_ref() {
     use crate::kimi_ref::RefKimi;
@@ -373,8 +375,29 @@ fn depth_mix_against_kimi_ref() {
     let src: Vec<Vec<f32>> = (0..5).map(|i| bfv(fill(&format!("src{i}"), d, -2.0, 2.0))).collect();
     for n in 1..=5 {
         let s: Vec<&[f32]> = src[..n].iter().map(|v| &v[..]).collect();
-        assert_close(&super::depth_mix(&s, &wn, &wp), &RefKimi::mix_of(&s, &wn, &wp), BF16_TOL, &format!("depth mix of {n}"));
+        for eps in [1e-5, 1e-2] {
+            assert_close(&super::depth_mix(&s, &wn, &wp, eps), &RefKimi::mix_of(&s, &wn, &wp, eps), BF16_TOL, &format!("depth mix of {n} at {eps}"));
+        }
     }
+    let small: Vec<Vec<f32>> = src.iter().enumerate().map(|(i, v)| bfv(v.iter().map(|x| x * 0.02 * (i + 1) as f32).collect())).collect();
+    let s: Vec<&[f32]> = small.iter().map(|v| &v[..]).collect();
+    let by_hand = |eps: f64| -> Vec<f32> {
+        let sc: Vec<f64> = s
+            .iter()
+            .map(|v| {
+                let ms = v.iter().map(|&x| x as f64 * x as f64).sum::<f64>() / d as f64;
+                (0..d).map(|i| wn[i] as f64 * wp[i] as f64 * v[i] as f64).sum::<f64>() / (ms + eps).sqrt()
+            })
+            .collect();
+        let m = sc.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let z: f64 = sc.iter().map(|x| (x - m).exp()).sum();
+        (0..d).map(|i| s.iter().zip(&sc).map(|(v, x)| (x - m).exp() / z * v[i] as f64).sum::<f64>() as f32).collect()
+    };
+    let (lo, hi) = (super::depth_mix(&s, &wn, &wp, 1e-5), super::depth_mix(&s, &wn, &wp, 1e-2));
+    assert_close(&lo, &by_hand(1e-5), 1e-5, "depth mix at 1e-5 by hand");
+    assert_close(&hi, &by_hand(1e-2), 1e-5, "depth mix at 1e-2 by hand");
+    assert_close(&RefKimi::mix_of(&s, &wn, &wp, 1e-2), &by_hand(1e-2), BF16_TOL, "kimi_ref's depth mix at 1e-2 by hand");
+    assert!(super::testing::rel(&lo, &hi) > 1e-2, "the eps moves the mix of small sources: {:.3e}", super::testing::rel(&lo, &hi));
 }
 
 /// A checkpoint as the reference model's tensor source (`model::checkpoint_tensor`).

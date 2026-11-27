@@ -518,7 +518,7 @@ pub fn describe_config_in(c: &ModelConfig, have: Option<&BTreeSet<String>>) -> R
         return kimi(c);
     }
     match c.model_type.as_str() {
-        "muse_spark" => return muse(tc, prefix),
+        "muse_spark" => return muse(c),
         "deepseek_v4" => return deepseek_v4(tc),
         "deepseek_v41" => return deepseek_v41(c),
         "nemotron_h" => return nemotron_h(tc),
@@ -2232,17 +2232,25 @@ fn kimi_mxfp4(q: &Value) -> Result<()> {
 }
 
 /// Muse Spark (`muse_spark`): GQA with weightless q/k norms, rope and a window on the sliding layers only, a gated output with a per-head
-/// norm; a normed embedding; sandwich norms with Muse's gated residual; the latent MoE in every layer; a soft-capped head.
-fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
-    let mt = "muse_spark_text";
+/// norm; a normed embedding; sandwich norms with Muse's gated residual; the latent MoE in every layer; a soft-capped head. Its numbers read as
+/// its family's reader reads them (`muse::number`: transformers' defaults where absent); a quantized checkpoint refused (`muse::quantized`); its
+/// audio and vision towers unread (`names::MUSE`).
+fn muse(c: &ModelConfig) -> Result<Described> {
+    let (tc, prefix, mt) = (&c.text, c.prefix(), "muse_spark_text");
+    crate::muse::quantized(&c.top, tc, mt)?;
     let k = Keys::new(tc, mt);
-    let (d, layers, vocab, eps, tied) = common(&k, None)?;
-    let pe = k.f64("post_norm_eps")? as f32;
+    let num = |key: &str| {
+        k.raw(key);
+        crate::muse::number(tc, key, mt)
+    };
+    let (d, layers, vocab, _, tied) = common(&k, None)?;
+    let (eps, pe) = (num("rms_norm_eps")?, num("post_norm_eps")?);
     k.expect("hidden_act", &Value::from("silu"))?;
     k.expect("attention_bias", &Value::Bool(false))?;
     k.expect("num_shared_experts", &Value::from(0))?;
+    // (read for their types: the reader takes the longest context; the dense MLP's width, where every MLP is sparse, is none's)
     k.opt_usize("max_position_embeddings")?;
-    k.usize("intermediate_size")?;
+    k.opt_usize("intermediate_size")?;
     let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.usize("head_dim")?);
     let window = k.usize("sliding_window")?;
     let strs = |x: &str| -> Result<Vec<String>> {
@@ -2264,10 +2272,8 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
             return err(format!("{mt}: rope scaling is not supported"));
         }
     }
-    let qk = k.f64("qk_scale_factor")? as f32;
-    let out_mult = k.f64("output_multiplier")? as f32;
-    let softcap = k.opt_f64("final_logit_softcapping")?.map(|v| v as f32);
-    let temperature = k.f64("residual_gate_temperature")? as f32;
+    let (qk, out_mult, softcap, temperature) =
+        (num("qk_scale_factor")?, num("output_multiplier")?, num("final_logit_softcapping")?, num("residual_gate_temperature")?);
     let (ne, lat) = (k.usize("num_local_experts")?, k.usize("moe_hidden_size")?);
     k.usize("moe_intermediate_size")?;
     let moe = Moe {
@@ -2278,7 +2284,7 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
             groups: None,
             top_k: k.usize("num_experts_per_tok")?,
             renorm: true,
-            scale: k.f64("routed_scaling_factor")? as f32,
+            scale: num("routed_scaling_factor")?,
             hash: false,
         },
         experts: ne,
@@ -2320,7 +2326,7 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
             rounding: AttnRounding::Sdpa,
             kv_from: None,
         };
-        let p = names::HF.layer(prefix, l);
+        let p = names::MUSE.layer(prefix, l);
         blocks.push(Block {
             norm_in: Norm::rms_plus_one(eps),
             body: Body::Mixer(Mixer::Attention(a)),
@@ -2344,12 +2350,12 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
         final_norm: Norm::rms(eps),
         // (the release's head is bf16: its product, the output multiplier's product and the soft-cap's three operations each rounded, as muse_ref.rs and the
         // engine's muse_softcap compute them)
-        head: Head { tied, softcap, scale: out_mult, collapse: Collapse::None, rounding: Rounding::Twice },
+        head: Head { tied, softcap: Some(softcap), scale: out_mult, collapse: Collapse::None, rounding: Rounding::Twice },
         mtp: Vec::new(),
         vision: None,
         rope: None,
     };
-    finish(&k, desc, &names::HF, prefix, roles, 0)
+    finish(&k, desc, &names::MUSE, prefix, roles, 0)
 }
 
 /// DeepSeek-V4 (`deepseek_v4`): the compressed attention (`kinds::Comp`), MoE with hash routing in the first layers then sqrt-softplus

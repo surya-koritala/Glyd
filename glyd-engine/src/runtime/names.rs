@@ -71,6 +71,10 @@ pub const GEMMA: Convention = Convention {
     ..HF
 };
 
+/// Muse Spark's: Hugging Face's, with its audio and vision towers, the vision adapter and its projection, which the text model does not run.
+pub const MUSE: Convention =
+    Convention { name: "Muse Spark", unread: &["model.audio_tower.", "model.vision_tower.", "model.vision_adapter.", "model.vision_projection."], ..HF };
+
 /// Kimi-K3's (the `kimi_linear` text model under `language_model.`), with the depth mix's output roles.
 pub const KIMI: Convention = Convention {
     name: "Kimi linear",

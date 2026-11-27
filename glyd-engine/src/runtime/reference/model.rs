@@ -80,19 +80,19 @@ pub struct Depth {
 }
 
 impl Depth {
-    /// The mix of the sources and the partial sum by the query `wn` * `wp`.
-    pub fn mix(&self, wn: &[f32], wp: &[f32]) -> Vec<f32> {
+    /// The mix of the sources and the partial sum by the query `wn` * `wp`, each normed with `eps`.
+    pub fn mix(&self, wn: &[f32], wp: &[f32], eps: f32) -> Vec<f32> {
         let mut all: Vec<&[f32]> = self.sources.iter().map(|s| &s[..]).collect();
         all.extend(self.partial.as_deref());
-        depth_mix(&all, wn, wp)
+        depth_mix(&all, wn, wp, eps)
     }
 
     /// A block's input: the partial sum itself while there are no sources, else the mix; a block that `starts` a group then closes the
     /// partial sum into a source.
-    pub fn input(&mut self, starts: bool, wn: &[f32], wp: &[f32]) -> Vec<f32> {
+    pub fn input(&mut self, starts: bool, wn: &[f32], wp: &[f32], eps: f32) -> Vec<f32> {
         let input = match (&self.partial, self.sources.is_empty()) {
             (Some(p), true) => p.clone(),
-            _ => self.mix(wn, wp),
+            _ => self.mix(wn, wp, eps),
         };
         if starts {
             let p = self.partial.take();
@@ -276,7 +276,7 @@ impl RefModel {
             };
             let (wn, wp) = (l.p.vec("mix_norm")?.to_vec(), l.p.vec("mix_proj")?.to_vec());
             for (t, dt) in depth.iter_mut().enumerate() {
-                let input = dt.input(dm.starts, &wn, &wp);
+                let input = dt.input(dm.starts, &wn, &wp, l.block.norm_in.eps);
                 let o = l.output(seqs[t], pos[t], tokens[t], &input)?;
                 dt.add(&o);
             }
@@ -425,7 +425,7 @@ impl RefModel {
             }
             Collapse::DepthMix => {
                 let dp = depth.ok_or_else(|| Error("the depth mix's collapse without its sources".into()))?;
-                dp.mix(self.p.vec("out_mix_norm")?, self.p.vec("out_mix_proj")?)
+                dp.mix(self.p.vec("out_mix_norm")?, self.p.vec("out_mix_proj")?, self.desc.final_norm.eps)
             }
             Collapse::LastPre if pre.len() == n => super::collapse(&self.streams_p(), pre, xt, d),
             Collapse::LastPre => return err(format!("lagged mHC's collapse with {} weights for {n} streams", pre.len())),

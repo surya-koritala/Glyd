@@ -54,10 +54,15 @@ extern "C" __global__ void __launch_bounds__(256) muse_moe_sum(const bf16* rows,
     }
 }
 
-// The logits' soft-cap in place (bf16 [n]): cap tanh(x mult / cap), each step rounded as transformers' bf16 tensors are.
+// The logits times the output multiplier, then their soft-cap, in place (bf16 [n]): cap tanh(x mult / cap), each step rounded as transformers' bf16 tensors are;
+// x mult alone where cap is not above 0 (a head with a multiplier and no soft-cap).
 extern "C" __global__ void muse_softcap(bf16* x, int n, float mult, float cap) {
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
         const float a = b2f(f2b(b2f(x[i]) * mult));
+        if (cap <= 0.f) {
+            x[i] = f2b(a);
+            continue;
+        }
         const float b = b2f(f2b(a / cap));
         x[i] = f2b(b2f(f2b(tanhf(b))) * cap);
     }

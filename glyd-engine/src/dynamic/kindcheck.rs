@@ -509,7 +509,7 @@ fn pass(
                 Some(b) => {
                     let blk = &m.layers[b];
                     let input = match (&blk.block.residual, r.depth.as_mut()) {
-                        (Residual::DepthMix(dm), Some(dp)) => dp.input(dm.starts, blk.p.vec("mix_norm")?, blk.p.vec("mix_proj")?),
+                        (Residual::DepthMix(dm), Some(dp)) => dp.input(dm.starts, blk.p.vec("mix_norm")?, blk.p.vec("mix_proj")?, blk.block.norm_in.eps),
                         // (lagged mHC: weighed by the block before's weights, this block's own kept for the next)
                         (Residual::Streams(s @ StreamsP { lagged: true, .. }), _) => {
                             let (own, post, comb) = hc_weights(s, &blk.p, &r.x)?;

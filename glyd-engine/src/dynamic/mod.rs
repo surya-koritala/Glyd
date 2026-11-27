@@ -448,7 +448,8 @@ pub enum Op {
     },
     /// Nothing (a model whose first operation is none)
     Nop,
-    /// The gated residual kind (`Residual::Gated`): X = bf16(bf16(alpha X) + bf16(beta O)), the factors small `alpha`, `beta`.
+    /// The gated residual kind (`Residual::Gated`): X = bf16(alpha X + beta O), the factors small `alpha`, `beta` (fp32), the products and their sum fp32,
+    /// one rounding (`muse::gated`).
     GatedResidual {
         alpha: usize,
         beta: usize,
@@ -556,8 +557,9 @@ impl MoeBlock for ResidentMoe {
 }
 
 /// A block's start in the depth mix (kernels/residual.cu `depth_mix`, one kernel): X = bf16(X + O) where `add`; the mix of the first `nb` completed sources (Blk)
-/// and X, by its norm weight `w_n` and projection `w_p` (small); X into source `push` of Blk, then X = 0, where given (the next group's partial sum starts empty);
-/// the norm of the mix by `w` (`eps`, the normed value rounded, times the weight, rounded again) into H.
+/// and X, by its norm weight `w_n` and projection `w_p` (small), each source scored normed by its RMS with `eps` (the model's: vLLM's score norm's); X into
+/// source `push` of Blk, then X = 0, where given (the next group's partial sum starts empty); the norm of the mix by `w` (`eps`, the normed value rounded,
+/// times the weight, rounded again) into H.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DepthMixOp {
     pub add: bool,
@@ -683,7 +685,7 @@ pub struct ModelDesc {
     pub v4: Option<V4Dims>,
     /// The residual streams' eps and Sinkhorn rounds (`StreamsP::eps`, `sinkhorn_iters`; 0s where none).
     pub hc: (f32, i32),
-    /// The logits times this before the soft-cap (Muse Spark's: cap tanh(x mult / cap), each step rounded); 0: the soft-cap alone.
+    /// The logits times this, before the soft-cap where there is one (Muse Spark's: cap tanh(x mult / cap), each step rounded); 0: none (`head_after`).
     pub logit_mult: f32,
     /// The tables read by rows held on the host (src/dynamic/tables.rs: the embedding's matrix, an n-gram block's table), none of them on the GPU.
     pub host: Vec<usize>,
@@ -765,19 +767,44 @@ pub struct Opts {
     pub layout: Option<Layout>,
 }
 
-/// How a small tensor is made from the values its checkpoint holds (bf16), as the operation reading it takes it: each result rounded to bf16.
+/// How a small tensor is made from the values its checkpoint holds (bf16), as the operation reading it takes it: each result rounded to bf16, but a residual
+/// gate's factors, fp32.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SmallForm {
     /// `n` ones, no tensor read (a weightless norm's weight).
     Ones(usize),
     /// 1 + w (a centered norm's factors, as transformers adds them: `muse::plus_one`).
     PlusOne,
-    /// A residual gate's two factors of its parameter at temperature T (`muse::residual_gate`): alpha, and beta.
+    /// A residual gate's two factors of its parameter (bf16 or fp32 as stored) at temperature T, in fp32 as transformers' fp32 gate makes them
+    /// (`runtime::reference::residual_gate`): alpha, and beta.
     GateAlpha(f32),
     GateBeta(f32),
     /// Several tensors one after another, each as saved and all of one type: the small tensor's name lists them, `|` between them (a delta attention layer's
     /// three convolutions as the one its kernel reads).
     Joined,
+}
+
+/// What the head does to the logits after the LM head's product.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum HeadAfter {
+    /// Times the output multiplier, then through the soft-cap where `cap` is above 0 (kernels/muse.cu `muse_softcap`, each step rounded).
+    Scaled {
+        mult: f32,
+        cap: f32,
+    },
+    /// The soft-cap alone.
+    Capped(f32),
+    Nothing,
+}
+
+/// The head's work after its product for a model of soft-cap `softcap` and output multiplier `mult` (0: none of either): the multiplier wherever the head has
+/// one, the soft-cap with it or alone.
+fn head_after(softcap: f32, mult: f32) -> HeadAfter {
+    match (softcap > 0.0, mult > 0.0) {
+        (_, true) => HeadAfter::Scaled { mult, cap: softcap.max(0.0) },
+        (true, false) => HeadAfter::Capped(softcap),
+        (false, false) => HeadAfter::Nothing,
+    }
 }
 
 /// The layers one GPU runs of a model split across several (`split::Split`): layers `layers.0..layers.1`, the embedding where `first`, the final norm
@@ -1113,24 +1140,32 @@ fn rotary64(theta: f64, dim: usize, pairs: usize, max_pos: usize) -> (Vec<u16>, 
     (c, s)
 }
 
-/// Small tensor `name` made in form `f` from its checkpoint's bf16 values: bf16 words.
-fn small_of(ck: &Checkpoint, name: &str, f: SmallForm) -> Result<Vec<u16>> {
+/// Whether form `f` makes fp32 values (a residual gate's factors), not bf16.
+fn form_f32(f: SmallForm) -> bool {
+    matches!(f, SmallForm::GateAlpha(_) | SmallForm::GateBeta(_))
+}
+
+/// Small tensor `name` made in form `f` from its checkpoint's values (bf16; a residual gate's parameter bf16 or fp32): its bytes, bf16 words or, where the
+/// form makes fp32 values (`form_f32`), fp32 ones.
+fn small_of(ck: &Checkpoint, name: &str, f: SmallForm) -> Result<Vec<u8>> {
     let vals = || -> Result<Vec<f32>> {
         let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
-        if t.dtype != "BF16" {
-            return err(format!("{name}: {}, where bf16 is read", t.dtype));
-        }
         let b = ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?;
-        Ok(b.as_chunks::<2>().0.iter().map(|x| f32::from_bits((u16::from_le_bytes(*x) as u32) << 16)).collect())
+        match t.dtype.as_str() {
+            "BF16" => Ok(b.as_chunks::<2>().0.iter().map(|x| f32::from_bits((u16::from_le_bytes(*x) as u32) << 16)).collect()),
+            "F32" if form_f32(f) => Ok(b.as_chunks::<4>().0.iter().map(|x| f32::from_le_bytes(*x)).collect()),
+            d => err(format!("{name}: {d}, where {} is read", if form_f32(f) { "bf16 or fp32" } else { "bf16" })),
+        }
     };
     let v = match f {
         SmallForm::Ones(n) => vec![1.0; n],
         SmallForm::PlusOne => crate::muse::plus_one(&vals()?),
-        SmallForm::GateAlpha(t) => crate::muse::residual_gate(&vals()?, t).0,
-        SmallForm::GateBeta(t) => crate::muse::residual_gate(&vals()?, t).1,
+        SmallForm::GateAlpha(t) => crate::runtime::reference::residual_gate(&vals()?, t).0,
+        SmallForm::GateBeta(t) => crate::runtime::reference::residual_gate(&vals()?, t).1,
         SmallForm::Joined => return err(format!("{name}: several tensors as one are read as saved, not made from their values")),
     };
-    Ok(v.into_iter().map(crate::weights::bf16_bits).collect())
+    let bf16: Vec<u16> = if form_f32(f) { Vec::new() } else { v.iter().map(|&x| crate::weights::bf16_bits(x)).collect() };
+    Ok(if form_f32(f) { crate::weights::as_bytes(&v) } else { crate::weights::as_bytes(&bf16) }.to_vec())
 }
 
 /// Small tensor `name` as its checkpoint holds it, its type and bytes; `joined`: the tensors the name lists (`SmallForm::Joined`), one after another, all of one type.
@@ -1157,7 +1192,8 @@ fn small_saved(ck: &Checkpoint, name: &str, joined: bool) -> Result<(String, Vec
 
 /// Bytes a value of small tensor `i` takes on the GPU, stored as `dtype`.
 fn small_width(d: &ModelDesc, i: usize, dtype: &str) -> u64 {
-    if read_f32(d).contains(&i) || read_f32_as_bf16(d).contains(&i) || read_typed(d).contains(&(i, true)) {
+    let formed = d.forms.iter().any(|&(j, f)| j == i && form_f32(f));
+    if formed || read_f32(d).contains(&i) || read_f32_as_bf16(d).contains(&i) || read_typed(d).contains(&(i, true)) {
         4
     } else if dtype == "I64" {
         8
@@ -1366,7 +1402,7 @@ fn load_part(
         .map(|(i, name)| {
             let form = d.forms.iter().find(|x| x.0 == i).map(|x| x.1);
             if let Some(f) = form.filter(|&f| f != SmallForm::Joined) {
-                return upload_bytes(crate::weights::as_bytes(&small_of(&ck, name, f)?));
+                return upload_bytes(&small_of(&ck, name, f)?);
             }
             // (released in FP8 with fp32 block scales, where its operation takes them: its E4M3 codes' values in bf16, exact, and the scales as released)
             if let Some(sn) = form.is_none().then(|| crate::formats::scales_beside(&ck, name)).flatten() {
@@ -3560,10 +3596,10 @@ impl Dyn {
         // (a draft head's LM head is the model's)
         let lm = if !std::ptr::eq(p, &self.big) && matches!(p.d.first, Op::MtpIn { .. }) { &self.big.mats[self.big.d.lm] } else { &p.mats[p.d.lm] };
         self.lin(lm, hl, head, p.logits.ptr)?;
-        if p.d.softcap > 0.0 && p.d.logit_mult > 0.0 {
-            launch!(self.kmuse.softcap, [64, 1, 1], [256, 1, 1], s; p.logits.ptr, (head * p.d.vocab) as i32, p.d.logit_mult, p.d.softcap)?;
-        } else if p.d.softcap > 0.0 {
-            launch!(self.kg.softcap, [64, 1, 1], [256, 1, 1], s; p.logits.ptr, (head * p.d.vocab) as i32, p.d.softcap)?;
+        match head_after(p.d.softcap, p.d.logit_mult) {
+            HeadAfter::Scaled { mult, cap } => launch!(self.kmuse.softcap, [64, 1, 1], [256, 1, 1], s; p.logits.ptr, (head * p.d.vocab) as i32, mult, cap)?,
+            HeadAfter::Capped(cap) => launch!(self.kg.softcap, [64, 1, 1], [256, 1, 1], s; p.logits.ptr, (head * p.d.vocab) as i32, cap)?,
+            HeadAfter::Nothing => {}
         }
         self.kern.argmax_rows(s, p.logits.ptr, p.d.vocab as i32, head as u32, p.tok.ptr, p.val.ptr)?;
         self.mark("head")
@@ -4588,6 +4624,41 @@ mod tests {
         assert!(small_saved(&ck, &format!("{}|{a_log}", conv[0]), true).unwrap_err().msg.contains("read as one"));
         assert_eq!(small_saved(&ck, &a_log, false).unwrap().1.len(), ck.read(&a_log).unwrap().len());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A residual gate's factors as the loader makes them: fp32 (four bytes a value), transformers' (`runtime::reference::residual_gate`), from a gate stored
+    /// bf16 or fp32 (transformers keeps the module fp32); a centered norm's factors from an fp32 tensor are refused, from a bf16 one bf16 words.
+    #[test]
+    fn a_residual_gates_factors_are_fp32_from_a_gate_of_either_type() {
+        let dir = std::env::temp_dir().join(format!("glyd-gate-small-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = [0.7f32, -0.45, 0.3125, 1.0];
+        let g16: Vec<f32> = g.iter().map(|&x| crate::runtime::reference::bf16(x)).collect();
+        let b16: Vec<u8> = g16.iter().flat_map(|&x| crate::weights::bf16_bits(x).to_le_bytes()).collect();
+        let b32: Vec<u8> = g.iter().flat_map(|x| x.to_le_bytes()).collect();
+        crate::pack::write_safetensors(
+            &dir.join("model.safetensors"),
+            &[("format", "pt".to_string())],
+            &[("g16", "BF16", vec![4], &b16), ("g32", "F32", vec![4], &b32)],
+        )
+        .unwrap();
+        let ck = Checkpoint::open(&dir).unwrap();
+        for (name, vals) in [("g16", &g16[..]), ("g32", &g[..])] {
+            let (a, b) = crate::runtime::reference::residual_gate(vals, 0.3);
+            assert_eq!(small_of(&ck, name, SmallForm::GateAlpha(0.3)).unwrap(), crate::weights::as_bytes(&a), "{name}");
+            assert_eq!(small_of(&ck, name, SmallForm::GateBeta(0.3)).unwrap(), crate::weights::as_bytes(&b), "{name}");
+        }
+        assert_eq!(small_of(&ck, "g16", SmallForm::PlusOne).unwrap().len(), 8);
+        assert!(small_of(&ck, "g32", SmallForm::PlusOne).unwrap_err().msg.contains("F32, where bf16 is read"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The head's output multiplier is applied wherever the head has one, with the soft-cap or alone; the soft-cap alone where it has none.
+    #[test]
+    fn the_heads_multiplier_is_applied_with_or_without_a_soft_cap() {
+        assert_eq!(head_after(20.0, 0.25), HeadAfter::Scaled { mult: 0.25, cap: 20.0 });
+        assert_eq!(head_after(0.0, 0.25), HeadAfter::Scaled { mult: 0.25, cap: 0.0 });
+        assert_eq!((head_after(30.0, 0.0), head_after(0.0, 0.0)), (HeadAfter::Capped(30.0), HeadAfter::Nothing));
     }
 
     /// A route table as glyd_gpu.cu's `route_for` gives it past 64 rows: the prompt kernel, and from `dec` rows the decoded way (None: never).
