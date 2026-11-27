@@ -3,8 +3,9 @@
 Per release and per VRAM tier (8, 12, 16, 24 and 32 GB): the largest model each engine runs at 20 tokens/s or more for one user, and the same model at
 about the same bits on Glyd, llama.cpp, Ollama and LM Studio, measured by one harness on one GPU. A release's results go in `vX.Y.Z/GPU/`: each run's
 result (`NAME.json`, `glyd-bench/1`), its command lines and versions (`NAME.cmd`), its server's log (`NAME.log`, or with the release's assets where it is
-over the tree's 64 KB), the sides that could not run (`NAME.skip`, with the reason) and the page made from them (`README.md`). No release has been
-measured this way yet; nothing here is a result until such a directory is.
+over the tree's 64 KB), the sides that could not run (`NAME.skip`, with the reason) and the page made from them (`README.md`). The first release measured
+this way is v0.35.0, on the 16 GB tier: [v0.35.0/rtx4080s](v0.35.0/rtx4080s/README.md) (the release's engine with the harness as it is here: the
+release's own run stopped on two rows and had no llama.cpp side).
 
 ## How
 
