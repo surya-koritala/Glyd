@@ -16,6 +16,10 @@ on:
         description: The tier's rows to run (empty for the GPU's own)
         type: string
         default: ''
+      convert:
+        description: Make the GGUF files the rows lack, from the Hub checkpoints with llama.cpp's own tools (hours and tens of GB the first time; kept in the machine's cache)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -48,11 +52,12 @@ jobs:
       ENGINES: ${{ inputs.engines || 'glyd llama.cpp ollama' }}
       TIER: ${{ inputs.tier }}
       GGUF_DIR: /cache/gguf                        # (the GGUF files of the matrix's rows, MODELNAME-QUANT.gguf; a row without one is listed as not run)
+      CONVERT: ${{ inputs.convert && '1' || '0' }}  # (a run by hand may make the missing ones; a release's run measures with the files that are there)
       LLAMA_SERVER_DIR: /cache/llama.cpp-build
     steps:
       - name: Tools
         run: |
-          apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential cmake pkg-config curl git ca-certificates python3 > /dev/null
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential cmake pkg-config curl git ca-certificates python3 python3-venv > /dev/null
           [ -x "$CARGO_HOME/bin/cargo" ] || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
           nvidia-smi
