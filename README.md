@@ -101,6 +101,8 @@ Glyd supports model families, not individual models: any size or fine-tune of th
 | DeepSeek | penguin, hummingbird |
 | Muse | penguin, hummingbird |
 
+Gemma 4: the 12B and 31B run; the 26B-A4B and the E models are not supported yet.
+
 ## Serving and tools
 
 | Area | What Glyd has |
