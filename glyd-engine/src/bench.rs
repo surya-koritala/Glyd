@@ -1454,7 +1454,10 @@ pub fn report(dir: &std::path::Path, title: &str) -> Result<String> {
     if all.is_empty() {
         return err(format!("{}: no {SCHEMA} result under it", dir.display()));
     }
-    let rel = |p: &std::path::Path| p.strip_prefix(dir).unwrap_or(p).display().to_string();
+    // (a file under DIR by its parts joined with '/', on every system: the page's text is the same on Windows)
+    let rel = |p: &std::path::Path| {
+        p.strip_prefix(dir).map_or_else(|_| p.display().to_string(), |r| r.iter().map(|c| c.to_string_lossy()).collect::<Vec<_>>().join("/"))
+    };
     let med = |v: &Value, prompt: &str, conc: u64, m: &str| cell(v, prompt, conc).and_then(|c| f(&c[m], "median"));
     let engine = |v: &Value| {
         v["server"]["engine"].as_str().filter(|e| !e.is_empty()).unwrap_or(if v["server"]["started_by_bench"] == true { "glyd" } else { "?" }).to_string()
