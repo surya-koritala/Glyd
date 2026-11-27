@@ -900,6 +900,19 @@ struct PromptRun {
     bytes: usize,
 }
 
+/// The prompt kernel's shape for its variant (1, 2 or 3: prompt_run's), on GeForce Ada (stream-K) or not, of the 12-bit layout or not: (CW, PW, NB, RBB, CR,
+/// the kernel's tag; stream-K or a grid).
+fn big_plan(variant: i32, ada: bool, twelve: bool) -> (i64, i64, i64, i64, i64, &'static str, bool) {
+    match (variant, ada) {
+        (3, _) if twelve => (8, 4, 2, 2, 64, "v3", false),
+        (2, false) => (4, 4, 2, 1, 64, "v2", false),
+        (_, false) => (4, 4, 3, 2, 64, "v1", false),
+        (2, true) => (8, 4, 2, 1, 32, "v2", true),
+        (_, true) if twelve => (8, 4, 2, 2, 32, "v1", true),
+        _ => (4, 4, 3, 2, 64, "v1", true),
+    }
+}
+
 fn prompt_run(u: Unpacker, o: i64, k: i64, m: i64) -> Result<Option<PromptRun>> {
     let Some(tag) = big_name(u) else { return Ok(None) };
     let twelve = matches!(u, Unpacker::Twelve { .. });
@@ -923,15 +936,7 @@ fn prompt_run(u: Unpacker, o: i64, k: i64, m: i64) -> Result<Option<PromptRun>> 
     } else {
         1
     };
-    // (CW, PW, NB, RBB, CR, the kernel's tag; stream-K or a grid)
-    let (cw, pw, nb, rbb, cr, v, sk) = match (variant, ada) {
-        (3, _) if twelve => (8, 4, 2, 2, 64, "v3", false),
-        (2, false) => (4, 4, 2, 1, 64, "v2", false),
-        (_, false) => (4, 4, 3, 2, 64, "v1", false),
-        (2, true) => (8, 4, 2, 1, 32, "v2", true),
-        (_, true) if twelve => (8, 4, 2, 2, 32, "v1", true),
-        _ => (4, 4, 3, 2, 64, "v1", true),
-    };
+    let (cw, pw, nb, rbb, cr, v, sk) = big_plan(variant, ada, twelve);
     let name = leaked(format!("fold_{}_{tag}_{v}", if sk { "sk" } else { "big" }));
     let (threads, tm, smem) = big_shape(cw, pw, nb, rbb, cr);
     let (per_sm_blocks, sms) = per_sm(name, threads, smem)?;
@@ -1010,6 +1015,16 @@ unsafe fn prompt_linear(u: Unpacker, w: &Pack, x: u64, m: i64, y: u64, (ws, ws_b
     Ok(true)
 }
 
+/// An A100's tile of route MID for `mc` tokens (mma12_ws_kernel's four, two row blocks a unit): its kernel, tokens a unit, threads and shared memory.
+fn ws12_tile(mc: i64) -> (&'static str, i64, u32, u32) {
+    match mc {
+        ..=32 => ("fold_ws12_32", 32, 384, 149_248),
+        33..=64 => ("fold_ws12_64", 64, 384, 152_192),
+        65..=96 => ("fold_ws12_96", 96, 384, 139_904),
+        _ => ("fold_ws12_128", 128, 512, 152_192),
+    }
+}
+
 /// The 12-bit layout's route MID (mma12_mid_any): its launches, 64 tokens each (an A100: 128, mma12_ws_kernel's four tiles), the smallest tile that holds
 /// each one's tokens, and the workspace of the largest; None where the GPU has no such kernel (compute capability under 8). Each: (kernel, threads, shared
 /// memory, blocks, first token, tokens).
@@ -1022,15 +1037,9 @@ fn mid12_runs(o: i64, k: i64, m: i64) -> Result<Option<(Vec<(&'static str, u32, 
     }
     let (mut runs, mut need) = (Vec::new(), 0usize);
     if cc == (8, 0) {
-        // (Ws12: tokens a unit, threads, shared memory; two row blocks a unit)
         for m0 in (0..m).step_by(128) {
             let mc = (m - m0).min(128);
-            let (name, tm, threads, smem) = match mc {
-                ..=32 => ("fold_ws12_32", 32, 384, 149_248),
-                33..=64 => ("fold_ws12_64", 64, 384, 152_192),
-                65..=96 => ("fold_ws12_96", 96, 384, 139_904),
-                _ => ("fold_ws12_128", 128, 512, 152_192),
-            };
+            let (name, tm, threads, smem) = ws12_tile(mc);
             let (per, sms) = per_sm(name, threads, smem)?;
             let units = (o / 64 + 1) / 2 * ((mc + tm - 1) / tm);
             let nb = (per * sms).min(units * (k / 64) / 8).max(1);
@@ -4744,6 +4753,110 @@ mod tests {
         assert_eq!(built(full(lead(Unpacker::Fp4R { ks: 4, mg: 1, sh: 1 }, tiers, None))), args_of::<kt::fold_moe_fp4r_1_1_8>());
         let twelve = Words::Twelve { exc: 0, exc_base: 0, sym: [0; 4] };
         assert_eq!(built(full(lead(Unpacker::Twelve { hb4: 0, xmax: 4 }, twelve, None))), args_of::<kt::fold_moe_twelve_4_2_2>());
+    }
+
+    /// The value of an integer expression of numbers, names (`var`), + and * and parentheses.
+    fn integer(s: &str, var: &dyn Fn(&str) -> Option<i64>) -> Option<i64> {
+        fn sum(t: &[String], i: &mut usize, var: &dyn Fn(&str) -> Option<i64>) -> Option<i64> {
+            let mut v = prod(t, i, var)?;
+            while t.get(*i).is_some_and(|x| x == "+") {
+                *i += 1;
+                v += prod(t, i, var)?;
+            }
+            Some(v)
+        }
+        fn prod(t: &[String], i: &mut usize, var: &dyn Fn(&str) -> Option<i64>) -> Option<i64> {
+            let mut v = atom(t, i, var)?;
+            while t.get(*i).is_some_and(|x| x == "*") {
+                *i += 1;
+                v *= atom(t, i, var)?;
+            }
+            Some(v)
+        }
+        fn atom(t: &[String], i: &mut usize, var: &dyn Fn(&str) -> Option<i64>) -> Option<i64> {
+            let x = t.get(*i)?;
+            *i += 1;
+            if x != "(" {
+                return x.parse().ok().or_else(|| var(x));
+            }
+            let v = sum(t, i, var)?;
+            *i += 1;
+            (t.get(*i - 1)? == ")").then_some(v)
+        }
+        let (mut t, mut word) = (Vec::new(), String::new());
+        for c in s.chars().chain([' ']) {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                word.push(c);
+                continue;
+            }
+            if !word.is_empty() {
+                t.push(std::mem::take(&mut word));
+            }
+            if !c.is_whitespace() {
+                t.push(c.to_string());
+            }
+        }
+        let mut i = 0;
+        let v = sum(&t, &mut i, var)?;
+        (i == t.len()).then_some(v)
+    }
+
+    /// A `__launch_bounds__`'s threads (crate::kt::BOUNDS's text): an integer (`32 * (4 + 4)`), or a struct's THREADS of gpu/glyd_gpu_kernels.h with its
+    /// template's arguments put in (`(glib::Tma12<16, 2>::THREADS)`: `template <int NT, int WG> struct Tma12 { static constexpr int THREADS = 128 * WG + 32;`).
+    fn bound_threads(text: &str) -> Option<i64> {
+        const HEADER: &str = include_str!("../../gpu/glyd_gpu_kernels.h");
+        let t = text.strip_prefix('(').and_then(|t| t.strip_suffix(')')).unwrap_or(text);
+        let Some((name, args)) = t.strip_prefix("glib::").and_then(|t| t.strip_suffix(">::THREADS")).and_then(|t| t.split_once('<')) else {
+            return integer(text, &|_| None);
+        };
+        let at = HEADER.find(&format!("> struct {name} {{"))?;
+        let params = HEADER[HEADER[..at].rfind('\n')? + 1..at].strip_prefix("template <")?;
+        let body = &HEADER[at..];
+        let expr = body[body.find(" THREADS = ")? + 11..].split([';', ',']).next()?;
+        let vals: Vec<(&str, i64)> =
+            params.split(',').zip(args.split(',')).map(|(p, a)| Some((p.trim().strip_prefix("int ")?, a.trim().parse().ok()?))).collect::<Option<_>>()?;
+        integer(expr, &|w| vals.iter().find(|(p, _)| *p == w).map(|v| v.1))
+    }
+
+    /// The prompt kernels' blocks (prompt_run's, mid12_runs' on an A100, the Hopper routes') are at most the threads their `__launch_bounds__` in
+    /// kernels/fold.cu say (crate::kt::BOUNDS): a block past its kernel's bound does not launch, and ptxas gives the kernel the registers of its bound.
+    #[test]
+    fn the_prompt_kernels_blocks_are_within_their_bounds() {
+        let bound = |name: &str| {
+            let (_, text) = crate::kt::BOUNDS.iter().find(|(n, _)| *n == name).unwrap_or_else(|| panic!("{name}: no __launch_bounds__ in kernels/"));
+            bound_threads(text).unwrap_or_else(|| panic!("{name}: its bound {text:?} not read"))
+        };
+        assert_eq!(
+            [bound("fold_big_tiered_v1"), bound("fold_sk_twelve_v2"), bound("fold_ws12_128"), bound("fold_tma12_16"), bound("fold_wgp12_256")],
+            [256, 384, 512, 288, 384]
+        );
+        let layouts = [
+            Unpacker::Tiered,
+            Unpacker::Compact,
+            Unpacker::Int6,
+            Unpacker::Int5,
+            Unpacker::Int4,
+            Unpacker::Int4H(0),
+            Unpacker::Fp4,
+            Unpacker::Fp4R { ks: 4, mg: 1, sh: 1 },
+            Unpacker::Int3,
+            Unpacker::Twelve { hb4: 0, xmax: 4 },
+        ];
+        for (u, variant, ada) in layouts.into_iter().flat_map(|u| (1..=3).flat_map(move |v| [(u, v, false), (u, v, true)])) {
+            let (cw, pw, nb, rbb, cr, v, sk) = big_plan(variant, ada, matches!(u, Unpacker::Twelve { .. }));
+            let name = format!("fold_{}_{}_{v}", if sk { "sk" } else { "big" }, big_name(u).unwrap());
+            assert!(big_shape(cw, pw, nb, rbb, cr).0 as i64 <= bound(&name), "{name}");
+        }
+        for mc in [1, 32, 33, 64, 65, 96, 97, 128] {
+            let (name, _, threads, _) = ws12_tile(mc);
+            assert!(threads as i64 <= bound(name), "{name}");
+        }
+        for name in [16, 32, 64, 96, 112, 128].map(|nt| format!("fold_tma12_{nt}")).into_iter().chain([16, 32, 64].map(|nt| format!("fold_tmat_{nt}"))) {
+            assert!(HOP_THREADS as i64 <= bound(&name), "{name}");
+        }
+        for nt in [192, 256] {
+            assert!(WGP_THREADS as i64 <= bound(&format!("fold_wgp12_{nt}")), "fold_wgp12_{nt}");
+        }
     }
 
     #[test]
