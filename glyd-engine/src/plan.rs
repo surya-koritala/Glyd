@@ -9613,7 +9613,10 @@ mod tests {
                             },
                             Err(r) => serde_json::json!({"refusal": [r.what, r.fix, r.code]}),
                         };
-                        let said: serde_json::Value = serde_json::from_str(&said.to_string().replace(&base, "DIR")).unwrap();
+                        // (the run's folder as the JSON text quotes it, a Windows path's backslashes escaped, and the separator after it '/' on every system)
+                        let quoted = |s: &str| serde_json::to_string(s).unwrap().trim_matches('"').to_string();
+                        let text = said.to_string().replace(&quoted(&format!("{base}{}", std::path::MAIN_SEPARATOR)), "DIR/").replace(&quoted(&base), "DIR");
+                        let said: serde_json::Value = serde_json::from_str(&text).unwrap();
                         got.insert(format!("{name} {preset} {level} {}", v.join(" ")).trim_end().to_string(), said);
                     }
                 }
