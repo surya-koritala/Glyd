@@ -7745,11 +7745,7 @@ mod tests {
         let v = json::parse(fixture).unwrap();
         let (mut header, mut at) = (String::from("{"), 0u64);
         for (name, t) in v.get("tensors").and_then(Value::as_object).unwrap() {
-            let (dtype, mut shape) = (t.as_array().unwrap()[0].as_str().unwrap(), t.as_array().unwrap()[1].as_u64s().unwrap());
-            // (a sparse file where the system makes them, else the shapes' large dimensions cut by 16 so that the file is under a GiB: a Windows runner's disk is not 15 GiB)
-            if cfg!(windows) {
-                shape.iter_mut().filter(|d| **d >= 256).for_each(|d| *d /= 16);
-            }
+            let (dtype, shape) = (t.as_array().unwrap()[0].as_str().unwrap(), t.as_array().unwrap()[1].as_u64s().unwrap());
             let width = match dtype {
                 "F64" | "I64" | "U64" => 8,
                 "F32" | "I32" | "U32" => 4,
@@ -7763,6 +7759,8 @@ mod tests {
         }
         header += "}";
         let mut f = std::fs::File::create(dir.join("model.safetensors")).unwrap();
+        // (the data a hole on every system, the release's shapes and sizes: Windows makes a file sparse when asked, else its length is written out)
+        crate::os::sparse(&f);
         std::io::Write::write_all(&mut f, &(header.len() as u64).to_le_bytes()).unwrap();
         std::io::Write::write_all(&mut f, header.as_bytes()).unwrap();
         f.set_len(8 + header.len() as u64 + at).unwrap();
