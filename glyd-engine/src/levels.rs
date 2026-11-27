@@ -124,9 +124,10 @@ pub fn layout_of(word: &str) -> Option<Layout> {
     })
 }
 
-/// A model's name on the Hub: the text after its org (`Qwen/Qwen3.8-27B` → `Qwen3.8-27B`).
+/// A model's name on the Hub: the text after its org (`Qwen/Qwen3.8-27B` → `Qwen3.8-27B`); a directory's, its last part by the system's separators
+/// (Windows: `\` as well as `/`).
 pub fn short_name(model: &str) -> String {
-    model.trim_end_matches('/').rsplit('/').next().unwrap_or(model).to_string()
+    model.trim_end_matches(std::path::is_separator).rsplit(std::path::is_separator).next().unwrap_or(model).to_string()
 }
 
 /// The draft model published beside MODEL, by the name its publisher gives it (google/gemma-4-12B-it: google/gemma-4-12B-it-assistant), else None. The
