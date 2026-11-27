@@ -92,28 +92,19 @@ machine and says what to fix.
 
 Glyd supports model families, not individual models: any size or fine-tune of these families runs, from the Hub or from 16-bit GGUF files.
 
-| Family | Releases it covers | Levels |
-| :--- | :--- | :--- |
-| Gemma&nbsp;4 | the dense models: 12B, 31B | penguin, kestrel, swift, wren |
-| Qwen3.5&nbsp;layout | Qwen3.5, 3.6 and 3.8, dense and mixture of experts | penguin, kestrel, swift, wren |
-| Qwen3.8-Flash-Next | the Qwen&nbsp;4 architecture | penguin, hummingbird |
-| Plain&nbsp;dense | Llama-style decoders: the model types `llama`, `mistral`, `qwen2`, `qwen3` | penguin, kestrel, swift, wren |
-| Nemotron-H | Nemotron 3 and 3.5 | penguin, kestrel, swift, wren, hummingbird |
-| Kimi | Kimi-K3, K3.1 | penguin, hummingbird |
-| GLM | GLM-5.3-Flash; GLM-5.3 (penguin) | penguin, hummingbird |
-| DeepSeek | DeepSeek-V4; V4.1 (penguin) | penguin, hummingbird |
-| Muse&nbsp;Spark | the text model | penguin, hummingbird |
-
-Gemma 4's 26B-A4B and E models are not supported yet. The engine tells a family by its `config.json`, not by its name; the
-[Models](https://surya-koritala.github.io/Glyd/guide/models.html) page of the guide is made from the engine's own table and has every detail.
-
-**Coming next.** A family is first *described* (its layers mapped from its config, its release's tensors all read, held to a CPU reference),
-then run on a GPU, and only then listed above.
-
-| Family | Stage |
+| Family | Levels |
 | :--- | :--- |
-| Domyn&nbsp;Edge | described |
-| Granite&nbsp;Swash (dense) | described |
+| Gemma | penguin, kestrel, swift, wren |
+| Qwen | penguin, kestrel, swift, wren, hummingbird |
+| Llama | penguin, kestrel, swift, wren |
+| Mistral | penguin, kestrel, swift, wren |
+| Nemotron | penguin, kestrel, swift, wren, hummingbird |
+| Kimi | penguin, hummingbird |
+| GLM | penguin, hummingbird |
+| DeepSeek | penguin, hummingbird |
+| Muse | penguin, hummingbird |
+
+The engine tells a family by a model's `config.json`, not by its name.
 
 ## Serving and tools
 
