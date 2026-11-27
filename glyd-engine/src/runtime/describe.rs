@@ -488,6 +488,10 @@ fn shape_roles(shapes: &mut std::collections::BTreeMap<String, Vec<usize>>, r: &
 /// The model types the `llama` builder reads: the pre-norm dense decoders of one attention and one gated MLP a layer.
 pub const LLAMA: &[&str] = &["llama", "mistral", "qwen2", "qwen3"];
 
+/// The model types of the families whose description is the whole of them (`support::Family::Layers`): each has a builder here whose blocks the dense
+/// lowering takes, and nothing else of its own in the engine. A new family of that kind adds its builder and its model type to this list.
+pub const LAYERS: &[&str] = &["domynedge", "granite_swa", "mellum"];
+
 /// The description of the model whose `config.json` is `cfg`.
 pub fn describe(cfg: &Value) -> Result<Described> {
     describe_config(&ModelConfig::from_value(cfg)?)

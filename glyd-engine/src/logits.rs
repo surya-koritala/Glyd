@@ -3535,6 +3535,8 @@ pub fn case_of_dir(dir: &Path) -> Result<&'static str> {
     let text = io(std::fs::read_to_string(dir.join("config.json"))).map_err(|e| Error(format!("{}: {}", dir.display(), e.msg)))?;
     Ok(match crate::runtime::config::family_of(&text) {
         Some(F::Qwen3) => "dense",
+        // (every family the description is the whole of loads by the dense loader, as this case's does)
+        Some(F::Layers) => "domynedge",
         Some(F::Qwen35) => "qwen35",
         Some(F::NemotronH) => "nemotron",
         Some(F::Gemma4) => "gemma4",

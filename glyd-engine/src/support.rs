@@ -42,6 +42,11 @@ pub enum Family {
     /// precise, best and fast packs' format: src/moe_cb.rs), every expert in the computer's memory and places of them on the GPU (`ExpertCache::Codes`).
     /// `qwenserve CKPT PACK --port` serves a pack from anywhere, on one GPU or `--gpus 0,1`.
     FlashNext,
+    /// The families whose description is the whole of them: layers of one attention and one feed-forward (a gated MLP or a mixture of experts) that the dense
+    /// lowering takes as described (`dynamic::lower::dense`), with no reader, loader or sizing of their own. Domyn Edge, Granite Swash and Mellum 2 are the
+    /// first (`runtime::describe::LAYERS`); a family joins by its description builder and its model type in that list. One GPU, at every block level: sized
+    /// from the description as every one-GPU row is (src/plan.rs `sizing::level_of`), loaded by the dense loader (`dynamic::dense::load_of`).
+    Layers,
 }
 
 /// One family's row.
@@ -209,7 +214,7 @@ const HB: &[&str] = &["hummingbird"];
 /// else as released (src/dynamic/experts.rs `pack_into_host`).
 const FP4_PACKS: &[u32] = &[glyd_gpu::pack::FP4R_TAG, glyd_gpu::pack::FP4_TAG];
 
-pub static TABLE: [Support; 11] = [
+pub static TABLE: [Support; 12] = [
     Support {
         family: Family::Qwen3,
         name: "plain dense",
@@ -371,6 +376,21 @@ pub static TABLE: [Support; 11] = [
         route: Route { sizing: Sizing::Dynamic, expert_cache: ExpertCache::Codes, ..ONE_GPU },
         saves: None,
         lossy: None,
+    },
+    Support {
+        family: Family::Layers,
+        name: "described layers",
+        levels: PENGUIN_LOSSY,
+        hummingbird_packed_only: false,
+        default_ctx: None,
+        max_ctx: None,
+        split_levels: NONE,
+        experts_in_ram_levels: NONE,
+        drafts: false,
+        route: ONE_GPU,
+        saves: Some(SAVED),
+        // (nothing of its own: the description and the dense lowering are the whole reading, the dense loader the engine)
+        lossy: Some(Lossy { kind: Kind::Qwen3, chunk: LOSSY_CHUNK, page: 1, draft: 0, pack: None, reads: described }),
     },
 ];
 
