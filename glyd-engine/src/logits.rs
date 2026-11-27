@@ -2543,6 +2543,9 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
             (0..shape[0]).flat_map(|_| grid(shape[1] as usize, shape[2] as usize, &mut u01, &mut gauss)).collect()
         } else if on_grid && name.contains("shared_expert.") {
             grid(shape[0] as usize, shape[1] as usize, &mut u01, &mut gauss)
+        } else if name.ends_with(".sinks") {
+            // (a sink a head: a logit beside the keys' scores, about theirs in size)
+            (0..n).map(|_| gauss(&mut u01) as f32).collect()
         } else if name.contains("ngram_embedding") || name.contains("embed_tokens") {
             // (an embedding that is the head too, as Qwen3.5's tied one is, is as wide as a head's rows: else its logits are tens apart and the softmax a point)
             let std = if tied && name.contains("embed_tokens") { 1.0 / (cols as f64).sqrt() } else { 1.0 };

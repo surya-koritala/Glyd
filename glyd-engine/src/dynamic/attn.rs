@@ -1232,13 +1232,18 @@ mod tests {
         assert!(AttnOp::of(&wide, Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
     }
 
-    /// kernels/attn.cu's AttnArgs: 15 pointers, a long long and an unsigned long long, 21 ints, 5 floats, no padding.
+    /// kernels/attn.cu's AttnArgs: 16 pointers, a long long and an unsigned long long, 21 ints, 5 floats, no padding.
     #[test]
     fn the_arguments_are_the_kernels_struct() {
-        assert_eq!(std::mem::size_of::<AttnArgs>(), 17 * 8 + 26 * 4);
+        assert_eq!(std::mem::size_of::<AttnArgs>(), 18 * 8 + 26 * 4);
         assert_eq!(
-            (std::mem::offset_of!(AttnArgs, rpos), std::mem::offset_of!(AttnArgs, tstride), std::mem::offset_of!(AttnArgs, rax)),
-            (14 * 8, 15 * 8, 16 * 8)
+            (
+                std::mem::offset_of!(AttnArgs, rpos),
+                std::mem::offset_of!(AttnArgs, sink),
+                std::mem::offset_of!(AttnArgs, tstride),
+                std::mem::offset_of!(AttnArgs, rax)
+            ),
+            (14 * 8, 15 * 8, 16 * 8, 17 * 8)
         );
     }
 }

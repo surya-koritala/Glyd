@@ -347,16 +347,13 @@ pub(crate) fn supported_in(name: &str, c: &crate::runtime::config::ModelConfig) 
     }
     let d = crate::runtime::describe::describe_config(c).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
     let max_pos = c.shared.max_position_embeddings.unwrap_or(crate::support::DEFAULT_CTX);
-    match crate::dynamic::lower::dense(&d, Vec::new(), max_pos) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(Refusal::unsupported(
-            match dense_lacks(&d) {
-                Some(what) => format!("{name} has {what}, which this engine does not run yet"),
-                None => format!("{name}: {}", e.msg),
-            },
-            unrun_fix(),
-        )),
-    }
+    // (what the plain dense row's sizes do not take is refused where the lowering would take it: a scaled rotary is a described family's, src/support.rs)
+    let said = match (crate::dynamic::lower::dense(&d, Vec::new(), max_pos), dense_lacks(&d)) {
+        (Ok(_), None) => return Ok(()),
+        (_, Some(what)) => format!("{name} has {what}, which this engine does not run yet"),
+        (Err(e), None) => format!("{name}: {}", e.msg),
+    };
+    Err(Refusal::unsupported(said, unrun_fix()))
 }
 
 /// The model's shape against what the engine's KV cache takes, and its context against what the tables cover: refused before anything is downloaded.
@@ -3012,7 +3009,10 @@ mod tests {
             // (the plain dense kind's lossy levels are its own sizer's, `dense_fit`: this path takes the rows sized on one GPU, by the table)
             assert!(
                 r.code == CANNOT
-                    && r.what == format!("dense-36l: the {level} level on this path takes the Qwen3.5, Nemotron-H, Gemma 4 rows, not the plain dense one")
+                    && r.what
+                        == format!(
+                            "dense-36l: the {level} level on this path takes the Qwen3.5, Nemotron-H, Gemma 4, described layers rows, not the plain dense one"
+                        )
                     && r.fix == "Run it lossless: glyd run org/dense-36l",
                 "{r}"
             );

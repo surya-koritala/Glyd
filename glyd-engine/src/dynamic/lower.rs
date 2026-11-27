@@ -278,9 +278,12 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         }
     };
     // (the first operation: the embedding's rows times its scale where it has one, and the first block's norm)
-    let begin = |norm: usize| match m.embed.scale {
-        s if s == 1.0 => Op::RmsNorm { x: Slot::X, w: norm, y: Slot::H, weight: NormW::Plain, eps },
-        s => Op::EmbedNorm { scale: bf16_round(s), norm },
+    let begin = |norm: usize| {
+        if m.embed.scale == 1.0 {
+            Op::RmsNorm { x: Slot::X, w: norm, y: Slot::H, weight: NormW::Plain, eps }
+        } else {
+            Op::EmbedNorm { scale: bf16_round(m.embed.scale), norm }
+        }
     };
     for l in 0..layers {
         let (ab, fb) = (&m.blocks[2 * l], &m.blocks[2 * l + 1]);
@@ -2810,7 +2813,7 @@ mod tests {
         let Some(Op::AddNorm { next, .. }) = d.layers[3].last() else { panic!() };
         assert!(d.small[*next].ends_with("model.norm.weight"));
         assert_eq!(d.widths[Slot::Proj as usize], 8 * 256 + 2 * 4 * 256);
-        assert!(crate::runtime::config::ModelConfig::parse(text).unwrap().family().is_none());
+        assert_eq!(crate::runtime::config::ModelConfig::parse(text).unwrap().family(), Some(crate::support::Family::Layers));
         // (a model with a norm after some blocks and not others is refused, named)
         let mut odd = kinds.clone();
         odd.desc.blocks[3].norm_out = None;
