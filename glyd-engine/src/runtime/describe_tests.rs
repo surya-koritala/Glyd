@@ -2256,3 +2256,132 @@ fn granite_swash_on_the_reference_scales_sinks_and_windows() {
     assert_eq!(run(&windowed, 0.0, true, &a), run(&windowed, 0.0, true, &first), "two layers of three positions see four back");
     assert_ne!(run(&c, 0.0, true, &a), run(&c, 0.0, true, &first), "the whole context sees the first token");
 }
+
+/// #549, Mellum 2: the released Mellum2.1-12B-A2.5B-Instruct (its recorded header) describes as 28 layers of Qwen3-style attention (32 query and 4
+/// key heads of 128, queries and keys normed with a weight) over the whole context or a window of 1,024 as `layer_types` says, each sort with its own
+/// rotary (yarn on the full layers, plain on the sliding ones), and a mixture of 64 experts a layer: the softmax of the router's logits, the best 8
+/// divided by their sum, no shared expert. Every shape is the checkpoint's and the checkpoint is read whole.
+#[test]
+fn mellum_21_describes_its_layer_types_rotaries_and_experts() {
+    use super::kinds::{Body, Ffn, Mixer, RouterScore};
+    let h = fixture("headers/Mellum2.1-12B-A2.5B-Instruct.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let types: Vec<&str> = cfg["layer_types"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+    assert_eq!((d.desc.blocks.len(), d.desc.head.tied, d.head.is_some()), (56, false, true));
+    let (mut full, mut sliding) = (None, None);
+    for (i, b) in d.desc.blocks.iter().enumerate() {
+        match &b.body {
+            Body::Mixer(Mixer::Attention(a)) => {
+                assert_eq!((a.heads, a.kv_heads, a.head_dim, a.sinks, a.bias), (32, 4, 128, false, false), "block {i}");
+                assert!(a.q_norm.is_some() && a.k_norm.is_some(), "block {i}");
+                let is_sliding = types[i / 2] == "sliding_attention";
+                assert_eq!(a.window, is_sliding.then_some(1024), "layer {}", i / 2);
+                let seen = if is_sliding { &mut sliding } else { &mut full };
+                assert!(seen.is_none() || *seen == a.rope, "one rotary a layer type");
+                *seen = a.rope.clone();
+            }
+            Body::Ffn(Ffn::Moe(m)) => {
+                assert_eq!((m.experts, m.router.top_k, m.router.renorm, m.router.score == RouterScore::Softmax), (64, 8, true, true), "block {i}");
+                assert!(m.shared.is_none() && !m.shared_gate && m.latent.is_none(), "block {i}");
+            }
+            _ => panic!("block {i}"),
+        }
+    }
+    assert!(full.is_some() && sliding.is_some() && full != sliding, "the full layers' rotary is not the sliding layers'");
+    let table = crate::sizes::Table::expand(&crate::sizes::groups_of(&h).unwrap());
+    let have = header_names(&h);
+    assert_eq!(d.names().len(), have.len());
+    for r in &table.rows {
+        let want: Vec<usize> = r.shape.iter().map(|&x| x as usize).collect();
+        assert_eq!(d.shapes.get(&r.name), Some(&want), "{}", r.name);
+    }
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+}
+
+/// A small config of the Mellum layout with `keys` over the class's defaults.
+fn mellum_tiny(keys: serde_json::Value) -> serde_json::Value {
+    let mut c = serde_json::json!({
+        "architectures": ["MellumForCausalLM"], "model_type": "mellum", "hidden_size": 32, "num_hidden_layers": 2, "vocab_size": 61,
+        "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 8, "intermediate_size": 48, "moe_intermediate_size": 16, "num_experts": 6,
+        "num_experts_per_tok": 2, "max_position_embeddings": 4096,
+    });
+    c.as_object_mut().unwrap().extend(keys.as_object().unwrap().clone());
+    c
+}
+
+/// The Mellum config class's defaults are the description's where a config is silent (every layer full attention and experts, the head not tied, the
+/// class's two rotaries), a "dense" layer is a gated MLP of `intermediate_size`, the draft layers are counted under either of their keys, and what the
+/// builder does not know is refused by name.
+#[test]
+fn mellum_defaults_are_its_config_classs() {
+    use super::kinds::{Body, Ffn, Mixer};
+    let d = describe(&mellum_tiny(serde_json::json!({}))).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert!(!d.desc.head.tied && d.desc.final_norm.eps == 1e-6);
+    assert!(d.desc.blocks.iter().step_by(2).all(|b| matches!(&b.body, Body::Mixer(Mixer::Attention(a)) if a.window.is_none())));
+    assert!(d.desc.blocks.iter().skip(1).step_by(2).all(|b| matches!(&b.body, Body::Ffn(Ffn::Moe(m)) if m.router.renorm && m.router.top_k == 2)));
+    let d =
+        describe(&mellum_tiny(serde_json::json!({"mlp_layer_types": ["dense", "sparse"], "layer_types": ["sliding_attention", "full_attention"]}))).unwrap();
+    assert!(matches!(&d.desc.blocks[1].body, Body::Ffn(Ffn::Mlp(_))) && matches!(&d.desc.blocks[3].body, Body::Ffn(Ffn::Moe(_))));
+    assert!(matches!(&d.desc.blocks[0].body, Body::Mixer(Mixer::Attention(a)) if a.window == Some(1024)));
+    assert!(
+        d.names().iter().any(|n| n.ends_with("layers.0.mlp.gate_proj.weight"))
+            && d.names().iter().any(|n| n.ends_with("layers.1.mlp.experts.5.down_proj.weight"))
+    );
+    for key in ["num_mtp_layers", "num_nextn_predict_layers"] {
+        assert_eq!(describe(&mellum_tiny(serde_json::json!({key: 1}))).unwrap().mtp_layers, 1, "{key}");
+    }
+    for (keys, word) in [
+        (serde_json::json!({"attention_bias": true}), "attention_bias"),
+        (serde_json::json!({"layer_types": ["full_attention", "global"]}), "layer_types[1]"),
+        (serde_json::json!({"mlp_layer_types": ["sparse", "latent"]}), "mlp_layer_types[1]"),
+        (serde_json::json!({"rope_parameters": {"rope_type": "default", "rope_theta": 1e4}}), "is not a layer type"),
+        (
+            serde_json::json!({"layer_types": ["sliding_attention", "full_attention"], "rope_parameters": {"full_attention": {"rope_type": "default", "rope_theta": 1e4}}}),
+            "has no sliding_attention",
+        ),
+        (serde_json::json!({"shared_expert_intermediate_size": 8}), "config key shared_expert_intermediate_size is not understood"),
+    ] {
+        let e = describe(&mellum_tiny(keys)).unwrap_err().msg;
+        assert!(e.contains(word), "{word}: {e}");
+    }
+}
+
+/// The Mellum layout on the CPU reference, a random model of each small config: it runs; the experts kept a token count (two of six is not three of
+/// six); a dense layer is another model than a sparse one; and two layers windowed to three positions do not see a token five back, to the bit, while
+/// full layers do.
+#[test]
+fn mellum_on_the_reference_routes_and_windows() {
+    let run = |cfg: &serde_json::Value, toks: &[u32]| -> Vec<f32> {
+        let d = describe(cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        let src = |n: &str| {
+            let shape = d.shapes.get(n)?.clone();
+            let len: usize = shape.iter().product();
+            let mut s = n.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |a, b| (a ^ b as u64).wrapping_mul(0x0100_0000_01B3));
+            let norm = n.contains("norm");
+            let v = (0..len)
+                .map(|_| {
+                    s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                    let u = ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5;
+                    if norm {
+                        1.0 + 0.2 * u
+                    } else {
+                        0.6 * u
+                    }
+                })
+                .collect();
+            Some((shape, v))
+        };
+        let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg));
+        m.forward(toks, 0).unwrap_or_else(|e| panic!("{}", e.msg)).pop().unwrap()
+    };
+    let (a, first): ([u32; 6], [u32; 6]) = ([5, 9, 13, 17, 21, 25], [44, 9, 13, 17, 21, 25]);
+    let base = mellum_tiny(serde_json::json!({}));
+    let row = run(&base, &a);
+    assert!(row.len() == 61 && row.iter().all(|x| x.is_finite()) && row.iter().any(|&x| x != row[0]));
+    assert_ne!(row, run(&mellum_tiny(serde_json::json!({"num_experts_per_tok": 3})), &a), "three experts a token is another answer than two");
+    assert_ne!(row, run(&mellum_tiny(serde_json::json!({"mlp_layer_types": ["dense", "sparse"]})), &a), "a dense layer is another model");
+    assert_ne!(row, run(&base, &first), "full layers see the first token");
+    let windowed = mellum_tiny(serde_json::json!({"layer_types": ["sliding_attention", "sliding_attention"], "sliding_window": 3}));
+    assert_eq!(run(&windowed, &a), run(&windowed, &first), "two layers of three positions see four back");
+}
