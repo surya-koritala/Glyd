@@ -14,7 +14,9 @@ GLYD_ENGINE=target/release/glyd-engine GGUF_DIR=~/gguf bash scripts/consumer_ben
 
 - **The rows:** [matrix.tsv](matrix.tsv), the models of each tier (released within the last six months), the level Glyd runs each at and the llama.cpp
   quant of the same weights at about the same bits (wren 4.53 against Q4_K_M or, for Gemma 4's quantization-aware checkpoint, Q4_0 of that checkpoint;
-  swift 5.53 against Q5_K_M; kestrel 6.53 against Q6_K). The script runs the rows of the GPU's own tier (`TIER` to choose).
+  swift 5.53 against Q5_K_M; kestrel 6.53 against Q6_K). The script runs the rows of the GPU's own tier (`TIER` to choose). A row is a level
+  `glyd fit` loads on a card of that tier; Glyd's server takes the steps its plan marks (`GLYD_DEGRADE=yes`: a mixture's experts in the computer's
+  memory, as llama.cpp's `--fit on` puts experts on the CPU), and a run whose server loaded another level than the row's is not a result.
 - **The same weights:** the GGUF is `GGUF_DIR/MODELNAME-QUANT.gguf`; with `CONVERT=1` the script makes a missing one from the Hub checkpoint with
   llama.cpp's own `convert_hf_to_gguf.py` and `llama-quantize` (llama.cpp at `LLAMA_CPP_REF`, 2026-11-22 by default). Ollama (`ollama create` from that
   file) and LM Studio (the file loaded by hand, `LMSTUDIO_URL`) run the same file. Bits a weight of a GGUF are its bytes over the parameters; Glyd's

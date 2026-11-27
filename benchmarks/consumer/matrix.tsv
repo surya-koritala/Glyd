@@ -3,6 +3,9 @@
 # params_b: its parameters, in billions (which model is the largest). glyd: the level Glyd runs it at. gguf: the llama.cpp quant of the same
 # weights at about the same bits, QUANT or QUANT@REPO where it is made from another checkpoint of the model (Google's QAT one for gemma's wren);
 # the same GGUF file is what Ollama and LM Studio are given. A row's gguf "-" has no llama.cpp side.
+# A row is a model at a level that `glyd fit` loads on a card of its tier: a mixture of experts may keep experts in the computer's memory (the
+# script takes that step); a dense model has to fit the card. On 16 GB (v0.35.0, RTX 4080 SUPER, 28 GiB of memory for the run): Nemotron 3.5
+# Lightning loads at wren and not at kestrel (28.2 GiB of the computer's memory); Qwen3.8-27B at no level (wren takes 16.6 GiB of the card).
 # tier_gb	model	released	params_b	glyd	gguf
 8	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	2026-08-01	30	wren	Q4_K_M
 8	google/gemma-4-12B-it	2026-05-23	12	wren	Q4_0@google/gemma-4-12B-it-qat-q4_0-unquantized
@@ -10,8 +13,7 @@
 12	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	2026-08-01	30	wren	Q4_K_M
 16	google/gemma-4-12B-it	2026-05-23	12	kestrel	Q6_K
 16	google/gemma-4-12B-it	2026-05-23	12	wren	Q4_0@google/gemma-4-12B-it-qat-q4_0-unquantized
-16	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	2026-08-01	30	kestrel	Q6_K
-16	Qwen/Qwen3.8-27B	2026-08-05	27	wren	Q4_K_M
+16	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	2026-08-01	30	wren	Q4_K_M
 24	Qwen/Qwen3.8-27B	2026-08-05	27	wren	Q4_K_M
 24	Qwen/Qwen3.8-27B	2026-08-05	27	swift	Q5_K_M
 24	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	2026-08-01	30	kestrel	Q6_K

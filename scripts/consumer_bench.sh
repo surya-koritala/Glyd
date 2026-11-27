@@ -3,6 +3,8 @@
 # here, measured by the one harness (`glyd-engine bench`, docs/bench.md) on the same GPU: Glyd at the row's level, llama.cpp on a GGUF of the same weights at
 # about the same bits, Ollama and LM Studio on that same GGUF file. Each result keeps its command lines, the engines' versions and the server's log beside it
 # (NAME.json, NAME.cmd, NAME.log); a side that could not run says why (NAME.skip). At the end the comparison page: `glyd-engine bench --report OUT`.
+# Glyd's server is told to take the steps its plan marks (GLYD_DEGRADE=yes, as `--yes`: a mixture's experts in the computer's memory where the card is
+# too small), and a row whose server loaded another level than the row's is not a result (NAME.json becomes NAME.json.other-level, which the page does not read, with a NAME.skip).
 # It exits 1 where a Glyd row did not run, or where other engines were asked for and none of them ran a row.
 #   scripts/consumer_bench.sh OUT
 # Environment:
@@ -81,7 +83,17 @@ while IFS=$'\t' read -r tier model released params level quant; do
   short=${model##*/}; echo "== $short ($params B, released $released): glyd $level, GGUF $quant"
   common=(--params "$params" --source "$model")
   if on glyd; then
-    bench "glyd-$short-$level" "$model:$level" --no-draft --engine glyd --label "glyd $level" "${common[@]}"
+    name=glyd-$short-$level
+    echo "env: GLYD_DEGRADE=yes (the server takes the steps its plan marks, as --yes; a lower level than $level is not taken as this row's result)" >> "$OUT/$name.cmd"
+    GLYD_DEGRADE=yes bench "$name" "$model:$level" --no-draft --engine glyd --label "glyd $level" "${common[@]}"
+    # (with the steps taken the plan may also step down a level: the result says which level the server loaded, and only the row's own counts)
+    if [ -s "$OUT/$name.json" ] && ! grep -Eq "\"level\": *\"$level\"" "$OUT/$name.json"; then
+      got=$(grep -Eo '"level": *"[a-z]+"' "$OUT/$name.json" | head -1 | cut -d'"' -f4)
+      mv "$OUT/$name.json" "$OUT/$name.json.other-level"
+      echo "did not run at $level: the server loaded ${got:-another level} ($name.json.other-level)" > "$OUT/$name.skip"
+      echo "  $name: loaded ${got:-another level}, not $level"
+      GLYD_FAILED="$GLYD_FAILED $name"
+    fi
   fi
   [ "$quant" = "-" ] && continue
   q=${quant%%@*}; file=$(gguf "$model" "$quant")
