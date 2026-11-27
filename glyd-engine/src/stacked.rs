@@ -89,9 +89,16 @@ fn files_of(dir: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
 /// Whether the saves `a` and `b` are the same directory: every file's name and bytes (glyd.json, the shards, the index, the copied files), but for the
 /// source each glyd.json names (`sources`: `a`'s, read as `b`'s there). None where they are; else the first file that differs, in words.
 pub fn same_files(a: &Path, b: &Path, sources: (&str, &str)) -> Result<Option<String>> {
+    use glyd_gpu::json::{to_compact, to_python, Value};
     let (mut fa, fb) = (files_of(a)?, files_of(b)?);
     if let Some(g) = fa.get_mut("glyd.json") {
-        *g = String::from_utf8_lossy(g).replace(&format!("\"{}\"", sources.0), &format!("\"{}\"", sources.1)).into_bytes();
+        // (each source as glyd.json quotes it, by either of its writers: a Windows path's backslashes escaped)
+        let quoted = |s: &str| [to_compact(&Value::from(s)), to_python(&Value::from(s), 0)];
+        let mut text = String::from_utf8_lossy(g).into_owned();
+        for (from, to) in quoted(sources.0).iter().zip(quoted(sources.1).iter()) {
+            text = text.replace(from, to);
+        }
+        *g = text.into_bytes();
     }
     if fa.keys().ne(fb.keys()) {
         return Ok(Some(format!("files {:?} and {:?}", fa.keys().collect::<Vec<_>>(), fb.keys().collect::<Vec<_>>())));
