@@ -46,19 +46,21 @@ else:
     said = subprocess.run([eng, "--version"], capture_output=True, text=True, env=env).stdout.strip()
     assert said == f"glyd-engine {want}", said
     doctor = subprocess.run([eng, "doctor"], capture_output=True, text=True, env=env).stdout
-    assert re.search(r"GPU library\s+" + re.escape(d) + r"/libglyd_gpu_cuda1[23]\.so\s", doctor + "\n"), doctor  # (the library beside it, of the C API it is written for)
+    assert re.search(r"GPU library\s+none: the engine runs its own kernels", doctor), doctor  # (it loads no GPU library: the two beside it are the Python package's)
     with tempfile.TemporaryDirectory() as m:
-        for arch, code in (("Qwen3ForCausalLM", 0), ("LlamaForCausalLM", 3)):
+        # (the engine describes a model from its config: the family is the config's model_type, and a config it runs has the sizes it reads)
+        qwen3 = {"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "rope_scaling": None, "hidden_size": 1024, "num_hidden_layers": 28, "num_attention_heads": 16, "num_key_value_heads": 8,
+                 "head_dim": 128, "intermediate_size": 3072, "vocab_size": 151936, "rms_norm_eps": 1e-6, "rope_theta": 1000000.0, "max_position_embeddings": 40960}
+        for config, code in ((qwen3, 0), (dict(qwen3, architectures=["OtherForCausalLM"], model_type="other"), 3)):
             with open(os.path.join(m, "config.json"), "w") as f:
-                json.dump({"architectures": [arch], "rope_scaling": None}, f)
+                json.dump(config, f)
             got = subprocess.run([eng, "supports", m], capture_output=True, text=True, env=env).returncode
-            assert got == code, (arch, got)
+            assert got == code, (config["model_type"], got)
         # on a computer with no NVIDIA driver (this one, where there is none): the engine's check says no, in words, before it looks at a model's files, with status 3 (the vLLM way); `run` and `serve` leave
         # the reason in the status file the program that starts them names (one line, whatever its status) and say nothing on the terminal, and standard input is as it was: nothing is read before they are up
         if not ctypes.util.find_library("cuda"):
             with open(os.path.join(m, "config.json"), "w") as f:
-                json.dump({"architectures": ["Qwen3ForCausalLM"], "rope_scaling": None, "hidden_size": 1024, "num_hidden_layers": 28, "num_attention_heads": 16, "num_key_value_heads": 8, "head_dim": 128,
-                           "intermediate_size": 3072, "vocab_size": 151936, "rms_norm_eps": 1e-6, "rope_theta": 1000000.0, "max_position_embeddings": 40960}, f)
+                json.dump(qwen3, f)
             r = subprocess.run([eng, "preflight", m], capture_output=True, text=True, env=env)
             assert r.returncode == 3 and "no NVIDIA driver" in r.stderr and r.stdout == "", (r.returncode, r.stdout, r.stderr)
             why = os.path.join(m, "why")
