@@ -6401,7 +6401,9 @@ mod tests {
             assert_eq!(crate::support::family(&text, name).unwrap(), crate::support::Family::Layers, "{name}");
             sizing::level_of(&args(&["run", "m"]), "m", name, layout, &mc(&text), None, None, Some(LOSSY_CTX))
         };
-        for (name, layers, moe) in [("Domyn-Edge-Base", 36, false), ("granite-swash-2b", 24, false), ("Mellum2.1-12B-A2.5B-Instruct", 28, true)] {
+        for (name, layers, moe) in
+            [("Domyn-Edge-Base", 36, false), ("granite-swash-2b", 24, false), ("Mellum2.1-12B-A2.5B-Instruct", 28, true), ("Aion-1.0-Instruct-2.3B", 28, false)]
+        {
             // (a mixture of experts on the one-GPU route holds its experts at the block levels: at penguin it is refused in that route's words for now)
             let levels: &[Layout] = if moe { &[Layout::Int6, Layout::Int5, Layout::Int4] } else { &[Layout::Tiered, Layout::Int6, Layout::Int5, Layout::Int4] };
             let by_level: Vec<u64> = levels
@@ -6433,7 +6435,12 @@ mod tests {
         let dense: serde_json::Value = serde_json::from_str(&fixture("dense_tiny_manifest.json")).unwrap();
         assert_eq!(crate::support::family(dense["config"].as_str().unwrap(), "q").unwrap(), crate::support::Family::Qwen3);
         // (and `fit` plans them as it plans every family: on an RTX 4080 SUPER, Domyn Edge and Granite Swash lossless, Mellum 2 at kestrel, the level `run` loads)
-        for (name, want) in [("Domyn-Edge-Base", "penguin"), ("granite-swash-2b", "penguin"), ("Mellum2.1-12B-A2.5B-Instruct", "kestrel")] {
+        for (name, want) in [
+            ("Domyn-Edge-Base", "penguin"),
+            ("granite-swash-2b", "penguin"),
+            ("Mellum2.1-12B-A2.5B-Instruct", "kestrel"),
+            ("Aion-1.0-Instruct-2.3B", "penguin"),
+        ] {
             let (text, _) = recorded_release(name);
             let dir = model_dir("described", name, &text);
             let words = ["fit", dir.to_str().unwrap(), "--machine", "rtx4080s"];
