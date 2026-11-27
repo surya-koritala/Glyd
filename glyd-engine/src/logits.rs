@@ -2096,6 +2096,13 @@ pub fn dense_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/dense_tiny_manifest.json"), out, 0x2026_1120_0000_0006, true, "plain dense model")
 }
 
+/// Domyn Edge's small model (the plain dense kind with a norm after each block as well as before it, queries normed with no weight and keys with one: four
+/// layers, the first and last over the whole context with heads of 256 and no positions, the two between windowed to 9 positions with heads of 64 and rotary
+/// positions; 8 query and 4 key-value heads, a vocabulary of 4096): the family's case, no release's.
+pub fn domynedge_random(out: &Path) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/domynedge_tiny_manifest.json"), out, 0x2026_1127_0000_0041, true, "Domyn Edge model")
+}
+
 /// A small Qwen3.5-family text model (Qwen3_5ForCausalLM: three Gated DeltaNet layers and a gated full-attention one, 1024 wide, a vocabulary of 4096): the layout of Qwen3.8-27B and the releases of its family at 0.8B's widths.
 /// Drawn by `manifest_random`'s rules, then the final norm's (1 + w) times `QWEN35_HEAD` (`head_scaled`): its head's logits that much smaller, which every row's
 /// KL from a last-place difference goes as a power of. As first drawn, the GPU against itself (each prompt served alone against all 64 at once, its sums in another
@@ -2670,6 +2677,16 @@ pub fn cases() -> Vec<Case> {
             id: "dense",
             family: "the plain dense kind (a pre-norm decoder of one attention and one gated MLP a layer, on the executor)",
             weights: Weights::Random(dense_random),
+            engine: dense_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            on_choices: None,
+            also: None,
+        },
+        Case {
+            id: "domynedge",
+            family: "Domyn Edge (the plain dense kind with a norm after each block, a head width and a rotary of the layer's own, on the executor)",
+            weights: Weights::Random(domynedge_random),
             engine: dense_engine,
             cpu: Some(described_cpu),
             vocab: 4096,
@@ -5754,7 +5771,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
             Dyn::new(dir, &crate::runtime::config::ModelConfig::load(dir)?, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
         "qwen35" | "qwen35-wide" | "qwen35moe" => crate::dynamic::qwen35::load(dir, o)?,
-        "dense" => crate::dynamic::dense::load(dir, o)?,
+        "dense" | "domynedge" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" | "kimi-dsa" => crate::dynamic::kimi::load(dir, o)?,
         "glm-dsa" | "glm-dsa-f8" => crate::dynamic::glm::load_plain(dir, o)?,
@@ -5837,6 +5854,7 @@ fn random_model_of(case: &str, dir: &Path) -> Result<()> {
         "qwen35moe" => qwen35moe_random(dir),
         "qwen35moe-st" => qwen35moe_stacked(dir, None),
         "dense" => dense_random(dir),
+        "domynedge" => domynedge_random(dir),
         "muse" => crate::muse_ref::random(dir),
         "kimi" => crate::kimi_ref::random(dir, 1, true, 8),
         "kimi-dsa" => crate::kimi_ref::random_dsa(dir),

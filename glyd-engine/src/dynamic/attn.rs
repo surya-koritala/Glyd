@@ -202,12 +202,15 @@ impl AttnOp {
         rms(&a.v_norm)?;
         let norm = match (a.q_norm.map(|n| n.weight), qk) {
             (None, _) => QkNorm::None,
+            // (queries normed with no weight and keys with one, as Domyn Edge's: the weighted norm, the queries' weight the tensor of ones the lowering names)
+            (Some(kinds::NormWeight::None), Some((q, k))) if a.k_norm.map(|n| n.weight) == Some(kinds::NormWeight::Plain) => QkNorm::Weight { q, k },
             (Some(kinds::NormWeight::None), _) => QkNorm::Plain,
             (Some(kinds::NormWeight::Plain), Some((q, k))) => QkNorm::Weight { q, k },
             (Some(kinds::NormWeight::PlusOne), Some((q, k))) => QkNorm::Plus1 { q, k },
             (w, _) => return err(format!("q and k norms of {w:?} (weights {qk:?}): not an operation of this executor")),
         };
-        if a.k_norm.map(|n| n.weight) != a.q_norm.map(|n| n.weight) || a.v_norm.is_some_and(|n| n.weight != kinds::NormWeight::None) {
+        let q_bare_k_weighted = matches!(norm, QkNorm::Weight { .. }) && a.q_norm.map(|n| n.weight) == Some(kinds::NormWeight::None);
+        if (a.k_norm.map(|n| n.weight) != a.q_norm.map(|n| n.weight) && !q_bare_k_weighted) || a.v_norm.is_some_and(|n| n.weight != kinds::NormWeight::None) {
             return err("q and k norms of different kinds, or a v norm with a weight: not an operation of this executor");
         }
         let rope = match (&a.rope, table) {

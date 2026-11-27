@@ -210,8 +210,10 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
     })
 }
 
-/// The pre-norm dense decoder (the description builder's `llama` reading): pairs of blocks, an attention of the kind's parameters
-/// (its q and k norms where the kind has them, a window where it slides) and the gated SiLU MLP, each `x + block(rmsnorm(x) w)`; the final norm on the last rows,
+/// The dense decoder of one attention and one gated SiLU MLP a layer (the description builder's `llama` reading, and Domyn Edge's): pairs of blocks, an
+/// attention of the kind's parameters (its q and k norms where the kind has them, the queries' with no weight where the kind says: a weight of ones; a window
+/// where it slides; a head width and a rotary of the layer's own, or no rotary) and the gated SiLU MLP, each `x + block(rmsnorm(x) w)`, or, where every block
+/// has a norm after it as well (Domyn Edge), `x + rmsnorm(block(rmsnorm(x) w)) post` (`Op::AddNorm`, the sandwich residual); the final norm on the last rows,
 /// the head the embedding's matrix where tied. Each matrix of a layer is its checkpoint tensors stacked (q, k and v; gate and up), sized by the shapes the
 /// description gives. The products are the library's at every row count, a long chunk's decoded and multiplied dense where its route says so: the products,
 /// norms, activation, embedding and head of the dense engine this replaces, kernel for kernel. A kind this lowering does not take (a bias, a rope with
@@ -251,6 +253,12 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         small.len() - 1
     };
     let (mut proj_w, mut q_w, mut inter_w, mut first) = (0, 0, 0, None);
+    // (a norm after each block as well as before it: the sandwich residual, every layer's or none's)
+    let sandwich = m.blocks[0].norm_out.is_some();
+    // (a weightless norm's weight: a small tensor of ones a head width, made once a width)
+    let mut forms: Vec<(usize, super::SmallForm)> = Vec::new();
+    let mut ones: Vec<(usize, usize)> = Vec::new();
+    let final_norm = name(&mut small, d.final_norm.clone());
     for l in 0..layers {
         let (ab, fb) = (&m.blocks[2 * l], &m.blocks[2 * l + 1]);
         let (ar, fr) = (&d.blocks[2 * l], &d.blocks[2 * l + 1]);
@@ -264,8 +272,14 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         }
         for b in [ab, fb] {
             plain(&b.norm_in, &format!("layer {l}"))?;
-            if b.norm_out.is_some() || b.residual != Residual::Add {
-                return err(format!("{what}: layer {l}'s block has a norm after it or a residual of {:?}, where the executor's adds its output", b.residual));
+            if let Some(n) = &b.norm_out {
+                plain(n, &format!("layer {l}'s norm after a block"))?;
+            }
+            if b.norm_out.is_some() != sandwich || b.residual != Residual::Add {
+                return err(format!(
+                    "{what}: layer {l}'s block has a residual of {:?}, or a norm after it where the first layer's has none (or none where it has), where the executor's adds its output",
+                    b.residual
+                ));
             }
         }
         if a.q_norm.is_some_and(|n| n.eps != eps) {
@@ -288,9 +302,23 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
             }
         };
         let (norm_in, post) = (name(&mut small, one(ar, "norm_in")?), name(&mut small, one(fr, "norm_in")?));
-        let qk = match a.q_norm {
-            Some(_) => Some((name(&mut small, one(ar, "q_norm")?), name(&mut small, one(ar, "k_norm")?))),
-            None => None,
+        let qk = match (a.q_norm.map(|n| n.weight), a.k_norm.map(|n| n.weight)) {
+            (None, _) => None,
+            // (the queries' norm has no weight and the keys' has one: the queries' is ones)
+            (Some(NormWeight::None), Some(NormWeight::Plain)) => {
+                let q = match ones.iter().find(|(hd, _)| *hd == a.head_dim) {
+                    Some(&(_, at)) => at,
+                    None => {
+                        let at = name(&mut small, String::new());
+                        forms.push((at, super::SmallForm::Ones(a.head_dim)));
+                        ones.push((a.head_dim, at));
+                        at
+                    }
+                };
+                Some((q, name(&mut small, one(ar, "k_norm")?)))
+            }
+            (Some(NormWeight::None), _) => None,
+            (Some(_), _) => Some((name(&mut small, one(ar, "q_norm")?), name(&mut small, one(ar, "k_norm")?))),
         };
         let ring = rings.len();
         rings.push(Ring::kv(a.head_dim, a.kv_heads, a.window.unwrap_or(0)));
@@ -308,6 +336,26 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         mats.push(gate_up);
         mats.push(item(vec![one(fr, "down")?], &shape)?);
         let mut layer = Vec::with_capacity(8);
+        if sandwich {
+            // (each block's output normed, then added; the add leaves the next block's input normed in H: the next layer's, or the final norm's on the last)
+            let (post_attn, post_mlp) = (name(&mut small, one(ar, "norm_out")?), name(&mut small, one(fr, "norm_out")?));
+            let next = if l + 1 < layers { name(&mut small, one(&d.blocks[2 * (l + 1)], "norm_in")?) } else { final_norm };
+            if l == 0 {
+                first = Some(Op::RmsNorm { x: Slot::X, w: norm_in, y: Slot::H, weight: NormW::Plain, eps });
+            }
+            layer.extend([
+                Op::Linear { w, x: Slot::H, y: Slot::Proj, name: "attention: qkv product" },
+                Op::Attn(attn),
+                Op::Linear { w: w + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
+                Op::AddNorm { y: Slot::O, post: post_attn, scalar: None, next: post },
+                Op::GateUpSilu { w: w + 2, inter },
+                Op::Linear { w: w + 3, x: Slot::M, y: Slot::D, name: "MLP: down product" },
+                Op::AddNorm { y: Slot::D, post: post_mlp, scalar: None, next },
+            ]);
+            ops.push(layer);
+            (proj_w, q_w, inter_w) = (proj_w.max(stride), q_w.max(a.heads * a.head_dim), inter_w.max(inter));
+            continue;
+        }
         match l {
             0 => first = Some(Op::RmsNorm { x: Slot::X, w: norm_in, y: Slot::H, weight: NormW::Plain, eps }),
             _ => layer.push(Op::NormAdd { y: Slot::D, w: norm_in, plus1: false }),
@@ -323,7 +371,6 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         ops.push(layer);
         (proj_w, q_w, inter_w) = (proj_w.max(stride), q_w.max(a.heads * a.head_dim), inter_w.max(inter));
     }
-    let final_norm = name(&mut small, d.final_norm.clone());
     let embed = mats.len();
     mats.push(item(vec![d.embed.clone()], &shape)?);
     let lm = match (&d.head, m.head.tied) {
@@ -358,13 +405,14 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         widths,
         mats,
         small,
-        forms: Vec::new(),
+        forms,
         ropes,
         rings,
         first: first.ok_or_else(|| Error(format!("{what}: no layers")))?,
         layers: ops,
         states: Vec::new(),
-        final_norm: Some((final_norm, Slot::D, false)),
+        // (the sandwich residual's last add leaves the final norm's output in H, which the head reads)
+        final_norm: (!sandwich).then_some((final_norm, Slot::D, false)),
         decoded: true,
         skinny: false,
         embed,
@@ -2647,6 +2695,51 @@ mod tests {
             "max_position_embeddings": 4096, "hidden_act": "silu", "tie_word_embeddings": false});
         c.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         c
+    }
+
+    /// Domyn Edge's small model (the logits checks' random one) lowers by the plain dense lowering: every layer the sandwich residual (`Op::AddNorm` after the
+    /// attention and after the MLP, no `Op::NormAdd`; the last one's next norm the final norm, which the head then reads from H: no final norm of its own on the
+    /// last rows); each layer's ring and attention at its own head width, with a rotary on the windowed layers alone; the queries' norm a weight of ones, one
+    /// small tensor a head width (`SmallForm::Ones`), the keys' the checkpoint's; a matrix for each tensor of the checkpoint, at its shape. (The planner does
+    /// not size a model whose layers differ in head width yet, so `fit`, `run` and `serve` do not take the family: `support::family` still refuses it.)
+    #[test]
+    fn domyn_edge_lowers_as_the_sandwich_dense_kind() {
+        use super::super::attn::QkNorm;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/domynedge_tiny_manifest.json")).unwrap()).unwrap();
+        let text = manifest["config"].as_str().unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(text).unwrap();
+        let kinds = crate::runtime::describe::describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        let have: std::collections::BTreeSet<String> = manifest["tensors"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
+        kinds.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+        for t in manifest["tensors"].as_array().unwrap() {
+            let shape: Vec<usize> = t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+            assert_eq!(kinds.shapes.get(t[0].as_str().unwrap()), Some(&shape), "{}", t[0]);
+        }
+        let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert_eq!((d.layers.len(), d.final_norm.is_none(), d.rings.len(), d.ropes.len()), (4, true, 4, 1));
+        assert_eq!(d.forms, vec![(d.forms[0].0, super::super::SmallForm::Ones(256)), (d.forms[1].0, super::super::SmallForm::Ones(64))]);
+        for (l, ops) in d.layers.iter().enumerate() {
+            let whole = l == 0 || l == 3;
+            assert_eq!(ops.iter().filter(|o| matches!(o, Op::AddNorm { scalar: None, .. })).count(), 2, "layer {l}");
+            assert!(!ops.iter().any(|o| matches!(o, Op::NormAdd { .. })), "layer {l}");
+            let Some(Op::Attn(a)) = ops.iter().find(|o| matches!(o, Op::Attn(_))) else { panic!("layer {l}: no attention") };
+            assert_eq!((a.d, a.nq, a.nk, a.rope.is_some()), (if whole { 256 } else { 64 }, 8, 4, !whole), "layer {l}");
+            let QkNorm::Weight { q, k } = a.norm else { panic!("layer {l}: {:?}", a.norm) };
+            assert!(d.small[q].is_empty() && d.small[k].ends_with(&format!("layers.{l}.attention.k_norm.weight")), "layer {l}");
+            assert_eq!(d.forms.iter().find(|f| f.0 == q).map(|f| f.1), Some(super::super::SmallForm::Ones(a.d)), "layer {l}");
+        }
+        // (the last add's next norm is the final norm)
+        let Some(Op::AddNorm { next, .. }) = d.layers[3].last() else { panic!() };
+        assert!(d.small[*next].ends_with("model.norm.weight"));
+        assert_eq!(d.widths[Slot::Proj as usize], 8 * 256 + 2 * 4 * 256);
+        assert!(crate::runtime::config::ModelConfig::parse(text).unwrap().family().is_none());
+        // (a model with a norm after some blocks and not others is refused, named)
+        let mut odd = kinds.clone();
+        odd.desc.blocks[3].norm_out = None;
+        let e = dense(&odd, vec![2], 4096).unwrap_err().msg;
+        assert!(e.contains("layer 1") && e.contains("norm after it"), "{e}");
     }
 
     /// Each form of the plain dense decoder the description builder reads (the random dense model of the logits checks; no q and k norms, a window on every
