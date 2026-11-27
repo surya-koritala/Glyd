@@ -231,6 +231,10 @@ Flagship consumer/prosumer NVIDIA launch: remaining core text model families, ca
 - [ ] K6 Residual forms: streams with no comb matrix, normalise-and-interpolate, value residual ([#554](https://github.com/surya-koritala/Glyd/issues/554))
 - [ ] K7 Small kind options, one batch ([#555](https://github.com/surya-koritala/Glyd/issues/555))
 - [ ] K8 Parallel block ([#556](https://github.com/surya-koritala/Glyd/issues/556))
+- [ ] K9 A role read from a range of rows of a tensor ([#632](https://github.com/surya-koritala/Glyd/issues/632))
+- [ ] Run the described families on the executor and in the planner ([#641](https://github.com/surya-koritala/Glyd/issues/641))
+- [ ] Hummingbird and RAM offload for dense models: a dense model larger than the card runs ([#636](https://github.com/surya-koritala/Glyd/issues/636))
+- [ ] A routine for adding a model family: one intake command, one page, plain kinds first ([#617](https://github.com/surya-koritala/Glyd/issues/617))
 - [ ] GGUF architectures: metadata to a model description for every family the runtime serves ([#557](https://github.com/surya-koritala/Glyd/issues/557))
 - [ ] One table-driven tool-call and reasoning parser ([#558](https://github.com/surya-koritala/Glyd/issues/558))
 - [ ] Derive tool-call and reasoning markers from the chat template ([#559](https://github.com/surya-koritala/Glyd/issues/559))
@@ -367,6 +371,7 @@ Gate: Per device (NVIDIA T4; AMD RX 7900 XTX, RX 9070 XT, Strix Halo, MI300X), t
 - [ ] SageMaker, Vertex and KServe v2 routes ([#593](https://github.com/surya-koritala/Glyd/issues/593))
 - [ ] Save and restore a conversation's KV pages to a file ([#594](https://github.com/surya-koritala/Glyd/issues/594))
 - [ ] Stored Responses: retrieve, cancel and previous_response_id ([#595](https://github.com/surya-koritala/Glyd/issues/595))
+- [ ] K11 Layer kinds that single families need ([#637](https://github.com/surya-koritala/Glyd/issues/637))
 
 Gate: A documented stable surface with CI compatibility checks; `llm-d` routes to Glyd pods by prefix-cache hits; a Helm + LeaderWorkerSet install passes readiness on a GPU cluster; SBOM and provenance on every artifact; a comparison with vLLM and SGLang per quality tier (lossless against bf16, lossy levels against FP8 and NVFP4) on H100 (and B200 via `V8a` `sm_100` kernels), published with configs and logs whatever the result.
 
@@ -393,6 +398,7 @@ Work deferred until the single-node server and small clusters are adopted: prefi
 - [ ] Fleet capacity planner ([#599](https://github.com/surya-koritala/Glyd/issues/599))
 - [ ] Tensor parallel across machines over RDMA ([#600](https://github.com/surya-koritala/Glyd/issues/600))
 - [ ] Snapshot and restore of a loaded server ([#601](https://github.com/surya-koritala/Glyd/issues/601))
+- [ ] Text diffusion language models ([#639](https://github.com/surya-koritala/Glyd/issues/639))
 
 Revisited after 1.0, by demand.
 
