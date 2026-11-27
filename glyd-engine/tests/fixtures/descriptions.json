@@ -223,6 +223,14 @@
     "plan": "68b0d4fcd7227af7",
     "family": "Kimi"
   },
+  "headers/Mellum2.1-12B-A2.5B-Instruct.json": {
+    "blocks": 56,
+    "tensors": 5631,
+    "kinds": "cd3b2f387aca00a2",
+    "weights": "6f5858688a341580",
+    "plan": "a0bdbb7edb873bf4",
+    "family": "refused: m is a MellumForCausalLM model, which this engine has no description of yet"
+  },
   "headers/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.json": {
     "blocks": 52,
     "tensors": 6243,
