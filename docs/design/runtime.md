@@ -575,7 +575,8 @@ gate in fp32): rounded to bf16, a weight moves by up to 2^-9 of itself and a nea
 latent attention's head weights to the reference's fp32 product of the same input rows (within 1e-4 of the largest) and its picks to the reference's
 choice on the engine's own queries and keys with those weights (within 1e-4 of the scores, the order of fp32 sums), and prints the rows where bf16
 weights would have picked another set; `logitsmodel glm-dsa DIR --ties` makes GLM-5.3's random model with indexers whose picks the head weights
-decide (two heads' scores cancelling but for a 64th), where bf16 weights pick another set at most rows.
+decide (two heads' scores cancelling but for a 64th): on an A10 (2026-11-27), its two indexers' 256 traced rows of a prompt of 64 and 64 steps
+all took the reference's choice with fp32 weights, and bf16 weights would have picked another set at 23 of them.
 
 **Exact ties.** Where two scores are equal in fp32 the engine's rule is the reference's: a router takes the expert of the smaller index first
 (`reference::ffn`, kernels/moe.cu; the reference's groups of experts the smaller group first, which the executor refuses), and an indexer the earlier pool or entry first (`reference::mla`,
