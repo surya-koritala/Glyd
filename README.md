@@ -71,16 +71,17 @@ one with a tag: `glyd run google/gemma-4-12B-it:wren`. The KV cache is bf16 page
 
 ## Supported hardware
 
-| Platform | GPUs | Status |
-| :--- | :--- | :--- |
-| NVIDIA, Linux x86_64 | Ampere to Blackwell: RTX 30, 40 and 50 series, RTX A-series and Ada, A100, L4, L40S, H100, H200, B200 | Supported |
-| NVIDIA, Linux aarch64 | GH200, GB200, DGX Spark, Jetson Thor | Built, not yet measured |
-| NVIDIA, Windows | The same GPUs as Linux x86_64 | Preview |
-| AMD | RDNA 3 and 4 | Development build (`GLYD_HIP=1`) |
-| Apple Silicon | M-series Macs | Planned ([roadmap](ROADMAP.md)) |
-| CPU only | x86_64 and arm64 | Planned ([roadmap](ROADMAP.md)) |
+| Vendor | System | GPUs | Status |
+| :--- | :--- | :--- | :--- |
+| NVIDIA | Linux&nbsp;x86_64 | Ampere to Blackwell: RTX 30, 40 and 50 series, RTX A-series and Ada, A100, L4, L40S, H100, H200, B200 | Supported |
+| NVIDIA | Linux&nbsp;aarch64 | GH200, GB200, DGX Spark, Jetson Thor | Built, not&nbsp;measured |
+| NVIDIA | Windows&nbsp;x86_64 | The same GPUs as Linux x86_64 | Preview |
+| AMD | Linux&nbsp;x86_64 | RDNA 3 and 4 | Development&nbsp;build |
+| Apple | macOS | M-series Macs | [Planned](ROADMAP.md) |
+| None (CPU&nbsp;only) | x86_64, arm64 | | [Planned](ROADMAP.md) |
 
-NVIDIA GPUs need driver R535 or newer (R570 for Blackwell). `glyd doctor` checks a machine and says what to fix.
+NVIDIA GPUs need driver R535 or newer (R570 for Blackwell). The AMD build is made from source with `GLYD_HIP=1`. `glyd doctor` checks a
+machine and says what to fix.
 
 | Setup | What runs | Status |
 | :--- | :--- | :--- |
@@ -91,17 +92,27 @@ NVIDIA GPUs need driver R535 or newer (R570 for Blackwell). `glyd doctor` checks
 
 Glyd supports model families, not individual models: any size or fine-tune of these families runs, from the Hub or from 16-bit GGUF files.
 
-| Family | Levels |
-| :--- | :--- |
-| Gemma | penguin, kestrel, swift, wren |
-| Qwen | penguin, kestrel, swift, wren |
-| Nemotron-H | penguin, kestrel, swift, wren, hummingbird |
-| Kimi | penguin, hummingbird |
-| GLM | penguin, hummingbird |
-| DeepSeek | penguin, hummingbird |
-| Muse | penguin, hummingbird |
+| Family | Releases it covers | Levels |
+| :--- | :--- | :--- |
+| Gemma&nbsp;4 | the dense models: 12B, 31B | penguin, kestrel, swift, wren |
+| Qwen3.5&nbsp;layout | Qwen3.5, 3.6 and 3.8, dense and mixture of experts | penguin, kestrel, swift, wren |
+| Qwen3.8-Flash-Next | the Qwen&nbsp;4 architecture | penguin, hummingbird |
+| Plain&nbsp;dense | Llama-style decoders: the model types `llama`, `mistral`, `qwen2`, `qwen3` | penguin, kestrel, swift, wren |
+| Nemotron-H | Nemotron 3 and 3.5 | penguin, kestrel, swift, wren, hummingbird |
+| Kimi | Kimi-K3, K3.1 | penguin, hummingbird |
+| GLM | GLM-5.3-Flash; GLM-5.3 (penguin) | penguin, hummingbird |
+| DeepSeek | DeepSeek-V4; V4.1 (penguin) | penguin, hummingbird |
+| Muse&nbsp;Spark | the text model | penguin, hummingbird |
 
-Gemma 4: the 12B and 31B run; the 26B-A4B and the E models are not supported yet.
+Gemma 4's 26B-A4B and E models are not supported yet. The engine tells a family by its `config.json`, not by its name; the
+[Models](https://surya-koritala.github.io/Glyd/guide/models.html) page of the guide is made from the engine's own table and has every detail.
+
+**Coming next.** A family is first *described* (its layers mapped from its config, its release's tensors all read, held to a CPU reference),
+then run on a GPU, and only then listed above.
+
+| Family | Stage |
+| :--- | :--- |
+| Domyn&nbsp;Edge | described |
 
 ## Serving and tools
 
