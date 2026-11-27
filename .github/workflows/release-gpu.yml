@@ -181,7 +181,7 @@ jobs:
       # (a run that is not a tag takes the library from the Actions cache where the GPU library's sources did not change; a tag builds it fresh. The check below runs either way.)
       - id: memo
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: lib
           key: gpulib-${{ matrix.name }}-cuda${{ matrix.cuda }}-${{ matrix.compress }}-${{ hashFiles('gpu/*.cu', 'gpu/*.h', 'gpu/build_lib.sh') }}-v1
@@ -261,7 +261,7 @@ jobs:
           persist-credentials: false
       - id: memo
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: .fatbin
           key: engine-fatbin-${{ matrix.name }}-cuda13.0.3-12.9-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h', 'gpu/glyd_gpu_kernels.h') }}-v1
@@ -394,7 +394,7 @@ jobs:
           persist-credentials: false
       - id: memo
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: .fatbin
           key: engine-fatbin-windows-cuda13.0.3-12.9.1-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h', 'gpu/glyd_gpu_kernels.h') }}-v1
