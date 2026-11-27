@@ -184,7 +184,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.platforms == 'true'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -239,9 +239,10 @@ jobs:
             target/ci/glyd$exe -d "$RUNNER_TEMP/in.glyd" -o "$RUNNER_TEMP/out.bin"
             cmp "$RUNNER_TEMP/in.bin" "$RUNNER_TEMP/out.bin"
           done
+      # (the build of the tests and then the tests: a hosted macOS machine took 7.5 minutes to build them and over 12 to run 1,236 of the 1,256 unit tests)
       - name: The engine's tests (the development build)
         if: matrix.part == 'engine'
-        timeout-minutes: 20
+        timeout-minutes: 50
         shell: bash
         run: cargo test --profile ci -p glyd-engine
       - name: The engine program runs
