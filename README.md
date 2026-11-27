@@ -106,6 +106,10 @@ Glyd supports model families, not individual models: any size or fine-tune of th
 
 The engine tells a family by a model's `config.json`, not by its name.
 
+**Planned families** ([roadmap](ROADMAP.md)): AliceAI, Beam, Command, Cosmos, DeepSeek-V2 and V3, Domyn Edge, ERNIE, EXAONE, Falcon, Flint, GLM-4,
+GPT-2, Granite, Hunyuan, Inkling, LFM, Ling, Mellum, MiniCPM, MiniMax, Mistral Large, OLMo, Phi, RWKV, StarCoder, Step, and the vision and
+audio models of every family. A family joins the table when the engine runs it.
+
 ## Serving and tools
 
 | Area | What Glyd has |
