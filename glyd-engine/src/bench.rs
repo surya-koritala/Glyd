@@ -594,6 +594,13 @@ fn free_port() -> Result<u16> {
     l.local_addr().map(|a| a.port()).map_err(|e| Error(e.to_string()))
 }
 
+/// Whether another process was on the GPU before a run: its median utilization past 10%, or more memory in use than a desktop takes
+/// (`used_mib` past 2,500). Where the server measured is one that was already running (`outside`: --against), the memory in use is that
+/// server's own model and says nothing: only the utilization counts.
+fn busy_before(utilization_pct: Option<f64>, used_mib: f64, outside: bool) -> bool {
+    utilization_pct.is_some_and(|u| u > 10.0) || (!outside && used_mib > 2500.0)
+}
+
 /// `serve MODEL` of this program on a port of its own, up when /v1/models answers (the first start downloads and packs the model).
 pub(crate) fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
     let port = match a.flag("port") {
@@ -699,7 +706,8 @@ pub fn measure(a: &Args) -> Result<()> {
         return err("--runs 0");
     }
     let machine = machine();
-    // (the GPU as it is before the server starts, five looks 0.3 s apart: busy where its median utilization is past 10%, or more than a desktop's memory is used: another process on it)
+    // (the GPU as it is before the server starts, five looks 0.3 s apart: busy where its median utilization is past 10%, or more than a desktop's memory is used: another process on it.
+    // With --against the server is already up and the memory in use is its own, so only the utilization can say the GPU is busy: `busy_before`)
     let mut looks: Vec<Value> = Vec::new();
     for i in 0..5 {
         if i > 0 {
@@ -710,7 +718,7 @@ pub fn measure(a: &Args) -> Result<()> {
     let util = median(&looks.iter().filter_map(|l| l["utilization_pct"].as_f64()).collect::<Vec<_>>());
     let before = looks.last().cloned().unwrap_or(Value::Null);
     let idle = before["memory_used_mib"].as_f64().unwrap_or(0.0);
-    let busy = util.is_some_and(|u| u > 10.0) || idle > 2500.0;
+    let busy = busy_before(util, idle, against.is_some());
     let peak = Peak::start();
     let users = users_asked(a, &loads)?;
     let server = match &against {
@@ -1592,6 +1600,18 @@ mod tests {
         // (a spread of rel_sd around base, alternating: the sample sd is about rel_sd * base)
         let r: Vec<f64> = (0..n).map(|i| base * (1.0 + if i % 2 == 0 { rel_sd } else { -rel_sd })).collect();
         stats(&r)
+    }
+
+    /// A server this program starts finds the GPU as others left it: memory in use past a desktop's is another process. A server that was
+    /// already running (--against) holds its own model there (llama.cpp's 14,915 MiB marked its own result contended): only utilization counts.
+    #[test]
+    fn an_outside_servers_own_memory_is_not_another_process() {
+        assert!(busy_before(Some(0.0), 14915.0, false));
+        assert!(!busy_before(Some(0.0), 14915.0, true));
+        assert!(!busy_before(Some(0.0), 305.0, false));
+        assert!(busy_before(Some(35.0), 305.0, false));
+        assert!(busy_before(Some(35.0), 14915.0, true));
+        assert!(!busy_before(None, 305.0, true));
     }
 
     #[test]

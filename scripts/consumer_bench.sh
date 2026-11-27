@@ -17,6 +17,7 @@
 #   OLLAMA_URL      a running Ollama (default: `ollama serve` started here where ollama is installed)
 #   LMSTUDIO_URL, LMSTUDIO_MODEL   a running LM Studio server with the row's GGUF loaded (LM Studio has no headless start here)
 #   LOADS (short:1,short:4,4k:1), RUNS (3), MAX_TOKENS (256), WORK (OUT/.work)
+#   SLOTS (4) the requests llama.cpp and Ollama take at once; SLOT_CTX (8192) the context each of them has
 set -uo pipefail
 [ $# -ge 1 ] || { sed -n 2,19p "$0"; exit 2; }
 OUT=$(mkdir -p "$1" && cd "$1" && pwd)
@@ -26,6 +27,7 @@ WORK=${WORK:-$OUT/.work}; mkdir -p "$WORK"
 GE=${GLYD_ENGINE:-$ROOT/target/release/glyd-engine}; [ -x "$GE" ] || GE=$(command -v glyd-engine) || { echo "no glyd-engine (GLYD_ENGINE=...)"; exit 2; }
 ENGINES=${ENGINES:-glyd llama.cpp ollama lmstudio}
 LOADS=${LOADS:-short:1,short:4,4k:1}; RUNS=${RUNS:-3}; MAX_TOKENS=${MAX_TOKENS:-256}
+SLOTS=${SLOTS:-4}; SLOT_CTX=${SLOT_CTX:-8192}   # (llama.cpp's -c is shared by its slots: -c 8192 -np 4 left each 2,048 tokens, and the 4K prompt was refused)
 LLAMA_CPP_REF=${LLAMA_CPP_REF:-0b51bb2fed322bc884f96f98db340e2b0f6ea176}   # (llama.cpp of 2026-11-22)
 GGUF_DIR=${GGUF_DIR:-$WORK/gguf}; mkdir -p "$GGUF_DIR"
 GPU=$(nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader | head -1)
@@ -61,19 +63,24 @@ llama_server() {
   fi
   echo "$s"
 }
-gguf() {  # gguf REPO QUANT[@SOURCE]: the GGUF file of the row (made where CONVERT=1), or nothing
+gguf() {  # gguf REPO QUANT[@SOURCE]: the GGUF file of the row (made where CONVERT=1), or nothing and the reason in WORK/gguf-NAME.why
   local q=${2%%@*} src=$1; [ "$2" != "$q" ] && src=${2#*@}
-  local f=$GGUF_DIR/${src##*/}-$q.gguf
+  local base=${src##*/}-$q; local f=$GGUF_DIR/$base.gguf why=$WORK/gguf-$base.why log=$WORK/gguf-$base
+  rm -f "$why"
   [ -s "$f" ] && { echo "$f"; return; }
-  [ "${CONVERT:-0}" = 1 ] || return 1
-  llama_server > /dev/null || return 1
-  local hf=$WORK/hf-src venv=$WORK/convert-venv
-  [ -x "$venv/bin/python" ] || { python3 -m venv "$venv" && "$venv/bin/pip" install -q -r "$WORK/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt" huggingface_hub; } > "$WORK/venv.log" 2>&1 || return 1
-  "$venv/bin/hf" download "$src" --local-dir "$hf" > "$WORK/download.log" 2>&1 \
-    && "$venv/bin/python" "$WORK/llama.cpp/convert_hf_to_gguf.py" "$hf" --outtype bf16 --outfile "$WORK/bf16.gguf" > "$WORK/convert.log" 2>&1 \
-    && "$WORK/llama.cpp/build/bin/llama-quantize" "$WORK/bf16.gguf" "$f" "$q" > "$WORK/quantize.log" 2>&1
-  local rc=$?; rm -rf "$hf" "$WORK/bf16.gguf"
-  [ $rc = 0 ] && echo "$f"
+  [ "${CONVERT:-0}" = 1 ] || { echo "no GGUF $q of ${src##*/} in $GGUF_DIR (CONVERT=1 makes one)" > "$why"; return 1; }
+  llama_server > /dev/null || { echo "llama.cpp did not build, so no GGUF could be made ($WORK/llama-build.log)" > "$why"; return 1; }
+  local hf=$WORK/hf-src venv=$WORK/convert-venv step=venv
+  # (llama.cpp pins a transformers that cannot read the newest tokenizers: gemma-4's stopped it with "'list' object has no attribute 'keys'"; the newest one is put over it)
+  [ -x "$venv/bin/python" ] && [ -e "$venv/.glyd-ready" ] || { python3 -m venv "$venv" && "$venv/bin/pip" install -q -r "$WORK/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt" huggingface_hub \
+    && "$venv/bin/pip" install -q -U transformers && touch "$venv/.glyd-ready"; } > "$log.venv.log" 2>&1 \
+    && step=download && "$venv/bin/hf" download "$src" --local-dir "$hf" > "$log.download.log" 2>&1 \
+    && step=convert && "$venv/bin/python" "$WORK/llama.cpp/convert_hf_to_gguf.py" "$hf" --outtype bf16 --outfile "$WORK/bf16.gguf" > "$log.convert.log" 2>&1 \
+    && step=quantize && "$WORK/llama.cpp/build/bin/llama-quantize" "$WORK/bf16.gguf" "$f.part" "$q" > "$log.quantize.log" 2>&1 && mv "$f.part" "$f"
+  local rc=$?; rm -rf "$hf" "$WORK/bf16.gguf" "$f.part"
+  [ $rc = 0 ] && { echo "$f"; return; }
+  echo "no GGUF $q of ${src##*/}: llama.cpp's $step step failed: $(grep -v '^[[:space:]]*$' "$log.$step.log" 2> /dev/null | tail -n 1 | cut -c1-200) ($log.$step.log)" > "$why"
+  return 1
 }
 bits_of() { awk -v b="$(stat -c %s "$1")" -v p="$2" 'BEGIN { printf "%.2f", b * 8 / (p * 1e9) }'; }   # (the file's bytes over the parameters: embeddings and all)
 
@@ -98,13 +105,15 @@ while IFS=$'\t' read -r tier model released params level quant; do
   [ "$quant" = "-" ] && continue
   q=${quant%%@*}; file=$(gguf "$model" "$quant")
   if [ -z "$file" ]; then
-    for e in llama.cpp ollama lmstudio; do on $e && echo "no GGUF $q of ${short} in $GGUF_DIR (CONVERT=1 makes one)" > "$OUT/$e-$short-$q.skip"; done
+    src=$model; [ "$quant" != "$q" ] && src=${quant#*@}
+    reason=$(cat "$WORK/gguf-${src##*/}-$q.why" 2> /dev/null); echo "  ${reason:-no GGUF $q of $short}"
+    for e in llama.cpp ollama lmstudio; do on $e && echo "${reason:-no GGUF $q of $short in $GGUF_DIR}" > "$OUT/$e-$short-$q.skip"; done
     continue
   fi
   b=$(bits_of "$file" "$params")
   if on llama.cpp && S=$(llama_server); then
     name=llama.cpp-$short-$q
-    cmd=("$S" -m "$file" --fit on -fa on -c 8192 -np 4 --jinja --host 127.0.0.1 --port 8091 ${LLAMA_ARGS:-})
+    cmd=("$S" -m "$file" --fit on -fa on -c $((SLOT_CTX * SLOTS)) -np "$SLOTS" --jinja --host 127.0.0.1 --port 8091 ${LLAMA_ARGS:-})
     echo "server: ${cmd[*]}" > "$OUT/$name.cmd"; echo "llama.cpp: $LLAMA_CPP_REF" >> "$OUT/$name.cmd"
     "${cmd[@]}" > "$OUT/$name.log" 2>&1 & pid=$!
     if up http://127.0.0.1:8091/health $pid; then
@@ -115,11 +124,11 @@ while IFS=$'\t' read -r tier model released params level quant; do
   if on ollama && { [ -n "${OLLAMA_URL:-}" ] || has ollama; }; then
     name=ollama-$short-$q; url=${OLLAMA_URL:-http://127.0.0.1:11434}; opid=
     if [ -z "${OLLAMA_URL:-}" ] && ! curl -sf "$url/api/version" > /dev/null; then
-      OLLAMA_NUM_PARALLEL=4 OLLAMA_FLASH_ATTENTION=1 OLLAMA_CONTEXT_LENGTH=8192 ollama serve > "$OUT/$name.log" 2>&1 & opid=$!
+      OLLAMA_NUM_PARALLEL=$SLOTS OLLAMA_FLASH_ATTENTION=1 OLLAMA_CONTEXT_LENGTH=$SLOT_CTX ollama serve > "$OUT/$name.log" 2>&1 & opid=$!
       up "$url/api/version" $opid
     fi
     printf 'FROM %s\nPARAMETER temperature 0\n' "$file" > "$WORK/Modelfile"
-    { echo "ollama: $(curl -s "$url/api/version")"; echo "ollama create glyd-$short-$q -f Modelfile: $(cat "$WORK/Modelfile" | tr '\n' ' ')"; echo "server env: OLLAMA_NUM_PARALLEL=4 OLLAMA_FLASH_ATTENTION=1 OLLAMA_CONTEXT_LENGTH=8192"; } > "$OUT/$name.cmd"
+    { echo "ollama: $(curl -s "$url/api/version")"; echo "ollama create glyd-$short-$q -f Modelfile: $(cat "$WORK/Modelfile" | tr '\n' ' ')"; echo "server env: OLLAMA_NUM_PARALLEL=$SLOTS OLLAMA_FLASH_ATTENTION=1 OLLAMA_CONTEXT_LENGTH=$SLOT_CTX"; } > "$OUT/$name.cmd"
     if ollama create "glyd-$short-$q" -f "$WORK/Modelfile" >> "$OUT/$name.log" 2>&1; then
       bench "$name" --against "$url" --model "glyd-$short-$q" --engine ollama --bits "$b" --label "ollama $q" "${common[@]}"
       ollama rm "glyd-$short-$q" > /dev/null 2>&1
