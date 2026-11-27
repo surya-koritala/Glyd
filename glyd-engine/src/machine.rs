@@ -31,13 +31,13 @@ pub fn driver_min(cc: (i32, i32)) -> i32 {
 }
 
 /// What `run`, `serve` and `fit` say on a GPU whose driver reports CUDA `driver` (12090 for 12.9) where the build carries the CUDA 12 kernels beside the CUDA 13 ones
-/// (`both`, a release's): the driver takes the CUDA 12 kernels and GPU library (dev.rs `pick_fatbin`, glyd-gpu's library by the driver's version), and says why and
+/// (`both`, a release's): the driver takes the CUDA 12 kernels (dev.rs `pick_fatbin`; a CUDA build loads no GPU library), and says why and
 /// how fast. Measured 2026-11-23: gemma-4-12B at wren on an RTX 4080 SUPER with the CUDA 12 pair against the CUDA 13 one, every load of the bench's gate suite
 /// within 0.3% (decode and prompt). None on a driver of CUDA 13, or a build with one pair.
 pub fn cuda12_note(driver: i32, both: bool) -> Option<String> {
     (both && driver > 0 && driver < 13000).then(|| {
         format!(
-            "this driver (the {} series) reports CUDA {}.{}, not 13, so the engine runs its CUDA 12 kernels and GPU library; they measured as fast as the CUDA 13 ones (gemma-4-12B on an RTX 4080 SUPER, within 0.3%). A driver of 580 or newer runs the CUDA 13 ones.",
+            "this driver (the {} series) reports CUDA {}.{}, not 13, so the engine runs its CUDA 12 kernels; they measured as fast as the CUDA 13 ones (gemma-4-12B on an RTX 4080 SUPER, within 0.3%). A driver of 580 or newer runs the CUDA 13 ones.",
             driver_series(driver),
             driver / 1000,
             driver % 1000 / 10
@@ -337,13 +337,13 @@ pub fn config_refusal(name: &str, c: &Config) -> Option<Refusal> {
     if c.head_dim != 128 {
         return Some(cannot(
             format!("{name}: its attention heads have {} values, and the engine's KV cache takes 128", c.head_dim),
-            instead("Other models run with vLLM", "Pick a Qwen3 model, which this engine runs: glyd run Qwen/Qwen3-8B"),
+            instead("Other models run with vLLM", "Pick a model of a family this engine runs: glyd run Qwen/Qwen3.8-27B"),
         ));
     }
     if c.kv_heads == 0 || !c.heads.is_multiple_of(c.kv_heads) || c.heads / c.kv_heads > MAX_GROUP {
         return Some(cannot(
             format!("{name} has {} query heads to {} KV heads, and the engine takes up to {MAX_GROUP} to one", c.heads, c.kv_heads),
-            instead("Other models run with vLLM", "Pick a Qwen3 model, which this engine runs: glyd run Qwen/Qwen3-8B"),
+            instead("Other models run with vLLM", "Pick a model of a family this engine runs: glyd run Qwen/Qwen3.8-27B"),
         ));
     }
     None
@@ -689,7 +689,7 @@ mod tests {
             assert!(!fix.contains("vLLM") && !fix.contains("vllm"), "{fix}");
         }
         assert!(alone[0].contains("GLYD_ENGINE=1 glyd run MODEL") && alone[0].contains("install.sh"), "{}", alone[0]);
-        assert!(alone[1].contains("install.sh") && alone[3].contains("Qwen/Qwen3-8B") && alone[4].contains("--context 40960"), "{alone:?}");
+        assert!(alone[1].contains("install.sh") && alone[3].contains("Qwen/Qwen3.8-27B") && alone[4].contains("--context 40960"), "{alone:?}");
         // the driver's update is exact either way: what it has, what the engine needs, and the command
         for fix in [&alone[2], &all(true)[2]] {
             assert!(fix.contains("runs CUDA 12.8") && fix.contains("CUDA 13.0") && fix.contains("580") && fix.contains("nvidia-driver-580"), "{fix}");

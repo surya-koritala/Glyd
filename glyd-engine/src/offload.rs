@@ -106,6 +106,11 @@ impl LayerCache {
         self.slot_of.get(e).copied().filter(|&s| s != NONE).map(|s| s as usize)
     }
 
+    /// Each place's expert (-1 where free): what `set_places` takes.
+    pub fn expert_in(&self) -> Vec<i32> {
+        self.expert_in.iter().map(|&e| if e == NONE { -1 } else { e as i32 }).collect()
+    }
+
     /// The experts in places now.
     pub fn resident(&self) -> usize {
         self.expert_in.len() - self.free.len()
@@ -261,6 +266,16 @@ pub fn distinct(ids: &[i64], experts: usize) -> Vec<u16> {
     out
 }
 
+/// A call's distinct experts (`needed`) in the order of their pairs among `ids`, the fewest first (the order given among equals): asked for in this order, the busiest are the most recently used, and where a call
+/// is computed in waves (`LayerCache::waves`) its last wave, whose experts stay in places for the next call, holds the busiest of its misses. On the decode traces of the routing record benchmarks/moe-skew-2026-10-09 at 16 and 20 rows a step this
+/// finds 1 to 7 points more of the pairs in places than the order the experts first appear in, and never fewer (the test below).
+pub fn by_rows(mut needed: Vec<u16>, ids: &[i64], experts: usize) -> Vec<u16> {
+    let mut n = vec![0u32; experts];
+    ids.iter().filter(|&&e| e >= 0 && (e as usize) < experts).for_each(|&e| n[e as usize] += 1);
+    needed.sort_by_key(|&e| n[e as usize]);
+    needed
+}
+
 /// A layer's experts ranked by routing counts, the most used first and the lower expert first among equals (numpy's stable argsort of the negated counts): the first `k` are a static profile of the layer.
 pub fn profile(counts: &[u64], k: usize) -> Vec<u16> {
     let mut ranked: Vec<u16> = (0..counts.len() as u16).collect();
@@ -323,6 +338,8 @@ pub struct Offload {
     /// Whether the copies of experts into places are made by a thread of their own: a copy from memory that is not pinned (a mapped file's pages) holds the thread that makes it for the time of the transfer, which is the
     /// time of the call's host work; with a copy thread the call goes on to the host's pairs at once, and a promotion's copies cost the call nothing.
     pub async_copies: bool,
+    /// Whether a layer whose host half the plan on the GPU computes (FP4 experts) plans its decode calls on the GPU (src/devplan.rs): no host waits inside such a call, and a step of them is one graph.
+    pub device: bool,
 }
 
 impl Default for Offload {
@@ -337,6 +354,7 @@ impl Default for Offload {
             skip_rank: 0,
             skip_rank_later: 0,
             async_copies: false,
+            device: false,
         }
     }
 }
@@ -373,6 +391,7 @@ pub fn offload_args(a: &crate::args::Args) -> Result<Offload> {
         o.pin = a.has("cpu-pin");
         o.window = a.num("offload-window", o.window)?;
         o.promote = a.num("offload-promote", o.promote)?;
+        o.device = a.has("device-plan");
     }
     Ok(o)
 }
@@ -394,21 +413,24 @@ pub fn parse_variant(text: &str, base: &Offload) -> Option<Offload> {
 /// The copy stream's backlog, in microseconds of copying, past which a call starts no copies behind it (the next call of a layer waits for its layer's, and the copies of a token must not outlast the token).
 const BACKLOG_US: f64 = 10_000.0;
 
-/// The times `plan` weighs, in microseconds: copying one expert, what a call of the host's has to start with (waking the crew), the host's time for one pair, and the copying already queued on the copy stream ahead of the
-/// call's own (`backlog`: the stream is one queue, so a copy the call asks for starts after it and the call's products wait for the copy). The first three figures are the records' (an expert of 3.1 MB at 12.4 GB/s,
-/// benchmarks/cpu/cpu-experts-epyc-2026-10-10: a layer's call of 2.5 to 10 pairs took 253 to 610 microseconds); `copied` and `computed` move them to what this computer does. The backlog is not learned: the store
-/// sets it on the copy of the costs a call is planned with (`queued`), and it is 0 where the stream is idle.
+/// The times `plan` weighs, in microseconds: copying one expert (its bytes over the link), what a call of the host's has to start with (waking the crew), the host's time for an expert's first row (its bytes read from the
+/// computer's memory, and the row's products) and for each row of it after the first (`row`: the products alone, the expert's bytes in the core's cache by then), and the copying already queued on the copy stream ahead
+/// of the call's own (`backlog`: the stream is one queue, so a copy the call asks for starts after it and the call's products wait for the copy). The first three figures are the records' (an expert of 3.1 MB at 12.4 GB/s,
+/// benchmarks/cpu/cpu-experts-epyc-2026-10-10: a layer's call of 2.5 to 10 pairs took 253 to 610 microseconds); `row` starts as `pair` (each row as dear as the first, as a host that reads an expert for each of its
+/// pairs pays); `copied` and `computed` move them to what this computer does. The backlog is not learned: the store sets it on the copy of the costs a call is planned with (`queued`), and it is 0 where the stream is
+/// idle.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Costs {
     pub copy: f64,
     pub fixed: f64,
     pub pair: f64,
+    pub row: f64,
     pub backlog: f64,
 }
 
 impl Default for Costs {
     fn default() -> Costs {
-        Costs { copy: 250.0, fixed: 100.0, pair: 50.0, backlog: 0.0 }
+        Costs { copy: 250.0, fixed: 100.0, pair: 50.0, row: 50.0, backlog: 0.0 }
     }
 }
 
@@ -428,12 +450,22 @@ impl Costs {
         bytes as f64 / expert.max(1) as f64 * self.copy
     }
 
-    /// A call of the host's took `us` for `pairs` pairs.
-    pub fn computed(&mut self, pairs: usize, us: f64) {
-        if pairs > 0 {
-            let sample = ((us - self.fixed).max(0.0) / pairs as f64).clamp(2.0, 1e4);
-            self.pair += Costs::SMOOTH * (sample - self.pair);
+    /// A call of the host's took `us` for `pairs` pairs of `experts` experts (each read once for its pairs): the call's time past the fixed part is `experts` first rows and `pairs - experts` further ones, and the
+    /// two times move toward what makes it so (a normalized least-mean-squares step: a call of a row an expert moves `pair` alone, as the store's first model did; one of many rows an expert mostly `row`).
+    pub fn computed(&mut self, experts: usize, pairs: usize, us: f64) {
+        if pairs == 0 || experts == 0 || experts > pairs {
+            return;
         }
+        let (e, r) = (experts as f64, (pairs - experts) as f64);
+        let miss = (us - self.fixed).max(0.0) - (e * self.pair + r * self.row);
+        let step = Costs::SMOOTH * miss / (e * e + r * r);
+        self.pair = (self.pair + step * e).clamp(2.0, 1e4);
+        self.row = (self.row + step * r).clamp(0.1, 1e4);
+    }
+
+    /// The host's time for a miss of `rows` rows (its expert read once, then each row's products).
+    pub fn host(&self, rows: usize) -> f64 {
+        self.pair + self.row * rows.saturating_sub(1) as f64
     }
 }
 
@@ -465,11 +497,12 @@ pub fn plan_groups(mode: Mode, misses: &[Vec<Miss>], rooms: &[usize], sizes: &[f
     }
     let mut order: Vec<(usize, usize)> = misses.iter().enumerate().flat_map(|(g, m)| (0..m.len()).map(move |i| (g, i))).collect();
     order.sort_by_key(|&(g, i)| (std::cmp::Reverse(misses[g][i].pairs), std::cmp::Reverse(misses[g][i].hot), g, i));
-    let mut left: usize = misses.iter().flatten().map(|m| m.pairs).sum();
+    // (the host's time is the misses' it keeps: each expert read once, then its rows, `Costs::host`)
+    let (mut left, mut kept): (f64, usize) = (misses.iter().flatten().map(|m| costs.host(m.pairs)).sum(), misses.iter().map(Vec::len).sum());
     let (mut free, mut taken) = (rooms.to_vec(), vec![0usize; misses.len()]);
-    let score = |left: usize, taken: &[usize]| {
+    let score = |left: f64, kept: usize, taken: &[usize]| {
         let copying: f64 = sizes.iter().zip(taken).map(|(size, &n)| costs.copy * size * n as f64).sum();
-        let computing = if left > 0 { costs.fixed + costs.pair * left as f64 } else { 0.0 };
+        let computing = if kept > 0 { costs.fixed + left } else { 0.0 };
         if mode == Mode::Split {
             (copying - computing).abs()
         } else {
@@ -477,7 +510,7 @@ pub fn plan_groups(mode: Mode, misses: &[Vec<Miss>], rooms: &[usize], sizes: &[f
             waiting.max(computing)
         }
     };
-    let (mut best, mut chosen) = (score(left, &taken), 0usize);
+    let (mut best, mut chosen) = (score(left, kept, &taken), 0usize);
     let mut copies = Vec::new();
     for &(g, i) in &order {
         if free[g] == 0 {
@@ -485,9 +518,10 @@ pub fn plan_groups(mode: Mode, misses: &[Vec<Miss>], rooms: &[usize], sizes: &[f
         }
         free[g] -= 1;
         taken[g] += 1;
-        left -= misses[g][i].pairs;
+        left -= costs.host(misses[g][i].pairs);
+        kept -= 1;
         copies.push((g, i));
-        let now = score(left, &taken);
+        let now = score(left, kept, &taken);
         if now < best - 1e-9 {
             (best, chosen) = (now, copies.len());
         }
@@ -495,6 +529,26 @@ pub fn plan_groups(mode: Mode, misses: &[Vec<Miss>], rooms: &[usize], sizes: &[f
     let mut copy: Vec<Vec<bool>> = misses.iter().map(|m| vec![false; m.len()]).collect();
     copies.iter().take(chosen).for_each(|&(g, i)| copy[g][i] = true);
     copy
+}
+
+/// Whether a call whose misses are more than the places its hits leave (`room`) is quicker with every miss copied, in waves of as many as the places hold (`LayerCache::waves`), than as `plan` serves it (at most
+/// `room` copies, the host the rest), by the times expected in `costs`. Only `Auto` decides so: with many rows a miss has many pairs, and the host's time for them can pass the copies' (DeepSeek-V4 at 32 rows on the
+/// 4080 SUPER, 32 places for 64 experts: 334 ms a step with the host against 280 copying all, `storebench`).
+pub fn waves_quicker(mode: Mode, misses: &[Miss], room: usize, costs: &Costs) -> bool {
+    if mode != Mode::Auto || misses.len() <= room {
+        return false;
+    }
+    let (mut copying, mut host, mut kept) = (0.0, 0.0, 0usize);
+    for (m, c) in misses.iter().zip(plan(mode, misses, room, costs)) {
+        if c {
+            copying += costs.copy;
+        } else {
+            (host, kept) = (host + costs.host(m.pairs), kept + 1);
+        }
+    }
+    let waiting = if copying > 0.0 { costs.backlog + copying } else { 0.0 };
+    let planned = waiting.max(if kept > 0 { costs.fixed + host } else { 0.0 });
+    costs.backlog + costs.copy * (misses.len() as f64) < planned
 }
 
 /// What a call did with its experts (`serve`): the experts that got a place now in the order the call asked for them, the copies to queue ((expert, place) of the misses `plan` copies), the reads found in a place (`hits`) and
@@ -696,13 +750,6 @@ impl CachePlan {
     }
 }
 
-/// The places a layer gets out of `budget` bytes of the GPU's memory for the cache: as many as fit, at most all of its experts; None where fewer than `least` fit.
-pub fn places_for(budget: u64, layers: usize, expert_bytes: u64, experts: usize, least: usize) -> Option<usize> {
-    let each = (layers as u64).checked_mul(expert_bytes)?;
-    let n = (budget.checked_div(each)? as usize).min(experts);
-    (n >= least.min(experts)).then_some(n)
-}
-
 /// `MemAvailable` of a /proc/meminfo's text, in bytes.
 pub fn parse_meminfo(text: &str) -> Option<u64> {
     let line = text.lines().find(|l| l.starts_with("MemAvailable:"))?;
@@ -804,6 +851,182 @@ impl Stats {
             self.disk_bytes as f64 / 1e9 / (self.disk_ms / 1e3)
         }
     }
+}
+
+/// What the store did for one of its layers over a step (`ExpertStore::end_step`) or over a run (`process_totals`; docs/design/runtime.md §6): the layer's calls and their rows and pairs, the experts they asked
+/// for (each once a call), those found in a place, the misses copied in before the products (`copies`) and those whose pairs the host computed (`host` experts, `host_pairs` pairs), the pairs left out for their small
+/// weights, the waves past a call's first; the bytes read from the computer's memory for the misses (`copy_bytes` over the link, `host_bytes` by the host's kernels: an expert's bytes once for all its rows where the
+/// kernel groups its pairs by expert, once a pair where it does not), and for the experts copied behind the calls for later ones (promotions, hints: `ahead`, `ahead_bytes`); the copy stream's time for the layer's
+/// copies, the host's for its pairs, the host's waits for the GPU (the router's choices, a wave's end), and the call's own time on the host besides (`plan_ms`: the plan, the copies and products queued, the
+/// host's sums sent). `whole` of the calls had no host half (every miss copied before the products, in waves where they outnumber the places: copy mode, or `waves_quicker`'s choice) and `whole_bytes` of the copies
+/// were theirs: a layer whose calls are some of each is not their average (`ceiling --stats`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LayerStats {
+    pub calls: u64,
+    pub whole: u64,
+    pub whole_bytes: u64,
+    pub rows: u64,
+    pub pairs: u64,
+    pub reads: u64,
+    pub hits: u64,
+    pub copies: u64,
+    pub host: u64,
+    pub host_pairs: u64,
+    pub skipped: u64,
+    pub waves: u64,
+    pub copy_bytes: u64,
+    pub host_bytes: u64,
+    pub missed_bytes: u64,
+    pub ahead: u64,
+    pub ahead_bytes: u64,
+    pub copy_ms: f64,
+    pub host_ms: f64,
+    pub wait_ms: f64,
+    pub plan_ms: f64,
+}
+
+impl LayerStats {
+    pub fn add(&mut self, o: &LayerStats) {
+        let LayerStats {
+            calls,
+            whole,
+            whole_bytes,
+            rows,
+            pairs,
+            reads,
+            hits,
+            copies,
+            host,
+            host_pairs,
+            skipped,
+            waves,
+            copy_bytes,
+            host_bytes,
+            missed_bytes,
+            ahead,
+            ahead_bytes,
+            copy_ms,
+            host_ms,
+            wait_ms,
+            plan_ms,
+        } = *o;
+        self.calls += calls;
+        self.whole += whole;
+        self.whole_bytes += whole_bytes;
+        self.rows += rows;
+        self.pairs += pairs;
+        self.reads += reads;
+        self.hits += hits;
+        self.copies += copies;
+        self.host += host;
+        self.host_pairs += host_pairs;
+        self.skipped += skipped;
+        self.waves += waves;
+        self.copy_bytes += copy_bytes;
+        self.host_bytes += host_bytes;
+        self.missed_bytes += missed_bytes;
+        self.ahead += ahead;
+        self.ahead_bytes += ahead_bytes;
+        self.copy_ms += copy_ms;
+        self.host_ms += host_ms;
+        self.wait_ms += wait_ms;
+        self.plan_ms += plan_ms;
+    }
+
+    /// A call of `tokens` rows and `pairs` pairs, whose choices the host waited `waited` ms for.
+    fn called(&mut self, tokens: usize, pairs: usize, waited: f64) {
+        self.calls += 1;
+        self.rows += tokens as u64;
+        self.pairs += pairs as u64;
+        self.wait_ms += waited;
+    }
+
+    /// `n` experts of `bytes` copied in behind a call, for later ones (promotions, hints).
+    fn ahead(&mut self, n: usize, bytes: u64) {
+        self.ahead += n as u64;
+        self.ahead_bytes += bytes;
+    }
+
+    /// What a call's plan did (`serve`'s): the experts it asked for, those in places, the misses copied before its products (`bytes` of them) and those the host keeps; `missed` the distinct missed experts' own bytes.
+    fn served(&mut self, sv: &Served, bytes: u64, missed: u64) {
+        self.reads += (sv.hits + sv.misses) as u64;
+        self.hits += sv.hits as u64;
+        self.copies += sv.loads.len() as u64;
+        self.copy_bytes += bytes;
+        self.missed_bytes += missed;
+    }
+
+    /// The host's part of a call: `experts` experts for `pairs` pairs (`skipped` left out), `bytes` read by its kernels, in `ms`.
+    fn hosted(&mut self, experts: usize, pairs: usize, skipped: usize, bytes: u64, ms: f64) {
+        self.host += experts as u64;
+        self.host_pairs += pairs as u64;
+        self.skipped += skipped as u64;
+        self.host_bytes += bytes;
+        self.host_ms += ms;
+    }
+
+    /// The experts asked for that were in no place (each once a call).
+    pub fn misses(&self) -> u64 {
+        self.reads - self.hits
+    }
+
+    /// The bytes read from the computer's memory for the calls' misses (copied, or read by the host's kernels): `missed_bytes` (the distinct missed experts' own bytes) where each is read once.
+    pub fn miss_bytes(&self) -> u64 {
+        self.copy_bytes + self.host_bytes
+    }
+
+    /// The stats summed over layers.
+    pub fn sum<'a>(all: impl IntoIterator<Item = &'a LayerStats>) -> LayerStats {
+        let mut t = LayerStats::default();
+        all.into_iter().for_each(|l| t.add(l));
+        t
+    }
+
+    /// The stats as a JSON object (the layer's number among the store's first).
+    pub fn json(&self, layer: usize) -> String {
+        format!(
+            "{{\"layer\":{layer},\"calls\":{},\"whole\":{},\"whole_bytes\":{},\"rows\":{},\"pairs\":{},\"reads\":{},\"hits\":{},\"copies\":{},\"host\":{},\"host_pairs\":{},\"skipped\":{},\"waves\":{},\"copy_bytes\":{},\"host_bytes\":{},\"missed_bytes\":{},\"ahead\":{},\"ahead_bytes\":{},\"copy_ms\":{:.3},\"host_ms\":{:.3},\"wait_ms\":{:.3},\"plan_ms\":{:.3}}}",
+            self.calls,
+            self.whole,
+            self.whole_bytes,
+            self.rows,
+            self.pairs,
+            self.reads,
+            self.hits,
+            self.copies,
+            self.host,
+            self.host_pairs,
+            self.skipped,
+            self.waves,
+            self.copy_bytes,
+            self.host_bytes,
+            self.missed_bytes,
+            self.ahead,
+            self.ahead_bytes,
+            self.copy_ms,
+            self.host_ms,
+            self.wait_ms,
+            self.plan_ms
+        )
+    }
+}
+
+/// Every store's layers' stats since the process started, by the layer's number in its store (`ExpertStore::end_step` adds a step's): what the server's /stats reports. One model's stores a process (two models
+/// with experts in a cache would add up layer by layer).
+static TOTALS: Mutex<Vec<LayerStats>> = Mutex::new(Vec::new());
+
+/// The layers' stats of every store since the process started (`TOTALS`).
+pub fn process_totals() -> Vec<LayerStats> {
+    TOTALS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// `process_totals` as /stats's field: `"experts":[...]` (a JSON object a layer, `LayerStats::json`), or nothing where no layer has run a call.
+pub fn stats_field() -> String {
+    let t = process_totals();
+    if t.iter().all(|l| l.calls == 0) {
+        return String::new();
+    }
+    format!(",\"experts\":[{}]", t.iter().enumerate().map(|(l, s)| s.json(l)).collect::<Vec<_>>().join(","))
 }
 
 /// A matrix of a layer's experts to hand to the store: the bytes of every expert end to end (the codes, the scales), the bytes of one expert in each, and the addresses of the places for it on the GPU (the first
@@ -933,7 +1156,6 @@ impl HostPack {
     }
 
     /// The bytes of expert `e` in both streams.
-    #[allow(dead_code)]
     fn bytes_of(&self, e: usize) -> u64 {
         (self.len(0, e) + self.len(1, e)) as u64
     }
@@ -947,13 +1169,13 @@ pub enum HostHalf {
     /// Experts as codebook rows (src/cpu_cb.rs; the clamp of the SwiGLU, the width and the neurons: GLM-5.3-Flash's 4,096 and 2,048, Qwen3.8-Flash-Next's 2,560 and 640): the host tier holds, for each expert, the codes
     /// and then the codebooks of its downT and its up as the pack's files do.
     Cb2(f32, usize, usize),
-    /// Kimi-K3's experts in the exact FP4 block layouts, read where the host tier holds them (src/cpu_fp4.rs): the layer's two packs, the first [2 inter,
-    /// latent] (gate then up), the second [latent, inter]; `packed` the Fp4R layout's scales; `act` situ's two caps.
+    /// Experts in the exact FP4 block layouts (Kimi-K3's, DeepSeek-V4's as released), read where the host tier holds them (src/cpu_fp4.rs): the layer's two packs, the first [2 inter,
+    /// latent] (gate then up), the second [latent, inter]; `packed` the Fp4R layout's scales; `act` the activation and where the weight goes, as the layer's GPU kernels have them.
     Fp4 {
         inter: usize,
         latent: usize,
         packed: bool,
-        act: (f32, f32),
+        act: crate::cpu_fp4::Act,
     },
     /// Hummingbird's experts of every mixture of experts (src/moe_hbg.rs: a group's places, `HbgPlace`, as the host tier holds them, read in place): each pair's two products with the family's activation `act`, finished as
     /// `finish` says (src/cpu_hbg.rs `store_pairs`: weighted in the rotated basis, or normed in the model's for Muse Spark).
@@ -1139,6 +1361,14 @@ struct Resident {
     calls: u64,
     // the disk tier, where the host tier holds some of the experts only (its `host` buffers then hold the slots, not every expert)
     tier: Option<Tier>,
+    // the layer's number in the store, and what it has done since the step began (`ExpertStore::end_step`)
+    index: usize,
+    stats: LayerStats,
+    // the layer's places as the GPU plans its decode calls (src/devplan.rs; `Offload::device`), None where the host plans every call
+    dplan: Option<crate::devplan::DevPlan>,
+    // (development) the pairs of the layer's last call the host computed (`ExpertStore::host_pairs`)
+    #[cfg(feature = "dev")]
+    host_pairs: Vec<usize>,
 }
 
 struct Cuda {
@@ -1151,9 +1381,11 @@ struct Cuda {
     z: Pinned,
     part: Pinned,
     out: Vec<f32>,
-    // (start, stop, bytes, the copy thread's job) of the batches of copies not yet counted (a job's events are recorded when it is done submitting), and events to make more of
-    timing: VecDeque<(Ev, Ev, u64, Option<Arc<JobState>>)>,
+    // (start, stop, bytes, the copy thread's job, the layer) of the batches of copies not yet counted (a job's events are recorded when it is done submitting), and events to make more of
+    timing: VecDeque<(Ev, Ev, u64, Option<Arc<JobState>>, usize)>,
     spare: Vec<Ev>,
+    // the copy stream's time for each layer's batches counted since the step began
+    layer_ms: Vec<f64>,
     // the batches of copies queued so far, and the ones counted (known to have run): a slot of a disk tier read by batch n is free to write once `retired` is n or more
     issued: u64,
     retired: u64,
@@ -1347,6 +1579,8 @@ impl Drop for Worker {
 pub type Predictor = Box<dyn FnMut(usize, &[u16]) -> Vec<(usize, Vec<u16>)>>;
 
 struct Inner {
+    // the plan on the GPU's host thread and buffers (src/devplan.rs), dropped first: its thread reads the layers' host tiers
+    mail: Option<crate::devplan::DevMail>,
     cuda: Option<Cuda>,
     layers: Vec<Option<Resident>>,
     stats: Stats,
@@ -1362,6 +1596,8 @@ struct Inner {
     frozen: bool,
     // the next `run_parts`' wait: a mapped host word the front's last kernel moves to the value given (`arm_ready`), looked at instead of the stream's synchronize
     ready: Option<(usize, u32)>,
+    // each layer's stats of the last step ended (`end_step`)
+    last: Vec<LayerStats>,
 }
 
 /// The computer's memory for the experts: `bytes` of the `total` bytes of all the experts of all the layers. Where it is less than the total, a group of a layer is given its share of it (`ExpertStore::host_slots`) and holds
@@ -1401,6 +1637,8 @@ struct DiskSlots {
 /// The expert cache of a model: a `LayerCache`, a host tier and a set of places for each mixture-of-experts layer (by its number among them), and one copy stream. The layers' blocks share it (`Rc`); it is not for threads.
 pub struct ExpertStore {
     inner: RefCell<Inner>,
+    /// Whether the calls being made are a decode step's of rows (`set_step_rows`).
+    step_rows: std::cell::Cell<bool>,
 }
 
 fn pinned_copy(bytes: &[u8]) -> Result<Pinned> {
@@ -1438,6 +1676,7 @@ impl Cuda {
             out: Vec::new(),
             timing: VecDeque::new(),
             spare: Vec::new(),
+            layer_ms: Vec::new(),
             issued: 0,
             retired: 0,
             frozen: false,
@@ -1464,17 +1703,21 @@ impl Cuda {
             }
             self.copy.sync()?;
         }
-        while let Some((a, b, bytes, job)) = self.timing.front() {
+        while let Some((a, b, bytes, job, layer)) = self.timing.front() {
             // (a batch of the copy thread's has its events recorded once the thread has submitted it)
             if job.as_ref().is_some_and(|j| !j.submitted()) || !b.done()? {
                 break;
             }
             let ms = b.since(a)? as f64;
             stats.copy_ms += ms;
+            if self.layer_ms.len() <= *layer {
+                self.layer_ms.resize(*layer + 1, 0.0);
+            }
+            self.layer_ms[*layer] += ms;
             if !self.frozen {
                 costs.copied(*bytes, ms, expert);
             }
-            let (a, b, _, _) = self.timing.pop_front().expect("a batch");
+            let (a, b, _, _, _) = self.timing.pop_front().expect("a batch");
             self.spare.extend([a, b]);
             self.retired += 1;
         }
@@ -1559,6 +1802,24 @@ impl Resident {
     /// The bytes of an expert in the host tier (and in a place).
     fn expert_bytes(&self) -> u64 {
         self.packs.iter().map(|p| p.stride[0] + p.stride[1]).sum()
+    }
+
+    /// Expert `e`'s own bytes in the host tier (a layer of mixed formats: its own lengths), where it is.
+    fn bytes_of(&self, e: usize) -> u64 {
+        let slot = self.host_slot(e).unwrap_or(e);
+        self.packs.iter().map(|p| p.bytes_of(slot)).sum()
+    }
+
+    /// The own bytes of the experts a call missed (`serve`'s: copied, or kept for the host), each once.
+    fn missed_bytes(&self, sv: &Served) -> u64 {
+        sv.loads.iter().map(|l| l.0).chain(sv.kept.iter().copied()).map(|e| self.bytes_of(e as usize)).sum()
+    }
+
+    /// `host_reads` of the layer's host half: its FP4 kernel and the hummingbird places' of every mixture of experts take an expert's pairs together (src/cpu_fp4.rs `by_expert`, src/cpu_hbg.rs `store_pairs`), the
+    /// others a pair at a time.
+    fn host_reads(&self, ids: &[i64], mine: &[usize]) -> (usize, u64) {
+        let grouped = matches!(self.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Fp4 { .. } | HostHalf::Hbg { .. }));
+        host_reads(ids, mine, self.cache.experts(), grouped, |e| self.bytes_of(e))
     }
 
     /// Where expert `e`'s bytes are in the host tier: its own place where every expert is there, else its slot (an expert that is in none was not read before it was used: a fault).
@@ -1649,6 +1910,30 @@ impl Resident {
         };
         crate::cpu_fp4::Fp4Expert { up: view(&self.packs[0], 2 * inter, *latent), down: view(&self.packs[1], *latent, *inter) }
     }
+
+    /// The layer's FP4 experts as the plan on the GPU's host thread reads them (src/devplan.rs), where its host half is FP4 experts, every one of them in the host tier, in two packs the kernels copy in
+    /// 16-byte pieces; None for any other layer (the host plans its calls).
+    fn host_fp4(&self) -> Option<crate::devplan::HostFp4> {
+        let Some(CpuSide { half: HostHalf::Fp4 { inter, latent, packed, act }, .. }) = &self.cpu else { return None };
+        let fits = self.tier.is_none()
+            && self.packs.len() == 2
+            && self
+                .packs
+                .iter()
+                .all(|p| p.place.is_none() && (0..2).all(|k| p.stride[k] % 16 == 0 && p.dev[k] % 16 == 0 && (p.host[k].ptr as usize) % 16 == 0))
+            && *latent <= crate::devplan::XP_WIDTH
+            && self.cache.experts() <= crate::devplan::XP_MAX;
+        let m = |p: &HostPack| [(p.host[0].ptr as usize, p.stride[0] as usize), (p.host[1].ptr as usize, p.stride[1] as usize)];
+        fits.then(|| crate::devplan::HostFp4 {
+            up: m(&self.packs[0]),
+            down: m(&self.packs[1]),
+            inter: *inter,
+            latent: *latent,
+            packed: *packed,
+            act: *act,
+            experts: self.cache.experts(),
+        })
+    }
 }
 
 /// Expert (or slot) number `at` of a Hummingbird group's host tier as the host's kernels read it: `place`'s view over its `data` and `meta` bytes where they are.
@@ -1659,10 +1944,28 @@ unsafe fn hb_view<'a>(place: &HbPlace, data: *const u8, meta: *const u8, at: usi
     place.expert(std::slice::from_raw_parts(data.add(at * place.data), place.data), std::slice::from_raw_parts(meta.add(at * place.meta), place.meta))
 }
 
-/// The copies of `loads` ((expert, place)) queued on the copy stream, behind the engine's stream's last use of the layer's places; the layer's `ready` is recorded after them.
-fn fetch(cuda: &mut Cuda, ly: &mut Resident, loads: &[(u16, u32)], stats: &mut Stats) -> Result<()> {
+/// The link's time for one expert of layer `ly` (its bytes in the host tier copied into its first place, which is free: the plan on the GPU has placed nothing yet), the least of three, microseconds.
+fn link_us(cuda: &Cuda, ly: &Resident) -> Result<f64> {
+    let s = cuda.copy.stream;
+    let mut best = f64::MAX;
+    for _ in 0..3 {
+        let t0 = Instant::now();
+        for p in &ly.packs {
+            for k in 0..2 {
+                // SAFETY: the host tier holds expert 0 (its first `stride` bytes) and place 0 has room for an expert; no call has run, so nothing reads the place.
+                unsafe { copy_h2d_async(p.dev[k], p.host[k].ptr as *const _, p.stride[k] as usize, s)? };
+            }
+        }
+        cuda.copy.sync()?;
+        best = best.min(t0.elapsed().as_secs_f64() * 1e6);
+    }
+    Ok(best)
+}
+
+/// The copies of `loads` ((expert, place)) queued on the copy stream, behind the engine's stream's last use of the layer's places; the layer's `ready` is recorded after them. Returns the bytes queued.
+fn fetch(cuda: &mut Cuda, ly: &mut Resident, loads: &[(u16, u32)], stats: &mut Stats) -> Result<u64> {
     if loads.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
     // (where each expert's bytes are in the host tier: its slot, with a disk tier; all found before a copy is queued)
     let at = loads.iter().map(|&(e, _)| ly.host_slot(e as usize)).collect::<Result<Vec<_>>>()?;
@@ -1708,12 +2011,12 @@ fn fetch(cuda: &mut Cuda, ly: &mut Resident, loads: &[(u16, u32)], stats: &mut S
             ly.pending = true;
             ly.job = Some(state.clone());
             stats.bytes += bytes;
-            cuda.timing.push_back((a, b, bytes, Some(state)));
+            cuda.timing.push_back((a, b, bytes, Some(state), ly.index));
             cuda.issued += 1;
             if let Some(t) = ly.tier.as_mut() {
                 at.iter().for_each(|&slot| t.busy[slot] = cuda.issued);
             }
-            return Ok(());
+            return Ok(bytes);
         }
     }
     ly.done.wait(s)?;
@@ -1740,13 +2043,13 @@ fn fetch(cuda: &mut Cuda, ly: &mut Resident, loads: &[(u16, u32)], stats: &mut S
     ly.ready.record(s)?;
     ly.pending = true;
     stats.bytes += bytes;
-    cuda.timing.push_back((a, b, bytes, None));
+    cuda.timing.push_back((a, b, bytes, None, ly.index));
     // (the slots these copies read are not to be written before the batch has run)
     cuda.issued += 1;
     if let Some(t) = ly.tier.as_mut() {
         at.iter().for_each(|&slot| t.busy[slot] = cuda.issued);
     }
-    Ok(())
+    Ok(bytes)
 }
 
 /// Experts `wanted` (distinct, at most the slots of the layer's disk tier) in the host tier's slots, read from the packed directory where they are not (see `Tier::stage`); nothing for a layer with every expert in memory. The
@@ -1844,6 +2147,24 @@ fn host_rounds(mine: &[(usize, usize)], local: &[Vec<i64>; 2], slots: [usize; 2]
     rounds
 }
 
+/// The experts of the host's pairs `mine` (numbers into a call's choices `ids`, of a layer of `experts`), each once, and the bytes the host's kernel reads of them (`bytes_of` an expert's): an expert's once for all
+/// its pairs where the kernel takes them together (`grouped`), else once a pair.
+pub fn host_reads(ids: &[i64], mine: &[usize], experts: usize, grouped: bool, bytes_of: impl Fn(usize) -> u64) -> (usize, u64) {
+    let set = distinct(&mine.iter().map(|&j| ids[j]).collect::<Vec<_>>(), experts);
+    let bytes = if grouped { set.iter().map(|&e| bytes_of(e as usize)).sum() } else { mine.iter().map(|&j| bytes_of(ids[j] as usize)).sum() };
+    (set.len(), bytes)
+}
+
+/// The host's time `ms` for the pairs `mine` ((group, pair)) of a call of a layer in groups (`layers`: each group's layer of the store), shared between the groups' layers by their pairs.
+fn host_time(all: &mut [Option<Resident>], layers: [Option<usize>; 2], mine: &[(usize, usize)], ms: f64) {
+    for (g, l) in layers.iter().enumerate() {
+        let n = mine.iter().filter(|&&(h, _)| h == g).count();
+        if let Some(ly) = l.and_then(|l| all.get_mut(l)).and_then(Option::as_mut).filter(|_| n > 0) {
+            ly.stats.host_ms += ms * n as f64 / mine.len() as f64;
+        }
+    }
+}
+
 /// Layers `a` and `b` of the store (either may be none), both at once.
 fn two_layers(layers: &mut [Option<Resident>], a: Option<usize>, b: Option<usize>) -> [Option<&mut Resident>; 2] {
     match (a, b) {
@@ -1858,25 +2179,29 @@ fn two_layers(layers: &mut [Option<Resident>], a: Option<usize>, b: Option<usize
 }
 
 /// The copies of `loads` as `fetch` queues them, after their experts are in the host tier's slots: with a disk tier a slot's worth at a time (`stage`, then the copies of those; a later slot's worth may take the slots of an
-/// earlier one once the copies have read them), else all at once.
-fn place(cuda: &mut Cuda, ly: &mut Resident, loads: &[(u16, u32)], stats: &mut Stats, costs: &mut Costs, expert: u64) -> Result<()> {
+/// earlier one once the copies have read them), else all at once. Returns the bytes queued.
+fn place(cuda: &mut Cuda, ly: &mut Resident, loads: &[(u16, u32)], stats: &mut Stats, costs: &mut Costs, expert: u64) -> Result<u64> {
     let Some(size) = ly.tier.as_ref().map(|t| t.ram.slots()) else { return fetch(cuda, ly, loads, stats) };
+    let mut bytes = 0;
     for chunk in loads.chunks(size) {
         let wanted: Vec<u16> = chunk.iter().map(|l| l.0).collect();
         stage(cuda, ly, &wanted, stats, costs, expert)?;
-        fetch(cuda, ly, chunk, stats)?;
+        bytes += fetch(cuda, ly, chunk, stats)?;
     }
-    Ok(())
+    Ok(bytes)
 }
 
 /// What a layer's call hands the store: the device buffers of the router's choices (int64 `pairs`), their weights (fp32), the experts' input z (bf16, `tokens` rows), the buffer the pairs' places go to (int64) and the one
-/// the host's sums come to (fp32, `tokens` rows of the layer's hidden size, `CPU_TOKENS` rows at most).
+/// the host's sums come to (fp32, `tokens` rows of the layer's hidden size, `CPU_TOKENS` rows at most); and `rows`, where the layer's sum adds each pair's own weighted row (fp32 [pairs, hidden], pair j's at row j: a
+/// block layout's weighted second product keeps its pairs' there), the buffer the host's pairs' rows go to instead, each at its pair's row, so that a token's pairs are added in the order of its choices and rounded once
+/// whichever computed them (0: none; the host's rows go up summed by token to `part`).
 pub struct Call {
     pub ids: u64,
     pub wts: u64,
     pub z: u64,
     pub way: u64,
     pub part: u64,
+    pub rows: u64,
     pub tokens: usize,
     pub pairs: usize,
 }
@@ -1889,12 +2214,14 @@ pub enum Stage {
 }
 
 /// What a stage is told: `gpu`, whether any pair has a place (else the products are not run), and for the sum the device address of the ids it is of (the pairs' places: -1 for a pair the host computed; 0: the router's
-/// choices) and of the host's sums (0: none).
+/// choices) and of the host's sums (0: none); `rows`, that the host's pairs' rows are in the call's `rows` beside the GPU's (`Call::rows`), and the sum is of each pair `ids` names (the router's choices, -1 for a pair
+/// left out), a token's in the order of its choices, rounded once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hybrid {
     pub gpu: bool,
     pub ids: u64,
     pub extra: u64,
+    pub rows: bool,
 }
 
 /// A model layer whose experts are in groups, each a layer of the store (the Hummingbird level's two bit widths): the store's layer of each group (None: the group is all on the GPU, and not the store's), and each
@@ -1932,11 +2259,70 @@ unsafe fn send_sums(cuda: &mut Cuda, tokens_of: impl Iterator<Item = usize>, hid
     copy_h2d_async(part, cuda.part.ptr, tokens * hidden * 4, s)
 }
 
+/// The host's pairs `mine` of a call (rising), as runs of pairs one after another: each run's first pair, its first row among `mine`'s, and its length.
+fn runs(mine: &[usize]) -> Vec<(usize, usize, usize)> {
+    let mut v: Vec<(usize, usize, usize)> = Vec::new();
+    for (r, &j) in mine.iter().enumerate() {
+        match v.last_mut() {
+            Some((j0, _, n)) if *j0 + *n == j => *n += 1,
+            _ => v.push((j, r, 1)),
+        }
+    }
+    v
+}
+
+/// The ids a call's sum adds where every pair's row is the layer's own (`Hybrid::rows`): each pair's choice (`ids`) where the GPU computed it (a place in `way`) or the host did (`mine`), -1 where neither did (a pair left
+/// out).
+fn sum_ids(ids: &[i64], way: &[i64], mine: &[usize]) -> Vec<i64> {
+    let mut v: Vec<i64> = ids.iter().zip(way).map(|(&e, &w)| if w >= 0 { e } else { -1 }).collect();
+    mine.iter().for_each(|&j| v[j] = ids[j]);
+    v
+}
+
+/// The host's rows of a call's pairs `mine` (`cuda.out`: `hidden` fp32 each, in `mine`'s order, rising) sent to the device on `s` as `call` asks, and what its sum is to be told: where the layer's sum adds each pair's own
+/// row (`Call::rows`), each into its pair's row there (from the pinned `part`, a copy a run of pairs one after another) and the ids the sum adds into `call.way` (`sum_ids`, after the products, which read the places
+/// there), the sum then of every pair a token's choices name, in their order, rounded once; else summed by token into `call.part` (`send_sums`), the sum's ids the pairs' places (`way`: -1 for the host's).
+///
+/// # Safety
+/// As `send_sums`; `call.rows`, where it is not 0, a live device buffer of `call.pairs` rows of `hidden` floats, and `call.way` one of `call.pairs` int64 that nothing queued after the products reads; the pinned
+/// buffers made for the call (`Cuda::reserve`); `ids` and `way` the call's choices and places.
+#[allow(clippy::too_many_arguments)]
+unsafe fn send_host(cuda: &mut Cuda, call: &Call, mine: &[usize], ids: &[i64], way: &[i64], hidden: usize, gpu: bool, s: Stream) -> Result<Hybrid> {
+    let k = call.pairs / call.tokens;
+    if call.rows == 0 {
+        send_sums(cuda, mine.iter().map(|&j| j / k), hidden, call.tokens, call.part, s)?;
+        return Ok(Hybrid { gpu, ids: call.way, extra: call.part, rows: false });
+    }
+    let staged = std::slice::from_raw_parts_mut(cuda.part.ptr as *mut f32, mine.len() * hidden);
+    staged.copy_from_slice(&cuda.out[..mine.len() * hidden]);
+    for (j0, r0, n) in runs(mine) {
+        copy_h2d_async(call.rows + (j0 * hidden * 4) as u64, (cuda.part.ptr as *const f32).add(r0 * hidden) as *const _, n * hidden * 4, s)?;
+    }
+    // (the sum's ids in the way buffer's second section: the first, the places, may not yet be read by its copy)
+    let sum = std::slice::from_raw_parts_mut((cuda.way.ptr as *mut i64).add(call.pairs), call.pairs);
+    sum.copy_from_slice(&sum_ids(ids, way, mine));
+    copy_h2d_async(call.way, sum.as_ptr() as *const _, call.pairs * 8, s)?;
+    Ok(Hybrid { gpu, ids: call.way, extra: 0, rows: true })
+}
+
+/// Whether the stores this process makes from now on hold the planner's times from the start (`ExpertStore::hold_costs`): said by a development check that
+/// holds one engine's tokens to another's made in its process (`servecheck`: a served model and the scheduler's), so that both plan alike whatever their
+/// timings. Without it a call's promotions are left out while the copy stream's measured backlog is past `BACKLOG_US`, and the places' state, so which
+/// pairs the host sums, turns on the copy link's timing.
+static HOLD_COSTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Every store this process makes from now on holds the planner's times (`HOLD_COSTS`).
+pub fn hold_costs_from_now() {
+    HOLD_COSTS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 impl ExpertStore {
-    /// An empty store. Its GPU side (the copy stream) is made with the first layer, in the context the engine made current.
+    /// An empty store. Its GPU side (the copy stream) is made with the first layer, in the context the engine made current. Its planner's times are held
+    /// where the process said so (`hold_costs_from_now`).
     pub fn new() -> Rc<ExpertStore> {
         Rc::new(ExpertStore {
             inner: RefCell::new(Inner {
+                mail: None,
                 cuda: None,
                 layers: Vec::new(),
                 stats: Stats::default(),
@@ -1947,10 +2333,18 @@ impl ExpertStore {
                 expert_bytes: 0,
                 host: None,
                 pinned: 0,
-                frozen: false,
+                frozen: HOLD_COSTS.load(std::sync::atomic::Ordering::Relaxed),
                 ready: None,
+                last: Vec::new(),
             }),
+            step_rows: std::cell::Cell::new(false),
         })
+    }
+
+    /// Whether the calls to come are a decode step's of rows (rows that decode and nothing else, eager or in its graph): the plan on the GPU takes such a call up to `devplan::DEV_STEP_ROWS`
+    /// rows, any other up to `devplan::DEV_ROWS` (a prompt's chunk of more is the host's plan, as before the decode steps of rows took graphs).
+    pub fn set_step_rows(&self, on: bool) {
+        self.step_rows.set(on);
     }
 
     /// How a miss is served from now on (the layers loaded with a host half serve them by the mode; the others copy).
@@ -2245,12 +2639,55 @@ impl ExpertStore {
             cpu,
             calls: 0,
             tier,
+            index: layer,
+            stats: LayerStats::default(),
+            dplan: None,
+            #[cfg(feature = "dev")]
+            host_pairs: Vec::new(),
         });
+        let inner = &mut *inner;
+        if inner.offload.device {
+            if let Some(h) = inner.layers[layer].as_ref().and_then(Resident::host_fp4) {
+                let ly = inner.layers[layer].as_mut().expect("installed above");
+                let regions: Vec<[u64; 4]> =
+                    ly.packs.iter().flat_map(|p| (0..2).map(move |k| [p.host[k].ptr as u64, p.stride[k], p.dev[k], p.stride[k]])).collect();
+                ly.dplan = Some(crate::devplan::DevPlan::new(experts, slots, &regions)?);
+                if inner.mail.is_none() {
+                    // (the plan on the GPU weighs a copy at the link's time for an expert, measured here once: its copies are the GPU's own, which the copy stream does not time)
+                    let cuda = inner.cuda.as_mut().expect("made above");
+                    let us = link_us(cuda, ly)?;
+                    if !inner.frozen && us > 0.0 {
+                        inner.costs.copy = us;
+                    }
+                    let params = crate::devplan::Params::of(&inner.offload, &inner.costs);
+                    inner.mail = Some(crate::devplan::DevMail::new(inner.offload.threads, inner.offload.pin, params)?);
+                }
+                inner.mail.as_ref().expect("made above").add_layer(layer, h);
+            }
+        }
         Ok(())
     }
 
-    /// Layer `layer`'s places emptied and their copies done (the copy thread's batch joined and the copy stream past it), so that their memory can be freed (`QxMoeCb::release_places`); the places at `dev` from now on
-    /// (the same strides and number), where a layer's places are made again (`restore_places`): its cache starts empty.
+    /// Whether layer `layer`'s decode calls are planned on the GPU (`Offload::device`, a host half of FP4 experts with every expert in the computer's memory): a step of them needs no host and is one graph.
+    pub fn device_on(&self, layer: usize) -> bool {
+        self.inner.borrow().layers.get(layer).and_then(Option::as_ref).is_some_and(|l| l.dplan.is_some())
+    }
+
+    /// The layers whose decode calls are planned on the GPU.
+    pub fn device_layers(&self) -> usize {
+        self.inner.borrow().layers.iter().flatten().filter(|l| l.dplan.is_some()).count()
+    }
+
+    /// What a call of `tokens` tokens and `pairs` pairs of layer `layer` hands kernels/moe.cu's plan on the GPU (src/devplan.rs), where the layer is planned there and the call is one of a decode's
+    /// (`devplan::DEV_ROWS` rows at most, a decode step's of rows `devplan::DEV_STEP_ROWS`: `set_step_rows`); None: the store plans it on the host (`run`).
+    pub fn device_args(&self, layer: usize, tokens: usize, pairs: usize) -> Option<crate::devplan::DevArgs> {
+        let inner = self.inner.borrow();
+        let (ly, mail) = (inner.layers.get(layer)?.as_ref()?, inner.mail.as_ref()?);
+        let dp = ly.dplan.as_ref()?;
+        let most = if self.step_rows.get() { crate::devplan::DEV_STEP_ROWS } else { crate::devplan::DEV_ROWS };
+        ((1..=most).contains(&tokens) && pairs <= crate::devplan::XP_PAIRS && pairs.is_multiple_of(tokens)).then(|| dp.args(mail, layer))
+    }
+
     /// Every layer's copies still queued done (the host waits): `hint`s behind a prompt finished before the decode's first step, not beside it.
     pub fn drain(&self) -> Result<()> {
         let mut guard = self.inner.borrow_mut();
@@ -2263,10 +2700,15 @@ impl ExpertStore {
         Ok(())
     }
 
+    /// Layer `layer`'s places emptied and their copies done (the copy thread's batch joined and the copy stream past it), so that their memory can be freed (a block's places released); the places at `dev` from now on
+    /// (the same strides and number): its cache starts empty.
     pub fn reset_places(&self, layer: usize, dev: [u64; 2]) -> Result<()> {
         let mut guard = self.inner.borrow_mut();
         let inner = &mut *guard;
         let ly = inner.layers.get_mut(layer).and_then(Option::as_mut).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+        if ly.dplan.is_some() {
+            return err(format!("layer {layer}'s places are planned on the GPU, whose copies name them: they are not moved"));
+        }
         ly.join_job()?;
         if ly.pending {
             ly.ready.wait_host()?;
@@ -2279,11 +2721,38 @@ impl ExpertStore {
         Ok(())
     }
 
+    /// (development) Whether layer `layer`'s host half is FP4 experts (src/cpu_fp4.rs).
+    #[cfg(feature = "dev")]
+    pub fn host_fp4(&self, layer: usize) -> bool {
+        self.inner.borrow().layers.get(layer).and_then(Option::as_ref).is_some_and(|ly| matches!(ly.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Fp4 { .. })))
+    }
+
+    /// (development) Layer `layer`'s places emptied where they are (the copies queued waited for): its next call finds no expert in one (`moe::PAIRS`: every pair the host's in
+    /// cpu mode). Not for a layer the GPU plans.
+    #[cfg(feature = "dev")]
+    pub fn empty_places(&self, layer: usize) -> Result<()> {
+        let mut guard = self.inner.borrow_mut();
+        let ly = guard.layers.get_mut(layer).and_then(Option::as_mut).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+        if ly.dplan.is_some() {
+            return err(format!("layer {layer}'s places are planned on the GPU"));
+        }
+        ly.join_job()?;
+        if ly.pending {
+            ly.ready.wait_host()?;
+        }
+        ly.forget();
+        ly.place.fill(-1);
+        Ok(())
+    }
+
     /// Layer `layer`'s places from now on `slots` at `dev` (made again in another number, the first ones' bytes moved there by the caller after `drain`): the experts in places past them leave the cache
     /// (`LayerCache::resize`), the others stay.
     pub fn resize_places(&self, layer: usize, slots: usize, dev: [u64; 2]) -> Result<()> {
         let mut guard = self.inner.borrow_mut();
         let ly = guard.layers.get_mut(layer).and_then(Option::as_mut).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+        if ly.dplan.is_some() {
+            return err(format!("layer {layer}'s places are planned on the GPU, whose copies name them: they are not moved"));
+        }
         ly.join_job()?;
         if ly.pending {
             ly.ready.wait_host()?;
@@ -2295,6 +2764,12 @@ impl ExpertStore {
             p.dev = dev;
         }
         Ok(())
+    }
+
+    /// (development) The pairs of layer `layer`'s last call that the host computed, numbers into the call's pairs, rising (`moe::JOINS`).
+    #[cfg(feature = "dev")]
+    pub fn host_pairs(&self, layer: usize) -> Vec<usize> {
+        self.inner.borrow().layers.get(layer).and_then(Option::as_ref).map_or_else(Vec::new, |l| l.host_pairs.clone())
     }
 
     /// The place each expert of `layer` is in on the GPU (-1: none), after the engine's stream `s` has been told to wait for the copies of the layer that are pending.
@@ -2316,6 +2791,10 @@ impl ExpertStore {
         for ly in inner.layers.iter_mut().flatten() {
             ly.forget();
             ly.calls = 0;
+            if let Some(dp) = ly.dplan.as_mut() {
+                dp.upload(&ly.cache.expert_in())?;
+                dp.reset()?;
+            }
             if let Some(c) = ly.cpu.as_mut() {
                 c.last.fill(0);
             }
@@ -2328,6 +2807,17 @@ impl ExpertStore {
         }
         inner.stats = Stats::default();
         inner.costs = Costs::default();
+        // (and the plan on the GPU weighs its calls by those times from its first call on: else the calls before the first end of a step plan by the times before)
+        if let Some(m) = inner.mail.as_mut() {
+            m.set_params(crate::devplan::Params::of(&inner.offload, &inner.costs))?;
+        }
+        for ly in inner.layers.iter_mut().flatten() {
+            ly.stats = LayerStats::default();
+        }
+        if let Some(c) = inner.cuda.as_mut() {
+            c.layer_ms.clear();
+        }
+        inner.last = Vec::new();
         Ok(())
     }
 
@@ -2338,9 +2828,14 @@ impl ExpertStore {
         let inner = &mut *guard;
         let cuda = inner.cuda.as_mut().ok_or_else(|| Error("the expert cache has no layers".into()))?;
         let ly = inner.layers.get_mut(layer).and_then(Option::as_mut).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+        // (a layer the GPU plans keeps its places in the GPU's table: a hint between its calls is not taken)
+        if ly.dplan.is_some() {
+            return Ok(());
+        }
         let got = ly.cache.hint(experts)?;
         inner.stats.hinted += got.loads.len() as u64;
-        place(cuda, ly, &got.loads, &mut inner.stats, &mut inner.costs, inner.expert_bytes).inspect_err(|_| ly.forget())?;
+        let bytes = place(cuda, ly, &got.loads, &mut inner.stats, &mut inner.costs, inner.expert_bytes).inspect_err(|_| ly.forget())?;
+        ly.stats.ahead(got.loads.len(), bytes);
         cuda.count(&mut inner.stats, &mut inner.costs, inner.expert_bytes, false)
     }
 
@@ -2393,7 +2888,8 @@ impl ExpertStore {
     ///
     /// Where the layer has a host half, the mode is not `Copy` and the call has at most `CPU_TOKENS` tokens, the weights and z are read back with the choices and the misses are served as `plan` says: the copies are
     /// queued, `Stage::Products` is run for the pairs that have a place (one wave; a miss computed by the host is a pair with no place), the host computes the pairs of the experts it keeps and their sums go up to
-    /// `call.part`, and `Stage::Sum` is run with them (`Hybrid::extra`) and the ids that leave the host's pairs out (`Hybrid::ids`).
+    /// `call.part`, and `Stage::Sum` is run with them (`Hybrid::extra`) and the ids that leave the host's pairs out (`Hybrid::ids`); or, where the call names the rows its layer's sum adds (`Call::rows`), each
+    /// pair's row goes into its pair's row there and `Stage::Sum` adds every pair, a token's in the order of its choices, rounded once (`Hybrid::rows`): the call's sum whichever computed its pairs.
     ///
     /// # Safety
     /// The addresses of `call` are live device buffers of the sizes it names; the engine's stream is `dev`'s, and `body` queues work on it alone.
@@ -2437,6 +2933,43 @@ impl ExpertStore {
         early: &mut dyn FnMut() -> Result<()>,
         body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
     ) -> Result<()> {
+        // (the call's own time on the host: what it took less its waits for the GPU and the host's pairs: `LayerStats::plan_ms`)
+        let spent = |st: &Self| st.inner.borrow().layers.get(layer).and_then(Option::as_ref).map_or(0.0, |l| l.stats.wait_ms + l.stats.host_ms);
+        let (t0, before) = (Instant::now(), spent(self));
+        // (a layer the GPU plans decode calls of: its places as the GPU has them before the host plans this call, and the host's after it, once the copies it queued have run for the engine's stream)
+        let dev = self.device_on(layer);
+        if dev {
+            at.sync()?;
+            let mut inner = self.inner.borrow_mut();
+            let ly = inner.layers[layer].as_mut().expect("a layer");
+            let places = ly.dplan.as_ref().expect("planned on the GPU").download()?;
+            ly.cache.set_places(&places);
+        }
+        let mut r = self.run_call(layer, at, call, early, body);
+        if dev && r.is_ok() {
+            let mut inner = self.inner.borrow_mut();
+            let ly = inner.layers[layer].as_mut().expect("a layer");
+            r = ly.wait_ready(at.stream).and_then(|_| ly.dplan.as_ref().expect("planned on the GPU").upload(&ly.cache.expert_in()));
+        }
+        let own = t0.elapsed().as_secs_f64() * 1e3 - (spent(self) - before);
+        if let Some(ly) = self.inner.borrow_mut().layers.get_mut(layer).and_then(Option::as_mut) {
+            ly.stats.plan_ms += own.max(0.0);
+        }
+        r
+    }
+
+    /// `run_early_at`'s call.
+    ///
+    /// # Safety
+    /// As `run`.
+    unsafe fn run_call(
+        &self,
+        layer: usize,
+        at: At,
+        call: &Call,
+        early: &mut dyn FnMut() -> Result<()>,
+        body: &mut dyn FnMut(Stage, usize, usize, &Hybrid) -> Result<()>,
+    ) -> Result<()> {
         let s = at.stream;
         let pairs = call.pairs;
         let (needed, host_ids, host_wts, hybrid) = {
@@ -2445,13 +2978,17 @@ impl ExpertStore {
             let mode = inner.offload.mode;
             let cuda = inner.cuda.as_mut().ok_or_else(|| Error("the expert cache has no layers".into()))?;
             cuda.use_worker = inner.offload.async_copies;
-            let ly = inner.layers.get(layer).and_then(Option::as_ref).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+            let ly = inner.layers.get_mut(layer).and_then(Option::as_mut).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+            #[cfg(feature = "dev")]
+            ly.host_pairs.clear();
             let hidden = ly.hidden();
             let hybrid = mode != Mode::Copy
                 && ly.cpu.as_ref().is_some_and(|c| matches!(c.half, HostHalf::Rows(_) | HostHalf::Cb2(..) | HostHalf::Fp4 { .. }))
                 && (1..=CPU_TOKENS).contains(&call.tokens)
                 && pairs.is_multiple_of(call.tokens);
-            cuda.reserve(pairs, if hybrid { call.tokens * hidden * 2 } else { 0 }, if hybrid { call.tokens * hidden * 4 } else { 0 }, at)?;
+            // (the host's sums by token, or its pairs' rows where the layer's sum adds each pair's own: `send_host`)
+            let part = if call.rows != 0 { pairs } else { call.tokens } * hidden * 4;
+            cuda.reserve(pairs, if hybrid { call.tokens * hidden * 2 } else { 0 }, if hybrid { part } else { 0 }, at)?;
             crate::tmark!(s, "store: choices requested");
             copy_d2h_async(cuda.ids.ptr, call.ids, pairs * 8, s)?;
             if hybrid {
@@ -2465,20 +3002,38 @@ impl ExpertStore {
             let t0 = Instant::now();
             got.wait_host()?;
             cuda.spare.push(got);
-            inner.stats.wait_ms += t0.elapsed().as_secs_f64() * 1e3;
+            let waited = t0.elapsed().as_secs_f64() * 1e3;
+            inner.stats.wait_ms += waited;
+            ly.stats.called(call.tokens, call.pairs, waited);
             crate::tmark!(s, "store: choices read");
             // SAFETY: the pinned buffers hold `pairs` int64 and fp32, written by the copies that have completed.
             let host_ids: Vec<i64> = std::slice::from_raw_parts(cuda.ids.ptr as *const i64, pairs).to_vec();
             let host_wts: Vec<f32> = if hybrid { std::slice::from_raw_parts(cuda.wts.ptr as *const f32, pairs).to_vec() } else { Vec::new() };
-            (distinct(&host_ids, ly.cache.experts()), host_ids, host_wts, hybrid)
+            let needed = by_rows(distinct(&host_ids, ly.cache.experts()), &host_ids, ly.cache.experts());
+            // (a call whose misses are more than the places its hits leave, copied whole in waves where that is quicker than the host's share of them)
+            let hybrid = hybrid && {
+                let experts = ly.cache.experts();
+                let mut pairs_of = vec![0usize; experts];
+                host_ids.iter().filter(|&&e| e >= 0 && (e as usize) < experts).for_each(|&e| pairs_of[e as usize] += 1);
+                let misses: Vec<Miss> = needed
+                    .iter()
+                    .filter(|&&e| ly.cache.slot_of(e as usize).is_none())
+                    .map(|&e| Miss { expert: e, pairs: pairs_of[e as usize], hot: false })
+                    .collect();
+                let room = ly.cache.slots() - (needed.len() - misses.len());
+                !waves_quicker(mode, &misses, room, &Costs { backlog: cuda.backlog(inner.expert_bytes, &inner.costs), ..inner.costs })
+            };
+            (needed, host_ids, host_wts, hybrid)
         };
         if hybrid {
+            // (the codebook rows' layers sum the host's sums by token, their own way: `Call::rows` is not theirs)
             let overlap = {
                 let inner = self.inner.borrow();
                 let ly = inner.layers[layer].as_ref().expect("a layer");
                 inner.offload.async_copies
                     && inner.predict.is_none()
                     && ly.tier.is_none()
+                    && call.rows == 0
                     && matches!(ly.cpu.as_ref().map(|c| &c.half), Some(HostHalf::Cb2(..)))
             };
             if overlap {
@@ -2492,8 +3047,12 @@ impl ExpertStore {
                 let mut guard = self.inner.borrow_mut();
                 let inner = &mut *guard;
                 if w > 0 {
-                    // (the last wave's places and the host buffer of its pairs' places are free once the engine's stream has run it)
+                    // (the last wave's places and the host buffer of its pairs' places are free once the engine's stream has run it: a wait for the GPU)
+                    let t0 = Instant::now();
                     at.sync()?;
+                    if let Some(ly) = inner.layers[layer].as_mut() {
+                        ly.stats.wait_ms += t0.elapsed().as_secs_f64() * 1e3;
+                    }
                 }
                 let cuda = inner.cuda.as_mut().expect("the copy stream");
                 let ly = inner.layers[layer].as_mut().expect("a layer");
@@ -2503,7 +3062,20 @@ impl ExpertStore {
                 inner.stats.misses += got.loads.len() as u64;
                 inner.stats.copied += got.loads.len() as u64;
                 inner.stats.waves += (w > 0) as u64;
-                place(cuda, ly, &got.loads, &mut inner.stats, &mut inner.costs, inner.expert_bytes).inspect_err(|_| ly.forget())?;
+                let bytes = place(cuda, ly, &got.loads, &mut inner.stats, &mut inner.costs, inner.expert_bytes).inspect_err(|_| ly.forget())?;
+                // (a copy mode's misses are the waves' copies, each expert copied once over the waves: `LayerCache::waves`)
+                let missed: u64 = got.loads.iter().map(|l| ly.bytes_of(l.0 as usize)).sum();
+                let st = &mut ly.stats;
+                (st.reads, st.hits, st.copies, st.waves, st.copy_bytes, st.missed_bytes, st.whole, st.whole_bytes) = (
+                    st.reads + wave.len() as u64,
+                    st.hits + got.hits as u64,
+                    st.copies + got.loads.len() as u64,
+                    st.waves + (w > 0) as u64,
+                    st.copy_bytes + bytes,
+                    st.missed_bytes + missed,
+                    st.whole + (w == 0) as u64,
+                    st.whole_bytes + bytes,
+                );
                 ly.wait_ready(s)?;
                 for &e in wave {
                     ly.place[e as usize] = ly.cache.slot_of(e as usize).expect("an expert in a place") as i64;
@@ -2519,7 +3091,7 @@ impl ExpertStore {
                 // (after this layer's own copies on the copy stream, and before its products are queued)
                 self.predicted(layer, &needed, [Some(layer), None])?;
             }
-            let all = Hybrid { gpu: true, ids: 0, extra: 0 };
+            let all = Hybrid { gpu: true, ids: 0, extra: 0, rows: false };
             body(Stage::Products, w, waves.len(), &all)?;
             body(Stage::Sum, w, waves.len(), &all)?;
             let mut guard = self.inner.borrow_mut();
@@ -2567,6 +3139,8 @@ impl ExpertStore {
         inner.stats.misses += served.misses as u64;
         inner.stats.copied += served.loads.len() as u64;
         inner.stats.cpu += served.kept.len() as u64;
+        let missed = ly.missed_bytes(&served);
+        ly.stats.served(&served, 0, missed);
         for &e in &served.wanted {
             ly.place[e as usize] = ly.cache.slot_of(e as usize).expect("an expert in a place") as i64;
         }
@@ -2587,6 +3161,7 @@ impl ExpertStore {
         tail_skip_rows(&mut mine, host_ids, host_wts, k, inner.offload.skip_rank, later);
         let dropped = kept - mine.len();
         inner.stats.skipped += dropped as u64;
+        let (host_experts, host_bytes) = ly.host_reads(host_ids, &mine);
         let hidden = ly.hidden();
         let Some(CpuSide { half: HostHalf::Cb2(limit, ..), .. }) = &ly.cpu else { unreachable!("a layer of this format") };
         let limit = *limit;
@@ -2625,27 +3200,30 @@ impl ExpertStore {
         };
         // beside it: the copies this call needs, the places of the pairs, the products on the GPU, the promotions
         let products = (|| -> Result<()> {
-            fetch(cuda, ly, &served.loads, &mut inner.stats).inspect_err(|_| ly.forget())?;
+            let bytes = fetch(cuda, ly, &served.loads, &mut inner.stats).inspect_err(|_| ly.forget())?;
+            ly.stats.copy_bytes += bytes;
             ly.wait_ready(s)?;
             copy_h2d_async(call.way, cuda.way.ptr, pairs * 8, s)?;
             crate::tmark!(s, "store: planned");
-            body(Stage::Products, 0, 1, &Hybrid { gpu: gpu > 0, ids: 0, extra: 0 })?;
+            body(Stage::Products, 0, 1, &Hybrid { gpu: gpu > 0, ids: 0, extra: 0, rows: false })?;
             crate::tmark!(s, "store: products queued");
             ly.done.record(s)?;
             let backlog = cuda.backlog(inner.expert_bytes, &inner.costs);
             if !served.promote.is_empty() && backlog <= BACKLOG_US {
                 let got = ly.cache.hint(&served.promote)?;
                 inner.stats.promoted += got.loads.len() as u64;
-                fetch(cuda, ly, &got.loads, &mut inner.stats).inspect_err(|_| ly.forget())?;
+                let bytes = fetch(cuda, ly, &got.loads, &mut inner.stats).inspect_err(|_| ly.forget())?;
+                ly.stats.ahead(got.loads.len(), bytes);
             }
             cuda.count(&mut inner.stats, &mut inner.costs, inner.expert_bytes, false)
         })();
         // (the host's pairs are waited for even if the rest failed: they write into `out`, which the call keeps)
         let host_result = pending.map(|rx| recv_spin(&rx));
         products?;
-        let hy = Hybrid { gpu: gpu > 0, ids: 0, extra: 0 };
+        let hy = Hybrid { gpu: gpu > 0, ids: 0, extra: 0, rows: false };
         let Some(joined) = host_result else {
             // (no pair left for the host: the pairs left out have no place and no host sum, and the sum leaves them out by their places)
+            ly.stats.hosted(0, 0, dropped, 0, 0.0);
             cuda.out = Vec::new();
             if parts {
                 // (the sum of the parts' graph adds the host's sums always: none this time)
@@ -2661,15 +3239,16 @@ impl ExpertStore {
         r?;
         inner.stats.cpu_pairs += mine.len() as u64;
         inner.stats.cpu_ms += us / 1e3;
+        ly.stats.hosted(host_experts, mine.len(), dropped, host_bytes, us / 1e3);
         if !inner.frozen {
-            inner.costs.computed(mine.len(), us);
+            inner.costs.computed(host_experts, mine.len(), us);
         }
         send_sums(cuda, mine.iter().map(|&j| j / k), hidden, call.tokens, call.part, s)?;
         crate::tmark!(s, "store: host sums sent");
         if parts {
             return Ok(());
         }
-        body(Stage::Sum, 0, 1, &Hybrid { gpu: hy.gpu, ids: call.way, extra: call.part })?;
+        body(Stage::Sum, 0, 1, &Hybrid { gpu: hy.gpu, ids: call.way, extra: call.part, rows: false })?;
         crate::tmark!(s, "store: sum queued");
         Ok(())
     }
@@ -2763,12 +3342,14 @@ impl ExpertStore {
                 }
                 None => dev.sync()?,
             }
-            inner.stats.wait_ms += t0.elapsed().as_secs_f64() * 1e3;
+            let waited = t0.elapsed().as_secs_f64() * 1e3;
+            inner.stats.wait_ms += waited;
             crate::tmark!(dev.stream, "store: choices read");
             // SAFETY: the pinned buffers hold `pairs` int64 and fp32, written by the copies the engine's stream has run.
             let host_ids: Vec<i64> = std::slice::from_raw_parts(cuda.ids.ptr as *const i64, pairs).to_vec();
             let host_wts: Vec<f32> = std::slice::from_raw_parts(cuda.wts.ptr as *const f32, pairs).to_vec();
-            let ly = inner.layers.get(layer).and_then(Option::as_ref).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+            let ly = inner.layers.get_mut(layer).and_then(Option::as_mut).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+            ly.stats.called(call.tokens, call.pairs, waited);
             (distinct(&host_ids, ly.cache.experts()), host_ids, host_wts)
         };
         early()?;
@@ -2819,7 +3400,7 @@ impl ExpertStore {
         let s = dev.stream;
         let (pairs, k) = (call.pairs, call.pairs / call.tokens);
         // the plan and the host's pairs started on their thread, the store borrowed (`next` captures graphs that ask it for its buffers)
-        let (pending, mine, hidden, promote, recorded) = {
+        let (pending, mine, hidden, promote, recorded, host_experts) = {
             let mut guard = self.inner.borrow_mut();
             let inner = &mut *guard;
             let cuda = inner.cuda.as_mut().ok_or_else(|| Error("the expert cache has no layers".into()))?;
@@ -2843,12 +3424,14 @@ impl ExpertStore {
                 }
                 None => dev.sync()?,
             }
-            inner.stats.wait_ms += t0.elapsed().as_secs_f64() * 1e3;
+            let waited = t0.elapsed().as_secs_f64() * 1e3;
+            inner.stats.wait_ms += waited;
             crate::tmark!(s, "store: choices read");
             // SAFETY: the pinned buffers hold `pairs` int64 and fp32, written by the front's kernel before it moved the word.
             let host_ids: Vec<i64> = std::slice::from_raw_parts(cuda.ids.ptr as *const i64, pairs).to_vec();
             let host_wts: Vec<f32> = std::slice::from_raw_parts(cuda.wts.ptr as *const f32, pairs).to_vec();
             let ly = inner.layers.get_mut(layer).and_then(Option::as_mut).ok_or_else(|| Error(format!("no layer {layer} in the expert cache")))?;
+            ly.stats.called(call.tokens, call.pairs, waited);
             ly.calls += 1;
             let (experts, now) = (ly.cache.experts(), ly.calls);
             if map.len() != experts {
@@ -2869,6 +3452,8 @@ impl ExpertStore {
             inner.stats.hits += served.hits as u64;
             inner.stats.misses += served.misses as u64;
             inner.stats.cpu += served.kept.len() as u64;
+            let missed = ly.missed_bytes(&served);
+            ly.stats.served(&served, 0, missed);
             // the host's pairs: those of the experts without a place in the map (what the GPU left out), less the ones the skips leave out
             let mut mine: Vec<usize> = (0..pairs).filter(|&j| host_ids[j] >= 0 && (host_ids[j] as usize) < experts && map[host_ids[j] as usize] < 0).collect();
             let kept = mine.len();
@@ -2878,6 +3463,8 @@ impl ExpertStore {
             let later = if call.tokens > 1 && inner.offload.skip_rank_later > 0 { inner.offload.skip_rank_later } else { inner.offload.skip_rank };
             tail_skip_rows(&mut mine, &host_ids, &host_wts, k, inner.offload.skip_rank, later);
             inner.stats.skipped += (kept - mine.len()) as u64;
+            let (host_experts, host_bytes) = ly.host_reads(&host_ids, &mine);
+            ly.stats.hosted(host_experts, mine.len(), kept - mine.len(), host_bytes, 0.0);
             let hidden = ly.hidden();
             if sums.len() < call.tokens * hidden {
                 return err(format!("host sums of {} values for {} tokens of {hidden}", sums.len(), call.tokens));
@@ -2908,7 +3495,7 @@ impl ExpertStore {
             };
             // (the products queued before are the places' last use, which the promotions' copies wait for)
             let recorded = ly.done.record(s);
-            (pending, mine, hidden, served.promote, recorded)
+            (pending, mine, hidden, served.promote, recorded, host_experts)
         };
         // the GPU's next work queued while the host computes (unless the call failed so far: its error then)
         let launched = match &recorded {
@@ -2930,6 +3517,7 @@ impl ExpertStore {
                 moved = !got.loads.is_empty();
                 // (the places taken out of the map whatever the copies do: an expert whose place another takes is in none)
                 let fetched = fetch(cuda, ly, &got.loads, &mut inner.stats).inspect_err(|_| ly.forget());
+                ly.stats.ahead(got.loads.len(), *fetched.as_ref().unwrap_or(&0));
                 for (e, m) in map.iter_mut().enumerate() {
                     if *m >= 0 && ly.cache.slot_of(e) != Some(*m as usize) {
                         *m = -1;
@@ -2960,8 +3548,11 @@ impl ExpertStore {
         cuda.out = out;
         inner.stats.cpu_pairs += mine.len() as u64;
         inner.stats.cpu_ms += us / 1e3;
+        if let Some(ly) = inner.layers.get_mut(layer).and_then(Option::as_mut) {
+            ly.stats.host_ms += us / 1e3;
+        }
         if !inner.frozen {
-            inner.costs.computed(mine.len(), us);
+            inner.costs.computed(host_experts, mine.len(), us);
         }
         Ok((moved, true))
     }
@@ -3004,7 +3595,9 @@ impl ExpertStore {
             inner.stats.misses += served.misses as u64;
             inner.stats.copied += served.loads.len() as u64;
             inner.stats.cpu += served.kept.len() as u64;
-            fetch(cuda, ly, &served.loads, &mut inner.stats).inspect_err(|_| ly.forget())?;
+            let bytes = fetch(cuda, ly, &served.loads, &mut inner.stats).inspect_err(|_| ly.forget())?;
+            let missed = ly.missed_bytes(&served);
+            ly.stats.served(&served, bytes, missed);
             ly.wait_ready(s)?;
             for &e in &served.wanted {
                 ly.place[e as usize] = ly.cache.slot_of(e as usize).expect("an expert in a place") as i64;
@@ -3025,10 +3618,14 @@ impl ExpertStore {
             tail_skip(&mut mine, host_ids, host_wts, k, inner.offload.skip_rank);
             dropped = kept - mine.len();
             inner.stats.skipped += dropped as u64;
+            let (host_experts, host_bytes) = ly.host_reads(host_ids, &mine);
+            ly.stats.hosted(host_experts, mine.len(), dropped, host_bytes, 0.0);
+            #[cfg(feature = "dev")]
+            ly.host_pairs.clone_from(&mine);
             (gpu, mine, served.promote)
         };
         self.predicted(layer, needed, [Some(layer), None])?;
-        let hy = Hybrid { gpu: gpu > 0, ids: 0, extra: 0 };
+        let hy = Hybrid { gpu: gpu > 0, ids: 0, extra: 0, rows: false };
         crate::tmark!(s, "store: planned");
         body(Stage::Products, 0, 1, &hy)?;
         crate::tmark!(s, "store: products queued");
@@ -3043,7 +3640,8 @@ impl ExpertStore {
             if !promote.is_empty() && backlog <= BACKLOG_US {
                 let got = ly.cache.hint(&promote)?;
                 inner.stats.promoted += got.loads.len() as u64;
-                fetch(cuda, ly, &got.loads, &mut inner.stats).inspect_err(|_| ly.forget())?;
+                let bytes = fetch(cuda, ly, &got.loads, &mut inner.stats).inspect_err(|_| ly.forget())?;
+                ly.stats.ahead(got.loads.len(), bytes);
             }
             cuda.count(&mut inner.stats, &mut inner.costs, inner.expert_bytes, false)?;
         }
@@ -3053,11 +3651,12 @@ impl ExpertStore {
             crate::tmark!(s, "store: sum queued");
             return Ok(());
         }
+        let sum;
         {
             let mut guard = self.inner.borrow_mut();
             let inner = &mut *guard;
             let cuda = inner.cuda.as_mut().expect("the copy stream");
-            let ly = inner.layers[layer].as_ref().expect("a layer");
+            let ly = inner.layers[layer].as_mut().expect("a layer");
             let hidden = ly.hidden();
             cuda.out.resize(mine.len() * hidden, 0.0);
             // SAFETY: the pinned buffers hold the tokens' rows of z and of sums, and the engine's stream does not read the sums until the copy below.
@@ -3075,6 +3674,7 @@ impl ExpertStore {
                     mine.iter().zip(&experts).map(|(&j, e)| crate::cpu_cb::GlmPair { expert: e, token: j / k, weight: host_wts[j] }).collect();
                 crate::cpu_cb::experts_pinned(crate::cpu_hb::checked_kernel(), Z::Bf16(z), &gp, &mut cuda.out, inner.offload.threads, inner.offload.pin)?;
             } else if let Some(CpuSide { half: HostHalf::Fp4 { act, .. }, .. }) = &ly.cpu {
+                // (each expert's bytes read once for its pairs: `by_expert`)
                 let fp: Vec<crate::cpu_fp4::Fp4Pair> =
                     mine.iter().map(|&j| crate::cpu_fp4::Fp4Pair { expert: ly.fp4_expert(host_ids[j] as usize), token: j / k, weight: host_wts[j] }).collect();
                 crate::cpu_fp4::experts(
@@ -3094,13 +3694,16 @@ impl ExpertStore {
             let us = t0.elapsed().as_secs_f64() * 1e6;
             inner.stats.cpu_pairs += mine.len() as u64;
             inner.stats.cpu_ms += us / 1e3;
+            ly.stats.host_ms += us / 1e3;
             if !inner.frozen {
-                inner.costs.computed(mine.len(), us);
+                inner.costs.computed(ly.host_reads(host_ids, &mine).0, mine.len(), us);
             }
-            send_sums(cuda, mine.iter().map(|&j| j / k), hidden, call.tokens, call.part, s)?;
+            // SAFETY: the way buffer's first section holds the call's places (`fill_way` above), which nothing has written since.
+            let way = std::slice::from_raw_parts(cuda.way.ptr as *const i64, pairs).to_vec();
+            sum = send_host(cuda, call, &mine, host_ids, &way, hidden, hy.gpu, s)?;
             crate::tmark!(s, "store: host sums sent");
         }
-        body(Stage::Sum, 0, 1, &Hybrid { gpu: hy.gpu, ids: call.way, extra: call.part })?;
+        body(Stage::Sum, 0, 1, &sum)?;
         crate::tmark!(s, "store: sum queued");
         Ok(())
     }
@@ -3161,7 +3764,16 @@ impl ExpertStore {
             copy_d2h_async(cuda.z.ptr, call.z, call.tokens * hidden * 4, s)?;
             let t0 = Instant::now();
             at.sync()?;
-            inner.stats.wait_ms += t0.elapsed().as_secs_f64() * 1e3;
+            let waited = t0.elapsed().as_secs_f64() * 1e3;
+            inner.stats.wait_ms += waited;
+            // (each group's layer a call of the tokens, of its own pairs; the wait the first's)
+            for (g, l) in layers.iter().enumerate() {
+                if let Some(ly) = l.and_then(|l| inner.layers.get_mut(l)).and_then(Option::as_mut) {
+                    let ids = std::slice::from_raw_parts(cuda.ids.ptr as *const i64, pairs);
+                    let own = ids.iter().filter(|&&e| e >= 0 && groups.group_of.get(e as usize).is_some_and(|&x| x as usize == g)).count();
+                    ly.stats.called(call.tokens, own, if layers[..g].iter().any(Option::is_some) { 0.0 } else { waited });
+                }
+            }
             // SAFETY: the pinned buffers hold `pairs` int64 and fp32, written by the copies that have completed.
             (
                 std::slice::from_raw_parts(cuda.ids.ptr as *const i64, pairs).to_vec(),
@@ -3197,7 +3809,13 @@ impl ExpertStore {
                 inner.stats.misses += sv.misses as u64;
                 inner.stats.copied += sv.loads.len() as u64;
                 inner.stats.cpu += sv.kept.len() as u64;
-                place(cuda, ly, &sv.loads, &mut inner.stats, &mut inner.costs, inner.expert_bytes).inspect_err(|_| ly.forget())?;
+                let bytes = place(cuda, ly, &sv.loads, &mut inner.stats, &mut inner.costs, inner.expert_bytes).inspect_err(|_| ly.forget())?;
+                let missed = ly.missed_bytes(sv);
+                ly.stats.served(sv, bytes, missed);
+                // (the host's pairs of the group: `cpu_hbg` reads an expert once for its pairs, `cpu_hb` once a pair)
+                let mine: Vec<usize> = placed.mine.iter().filter(|&&(h, _)| h == g).map(|&(_, j)| j).collect();
+                let (host_experts, host_bytes) = ly.host_reads(&placed.local[g], &mine);
+                ly.stats.hosted(host_experts, mine.len(), 0, host_bytes, 0.0);
                 ly.wait_ready(s)?;
                 // SAFETY: the pinned buffer holds a section of `pairs` int64 for each group and the engine's stream does not read it now.
                 let way = std::slice::from_raw_parts_mut((cuda.way.ptr as *mut i64).add(g * pairs), pairs);
@@ -3221,7 +3839,7 @@ impl ExpertStore {
         let any = gpu.iter().any(|&b| b);
         for g in 0..2 {
             let Some(l) = layers[g] else { continue };
-            body(Stage::Products, g, &Hybrid { gpu: gpu[g], ids: 0, extra: 0 })?;
+            body(Stage::Products, g, &Hybrid { gpu: gpu[g], ids: 0, extra: 0, rows: false })?;
             // (the places are free of this group's products once they have run: the copies behind it wait for them)
             self.inner.borrow().layers[l].as_ref().expect("a layer").done.record(s)?;
         }
@@ -3236,13 +3854,14 @@ impl ExpertStore {
                     let ly = inner.layers[l].as_mut().expect("a layer");
                     let got = ly.cache.hint(&sv.promote)?;
                     inner.stats.promoted += got.loads.len() as u64;
-                    place(cuda, ly, &got.loads, &mut inner.stats, &mut inner.costs, inner.expert_bytes).inspect_err(|_| ly.forget())?;
+                    let bytes = place(cuda, ly, &got.loads, &mut inner.stats, &mut inner.costs, inner.expert_bytes).inspect_err(|_| ly.forget())?;
+                    ly.stats.ahead(got.loads.len(), bytes);
                 }
             }
             cuda.count(&mut inner.stats, &mut inner.costs, inner.expert_bytes, false)?;
         }
         if placed.mine.is_empty() {
-            return body(Stage::Sum, 0, &Hybrid { gpu: any, ids: 0, extra: 0 });
+            return body(Stage::Sum, 0, &Hybrid { gpu: any, ids: 0, extra: 0, rows: false });
         }
         {
             let mut guard = self.inner.borrow_mut();
@@ -3285,11 +3904,13 @@ impl ExpertStore {
                     let wts: Vec<f32> = placed.mine[start..end].iter().map(|&(_, j)| host_wts[j]).collect();
                     let t0 = Instant::now();
                     crate::cpu_hbg::store_pairs(&experts, z, &tokens, &wts, act, &finish, &mut cuda.out[start * hidden..end * hidden], inner.offload.threads)?;
-                    let round = t0.elapsed().as_secs_f64() * 1e6;
-                    inner.stats.cpu_pairs += experts.len() as u64;
+                    let (round, n) = (t0.elapsed().as_secs_f64() * 1e6, experts.len());
+                    drop(experts);
+                    inner.stats.cpu_pairs += n as u64;
                     inner.stats.cpu_ms += round / 1e3;
+                    host_time(&mut inner.layers, layers, &placed.mine[start..end], round / 1e3);
                     if !inner.frozen {
-                        inner.costs.computed(experts.len(), round);
+                        inner.costs.computed(n, n, round);
                     }
                     continue;
                 }
@@ -3308,16 +3929,81 @@ impl ExpertStore {
                     inner.offload.threads,
                     inner.offload.pin,
                 )?;
-                let round = t0.elapsed().as_secs_f64() * 1e6;
-                inner.stats.cpu_pairs += views.len() as u64;
+                let (round, n) = (t0.elapsed().as_secs_f64() * 1e6, views.len());
+                drop(views);
+                drop(experts);
+                inner.stats.cpu_pairs += n as u64;
                 inner.stats.cpu_ms += round / 1e3;
+                host_time(&mut inner.layers, layers, &placed.mine[start..end], round / 1e3);
                 if !inner.frozen {
-                    inner.costs.computed(views.len(), round);
+                    inner.costs.computed(n, n, round);
                 }
             }
             send_sums(cuda, placed.mine.iter().map(|&(_, j)| j / k), hidden, call.tokens, call.part, s)?;
         }
-        body(Stage::Sum, 0, &Hybrid { gpu: any, ids: call.sum_ids, extra: call.part })
+        body(Stage::Sum, 0, &Hybrid { gpu: any, ids: call.sum_ids, extra: call.part, rows: false })
+    }
+
+    /// A step's end (the engine's, after the step's results are read): the copies that have run are counted, and each layer's stats since the step began become the last step's (`last_step`) and are added to the
+    /// process's (`process_totals`, the server's /stats). Returns the step's, by the layer's number in the store (zeros for a number no layer has). Copies still running (promotions
+    /// behind the last layers) count in the step that sees them done. A step of no call (an end asked for twice) leaves the last step as it was.
+    pub fn end_step(&self) -> Result<Vec<LayerStats>> {
+        let mut guard = self.inner.borrow_mut();
+        let inner = &mut *guard;
+        let Some(cuda) = inner.cuda.as_mut() else { return Ok(Vec::new()) };
+        cuda.count(&mut inner.stats, &mut inner.costs, inner.expert_bytes, false)?;
+        let ms = std::mem::take(&mut cuda.layer_ms);
+        // (the calls the GPU planned since the last step: its counters, the experts' bytes, the host thread's time; the plan's settings from the costs measured so far)
+        for ly in inner.layers.iter_mut().flatten() {
+            let Some(dp) = ly.dplan.as_mut() else { continue };
+            let [calls, _, reads, hits, fills, host, host_pairs, promos] = dp.counters()?.map(u64::from);
+            let b = ly.packs.iter().map(|p| p.stride[0] + p.stride[1]).sum::<u64>();
+            let st = &mut ly.stats;
+            (st.calls, st.reads, st.hits, st.copies, st.host, st.host_pairs, st.ahead) =
+                (st.calls + calls, st.reads + reads, st.hits + hits, st.copies + fills, st.host + host, st.host_pairs + host_pairs, st.ahead + promos);
+            (st.copy_bytes, st.host_bytes, st.missed_bytes, st.ahead_bytes) =
+                (st.copy_bytes + fills * b, st.host_bytes + host * b, st.missed_bytes + (fills + host) * b, st.ahead_bytes + promos * b);
+            let ms = inner.mail.as_ref().map_or(0.0, |m| m.host_ms(ly.index));
+            st.host_ms += ms;
+            // (the host's time for the GPU's requests prices its next misses as a call of the host's own does)
+            if host > 0 && ms > 0.0 && !inner.frozen {
+                inner.costs.computed(host as usize, host_pairs as usize, ms * 1e3);
+            }
+        }
+        if let Some(m) = inner.mail.as_mut() {
+            m.set_params(crate::devplan::Params::of(&inner.offload, &inner.costs))?;
+        }
+        let step: Vec<LayerStats> = inner
+            .layers
+            .iter_mut()
+            .enumerate()
+            .map(|(l, ly)| {
+                let mut st = ly.as_mut().map(|ly| std::mem::take(&mut ly.stats)).unwrap_or_default();
+                st.copy_ms += ms.get(l).copied().unwrap_or(0.0);
+                st
+            })
+            .collect();
+        let add = |to: &mut Vec<LayerStats>| {
+            if to.len() < step.len() {
+                to.resize(step.len(), LayerStats::default());
+            }
+            to.iter_mut().zip(&step).for_each(|(a, b)| a.add(b));
+        };
+        add(&mut TOTALS.lock().unwrap_or_else(|e| e.into_inner()));
+        if step.iter().any(|l| l.calls > 0) {
+            inner.last = step.clone();
+        }
+        Ok(step)
+    }
+
+    /// Each layer's stats of the last step ended (`end_step`).
+    pub fn last_step(&self) -> Vec<LayerStats> {
+        self.inner.borrow().last.clone()
+    }
+
+    /// The bytes of an expert of the layers added last (the codes and scales of all its matrices).
+    pub fn expert_bytes(&self) -> u64 {
+        self.inner.borrow().expert_bytes
     }
 
     /// What the cache has done so far (the copy stream waited for, so that every copy is counted).
@@ -3441,6 +4127,24 @@ mod tests {
         tail_skip_rows(&mut rows, &ids, &wts, 4, 1, 3);
         assert_eq!(rows, vec![2, 4]);
     }
+
+    /// Where the layer's sum adds each pair's own row (`Call::rows`), the host's rows go to their pairs' rows a copy for each run of pairs one after another, and the
+    /// sum adds the pairs the GPU or the host computed, by their choices, and leaves out a pair neither did: a token's pairs in the order of its choices whoever
+    /// computed them, as copy mode's sum adds them.
+    #[test]
+    fn the_hosts_rows_go_to_their_pairs_and_the_sum_is_of_every_pair_computed() {
+        // two tokens of 4 choices: pairs 1, 2, 3 and 6 the host's, 0, 4 and 5 the GPU's, 7 left out (no place and not the host's)
+        let mine = [1usize, 2, 3, 6];
+        assert_eq!(runs(&mine), vec![(1, 0, 3), (6, 3, 1)]);
+        assert_eq!(runs(&[]), Vec::<(usize, usize, usize)>::new());
+        assert_eq!(runs(&[0, 1, 2, 3]), vec![(0, 0, 4)]);
+        let ids = [5i64, 9, 2, 7, 3, 5, 11, 0];
+        let way = [0i64, -1, -1, -1, 1, 0, -1, -1];
+        assert_eq!(sum_ids(&ids, &way, &mine), vec![5, 9, 2, 7, 3, 5, 11, -1]);
+        // (every pair the host's, or none: the router's choices, the pairs left out apart)
+        assert_eq!(sum_ids(&ids, &[-1; 8], &[0, 1, 2, 3, 4, 5, 6, 7]), ids.to_vec());
+        assert_eq!(sum_ids(&ids, &way, &[]), vec![5, -1, -1, -1, 3, 5, -1, -1]);
+    }
     use flate2::read::DeflateDecoder;
     use std::io::Read;
 
@@ -3538,11 +4242,29 @@ mod tests {
     }
 
     /// The places and memory a cache is sized to: Nemotron 3 Super's experts at the swift level are 3,784,704 bytes (two matrices of 2,688 steps of 640 bytes and 172,032 of scales apiece) in 40 layers of 512.
+    /// The places a layer of a budget are the one expert-cache rule's (src/plan.rs `sizing::expert_cache_with`), as every route plans them.
     #[test]
     fn the_budget_is_places_a_layer() {
+        use crate::plan::sizing::{expert_cache_with, CacheAsk, CacheOf};
         let one = 3_784_704u64;
         assert_eq!(2 * (2688 * 640 + 2688 / 2 * 128), one);
         let gib = 1u64 << 30;
+        let places_for = |budget: u64, layers: usize, place: u64, experts: usize, least: usize| {
+            let c = CacheOf {
+                dense: vec![0; layers],
+                base: 0,
+                ram: Vec::new(),
+                moe: vec![true; layers],
+                place,
+                experts,
+                top_k: 22,
+                all: (layers * experts) as u64 * place,
+                disk: false,
+                across: 1,
+                starts: Vec::new(),
+            };
+            expert_cache_with(&c, CacheAsk { least: Some(least), ..CacheAsk::default() }, &[(0, budget)], &[], None).ok().map(|k| k.places[0])
+        };
         assert_eq!(places_for(15 * gib, 40, one, 512, 44), Some(106));
         assert_eq!(places_for(23 * gib, 40, one, 512, 44), Some(163));
         assert_eq!(places_for(500 * gib, 40, one, 512, 44), Some(512), "no more than all of them");
@@ -3662,7 +4384,7 @@ mod tests {
     /// (20 pairs and more each) are copied while the backlog is shorter than the host's work they save; `Split` ignores the backlog.
     #[test]
     fn a_copy_waits_for_the_backlog_in_front_of_it() {
-        let idle = Costs { copy: 160.0, fixed: 100.0, pair: 38.0, backlog: 0.0 };
+        let idle = Costs { copy: 160.0, fixed: 100.0, pair: 38.0, row: 38.0, backlog: 0.0 };
         let behind = |us: f64| Costs { backlog: us, ..idle };
         let decode: Vec<Miss> = (0..10).map(|e| miss(e, 1, e % 3 == 0)).collect();
         for us in [10_000.0, 1_000.0, 500.0] {
@@ -3687,7 +4409,7 @@ mod tests {
     /// The copies go to the misses with the most pairs (the host's time is by the pair), the ones missed lately first among equals, and the earlier first among those.
     #[test]
     fn the_copies_go_to_the_heavy_and_the_hot() {
-        let c = Costs { copy: 120.0, fixed: 100.0, pair: 50.0, backlog: 0.0 };
+        let c = Costs { copy: 120.0, fixed: 100.0, pair: 50.0, row: 50.0, backlog: 0.0 };
         let misses = [miss(1, 1, false), miss(2, 30, false), miss(3, 1, true), miss(4, 1, true), miss(5, 12, false), miss(6, 1, false)];
         // k = 1: 30 pairs leave 16 for the host (900 microseconds); k = 2: 12 more leave 4 (300) against 240 copying; k = 3: 3 leave 3 (250) against 360
         assert_eq!(plan(Mode::Auto, &misses, 9, &c), [false, true, false, false, true, false]);
@@ -3702,7 +4424,7 @@ mod tests {
     /// group whose experts are larger costs more of the call's time.
     #[test]
     fn the_misses_of_two_groups_are_planned_together() {
-        let c = Costs { copy: 120.0, fixed: 100.0, pair: 50.0, backlog: 0.0 };
+        let c = Costs { copy: 120.0, fixed: 100.0, pair: 50.0, row: 50.0, backlog: 0.0 };
         let one = [miss(1, 1, false), miss(2, 30, false), miss(3, 1, true), miss(4, 12, false)];
         for mode in [Mode::Copy, Mode::Cpu, Mode::Split, Mode::Auto] {
             for room in [0, 2, 9] {
@@ -3864,20 +4586,125 @@ mod tests {
         }
         assert!((c.copy - 125.0).abs() < 1.0, "{c:?}");
         for _ in 0..60 {
-            c.computed(6, 100.0 + 6.0 * 31.0);
+            c.computed(6, 6, 100.0 + 6.0 * 31.0);
         }
         assert!((c.pair - 31.0).abs() < 0.5, "{c:?}");
         let before = c;
         c.copied(0, 5.0, 3_000_000);
         c.copied(100, 0.0, 3_000_000);
-        c.computed(0, 500.0);
+        c.computed(0, 0, 500.0);
         assert_eq!(c, before);
-        c.computed(3, 1.0);
+        c.computed(3, 3, 1.0);
         assert!(c.pair >= 2.0 * 0.25 && c.pair < before.pair, "a call shorter than its fixed part: {c:?}");
+        // calls of one row an expert and of four (8 experts, 8 or 32 pairs) on a host that reads an expert in 300 microseconds and computes a further row in 40: both times found
+        let mut c = Costs::default();
+        for i in 0..400 {
+            let pairs = if i % 2 == 0 { 8 } else { 32 };
+            c.computed(8, pairs, 100.0 + 8.0 * 300.0 + (pairs - 8) as f64 * 40.0);
+        }
+        assert!((c.pair - 300.0).abs() < 1.0 && (c.row - 40.0).abs() < 1.0, "{c:?}");
+        assert_eq!((c.host(1), c.host(3)), (c.pair, c.pair + 2.0 * c.row));
+        // more experts than pairs is no call
+        let before = c;
+        c.computed(4, 2, 900.0);
+        assert_eq!(c, before);
+    }
+
+    /// A call whose misses do not fit the places its hits leave is copied whole in waves where the host's share of it would take longer (many rows a miss), and planned with the host where it would not; only `Auto`
+    /// decides so, and a call whose misses fit is never waves.
+    #[test]
+    fn many_rows_of_misses_past_the_places_go_in_waves() {
+        let c = Costs { copy: 480.0, fixed: 100.0, pair: 300.0, row: 250.0, backlog: 0.0 };
+        // (30 misses of 3 rows each, 2 places left: the host's 28 take 22,500 microseconds against 14,400 copying all 30)
+        let heavy: Vec<Miss> = (0..30).map(|e| miss(e, 3, false)).collect();
+        assert!(waves_quicker(Mode::Auto, &heavy, 2, &c));
+        assert!(!waves_quicker(Mode::Cpu, &heavy, 2, &c) && !waves_quicker(Mode::Split, &heavy, 2, &c));
+        // (one row a miss: the host's 28 take 8,500 against 14,400)
+        let light: Vec<Miss> = (0..30).map(|e| miss(e, 1, false)).collect();
+        assert!(!waves_quicker(Mode::Auto, &light, 2, &c));
+        // (room for all: never waves)
+        assert!(!waves_quicker(Mode::Auto, &heavy, 30, &c));
+        // (a long backlog makes the copies dear)
+        assert!(!waves_quicker(Mode::Auto, &heavy, 2, &Costs { backlog: 50_000.0, ..c }));
+    }
+
+    /// The host's time for a miss is its expert's first row and then its other rows (`Costs::host`): where a row after the first costs the products alone, a miss of many rows is still the host's when a pair-by-pair
+    /// host would have it copied, and the copies go to the misses whose rows make the host's time the longest.
+    #[test]
+    fn a_miss_of_many_rows_costs_the_host_its_rows_products() {
+        let grouped = Costs { copy: 400.0, fixed: 100.0, pair: 300.0, row: 20.0, backlog: 0.0 };
+        let by_pair = Costs { row: 300.0, ..grouped };
+        let misses = [miss(1, 8, false), miss(2, 2, false), miss(3, 1, false)];
+        // (by the pair: 2,400, 600 and 300 microseconds; copying the first two leaves 400 against 800 of copies)
+        assert_eq!(plan(Mode::Auto, &misses, 9, &by_pair), [true, true, false]);
+        // (an expert read once: 440, 320 and 300; one copy leaves the host 720 against 400 of copying, two 400 against 800)
+        assert_eq!(plan(Mode::Auto, &misses, 9, &grouped), [true, false, false]);
+        assert_eq!(grouped.host(8), 440.0);
     }
 
     fn pairs_one(experts: usize) -> Vec<usize> {
         vec![1; experts]
+    }
+
+    /// A decode step of 8 rows (6 of 64 experts a row, 16 places; uniform choices) in each mode, the step's layer statistics made as the store makes them (`LayerStats::served`, `hosted` with `host_reads`): the
+    /// bytes read from the computer's memory for the misses are the distinct missed experts' bytes, each expert once whatever its rows, copied or computed by a host that takes an expert's pairs together; a host that
+    /// computes pair by pair reads more where rows share an expert.
+    #[test]
+    fn a_step_of_many_rows_reads_each_missed_expert_once() {
+        let (experts, k, rows, places, bytes) = (64usize, 6usize, 8usize, 16usize, 12_582_912u64);
+        let mut x = 0x0DDB_1A5E_5BAD_5EEDu64;
+        let mut next = move |n: usize| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 11) as usize % n
+        };
+        for mode in [Mode::Copy, Mode::Cpu, Mode::Split, Mode::Auto] {
+            let off = Offload { mode, ..Offload::default() };
+            let (mut cache, mut last) = (LayerCache::new(experts, places), vec![0u64; experts]);
+            let mut per_pair_more = 0u64;
+            for step in 1..=40u64 {
+                let mut ids = Vec::new();
+                for _ in 0..rows {
+                    let mut pick: Vec<i64> = Vec::new();
+                    while pick.len() < k {
+                        let e = next(experts) as i64;
+                        if !pick.contains(&e) {
+                            pick.push(e);
+                        }
+                    }
+                    ids.extend(pick);
+                }
+                let needed = distinct(&ids, experts);
+                let mut pairs_of = vec![0usize; experts];
+                ids.iter().for_each(|&e| pairs_of[e as usize] += 1);
+                let sv = serve(&mut cache, &needed, &pairs_of, &mut last, step, &off, &Costs::default()).unwrap();
+                let mut st = LayerStats::default();
+                st.called(rows, ids.len(), 0.0);
+                st.served(&sv, sv.loads.len() as u64 * bytes, (sv.loads.len() + sv.kept.len()) as u64 * bytes);
+                // (the host's pairs: those of the experts left with no place)
+                let mine: Vec<usize> = (0..ids.len()).filter(|&j| cache.slot_of(ids[j] as usize).is_none()).collect();
+                let (n, b) = host_reads(&ids, &mine, experts, true, |_| bytes);
+                st.hosted(n, mine.len(), 0, b, 0.0);
+                assert_eq!(st.copies + st.host, st.misses(), "{mode:?} step {step}: every miss copied or computed, never both");
+                assert_eq!(st.miss_bytes(), st.misses() * bytes, "{mode:?} step {step}: each missed expert's bytes read once");
+                assert_eq!(st.miss_bytes(), st.missed_bytes);
+                assert_eq!((st.reads, st.rows, st.pairs), (needed.len() as u64, rows as u64, (rows * k) as u64));
+                per_pair_more += host_reads(&ids, &mine, experts, false, |_| bytes).1 - b;
+            }
+            assert!(mode == Mode::Copy || per_pair_more > 0, "{mode:?}: no host pairs shared an expert in 40 steps");
+        }
+        // (/stats's field: none before a layer has run a call, then a JSON object a layer)
+        TOTALS.lock().unwrap().clear();
+        assert_eq!(stats_field(), "");
+        TOTALS.lock().unwrap().extend([LayerStats::default(), LayerStats { calls: 2, hits: 1, ..LayerStats::default() }]);
+        let f = stats_field();
+        assert!(f.starts_with(",\"experts\":[{\"layer\":0,") && f.contains("{\"layer\":1,\"calls\":2,") && f.ends_with(']'), "{f}");
+        TOTALS.lock().unwrap().clear();
+        let one = LayerStats { calls: 1, reads: 3, hits: 1, copy_bytes: 5, host_bytes: 7, copy_ms: 0.5, ..LayerStats::default() };
+        let two = LayerStats::sum([&one, &one]);
+        assert_eq!((two.calls, two.misses(), two.miss_bytes(), two.copy_ms), (2, 4, 24, 1.0));
+        assert!(one.json(3).starts_with("{\"layer\":3,\"calls\":1,") && one.json(3).contains("\"copy_ms\":0.500"));
     }
 
     /// A call's bookkeeping: hits keep their places, the copies get places that are not the call's other experts', the misses left to the host have none, every expert of the call is one or the other, and a
@@ -4158,6 +4985,68 @@ mod tests {
             eprintln!("{cap} places seeded: the record's replay {got:.3}");
             assert!((got - seeded).abs() <= 0.05, "{cap} places seeded: {got:.3}, the record's {seeded}");
         }
+    }
+
+    /// The record's 20 generations (127 decode steps each) decoded `rows` at a time (generations g to g + rows side by side, each group once), each layer's cache of `cap` places asked for a step's experts as a call
+    /// of the store asks in copy mode (one request, or waves of as many as fit where there are more): the step's distinct experts, the distinct missed ones (each copied once) and the share of pairs found in a place,
+    /// a layer and step on average. `first`: the experts in the order they first appear, as calls asked before `by_rows`.
+    fn replay_rows(cap: usize, rows: usize, first: bool) -> (f64, f64, f64) {
+        let &(_, layers, k, ref ids) = trace();
+        let (gens, steps) = (20usize, 127usize);
+        let (mut distinct_n, mut missed, mut found, mut pairs, mut calls) = (0usize, 0usize, 0usize, 0usize, 0usize);
+        for g0 in (0..gens).step_by(rows).filter(|g| g + rows <= gens) {
+            for l in 0..layers {
+                let mut c = LayerCache::new(512, cap);
+                for t in 0..steps {
+                    let step: Vec<i64> = (g0..g0 + rows).flat_map(|g| ids[((g * steps + t) * layers + l) * k..][..k].iter().map(|&e| e as i64)).collect();
+                    let mut needed = distinct(&step, 512);
+                    if !first {
+                        needed = by_rows(needed, &step, 512);
+                    }
+                    found += step.iter().filter(|&&e| c.slot_of(e as usize).is_some()).count();
+                    for wave in c.waves(&needed) {
+                        missed += c.request(&wave).unwrap().loads.len();
+                    }
+                    (distinct_n, pairs, calls) = (distinct_n + needed.len(), pairs + step.len(), calls + 1);
+                }
+            }
+        }
+        (distinct_n as f64 / calls as f64, missed as f64 / calls as f64, found as f64 / pairs as f64)
+    }
+
+    /// The slot policy and the planner's model of it over the routing record's decode traces at 1 to 20 rows a step (benchmarks/moe-skew-2026-10-09: 512 experts, 22 chosen; places for 17, 32 and 46% of them):
+    /// - asking for a step's experts by their rows, fewest first (`by_rows`), never finds fewer pairs in places than in the order they first appear, and more at 16 and 20 rows;
+    /// - the planner's distinct missed experts a step (`plan::step_misses` with `HIT_EXPONENT`: the reads from the computer's memory a step) are within 20% of the cache's at every point; at one row its
+    ///   f^0.23 is 61, 73 and 80% where the cache finds 61, 73 and 80... (printed), the misses' error the largest there, and at many rows the places' reuse between steps goes as the rows' experts fill them.
+    #[test]
+    fn the_slot_policy_and_the_planners_model_over_the_traces_at_many_rows() {
+        let mut worst = 0f64;
+        for cap in [87usize, 164, 236] {
+            for rows in [1usize, 4, 8, 16, 20] {
+                let (d, missed, found) = replay_rows(cap, rows, false);
+                let (_, missed0, found0) = replay_rows(cap, rows, true);
+                let model = 22.0 * crate::plan::step_misses(512, 22, cap, rows, crate::plan::HIT_EXPONENT);
+                let e = model / missed - 1.0;
+                worst = worst.max(e.abs());
+                eprintln!(
+                    "{cap} places, {rows:>2} rows: {d:.1} experts a step, {missed:.1} missed ({missed0:.1} in the order they first appear), {:.1}% of pairs found ({:.1}%); the planner's {model:.1} missed ({:+.1}%)",
+                    100.0 * found,
+                    100.0 * found0,
+                    100.0 * e
+                );
+                assert!(found >= found0 - 1e-9, "{cap} places, {rows} rows: by rows {found} against {found0}");
+                if rows >= 16 {
+                    assert!(found > found0, "{cap} places, {rows} rows: by rows finds more ({found} against {found0})");
+                }
+                assert!(e.abs() < 0.20, "{cap} places, {rows} rows: the planner's {model:.1} missed experts a step against the cache's {missed:.1}");
+            }
+        }
+        eprintln!("the planner's distinct missed experts a step: the largest error {:.1}%", 100.0 * worst);
+        // (a uniform router's share is the places' share at any rows; at one row the model is the old one, f^s)
+        for rows in [1usize, 8, 32] {
+            assert!((crate::plan::step_hit(64, 6, 32, rows, 1.0) - 0.5).abs() < 1e-12);
+        }
+        assert_eq!(crate::plan::step_hit(512, 22, 164, 1, crate::plan::HIT_EXPONENT), (164.0f64 / 512.0).powf(crate::plan::HIT_EXPONENT));
     }
 
     // ---- the places hold the bytes of the experts the cache says they do ----------------------------------------------------------------------------------------------------------------------------
@@ -4811,9 +5700,10 @@ mod tests {
         let mut x = Pick(0xFACE_FEED);
         let (mut found, mut read_in) = (0usize, 0usize);
         for l in [1usize, 3, 5] {
-            let host = read_layer(&ck, &manifest, &c, l).unwrap();
-            let ix = index_layer(&manifest, &c, l).unwrap();
-            let disk = Arc::new(crate::moe_hb::HbDisk::open(&ck, &c, l, &ix).unwrap());
+            let names = c.hb_names(l);
+            let host = read_layer(&ck, &manifest, &names).unwrap();
+            let ix = index_layer(&manifest, &names).unwrap();
+            let disk = Arc::new(crate::moe_hb::HbDisk::open(&ck, &names, &ix).unwrap());
             let _: &HbDisk = &disk;
             for g in 0..2 {
                 let h = host.groups[g].as_ref().unwrap();
@@ -4886,6 +5776,44 @@ mod tests {
             assert_eq!(at, pairs, "trial {trial}: every pair is in a round");
         }
         assert!(host_rounds(&[], &[Vec::new(), Vec::new()], [1, 1]).is_empty());
+    }
+
+    /// The plan on the GPU (src/devplan.rs, kernels/moe.cu xp_plan: a clock over the places) over the record's decode traces, every miss copied: the share of pairs it finds in places against the
+    /// store's least-recently-used cache's, a row a step and 8 rows a step (generations side by side, as `replay_rows`). The clock finds 0.5 to 0.6 points fewer at one row (60.7, 72.8 and 79.4%
+    /// against 61.3, 73.3 and 79.9): held within 1 point; at 8 rows 5.1 points more to 0.6 fewer: held to no more than 1 point fewer.
+    #[test]
+    fn the_plan_on_the_gpu_over_the_traces() {
+        let &(_, layers, k, ref ids) = trace();
+        let copy_all = |_: usize| crate::devplan::Params { copy: 1.0, fixed: 0.0, pair: 1.0, row: 1.0, mode: Mode::Copy, window: 0, max_promote: 0 };
+        for cap in [87usize, 164, 236] {
+            for rows in [1usize, 8] {
+                let (mut found, mut pairs) = (0usize, 0usize);
+                for g0 in (0..20).step_by(rows).filter(|g| g + rows <= 20) {
+                    for l in 0..layers {
+                        let mut pl = crate::devplan::Policy::new(512, cap);
+                        for t in 0..127 {
+                            let step: Vec<i64> = (g0..g0 + rows).flat_map(|g| ids[((g * 127 + t) * layers + l) * k..][..k].iter().map(|&e| e as i64)).collect();
+                            found += step.iter().filter(|&&e| pl.place_of[e as usize] >= 0).count();
+                            pairs += step.len();
+                            // (a call's distinct experts past the places: the rest the host's, as the plan on the GPU sends them)
+                            pl.call(&step, &copy_all(cap));
+                        }
+                    }
+                }
+                let clock = found as f64 / pairs as f64;
+                let lru = replay_rows(cap, rows, false).2;
+                eprintln!(
+                    "{cap} places, {rows} rows: the plan on the GPU finds {:.1}% of pairs in places, the store's cache {:.1}%",
+                    100.0 * clock,
+                    100.0 * lru
+                );
+                if rows == 1 {
+                    assert!((clock - lru).abs() < 0.01, "{cap} places: {clock:.3} against {lru:.3}");
+                } else {
+                    assert!(clock >= lru - 0.01, "{cap} places, {rows} rows: {clock:.3} against {lru:.3}");
+                }
+            }
+        }
     }
 }
 

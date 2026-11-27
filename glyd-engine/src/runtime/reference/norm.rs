@@ -18,6 +18,7 @@ pub fn norm(n: &Norm, x: &[f32], w: Option<&[f32]>, b: Option<&[f32]>) -> Vec<f3
     let (mean, r) = match n.kind {
         NormKind::Rms => (0.0, 1.0 / (input.iter().map(|&v| v * v).sum::<f32>() / dim + n.eps).sqrt()),
         NormKind::L2 => (0.0, 1.0 / (input.iter().map(|&v| v * v).sum::<f32>() + n.eps).sqrt()),
+        NormKind::Identity => (0.0, 1.0),
         NormKind::Layer => {
             let m = input.iter().sum::<f32>() / dim;
             (m, 1.0 / (input.iter().map(|&v| (v - m) * (v - m)).sum::<f32>() / dim + n.eps).sqrt())
@@ -46,6 +47,7 @@ pub fn norm(n: &Norm, x: &[f32], w: Option<&[f32]>, b: Option<&[f32]>) -> Vec<f3
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::reference::Libm;
 
     #[test]
     fn the_forms() {
@@ -75,7 +77,7 @@ mod tests {
     /// Kimi's two roundings differ from one: bf16(w bf16(x r)) against bf16(w x r).
     #[test]
     fn the_rounding_points() {
-        let x: Vec<f32> = (0..32).map(|i| (i as f32 * 0.37).sin() * 3.0).collect();
+        let x: Vec<f32> = (0..32).map(|i| (i as f32 * 0.37).lsin() * 3.0).collect();
         let w: Vec<f32> = (0..32).map(|i| 1.0 + i as f32 * 0.013).collect();
         let r = 1.0 / (x.iter().map(|v| v * v).sum::<f32>() / 32.0 + 1e-5).sqrt();
         let twice = Norm { rounding: Rounding::Twice, ..Norm::rms(1e-5) };

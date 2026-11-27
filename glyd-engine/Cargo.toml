@@ -23,9 +23,12 @@ minijinja = { version = "2.24.0", features = ["builtins", "fuel", "json", "loop_
 minijinja-contrib = { version = "2.24.0", features = ["pycompat"] }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 sha2 = "0.11"
+# the CPU reference's exp, log, tanh, powf, sin and cos (src/runtime/reference): musl's, in Rust, the same bits on every computer, where each system's libm rounds some values otherwise
+libm = "0.2.16"
 ureq = "3"
 llguidance = { version = "1.9.1", default-features = false, features = ["lark", "referencing", "ahash"] }
 toktrie = "1.9.1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # the front end of the server (src/frontend.rs): the connections, their keep-alive and their timeouts are tasks; the handlers of the answers stay on threads of their own
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }

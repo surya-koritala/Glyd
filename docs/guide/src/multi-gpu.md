@@ -13,7 +13,8 @@ CUDA_VISIBLE_DEVICES=0,1 glyd serve MODEL                 # the GPUs to choose f
 glyd serve MODEL --split CUTS --devices GPUS              # your own split, see below
 ```
 
-- Which families split, and at which levels, is the [Models](models.md) table, column "Weights split over GPUs".
+- Which families split, and at which levels, is the [Models](models.md) table, column "Weights split over GPUs". Qwen3.8-Flash-Next splits at penguin as the others do;
+  its codes packs (hummingbird) run on one GPU through `glyd run` and over several through Condor's `qwenserve --gpus 0,1`.
 - `--split CUTS --devices GPUS` is the layer cuts and the GPUs they go to. `fit MODEL` shows the placement the planner
   would choose. If the GPUs do not hold the model, `run` says how much it needs and stops (exit 3).
 - With layers split, one GPU works at a time. On datacenter GPUs that reach each other directly (A100, H100, B200), Kimi-K3

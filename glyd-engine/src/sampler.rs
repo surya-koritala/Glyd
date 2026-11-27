@@ -1,5 +1,10 @@
-//! Sampling a next token from a step's logits, on the host (a step's logits are 300 KB, a copy of some 30 us beside a step of 46 ms): repetition, presence and frequency penalties over the
-//! tokens so far, temperature, top-k, top-p and min-p, then a draw from the generator the seed starts. Temperature 0 is the largest logit (the first of equals, as torch.argmax chooses).
+//! Sampling a next token from a step's logits: repetition, presence and frequency penalties over the tokens so far, a bias, allowed tokens, a grammar's mask, temperature, top-k, top-p and
+//! min-p, then a draw from the generator the seed starts. Temperature 0 is the largest logit (the first of equals, as torch.argmax chooses).
+//!
+//! A draw weighs each token by `weight`, exp((logit - largest) / temperature) as a whole number of 2^-40 (WBITS), so that every sum a draw takes (the row's, a cut's, the walk's) is a
+//! sum of whole numbers: the same in any order, on the host or on a GPU. Where the logits are made on a GPU, the row is not read: the GPU makes the row's largest logits (and, where
+//! the request changes the row, of the row the draw sees: the changes put on it first as `processed` puts them, `Proc`, `Resolved`), and where a cut or the draw's point lies past
+//! them, the weights and the tokens of ranges of the row in the draw's order (`View`, `select`); the host draws from those the token it draws from the whole row, seed for seed.
 
 /// What a request asks of the sampler.
 #[derive(Clone, Debug)]
@@ -16,8 +21,9 @@ pub struct Params {
     /// Subtracted once from the logit of a token that has been generated, and `frequency_penalty` times the count of it.
     pub presence_penalty: f32,
     pub frequency_penalty: f32,
-    /// Added to the logit of each token it names (the token and its bias), before the penalties and the temperature, as vLLM orders them: it can move a greedy choice, and a token the GPU's largest
-    /// logits do not hold can become the choice, so a request with a bias is drawn from the whole row.
+    /// Added to the logit of each token it names (the token and its bias; a token named twice, its last, as the server's JSON object keeps its last key), before the penalties and the
+    /// temperature, as vLLM orders them: it can move a greedy choice, and a token the model's largest logits do not hold can become the choice, so a GPU's candidates of a request with a
+    /// bias are of the row with it put on (`Proc`).
     pub logit_bias: Vec<(u32, f32)>,
     /// The only tokens that may be chosen (vLLM's `allowed_token_ids`; empty: any): the row's other logits are taken out before anything else.
     pub allowed: Vec<u32>,
@@ -61,25 +67,376 @@ impl Params {
     }
 }
 
-/// What a draw asks of the GPU before the step it draws from: the row's largest logits (`kern::TOPK` of them) and, for a top-p with no top-k, the sum over the whole row of exp((logit - largest) / temperature).
+/// A token whose logit a request's draw changes (`Proc`): a bias added; the repetition penalty (the token is in the prompt or the answer so far); the presence and frequency penalties
+/// (the times the answer has said it, 0: none); and `rescue`, an end token set to 0 first where a grammar and the least length leave no token (`Sampler::processed`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Need {
-    pub temperature: f32,
-    pub mass: bool,
+pub struct Entry {
+    pub token: u32,
+    pub bias: Option<f32>,
+    pub seen: bool,
+    pub said: u32,
+    pub rescue: bool,
 }
 
-/// What the GPU gives for a `Need`: the largest logits of a step's row (token and logit, largest first, equal logits by the smaller token) and the sum asked for.
+/// What a GPU puts on a row of logits for a request's draw before it makes the row's largest logits (`Sampler::proc`, made before the step): the tokens taken out (an allowed list, the
+/// grammar's mask of the step, the tokens a least length holds back) and the tokens whose logits change (`Entry`). `resolve` makes it the row's, the grammar's mask waited for.
+#[derive(Clone)]
+pub struct Proc {
+    /// The grammar's mask of the step (a worker makes it beside the step), its end tokens and its width.
+    gram: Option<(crate::constrain::MaskHandle, Vec<u32>, usize)>,
+    /// The allowed list, where the request has one.
+    allowed: Option<std::sync::Arc<Vec<u32>>>,
+    /// The tokens held back until the least length (none where it is reached).
+    suppress: Vec<u32>,
+    entries: Vec<Entry>,
+    repetition: f32,
+    presence: f32,
+    frequency: f32,
+}
+
+/// A `Proc` for a row of a vocabulary: the tokens that may be chosen as 32 tokens' bits a word (token t's in word t / 32, bit t % 32; None: every token), and the tokens whose logits
+/// change, each once (those in the vocabulary, the grammar's end tokens put back at 0 where nothing else is left), with the penalties.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Top {
-    pub cands: Vec<(u32, f32)>,
-    pub mass: Option<f64>,
+pub struct Resolved {
+    pub words: Option<Vec<u32>>,
+    pub entries: Vec<Entry>,
+    pub repetition: f32,
+    pub presence: f32,
+    pub frequency: f32,
 }
 
-/// Draws made by `Sampler::sample_with` from the whole row and from the GPU's largest logits alone.
+impl Proc {
+    /// The request's changes for a row of `v` logits, as `Sampler::processed` makes them: the allowed list, the grammar's mask (waited for; where its worker died, the end tokens alone,
+    /// as the grammar then gives) and the tokens held back taken out together; where that leaves no token under a grammar, its end tokens put back.
+    pub fn resolve(&self, v: usize) -> Resolved {
+        let n = v.div_ceil(32);
+        let mut words: Option<Vec<u32>> = None;
+        let mut and = |w: Vec<u32>| match words.as_mut() {
+            Some(x) => x.iter_mut().zip(&w).for_each(|(a, b)| *a &= b),
+            None => words = Some(w),
+        };
+        if let Some(a) = &self.allowed {
+            let mut w = vec![0u32; n];
+            for &t in a.iter().filter(|&&t| (t as usize) < v) {
+                w[t as usize / 32] |= 1 << (t % 32);
+            }
+            and(w);
+        }
+        if let Some((h, ends, width)) = &self.gram {
+            // (the bits `Gram::apply` keeps: a word all set as it is; past the mask's length, none)
+            let (bits, len) = match h.words() {
+                Some(m) => (m.as_slice().to_vec(), m.len()),
+                None => {
+                    let mut b = vec![0u32; width.div_ceil(32)];
+                    for &e in ends.iter().filter(|&&e| (e as usize) < *width) {
+                        b[e as usize / 32] |= 1 << (e % 32);
+                    }
+                    (b, *width)
+                }
+            };
+            let w = (0..n)
+                .map(|i| match bits.get(i).copied().unwrap_or(0) {
+                    u32::MAX => u32::MAX,
+                    x if x == 0 || i * 32 >= len => 0,
+                    x if len - i * 32 < 32 => x & ((1u32 << (len - i * 32)) - 1),
+                    x => x,
+                })
+                .collect();
+            and(w);
+        }
+        if !self.suppress.is_empty() {
+            let mut w = vec![u32::MAX; n];
+            for &t in self.suppress.iter().filter(|&&t| (t as usize) < v) {
+                w[t as usize / 32] &= !(1 << (t % 32));
+            }
+            and(w);
+        }
+        let mut entries: Vec<Entry> = self.entries.iter().filter(|e| (e.token as usize) < v).copied().collect();
+        // (a grammar and a least length that leave no token: the grammar's end tokens at 0, the reply ends as it cannot go on)
+        if let (Some((_, ends, _)), Some(w), false) = (&self.gram, &words, self.suppress.is_empty()) {
+            if !(0..v).any(|t| (w[t / 32] >> (t % 32)) & 1 == 1) {
+                for &e in ends.iter().filter(|&&e| (e as usize) < v) {
+                    match entries.iter_mut().find(|x| x.token == e) {
+                        Some(x) => x.rescue = true,
+                        None => entries.push(Entry { token: e, bias: None, seen: false, said: 0, rescue: true }),
+                    }
+                }
+            }
+        }
+        Resolved { words, entries, repetition: self.repetition, presence: self.presence, frequency: self.frequency }
+    }
+}
+
+impl Resolved {
+    /// Whether token `t` may be chosen.
+    pub fn allows(&self, t: usize) -> bool {
+        self.words.as_ref().is_none_or(|w| (w[t / 32] >> (t % 32)) & 1 == 1)
+    }
+
+    /// A changed token's logit from the model's `x`, in `Sampler::processed`'s order, each operation rounded alone: the bias, -inf where the token is taken out, 0 where it is put
+    /// back, the repetition penalty, then the presence and frequency penalties.
+    pub fn changed(&self, e: &Entry, mut x: f32) -> f32 {
+        if let Some(b) = e.bias {
+            x += b;
+        }
+        if !self.allows(e.token as usize) {
+            x = f32::NEG_INFINITY;
+        }
+        if e.rescue {
+            x = 0.0;
+        }
+        if e.seen {
+            x = if x > 0.0 { x / self.repetition } else { x * self.repetition };
+        }
+        if e.said > 0 {
+            x -= self.presence + self.frequency * e.said as f32;
+        }
+        x
+    }
+
+    /// The row the draw sees, from the model's row `raw` as the GPU makes it (kernels/engine.cu `proc_fill`, `proc_entries`): each token's logit where it may be chosen, else -inf;
+    /// then each changed token's (`changed`). `Sampler::processed`'s row, bit for bit.
+    pub fn apply(&self, raw: &[f32]) -> Vec<f32> {
+        let mut l: Vec<f32> = raw.iter().enumerate().map(|(t, &x)| if self.allows(t) { x } else { f32::NEG_INFINITY }).collect();
+        for e in &self.entries {
+            l[e.token as usize] = self.changed(e, raw[e.token as usize]);
+        }
+        l
+    }
+}
+
+/// A token's weight in a draw is a whole number of 2^-WBITS: the largest logit's is 2^WBITS (`weight`). A row of up to 2^23 tokens sums to less than 2^64.
+pub const WBITS: u32 = 40;
+
+/// `weight`'s float constants, as bits (kernels/engine.cu `draw_weight` has the same): log2(e); ln 2 in two parts (the first's few bits make k ln 2's first part exact); exp's
+/// Taylor coefficients 1/2! .. 1/7!.
+const LOG2E: u32 = 0x3FB8_AA3B;
+const LN2_HI: u32 = 0x3F31_8000;
+const LN2_LO: u32 = 0xB95E_8083;
+const EXP_C: [u32; 6] = [0x3F00_0000, 0x3E2A_AAAB, 0x3D2A_AAAB, 0x3C08_8889, 0x3AB6_0B61, 0x3950_0D01];
+
+/// A token's weight in a draw: exp(q) for q = (logit - largest) / temperature (in f32, as `cut` forms it), in units of 2^-WBITS, rounded down; 0 for q below -32 (exp(-32) is less
+/// than 2^-46) or not a number (a row of -inf). Every float operation rounded alone, in this order (kernels/engine.cu `draw_weight` makes it bit for bit): k = q log2(e) to the
+/// nearest whole number (ties to even), r = (q - k LN2_HI) - k LN2_LO, exp(r) by Taylor's terms to the 7th in Horner's order, its 24 bits shifted by k. Within 4e-7 of exp(q) and
+/// 2^-40; not always falling with q at its last bit (2,861 of the 1.1 billion floats from -32 to 0 weigh a unit of their 24 bits more than the next larger), so no cut is a floor on
+/// weights: min-p is one on the quotient q itself (`min_floor`), which falls along the draw's order.
+pub fn weight(q: f32) -> u64 {
+    if !(q > -32.0) {
+        return 0;
+    }
+    if q >= 0.0 {
+        return 1 << WBITS;
+    }
+    let f = f32::from_bits;
+    let k = (q * f(LOG2E)).round_ties_even();
+    let r = (q - k * f(LN2_HI)) - k * f(LN2_LO);
+    let mut p = f(EXP_C[5]);
+    for &c in EXP_C[..5].iter().rev() {
+        p = p * r + f(c);
+    }
+    p = p * r + 1.0;
+    p = p * r + 1.0;
+    let b = p.to_bits();
+    let m = ((b & 0x7F_FFFF) | 0x80_0000) as u64;
+    let s = ((b >> 23) & 0xFF) as i32 - 127 - 23 + k as i32 + WBITS as i32;
+    match s {
+        0.. => m << s,
+        -63..=-1 => m >> -s,
+        _ => 0,
+    }
+}
+
+/// The least whole number at or above p w, exactly (p a float, w a weight): the weight a cumulative sum must reach for a top-p of p over a list of weight w. 0 for p of 0 or below
+/// (or not a number); u64::MAX where it is past that.
+pub fn share(p: f32, w: u64) -> u64 {
+    if !(p > 0.0) || w == 0 {
+        return 0;
+    }
+    let b = p.to_bits();
+    let e = ((b >> 23) & 0xFF) as i32;
+    // (p = m 2^-s)
+    let (m, s) = if e == 0 { ((b & 0x7F_FFFF) as u128, 149) } else { (((b & 0x7F_FFFF) | 0x80_0000) as u128, 150 - e) };
+    let x = m * w as u128;
+    let n = match s {
+        ..=0 => x.checked_shl((-s) as u32).filter(|y| y >> (-s) as u32 == x).unwrap_or(u128::MAX),
+        1..=127 => (x + (1u128 << s) - 1) >> s,
+        _ => (x > 0) as u128,
+    };
+    n.min(u64::MAX as u128) as u64
+}
+
+/// A min-p's floor on a token's quotient q = (logit - largest) / temperature: ln(min_p) as a float (exp(q) >= min_p, the largest's exp being 1). The quotient falls along the draw's
+/// order (a subtraction and a division by a positive number, each rounded, never turn two values about), so the tokens at or above it are a first part of it.
+pub fn min_floor(min_p: f32) -> f32 {
+    (min_p as f64).ln() as f32
+}
+
+/// The point a draw's number `u` (the generator's next) lands on in a list of weight `total`: floor(u' total / 2^53), u' the number's top 53 bits (u' / 2^53 a uniform number in
+/// [0, 1)): a whole number below `total` (0 where it is 0).
+fn pick(u: u64, total: u64) -> u64 {
+    (((u >> 11) as u128 * total as u128) >> 53) as u64
+}
+
+/// A float's bits as the number that grows with the value (-0 and +0 the same), as kernels/engine.cu's `f32_key` orders them.
+pub fn key32(x: f32) -> u32 {
+    let b = x.to_bits();
+    let b = if b == 0x8000_0000 { 0 } else { b };
+    if b & 0x8000_0000 != 0 {
+        !b
+    } else {
+        b | 0x8000_0000
+    }
+}
+
+/// A token's place in a draw's order as a number that falls along it: the larger logit first, and of equal ones the smaller token (`dist`'s order). kernels/engine.cu `draw_key`.
+pub fn key(x: f32, token: u32) -> u64 {
+    ((key32(x) as u64) << 32) | (u32::MAX - token) as u64
+}
+
+/// Draws made from rows read on the host and from what a GPU made of them (src/sched.rs `draw_row`, `check_row`).
 pub static DRAWS: [std::sync::atomic::AtomicU64; 2] = [const { std::sync::atomic::AtomicU64::new(0) }; 2];
 
-/// How far the GPU's sum of a row's exponentials may be from the host's, relative (topkcheck holds the kernel to 2e-6); a top-p cut that is not the same for every sum within it is not made from the largest logits.
-const MASS_ERROR: f64 = 1e-5;
+/// What a GPU is asked of a row (the row a draw sees) beside its candidates (`View`): the tokens whose logit is not -inf, whose keys (`key`) lie in [lo, hi] and whose quotients
+/// (x - max) / temperature are `floor` or more (a min-p's: `min_floor`; -inf: any), in 256 bins by the bits `shift` .. `shift` + 8 of their keys; their weights about `max`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Query {
+    pub max: f32,
+    pub temperature: f32,
+    pub lo: u64,
+    pub hi: u64,
+    pub floor: f32,
+    pub shift: u32,
+}
+
+impl Query {
+    /// Every token of the row (not -inf), binned by its keys' first 8 bits.
+    pub fn all(max: f32, temperature: f32) -> Query {
+        Query { max, temperature, lo: 0, hi: u64::MAX, floor: f32::NEG_INFINITY, shift: 56 }
+    }
+
+    /// Token `t` of logit `x`'s key and weight, where it is the query's.
+    pub fn holds(&self, x: f32, t: u32) -> Option<(u64, u64)> {
+        if !(x > f32::NEG_INFINITY) {
+            return None;
+        }
+        let (k, q) = (key(x, t), (x - self.max) / self.temperature);
+        (k >= self.lo && k <= self.hi && q >= self.floor).then(|| (k, weight(q)))
+    }
+}
+
+/// A query's tokens in its 256 bins: each bin's count, weight (the sum of its tokens'), and least and greatest key (u64::MAX and 0 where it has none).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bins {
+    pub count: Vec<u32>,
+    pub weight: Vec<u64>,
+    pub least: Vec<u64>,
+    pub most: Vec<u64>,
+}
+
+impl Bins {
+    pub fn empty() -> Bins {
+        Bins { count: vec![0; 256], weight: vec![0; 256], least: vec![u64::MAX; 256], most: vec![0; 256] }
+    }
+
+    /// A token of the query (its key and weight) put in its bin.
+    pub fn add(&mut self, k: u64, w: u64, shift: u32) {
+        let b = ((k >> shift) & 0xFF) as usize;
+        self.count[b] += 1;
+        self.weight[b] += w;
+        self.least[b] = self.least[b].min(k);
+        self.most[b] = self.most[b].max(k);
+    }
+}
+
+/// What a GPU gives of a step's row (the row a request's draw sees: the model's, or the one its changes are put on) in place of the row: its candidates, and the weights and
+/// tokens of ranges of it (`Query`). None from any of them: it has none (the row is then read).
+pub trait View {
+    /// The row's `kern::TOPK` largest logits (token and logit, largest first, equal ones by the smaller token).
+    fn cands(&mut self) -> Option<Vec<(u32, f32)>>;
+    /// The sum of every token's weight about `max` at `temperature` (made with the step where it was asked for).
+    fn total(&mut self, max: f32, temperature: f32) -> Option<u64> {
+        self.bins(&Query::all(max, temperature)).map(|b| b.weight.iter().sum())
+    }
+    fn bins(&mut self, q: &Query) -> Option<Bins>;
+    /// The query's tokens (token and logit, in any order), where they are `cap` or fewer.
+    fn tokens(&mut self, q: &Query, cap: usize) -> Option<Vec<(u32, f32)>>;
+    /// Token `t`'s logit (a drafted token that is not among the candidates).
+    fn logit(&mut self, t: u32) -> Option<f32>;
+}
+
+/// The most tokens a draw asks a view for at once (`select`): a range of more is split by its keys' bits again.
+pub const SELECT_CAP: usize = 4096;
+
+/// What `select` finds: the first place of a query's tokens in the draw's order where they hold so many tokens (`Count`) or so much weight (`Weight`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Target {
+    Count(u64),
+    Weight(u64),
+}
+
+/// The token `select` finds: its key, logit and weight, and the count and weight of the query's tokens before it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct At {
+    pub key: u64,
+    pub token: u32,
+    pub x: f32,
+    pub w: u64,
+    pub before_n: u64,
+    pub before_w: u64,
+}
+
+/// The token of `q`'s at which its tokens, in the draw's order (the larger key first), first hold `target`, found range by range (the bin that holds it, then that bin's range
+/// binned by the bits its keys differ in, until a range of SELECT_CAP tokens or fewer, whose tokens are read and ordered); `skip`: a token of `q`'s (its key and weight) left out.
+/// Some(None) where all of them hold less; None where the view gives none, or gives tokens that are not its bins'.
+pub fn select(v: &mut dyn View, q: &Query, target: Target, skip: Option<(u64, u64)>) -> Option<Option<At>> {
+    let reached = |n: u64, w: u64| match target {
+        Target::Count(k) => n >= k,
+        Target::Weight(x) => w >= x,
+    };
+    let mut q = Query { shift: 56, ..*q };
+    let (mut n, mut w) = (0u64, 0u64);
+    loop {
+        let mut b = v.bins(&q)?;
+        if let Some((k, kw)) = skip.filter(|s| s.0 >= q.lo && s.0 <= q.hi) {
+            let i = ((k >> q.shift) & 0xFF) as usize;
+            b.count[i] = b.count[i].checked_sub(1)?;
+            b.weight[i] = b.weight[i].checked_sub(kw)?;
+        }
+        let mut found = None;
+        for i in (0..256).rev() {
+            let (cn, cw) = (n + b.count[i] as u64, w + b.weight[i]);
+            if b.count[i] > 0 && reached(cn, cw) {
+                found = Some(i);
+                break;
+            }
+            (n, w) = (cn, cw);
+        }
+        let Some(i) = found else { return Some(None) };
+        let (least, most) = (b.least[i], b.most[i]);
+        if b.count[i] as usize <= SELECT_CAP || least == most {
+            let toks = v.tokens(&Query { lo: least, hi: most, ..q }, SELECT_CAP + 1)?;
+            let mut ks: Vec<(u64, u32, f32, u64)> = toks
+                .iter()
+                .filter_map(|&(t, x)| q.holds(x, t).map(|(k, wt)| (k, t, x, wt)))
+                .filter(|&(k, ..)| k >= least && k <= most && Some(k) != skip.map(|s| s.0))
+                .collect();
+            if ks.len() != b.count[i] as usize {
+                return None;
+            }
+            ks.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+            for (k, t, x, wt) in ks {
+                let (cn, cw) = (n + 1, w + wt);
+                if reached(cn, cw) {
+                    return Some(Some(At { key: k, token: t, x, w: wt, before_n: n, before_w: w }));
+                }
+                (n, w) = (cn, cw);
+            }
+            return None;
+        }
+        let h = 63 - (least ^ most).leading_zeros();
+        q = Query { lo: least, hi: most, shift: h.saturating_sub(7), ..q };
+    }
+}
 
 /// The model's own sampling defaults, from its generation_config.json (temperature, top_k, top_p, repetition_penalty), as vLLM takes them; the API's (temperature 1) where it has none.
 pub fn generation_defaults(dir: &std::path::Path) -> Params {
@@ -146,11 +503,6 @@ impl Rng {
         s[3] = s[3].rotate_left(45);
         r
     }
-
-    /// A uniform number in [0, 1).
-    fn unit(&mut self) -> f64 {
-        (self.u64() >> 11) as f64 / (1u64 << 53) as f64
-    }
 }
 
 pub struct Sampler {
@@ -166,6 +518,30 @@ pub struct Sampler {
     mask: Vec<bool>,
     /// Where the answer is in the request's grammar, if it has one.
     gram: Option<crate::constrain::Gram>,
+    /// The allowed list for a GPU (`Proc`), ascending, each once.
+    allowed: Option<std::sync::Arc<Vec<u32>>>,
+    /// The tokens whose logits the penalties and the bias change (a token the bias names twice: its last bias), kept as the answer grows (`note`), and where each is.
+    entries: Vec<Entry>,
+    entry_at: std::collections::HashMap<u32, usize>,
+}
+
+/// The list a draw from a view walks (`Sampler::kept`): all of it among the candidates (its tokens and weights, as `cut` gives them), or the candidates and the tokens of a query
+/// past them (the candidates are its first) and its weight.
+enum Kept {
+    List(Vec<u32>, Vec<u64>),
+    Past(Query, u64),
+}
+
+/// The token of the list `idx` (weights `w`, in the draw's order) that point `r` lands on: the first whose cumulative weight passes it; the first where none does (a list of weight 0).
+fn land(idx: &[u32], w: &[u64], r: u64) -> u32 {
+    let mut acc = 0u64;
+    for (i, &x) in w.iter().enumerate() {
+        acc += x;
+        if acc > r {
+            return idx[i];
+        }
+    }
+    idx[0]
 }
 
 impl Sampler {
@@ -179,7 +555,41 @@ impl Sampler {
         }
         let rng = Rng::new(p.seed);
         let gram = p.constraint.as_ref().map(|c| c.start());
-        Sampler { p, rng, seen, said: std::collections::HashMap::new(), n_said: 0, suppress: Vec::new(), mask: Vec::new(), gram }
+        let allowed = (!p.allowed.is_empty()).then(|| {
+            let mut a = p.allowed.clone();
+            a.sort_unstable();
+            a.dedup();
+            std::sync::Arc::new(a)
+        });
+        let mut s = Sampler {
+            p,
+            rng,
+            seen,
+            said: std::collections::HashMap::new(),
+            n_said: 0,
+            suppress: Vec::new(),
+            mask: Vec::new(),
+            gram,
+            allowed,
+            entries: Vec::new(),
+            entry_at: std::collections::HashMap::new(),
+        };
+        for &(t, b) in &s.p.logit_bias.clone() {
+            s.entry(t).bias = Some(b);
+        }
+        for t in s.seen.keys().copied().collect::<Vec<_>>() {
+            s.entry(t).seen = true;
+        }
+        s
+    }
+
+    /// Token `t`'s entry, made where it has none.
+    fn entry(&mut self, t: u32) -> &mut Entry {
+        let at = *self.entry_at.entry(t).or_insert_with(|| {
+            self.entries.push(Entry { token: t, bias: None, seen: false, said: 0, rescue: false });
+            self.entries.len() - 1
+        });
+        &mut self.entries[at]
     }
 
     pub fn params(&self) -> &Params {
@@ -219,23 +629,27 @@ impl Sampler {
         let tok = if self.p.temperature <= 0.0 {
             argmax(&l)
         } else {
-            let (idx, probs) = self.dist(&mut l);
-            let total: f64 = probs.iter().sum();
-            let pd = idx.iter().position(|&t| t == draft).map_or(0.0, |i| probs[i] / total);
-            if pd > 0.0 && self.rng.unit() < pd {
-                draft
-            } else {
-                // (the rest, renormalized by walk: the draft's share taken out)
-                let (idx, probs): (Vec<u32>, Vec<f64>) = idx.iter().zip(&probs).filter(|(t, _)| **t != draft).map(|(t, p)| (*t, *p)).unzip();
-                if idx.is_empty() {
-                    draft
-                } else {
-                    self.walk(&idx, &probs)
-                }
-            }
+            let (idx, w) = self.dist(&mut l);
+            self.check_list(&idx, &w, draft)
         };
         self.note(tok);
         (tok, tok == draft)
+    }
+
+    /// `check_draft`'s draw from the list `idx` (weights `w`): the draft where the first number lands within its weight (none drawn where it has none), else the rest's walk.
+    fn check_list(&mut self, idx: &[u32], w: &[u64], draft: u32) -> u32 {
+        let total: u64 = w.iter().sum();
+        let wd = idx.iter().position(|&t| t == draft).map_or(0, |i| w[i]);
+        if wd > 0 && pick(self.rng.u64(), total) < wd {
+            return draft;
+        }
+        // (the rest, its weight the list's but the draft's)
+        let (idx, w): (Vec<u32>, Vec<u64>) = idx.iter().zip(w).filter(|(t, _)| **t != draft).map(|(t, x)| (*t, *x)).unzip();
+        if idx.is_empty() {
+            draft
+        } else {
+            self.walk(&idx, &w)
+        }
     }
 
     /// The token chosen, held by the answer (the penalties' counts).
@@ -244,17 +658,27 @@ impl Sampler {
             g.consume(tok);
         }
         self.n_said += 1;
-        *self.said.entry(tok).or_insert(0) += 1;
-        if self.p.repetition_penalty != 1.0 {
+        let n = self.said.entry(tok).or_insert(0);
+        *n += 1;
+        let n = *n;
+        let (rep, said) = (self.p.repetition_penalty != 1.0, self.p.presence_penalty != 0.0 || self.p.frequency_penalty != 0.0);
+        if rep {
             *self.seen.entry(tok).or_insert(0) += 1;
+        }
+        if rep || said {
+            let e = self.entry(tok);
+            e.seen |= rep;
+            if said {
+                e.said = n;
+            }
         }
     }
 
-    /// `logits` after the bias, the allowed tokens, the suppressed ones and the penalties: what the temperature and the cuts then see.
-    fn processed(&mut self, logits: &[f32]) -> Vec<f32> {
+    /// `logits` after the bias, the allowed tokens, the suppressed ones and the penalties: what the temperature and the cuts then see (what a GPU makes of the row, `Proc`).
+    pub fn processed(&mut self, logits: &[f32]) -> Vec<f32> {
         let mut l: Vec<f32> = logits.to_vec();
-        for &(t, b) in &self.p.logit_bias {
-            if let Some(x) = l.get_mut(t as usize) {
+        for e in &self.entries {
+            if let (Some(b), Some(x)) = (e.bias, l.get_mut(e.token as usize)) {
                 *x += b;
             }
         }
@@ -308,217 +732,222 @@ impl Sampler {
         l
     }
 
-    /// What a draw from the row's `n` largest logits asks of the GPU, or None where it needs the whole row. It looks at them alone with a temperature above 0, no penalties, no bias, no allowed tokens and none taken out, and
-    /// either a top-k of at most `n` or, with no top-k, a top-p below 1 and no min-p (the cut is then of the row's probabilities: their sum is asked for).
-    fn need(&self, n: usize) -> Option<Need> {
+    /// Whether the request changes the row before its draw: penalties, a bias, allowed tokens, a grammar, or tokens held back until the least length. The candidates a draw takes
+    /// are then of the row it sees (`Proc` put on it), not the model's.
+    pub fn changes(&self) -> bool {
         let p = &self.p;
-        if n == 0
-            || p.repetition_penalty != 1.0
+        p.repetition_penalty != 1.0
             || p.presence_penalty != 0.0
             || p.frequency_penalty != 0.0
             || !p.logit_bias.is_empty()
             || !p.allowed.is_empty()
+            || self.gram.is_some()
             || self.suppressing()
-        {
+    }
+
+    /// What a GPU puts on the row before the next draw's candidates (`Proc`): None where the request changes nothing on it (`changes`). A grammar's mask is the one its worker
+    /// makes beside the step (made here where no worker has it).
+    pub fn proc(&mut self) -> Option<Proc> {
+        if !self.changes() {
             return None;
         }
-        if self.gram.is_some() {
-            // (a grammar: the largest allowed candidate, or a top-k of the allowed ones, where the candidates hold enough of them: `sample_grammar`)
-            return match p.temperature {
-                t if t <= 0.0 => Some(Need { temperature: 0.0, mass: false }),
-                t if (1..=n).contains(&p.top_k) => Some(Need { temperature: t, mass: false }),
-                _ => None,
-            };
-        }
-        if p.temperature <= 0.0 {
-            return None;
-        }
-        match p.top_k {
-            k if (1..=n).contains(&k) => Some(Need { temperature: p.temperature, mass: false }),
-            0 if p.top_p < 1.0 && p.min_p == 0.0 => Some(Need { temperature: p.temperature, mass: true }),
-            _ => None,
-        }
-    }
-
-    /// The mask of the next draw's grammar, for a GPU that makes `kern::TOPK` candidates to put on the row before its top-k, where the draw looks at the candidates (`top_need`): the candidates then hold the draw's tokens
-    /// wherever the grammar allows that many (`sample_grammar`). None: no grammar, or a draw of the whole row.
-    pub fn mask_handle(&self) -> Option<crate::constrain::MaskHandle> {
-        self.top_need().and(self.gram.as_ref()?.handle())
-    }
-
-    /// What the next draw asks of a GPU that makes `kern::TOPK` candidates (None: it reads the whole row).
-    pub fn top_need(&self) -> Option<Need> {
-        self.need(crate::kern::TOPK)
-    }
-
-    /// The next token from the largest logits of the step's row alone (`cands`: token and logit, largest first, equal logits by the smaller token: what the GPU returns, with `mass`, the sum over the whole row of
-    /// exp((logit - largest) / temperature), where a top-p with no top-k is asked), where that is all the draw looks at (`need`). The same token `sample` gives from the whole row. None where it is not (the row's logits are
-    /// then to be had and `sample` used), the generator untouched.
-    pub fn sample_top(&mut self, cands: &[(u32, f32)], mass: Option<f64>) -> Option<u32> {
-        let need = self.need(cands.len())?;
-        if self.gram.is_some() {
-            return self.sample_grammar(cands);
-        }
-        let tok = if need.mass {
-            self.draw_mass(cands, mass?)?
-        } else {
-            let k = self.p.top_k;
-            self.finish_draw(cands[..k].iter().map(|c| c.0).collect(), cands[..k].iter().map(|c| c.1).collect())
-        };
-        self.n_said += 1;
-        *self.said.entry(tok).or_insert(0) += 1;
-        Some(tok)
-    }
-
-    /// The tokens whose logits the next draw changes (the repetition penalty's, the presence and frequency penalties', the bias's, the suppressed ones), each once,
-    /// in order, for a draw from the row's largest logits with those changes put on them (`sample_adjusted`). None where the draw changes none (`sample_top` then),
-    /// or looks at more than the candidates can show: a grammar, allowed tokens, a top-k past the candidates or none (a top-p over the whole row).
-    pub fn adjusts(&self) -> Option<Vec<u32>> {
+        let gram = self.gram.as_mut().map(|g| {
+            let h = g.handle().unwrap_or_else(|| crate::constrain::MaskHandle::Ready(std::sync::Arc::new(g.mask())));
+            (h, g.ends().to_vec(), g.width())
+        });
         let p = &self.p;
-        let k = if p.temperature <= 0.0 { 1 } else { p.top_k };
-        if self.gram.is_some() || !p.allowed.is_empty() || !(1..=crate::kern::TOPK).contains(&k) {
-            return None;
-        }
-        let mut t: Vec<u32> = Vec::new();
-        if p.repetition_penalty != 1.0 {
-            t.extend(self.seen.keys());
-        }
-        if p.presence_penalty != 0.0 || p.frequency_penalty != 0.0 {
-            t.extend(self.said.keys());
-        }
-        t.extend(p.logit_bias.iter().map(|b| b.0));
-        if self.suppressing() {
-            t.extend(&self.suppress);
-        }
-        if t.is_empty() {
-            return None;
-        }
-        t.sort_unstable();
-        t.dedup();
-        Some(t)
+        Some(Proc {
+            gram,
+            allowed: self.allowed.clone(),
+            suppress: if self.suppressing() { self.suppress.clone() } else { Vec::new() },
+            entries: self.entries.clone(),
+            repetition: p.repetition_penalty,
+            presence: p.presence_penalty,
+            frequency: p.frequency_penalty,
+        })
     }
 
-    /// Token `t`'s logit `x` as `processed` changes it, in its order: the bias, the suppression, the repetition penalty, the presence and frequency penalties.
-    fn changed(&self, t: u32, mut x: f32) -> f32 {
-        for &(b, v) in &self.p.logit_bias {
-            if b == t {
-                x += v;
-            }
-        }
-        if self.suppressing() && self.suppress.contains(&t) {
-            x = f32::NEG_INFINITY;
-        }
-        if self.p.repetition_penalty != 1.0 && self.seen.contains_key(&t) {
-            x = if x > 0.0 { x / self.p.repetition_penalty } else { x * self.p.repetition_penalty };
-        }
-        if self.p.presence_penalty != 0.0 || self.p.frequency_penalty != 0.0 {
-            if let Some(&n) = self.said.get(&t) {
-                x -= self.p.presence_penalty + self.p.frequency_penalty * n as f32;
-            }
-        }
-        x
+    /// The temperature at which the next draw takes the total of the row's weights (`View::total`; a step can make it with its candidates): a draw with no top-k, but a min-p alone
+    /// (whose walk is of the tokens it keeps). None for the largest logit or a top-k.
+    pub fn total_need(&self) -> Option<f32> {
+        let p = &self.p;
+        (p.temperature > 0.0 && p.top_k == 0 && (p.top_p < 1.0 || p.min_p <= 0.0)).then_some(p.temperature)
     }
 
-    /// The next token from the row's largest logits `cands` (largest first, equal logits by the smaller token: the GPU's `kern::TOPK`) and the row's own logits
-    /// `raw` at the tokens `adjusts` named (those in the vocabulary): each changed as `processed` changes the whole row, and the draw's top-k taken from the
-    /// candidates and those tokens together. Every other token's logit is unchanged and no larger than the last candidate's, so where the k-th of them is larger
-    /// than that the top-k is the whole row's, and the token is the one `sample` gives. None where it is not (the whole row is then read), the generator untouched.
-    pub fn sample_adjusted(&mut self, cands: &[(u32, f32)], raw: &[(u32, f32)]) -> Option<u32> {
-        self.adjusts()?;
-        let k = if self.p.temperature <= 0.0 { 1 } else { self.p.top_k };
-        let floor = if cands.len() >= crate::kern::TOPK { cands[crate::kern::TOPK - 1].1 } else { f32::NEG_INFINITY };
-        let mut pool: Vec<(u32, f32)> = cands.iter().map(|&(t, x)| (t, self.changed(t, x))).collect();
-        for &(t, x) in raw {
-            if !cands.iter().any(|c| c.0 == t) {
-                pool.push((t, self.changed(t, x)));
-            }
-        }
-        // (the whole row's order: the larger logit first, equal ones (0 and -0 too) by the smaller token)
-        pool.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
-        if pool.len() < k || !(pool[k - 1].1 > floor) {
-            return None;
-        }
-        let tok = if self.p.temperature <= 0.0 {
-            pool[0].0
-        } else {
-            self.finish_draw(pool[..k].iter().map(|c| c.0).collect(), pool[..k].iter().map(|c| c.1).collect())
-        };
+    /// What the next draw asks of a GPU before the step: the total's temperature (`total_need`), and what it puts on the row first (`proc`).
+    pub fn gpu_ask(&mut self) -> (Option<f32>, Option<Proc>) {
+        (self.total_need(), self.proc())
+    }
+
+    /// The next token from a GPU's view of the row the draw sees (`View`: its candidates, and past them its weights and tokens by range), never the row: the token `sample` gives
+    /// from the row, seed for seed. The view is of the row the request's changes are put on where it `changes` it. None where the view has none (the generator untouched).
+    pub fn sample_view(&mut self, v: &mut dyn View) -> Option<u32> {
+        let c = v.cands().filter(|c| !c.is_empty())?;
+        let tok = self.draw_view(v, &c)?;
         self.note(tok);
         Some(tok)
     }
 
-    /// The next token for an engine that makes the row's largest logits on the GPU (`top`, as `top_need` asked): drawn from them where that is all the draw looks at (`sample_top`), else from the whole row, which `row`
-    /// reads then and not before. The same token either way.
-    pub fn sample_with(&mut self, top: Option<&Top>, row: impl FnOnce() -> crate::ffi::Result<Vec<f32>>) -> crate::ffi::Result<u32> {
-        use std::sync::atomic::Ordering::Relaxed;
-        if let Some(tok) = top.and_then(|t| self.sample_top(&t.cands, t.mass)) {
-            DRAWS[1].fetch_add(1, Relaxed);
-            return Ok(tok);
-        }
-        DRAWS[0].fetch_add(1, Relaxed);
-        Ok(self.sample(&row()?))
-    }
-
-    /// The next token under a grammar from the row's largest logits `cands` (largest first, equal logits by the smaller token), the grammar's mask put on them before the top-k cut: the same token `sample` gives from the
-    /// whole row, where the candidates hold the draw's: the first allowed one of them at temperature 0, else the top-k of the allowed ones (k allowed candidates, or every allowed token among them, or the one the grammar allows: an
-    /// allowed token past the candidates is smaller than all of them). None where they do not (the whole row is then read), the generator untouched.
-    fn sample_grammar(&mut self, cands: &[(u32, f32)]) -> Option<u32> {
-        let mask = self.gram.as_mut()?.mask();
-        let total = mask.num_set();
-        let greedy = self.p.temperature <= 0.0;
-        let k = if greedy { 1 } else { self.p.top_k };
-        let (mut toks, mut vals) = (Vec::new(), Vec::new());
-        for &(t, v) in cands {
-            if mask.is_allowed(t) {
-                toks.push(t);
-                vals.push(v);
-                if toks.len() == k {
-                    break;
+    /// `check_draft` from a GPU's view of the drafted row the draw sees (`sample_view`'s): the same token, seed for seed. None where the view has none (the generator untouched).
+    pub fn check_view(&mut self, v: &mut dyn View, draft: u32) -> Option<(u32, bool)> {
+        let c = v.cands().filter(|c| !c.is_empty())?;
+        let tok = if self.p.temperature <= 0.0 {
+            c[0].0
+        } else {
+            let saved = Rng(self.rng.0);
+            match self.check_past(v, &c, draft) {
+                Some(t) => t,
+                None => {
+                    self.rng = saved;
+                    return None;
                 }
             }
-        }
-        let tok = if total == 1 && !greedy {
-            // (one token may follow: no logit is looked at)
-            self.finish_draw(vec![mask.first_bit_set()? as u32], vec![0.0])
-        } else if toks.is_empty() || (toks.len() < k && toks.len() < total) {
-            return None;
-        } else if greedy {
-            toks[0]
-        } else {
-            self.finish_draw(toks, vals)
         };
         self.note(tok);
-        Some(tok)
+        Some((tok, tok == draft))
     }
 
-    /// A draw with a top-p and no top-k from the largest logits `cands` and `mass`, the sum over the row of their exponentials: the token the whole row gives, or None where the cut is not the same for every sum within
-    /// MASS_ERROR of `mass`, that is where it lies past the candidates or too near a cumulative probability to tell (and where `mass` is no sum that holds the candidates').
-    fn draw_mass(&mut self, cands: &[(u32, f32)], mass: f64) -> Option<u32> {
-        let max = cands[0].1;
-        let e: Vec<f64> = cands.iter().map(|c| (((c.1 - max) / self.p.temperature) as f64).exp()).collect();
-        if !mass.is_finite() || mass < e.iter().sum::<f64>() * (1.0 - MASS_ERROR) {
-            return None;
+    /// A draw at a temperature from the candidates `c` of the row the draw sees (the largest first) and the view past them.
+    fn draw_view(&mut self, v: &mut dyn View, c: &[(u32, f32)]) -> Option<u32> {
+        if self.p.temperature <= 0.0 {
+            return Some(c[0].0);
         }
-        // the tokens kept, as `finish_draw` keeps them: up to the first whose cumulative probability reaches top-p
-        let cut = |z: f64| {
-            let mut acc = 0.0;
-            e.iter().position(|&x| {
-                acc += x / z;
-                acc >= self.p.top_p as f64
-            })
+        let saved = Rng(self.rng.0);
+        let tok = match self.kept(v, c) {
+            Some(Kept::List(idx, w)) => Some(self.walk(&idx, &w)),
+            Some(Kept::Past(q, wk)) => {
+                let r = pick(self.rng.u64(), wk);
+                // (the point among the candidates, the list's first tokens, else past them)
+                let wc: Vec<u64> = c.iter().map(|x| weight((x.1 - q.max) / q.temperature)).collect();
+                let mut acc = 0u64;
+                match wc.iter().position(|&x| {
+                    acc += x;
+                    acc > r
+                }) {
+                    Some(i) => Some(c[i].0),
+                    None => select(v, &q, Target::Weight(r + 1), None).flatten().map(|a| a.token),
+                }
+            }
+            None => None,
         };
-        let keep = cut(mass * (1.0 - MASS_ERROR)).filter(|&i| Some(i) == cut(mass * (1.0 + MASS_ERROR)))? + 1;
-        let probs: Vec<f64> = e[..keep].iter().map(|x| x / mass).collect();
-        Some(self.walk(&cands[..keep].iter().map(|c| c.0).collect::<Vec<_>>(), &probs))
+        if tok.is_none() {
+            self.rng = saved;
+        }
+        tok
+    }
+
+    /// `check_list` from the candidates `c` and the view past them.
+    fn check_past(&mut self, v: &mut dyn View, c: &[(u32, f32)], draft: u32) -> Option<u32> {
+        let (q, wk) = match self.kept(v, c)? {
+            Kept::List(idx, w) => return Some(self.check_list(&idx, &w, draft)),
+            Kept::Past(q, wk) => (q, wk),
+        };
+        // the draft's place: among the candidates, else its logit read; its weight in the list (0 where the list does not hold it)
+        let x = match c.iter().find(|x| x.0 == draft) {
+            Some(x) => x.1,
+            None => v.logit(draft)?,
+        };
+        let held = q.holds(x, draft);
+        let wd = held.map_or(0, |h| h.1);
+        if wd > 0 && pick(self.rng.u64(), wk) < wd {
+            return Some(draft);
+        }
+        // the rest's walk, the draft left out
+        let rest = wk - wd;
+        let wc: Vec<(u32, u64)> = c.iter().filter(|x| x.0 != draft).map(|x| (x.0, weight((x.1 - q.max) / q.temperature))).collect();
+        let r = pick(self.rng.u64(), rest);
+        if rest == 0 {
+            return Some(wc[0].0);
+        }
+        let mut acc = 0u64;
+        if let Some(&(t, _)) = wc.iter().find(|&&(_, w)| {
+            acc += w;
+            acc > r
+        }) {
+            return Some(t);
+        }
+        select(v, &q, Target::Weight(r + 1), held).flatten().map(|a| a.token)
+    }
+
+    /// The list a draw walks (`dist`, then `cut`) from the candidates `c` of the row it sees (the largest first; their largest not -inf) and the view past them: of the candidates
+    /// alone where the top-k is within them, or the row's tokens are all among them, or the min-p or the top-p cut falls among them; else the query of its tokens past them (the
+    /// top-k's k-th token found by count, the min-p a floor on the quotient, the top-p's token found by weight). None where the view gives none.
+    fn kept(&self, v: &mut dyn View, c: &[(u32, f32)]) -> Option<Kept> {
+        let p = &self.p;
+        let (max, t, k) = (c[0].1, p.temperature, p.top_k);
+        let gram = self.gram.is_some();
+        // (a row of -inf: the list's first alone has a place, its weight 0; under a grammar the first of the row, as `dist` takes it)
+        if !(max > f32::NEG_INFINITY) {
+            let n = if gram || k == 1 { 1 } else { 2.min(c.len()) };
+            return Some(Kept::List(c[..n].iter().map(|x| x.0).collect(), vec![0; n]));
+        }
+        let fin = c.iter().take_while(|x| x.1 > f32::NEG_INFINITY).count();
+        let list = |n: usize| {
+            // (as `dist` gives it: under a grammar the tokens taken out are not in it)
+            let l: Vec<&(u32, f32)> = c[..n].iter().filter(|x| !gram || x.1 > f32::NEG_INFINITY).collect();
+            self.cut(l.iter().map(|x| x.0).collect(), l.iter().map(|x| x.1).collect())
+        };
+        if (1..=c.len()).contains(&k) {
+            let (idx, w) = list(k);
+            return Some(Kept::List(idx, w));
+        }
+        if fin < c.len() {
+            // (every token of the row that is not -inf is a candidate: the row's -inf ones weigh 0, and under a grammar are not in it)
+            let (idx, w) = list(fin);
+            return Some(Kept::List(idx, w));
+        }
+        let mut q = Query::all(max, t);
+        if k > 0 {
+            if let Some(at) = select(v, &q, Target::Count(k as u64), None)? {
+                q.lo = at.key;
+            }
+        }
+        let f = if p.min_p > 0.0 { min_floor(p.min_p) } else { f32::NEG_INFINITY };
+        if f > 0.0 {
+            // (a floor above the largest's quotient: `cut` keeps the largest alone)
+            return Some(Kept::List(vec![c[0].0], vec![weight(0.0)]));
+        }
+        let qc: Vec<f32> = c.iter().map(|x| (x.1 - max) / t).collect();
+        let wc: Vec<u64> = qc.iter().map(|&x| weight(x)).collect();
+        let m = qc.iter().take_while(|&&x| x >= f).count();
+        let (top_p, min_p) = (p.top_p < 1.0, p.min_p > 0.0);
+        let total = match (top_p || !min_p, q.lo) {
+            (false, _) => 0,
+            (true, 0) => v.total(max, t)?,
+            (true, _) => v.bins(&q)?.weight.iter().sum(),
+        };
+        let cut = top_p.then(|| share(p.top_p, total));
+        if let Some(cut) = cut {
+            let mut acc = 0u64;
+            if let Some(i) = wc[..m].iter().position(|&w| {
+                acc += w;
+                acc >= cut
+            }) {
+                return Some(Kept::List(c[..=i].iter().map(|x| x.0).collect(), wc[..=i].to_vec()));
+            }
+        }
+        if m < c.len() {
+            return Some(Kept::List(c[..m].iter().map(|x| x.0).collect(), wc[..m].to_vec()));
+        }
+        let q = Query { floor: f, ..q };
+        let whole = |v: &mut dyn View| v.bins(&q).map(|b| b.weight.iter().sum::<u64>());
+        Some(match cut {
+            Some(cut) => match select(v, &q, Target::Weight(cut), None)? {
+                Some(at) => Kept::Past(Query { lo: at.key, ..q }, at.before_w + at.w),
+                None => Kept::Past(q, whole(v)?),
+            },
+            None if !min_p => Kept::Past(q, total),
+            None => Kept::Past(q, whole(v)?),
+        })
     }
 
     fn draw(&mut self, l: &mut [f32]) -> u32 {
-        let (idx, probs) = self.dist(l);
-        self.walk(&idx, &probs)
+        let (idx, w) = self.dist(l);
+        self.walk(&idx, &w)
     }
 
-    /// The draw's candidates and their probabilities (largest first; walk renormalizes them): top-k, temperature, min-p and top-p over the processed row.
-    fn dist(&self, l: &mut [f32]) -> (Vec<u32>, Vec<f64>) {
+    /// The draw's list and its tokens' weights (in the draw's order: the larger logit first, the smaller token of equal ones): top-k, temperature, min-p and top-p over the processed row.
+    fn dist(&self, l: &mut [f32]) -> (Vec<u32>, Vec<u64>) {
         // the candidates by probability, largest first, cut by top-k, then min-p, then top-p
         if self.gram.is_some() && self.p.top_k > 0 {
             // (a grammar leaves a share of the row, often most of it: the top-k is taken in one pass, the logits with their tokens beside them, a buffer of twice k cut to k each time it fills, and the k-th
@@ -565,52 +994,40 @@ impl Sampler {
         self.cut(idx, vals)
     }
 
-    /// A token drawn from the candidates `idx` (their logits `vals`, largest first): temperature, then min-p and top-p cuts, then the generator's draw.
-    fn finish_draw(&mut self, idx: Vec<u32>, vals: Vec<f32>) -> u32 {
-        let (idx, probs) = self.cut(idx, vals);
-        self.walk(&idx, &probs)
-    }
-
-    /// The candidates `idx` (their logits `vals`, largest first) after the temperature and the min-p and top-p cuts, with their probabilities.
-    fn cut(&self, mut idx: Vec<u32>, vals: Vec<f32>) -> (Vec<u32>, Vec<f64>) {
+    /// The candidates `idx` (their logits `vals`, largest first) after the min-p and top-p cuts, with their weights (`weight` of their quotients at the temperature, about the first): the
+    /// tokens whose quotient is at least min-p's floor (`min_floor`; the first at least), then up to the first whose cumulative weight reaches top-p of the whole list's (all of those
+    /// where none does).
+    fn cut(&self, mut idx: Vec<u32>, vals: Vec<f32>) -> (Vec<u32>, Vec<u64>) {
         let max = vals[0];
-        let mut probs: Vec<f64> = vals.iter().map(|&v| (((v - max) / self.p.temperature) as f64).exp()).collect();
-        let total: f64 = probs.iter().sum();
-        for p in probs.iter_mut() {
-            *p /= total;
-        }
+        let qs: Vec<f32> = vals.iter().map(|&v| (v - max) / self.p.temperature).collect();
+        let mut w: Vec<u64> = qs.iter().map(|&q| weight(q)).collect();
+        let total: u64 = w.iter().sum();
         if self.p.min_p > 0.0 {
-            let floor = self.p.min_p as f64 * probs[0];
-            let keep = probs.iter().take_while(|&&p| p >= floor).count().max(1);
-            probs.truncate(keep);
+            let floor = min_floor(self.p.min_p);
+            let keep = qs.iter().take_while(|&&q| q >= floor).count().max(1);
+            w.truncate(keep);
             idx.truncate(keep);
         }
         if self.p.top_p < 1.0 {
-            let (mut acc, mut keep) = (0.0, 0);
-            for &p in &probs {
-                acc += p;
-                keep += 1;
-                if acc >= self.p.top_p as f64 {
-                    break;
-                }
-            }
-            probs.truncate(keep.max(1));
+            let cut = share(self.p.top_p, total);
+            let mut acc = 0u64;
+            let keep = w
+                .iter()
+                .position(|&x| {
+                    acc += x;
+                    acc >= cut
+                })
+                .map_or(w.len(), |i| i + 1);
+            w.truncate(keep.max(1));
             idx.truncate(keep.max(1));
         }
-        (idx, probs)
+        (idx, w)
     }
 
-    /// The generator's draw among the tokens `idx` of probabilities `probs` (largest first): one number, walked down their sum.
-    fn walk(&mut self, idx: &[u32], probs: &[f64]) -> u32 {
-        let total: f64 = probs.iter().sum();
-        let mut r = self.rng.unit() * total;
-        for (i, &p) in probs.iter().enumerate() {
-            r -= p;
-            if r <= 0.0 {
-                return idx[i];
-            }
-        }
-        idx[idx.len() - 1]
+    /// The generator's draw among the tokens `idx` of weights `w` (in the draw's order): one number, landed on their sum (`pick`, `land`).
+    fn walk(&mut self, idx: &[u32], w: &[u64]) -> u32 {
+        let r = pick(self.rng.u64(), w.iter().sum());
+        land(idx, w, r)
     }
 }
 
@@ -659,14 +1076,263 @@ pub fn argmax(l: &[f32]) -> u32 {
     at as u32
 }
 
+/// What a GPU's kernels make of a row of logits, made on the host (the tests, and the kernels' checks: kcheck.rs): its candidates (`topk64_*`), its total, bins and tokens of a
+/// query (`draw_total_*`, `draw_bins_*`, `draw_tokens_*`), a row as their view, and the draw an engine makes from them.
+#[cfg(any(test, feature = "dev"))]
+pub mod emu {
+    use super::*;
+
+    /// The `kern::TOPK` largest of a row, largest first, equal ones by the smaller token (`topk64_f32`, `topk64_bf16`).
+    pub fn top(w: &[f32]) -> Vec<(u32, f32)> {
+        let mut i: Vec<u32> = (0..w.len() as u32).collect();
+        i.sort_by(|&a, &b| key32(w[b as usize]).cmp(&key32(w[a as usize])).then(a.cmp(&b)));
+        i[..crate::kern::TOPK.min(w.len())].iter().map(|&t| (t, w[t as usize])).collect()
+    }
+
+    /// The sum of the weights of the row's tokens (not -inf) about `max` at temperature `t`.
+    pub fn total(w: &[f32], max: f32, t: f32) -> u64 {
+        bins(w, &Query::all(max, t)).weight.iter().sum()
+    }
+
+    /// The query's tokens of the row in its bins.
+    pub fn bins(w: &[f32], q: &Query) -> Bins {
+        let mut b = Bins::empty();
+        for (t, &x) in w.iter().enumerate() {
+            if let Some((k, wt)) = q.holds(x, t as u32) {
+                b.add(k, wt, q.shift);
+            }
+        }
+        b
+    }
+
+    /// The query's tokens of the row (token and logit), in the row's order.
+    pub fn tokens(w: &[f32], q: &Query) -> Vec<(u32, f32)> {
+        w.iter().enumerate().filter(|(t, &x)| q.holds(x, *t as u32).is_some()).map(|(t, &x)| (t as u32, x)).collect()
+    }
+
+    /// A row on the host as a GPU's view of it, counting the queries past the candidates it answers (its total is made with the step's candidates, as a GPU's is: not counted).
+    pub struct Row<'a> {
+        pub row: &'a [f32],
+        pub asks: usize,
+    }
+
+    impl View for Row<'_> {
+        fn cands(&mut self) -> Option<Vec<(u32, f32)>> {
+            Some(top(self.row))
+        }
+        fn total(&mut self, max: f32, t: f32) -> Option<u64> {
+            Some(total(self.row, max, t))
+        }
+        fn bins(&mut self, q: &Query) -> Option<Bins> {
+            self.asks += 1;
+            Some(bins(self.row, q))
+        }
+        fn tokens(&mut self, q: &Query, cap: usize) -> Option<Vec<(u32, f32)>> {
+            self.asks += 1;
+            Some(tokens(self.row, q)).filter(|v| v.len() <= cap)
+        }
+        fn logit(&mut self, t: u32) -> Option<f32> {
+            self.row.get(t as usize).copied()
+        }
+    }
+
+    /// The token an engine draws for `s` from `row` (the model's logits) by a GPU's view of the row it sees, and whether it read the row. Where the request changes the row, that
+    /// row as the GPU makes it is held to `processed`'s bit for bit first.
+    pub fn draw(s: &mut Sampler, row: &[f32]) -> (u32, bool) {
+        let w = match s.proc() {
+            Some(p) => {
+                let w = p.resolve(row.len()).apply(row);
+                let host = s.processed(row);
+                assert!(w.iter().zip(&host).all(|(a, b)| a.to_bits() == b.to_bits()), "the row the GPU makes is not the host's");
+                w
+            }
+            None => row.to_vec(),
+        };
+        match s.sample_view(&mut Row { row: &w, asks: 0 }) {
+            Some(t) => (t, false),
+            None => (s.sample(row), true),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A draw from the row's 64 largest logits and the changed tokens' own (`sample_adjusted`) is the whole row's (`sample`), step by step, for penalties, a bias,
-    /// suppressed tokens and greedy: two samplers of the same request, one given each, choose the same tokens; and most steps need no row.
+    fn xorshift(mut x: u64) -> impl FnMut() -> u64 {
+        move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        }
+    }
+
+    /// A weight is exp(q) to within its float's rounding (4e-7 of it) and a unit of 2^-40 of the largest's, at the floats from -32 to 0 (every 61st, each k's boundaries on the
+    /// way); 0 at and below -32, for -inf and for not a number.
     #[test]
-    fn a_draw_from_the_candidates_and_the_changed_tokens_is_the_whole_rows() {
+    fn a_weight_is_exp_to_its_rounding() {
+        assert_eq!(
+            (weight(0.0), weight(-0.0), weight(f32::NEG_INFINITY), weight(f32::NAN), weight(-32.0), weight(-40.0)),
+            (1 << WBITS, 1 << WBITS, 0, 0, 0, 0)
+        );
+        for b in (0x8000_0001u32..0xC200_0000).step_by(61) {
+            let q = f32::from_bits(b);
+            let (w, e) = (weight(q), (q as f64).exp() * (1u64 << WBITS) as f64);
+            assert!((w as f64 - e).abs() <= e * 4e-7 + 1.0, "q {q}: weight {w}, exp {e}");
+        }
+    }
+
+    /// `share` is the ceiling of p w, exactly: against the product in whole numbers of p's own fraction, for floats of every size and weights up to a row's.
+    #[test]
+    fn a_share_is_the_ceiling_of_the_product() {
+        let mut next = xorshift(0x2545_F491_4F6C_DD1D);
+        for i in 0..20_000 {
+            let p = match i % 4 {
+                0 => (next() % 1_000_000) as f32 / 1_000_000.0,
+                1 => f32::from_bits(0x3000_0000 + (next() % 0x0F80_0000) as u32),
+                2 => [0.95, 0.9, 0.5, 0.05, 0.1, 1.0, 0.999, 1e-30, 1.5][i / 4 % 9],
+                _ => f32::from_bits((next() % 0x0080_0000) as u32),
+            };
+            let w = next() >> (next() % 64);
+            // (p = m / 2^s: the ceiling of m w / 2^s)
+            let (m, s) = {
+                let b = p.to_bits();
+                let e = (b >> 23) & 0xFF;
+                if e == 0 {
+                    ((b & 0x7F_FFFF) as u128, 149)
+                } else {
+                    (((b & 0x7F_FFFF) | 0x80_0000) as u128, 150 - e as i32)
+                }
+            };
+            let x = m * w as u128;
+            let want = if s >= 128 { (x > 0) as u128 } else { x.div_ceil(1u128 << s) };
+            assert_eq!(share(p, w) as u128, want.min(u64::MAX as u128), "p {p} w {w}");
+        }
+        assert_eq!((share(0.0, 9), share(-1.0, 9), share(f32::NAN, 9), share(0.5, 0), share(0.5, 9), share(1.0, 9)), (0, 0, 0, 0, 5, 9));
+        assert_eq!(share(1e30, u64::MAX), u64::MAX);
+    }
+
+    /// Rows of every kind a draw meets, of `v` tokens: a sure token, a few alike, a hundred alike, a flat row (its 95% nucleus thousands of tokens), all equal, ramps, a tail of -inf,
+    /// fewer finite tokens than the candidates, and bf16 values with many equal ones.
+    fn kinds_of_rows(v: usize, seed: u64) -> Vec<(String, Vec<f32>)> {
+        let mut next = xorshift(seed);
+        let bf = |x: f32| f32::from_bits(x.to_bits() & 0xFFFF_0000);
+        let mut rows = Vec::new();
+        let floor = |next: &mut dyn FnMut() -> u64| -> Vec<f32> { (0..v).map(|_| bf(-12.0 + (next() % 400) as f32 / 100.0)).collect() };
+        for (name, hot, level) in [("a sure token", 4, 8.0f32), ("thirty alike", 30, 4.0), ("a hundred alike", 100, 3.0)] {
+            let mut r = floor(&mut next);
+            for _ in 0..hot {
+                r[(next() % v as u64) as usize] = bf(level + (next() % 300) as f32 / 100.0);
+            }
+            rows.push((name.to_string(), r));
+        }
+        rows.push(("flat".into(), (0..v).map(|_| bf((next() % 1000) as f32 / 4000.0)).collect()));
+        rows.push(("flat, f32".into(), (0..v).map(|_| (next() % 1_000_000) as f32 / 3e6).collect()));
+        rows.push(("all equal".into(), vec![1.5; v]));
+        rows.push(("a ramp".into(), (0..v).map(|t| -(t as f32) / v as f32 * 6.0).collect()));
+        rows.push(("a falling ramp of ties".into(), (0..v).map(|t| bf(-((t / 37) as f32) * 0.125)).collect()));
+        let mut r = floor(&mut next);
+        for x in r.iter_mut().skip(v / 3) {
+            *x = f32::NEG_INFINITY;
+        }
+        rows.push(("a third, the rest -inf".into(), r));
+        let mut r = vec![f32::NEG_INFINITY; v];
+        for _ in 0..40 {
+            r[(next() % v as u64) as usize] = bf((next() % 100) as f32 / 10.0);
+        }
+        rows.push(("40 finite".into(), r));
+        rows.push(("both zeros and far ones".into(), (0..v).map(|t| [0.0, -0.0, -40.0, -25.0][(next() % 4) as usize] + (t % 3) as f32 * 0.0).collect()));
+        rows
+    }
+
+    /// The samplings a draw meets: greedy; top-k within the candidates and past them (200, 5,000, more than the row); top-p and min-p alone and together, near 1 and far; temperatures.
+    fn samplings() -> Vec<Params> {
+        let d = Params::default();
+        let mut out = vec![Params { temperature: 0.0, ..d.clone() }];
+        for (temperature, top_k, top_p, min_p) in [
+            (1.0, 0, 1.0, 0.0),
+            (0.7, 0, 0.95, 0.0),
+            (1.0, 0, 0.999, 0.0),
+            (1.3, 0, 0.5, 0.0),
+            (1.0, 0, 1.0, 0.05),
+            (0.9, 0, 1.0, 0.5),
+            (1.1, 0, 0.8, 0.02),
+            (1.0, 20, 0.9, 0.0),
+            (1.0, 64, 1.0, 0.1),
+            (1.0, 65, 1.0, 0.0),
+            (0.8, 200, 0.95, 0.0),
+            (1.0, 200, 1.0, 0.01),
+            (1.0, 5000, 0.9, 0.05),
+            (2.0, 1 << 40, 0.99, 0.0),
+            (0.3, 0, 0.9, 0.0),
+            (1.0, 1, 1.0, 0.0),
+            (1.0, 0, 1.0, 1.5),
+            (1.0, 0, 0.0, 0.0),
+        ] {
+            out.push(Params { temperature, top_k, top_p, min_p, ..d.clone() });
+        }
+        out
+    }
+
+    /// A draw from a GPU's view of the row (its candidates, and past them the weights and tokens of ranges: `View`, `select`) is the draw from the row, seed for seed, for every kind
+    /// of row and every sampling, and never reads the row: a flat row's 95% nucleus of thousands of tokens, a top-k of 200 or 5,000, a min-p past the candidates. The queries past
+    /// the candidates are asked where the cut or the point lies past them, and none where it does not.
+    #[test]
+    fn a_draw_from_a_view_is_the_draw_from_the_row() {
+        let (mut draws, mut past) = (0usize, 0usize);
+        for v in [3000usize, 30_000] {
+            for (name, row) in kinds_of_rows(v, 0x9E37_79B9_7F4A_7C15 ^ v as u64) {
+                for (i, base) in samplings().into_iter().enumerate() {
+                    let p = Params { seed: (i * 7 + v) as u64, ..base };
+                    let (mut whole, mut gpu) = (Sampler::new(p.clone(), &[]), Sampler::new(p.clone(), &[]));
+                    let mut asks = 0;
+                    for step in 0..6 {
+                        let mut view = emu::Row { row: &row, asks: 0 };
+                        let got = gpu.sample_view(&mut view);
+                        let want = whole.sample(&row);
+                        assert_eq!(got, Some(want), "{name}, {v} tokens, {p:?}, step {step}");
+                        asks += view.asks;
+                        draws += 1;
+                    }
+                    past += (asks > 0) as usize;
+                    // (a draw the candidates hold asks nothing past them: greedy, a top-k within them, a sure row's top-p)
+                    if p.temperature <= 0.0 || (1..=64).contains(&p.top_k) || (name == "a sure token" && p.top_k == 0 && p.top_p == 0.95) {
+                        assert_eq!(asks, 0, "{name}, {p:?}");
+                    }
+                }
+            }
+        }
+        assert!(past > 100, "{past} samplings of {draws} draws asked past the candidates");
+    }
+
+    /// A flat row's nucleus: thousands of tokens hold 95% of its weight, and the draw lands among them as the row's does, from what a GPU gives of a few ranges, not the row.
+    #[test]
+    fn a_flat_rows_nucleus_of_thousands_is_drawn_without_the_row() {
+        let v = 262_144usize;
+        let mut next = xorshift(0x51ED_270B_27C3_B1A5);
+        let row: Vec<f32> = (0..v).map(|_| f32::from_bits((((next() % 2000) as f32 / 1000.0).to_bits()) & 0xFFFF_0000)).collect();
+        for (temperature, top_p, min_p, top_k) in
+            [(1.0f32, 0.95f32, 0.0f32, 0usize), (0.7, 0.9, 0.0, 0), (1.0, 1.0, 0.3, 0), (1.0, 0.95, 0.0, 20_000), (1.0, 1.0, 0.0, 0)]
+        {
+            let p = Params { temperature, top_p, min_p, top_k, seed: 11, ..Params::default() };
+            let (mut whole, mut gpu) = (Sampler::new(p.clone(), &[]), Sampler::new(p.clone(), &[]));
+            // (the nucleus: the tokens the row's own cut keeps)
+            let (kept, _) = whole.dist(&mut row.clone());
+            assert!(kept.len() > 1000, "{p:?}: a nucleus of {}", kept.len());
+            for step in 0..8 {
+                let mut view = emu::Row { row: &row, asks: 0 };
+                assert_eq!(gpu.sample_view(&mut view), Some(whole.sample(&row)), "{p:?}, step {step}");
+                assert!(view.asks <= 24, "{p:?}: {} queries", view.asks);
+            }
+        }
+    }
+
+    /// The draw an engine makes from the GPU's view of the row the draw sees (the penalties, a bias, allowed tokens and the tokens held back put on the row first, `Proc`) is the
+    /// draw from the model's whole row (`sample`), seed for seed and step by step as the penalties' counts grow, whatever the sampling; the row the GPU makes is `processed`'s bit for
+    /// bit at every step, and the row is never read.
+    #[test]
+    fn a_draw_from_the_row_the_gpu_makes_is_the_rows() {
         let v = 3000usize;
         let mut seed = 0x51ed_270b_27c3_b1a5u64;
         let mut unit = || {
@@ -675,58 +1341,165 @@ mod tests {
             seed ^= seed << 17;
             (seed >> 11) as f32 / (1u64 << 53) as f32
         };
-        let cases = [
-            Params { temperature: 0.8, top_k: 20, top_p: 0.9, repetition_penalty: 1.3, seed: 7, ..Params::default() },
+        let draws = [
+            Params { temperature: 0.0, ..Params::default() },
+            Params { temperature: 0.8, top_k: 20, top_p: 0.9, ..Params::default() },
+            Params { temperature: 1.0, top_k: 64, min_p: 0.05, ..Params::default() },
+            Params { temperature: 0.7, top_k: 1, ..Params::default() },
+            Params { temperature: 1.0, top_p: 0.95, ..Params::default() },
+            Params { temperature: 0.9, min_p: 0.1, ..Params::default() },
+            Params { temperature: 1.1, top_p: 0.8, min_p: 0.02, ..Params::default() },
+            Params { temperature: 1.0, ..Params::default() },
+            Params { temperature: 0.6, top_k: 100, ..Params::default() },
+            Params { temperature: 1.0, top_k: 200, top_p: 0.9, ..Params::default() },
+        ];
+        let changes = [
+            Params { repetition_penalty: 1.3, ..Params::default() },
+            Params { repetition_penalty: 0.8, ..Params::default() },
+            Params { presence_penalty: 0.6, frequency_penalty: 0.4, ..Params::default() },
+            Params { logit_bias: vec![(5, 3.0), (2999, -2.0), (17, 9.0), (1234, 100.0)], ..Params::default() },
             Params {
-                temperature: 1.0,
-                top_k: 40,
-                presence_penalty: 0.6,
-                frequency_penalty: 0.4,
-                logit_bias: vec![(5, 3.0), (2999, -2.0), (17, 9.0)],
-                seed: 9,
+                logit_bias: vec![(7, -100.0), (9, 1.0), (9, 2.5)],
+                repetition_penalty: 1.2,
+                frequency_penalty: -0.5,
+                presence_penalty: 0.25,
                 ..Params::default()
             },
-            Params { temperature: 0.0, repetition_penalty: 1.2, frequency_penalty: 0.5, seed: 1, ..Params::default() },
-            // (a top-k of 32: at 64, every candidate is in it, so one changed below the last makes the draw the row's)
-            Params { temperature: 0.7, top_k: 32, min_p: 0.05, repetition_penalty: 1.1, min_tokens: 8, seed: 3, ..Params::default() },
+            Params { allowed: (0..v as u32).step_by(7).chain([4, 4, 9999]).collect(), presence_penalty: 1.0, ..Params::default() },
+            Params { min_tokens: 30, repetition_penalty: 1.1, ..Params::default() },
         ];
-        for (n, p) in cases.into_iter().enumerate() {
-            let prompt: Vec<u32> = (0..40).map(|i| (i * 37 % v) as u32).collect();
-            let (mut whole, mut part) = (Sampler::new(p.clone(), &prompt), Sampler::new(p.clone(), &prompt));
-            for s in [&mut whole, &mut part] {
-                s.set_suppress(vec![0, 1]);
-            }
-            let mut used = 0;
-            for step in 0..120 {
-                // a row of bf16 values (as the GPU's logits are), a few tokens tied, the ones the answer holds among the largest
-                let mut row: Vec<f32> = (0..v).map(|_| f32::from_bits(((unit() * 16.0 - 8.0).to_bits()) & 0xffff_0000)).collect();
-                for t in (0..v).step_by(97) {
-                    row[t] = row[(t + 1) % v];
+        for (i, d) in draws.iter().enumerate() {
+            for (j, c) in changes.iter().enumerate() {
+                let p = Params { temperature: d.temperature, top_k: d.top_k, top_p: d.top_p, min_p: d.min_p, seed: (i * 31 + j) as u64, ..c.clone() };
+                let prompt: Vec<u32> = (0..40).map(|i| (i * 37 % v) as u32).collect();
+                let (mut whole, mut gpu) = (Sampler::new(p.clone(), &prompt), Sampler::new(p.clone(), &prompt));
+                for s in [&mut whole, &mut gpu] {
+                    s.set_suppress(vec![0, 1, 7]);
                 }
-                for (&t, _) in whole.said.iter().take(6) {
-                    row[t as usize] = 7.5;
-                }
-                let mut cands: Vec<(u32, f32)> = row.iter().enumerate().map(|(i, &x)| (i as u32, x)).collect();
-                cands.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
-                cands.truncate(crate::kern::TOPK);
-                let want = whole.sample(&row);
-                let got = match part.adjusts() {
-                    Some(ts) => {
-                        let raw: Vec<(u32, f32)> = ts.iter().filter(|&&t| (t as usize) < v).map(|&t| (t, row[t as usize])).collect();
-                        match part.sample_adjusted(&cands, &raw) {
-                            Some(t) => {
-                                used += 1;
-                                t
-                            }
-                            None => part.sample(&row),
+                for step in 0..60 {
+                    // a row of bf16 values (as the GPU's logits are): a low floor, a few tied, both zeros, a few tokens far above it and the tokens said so far among them;
+                    // every fifth step flat
+                    let bf = |x: f32| f32::from_bits(x.to_bits() & 0xffff_0000);
+                    let spread = if step % 5 == 4 { 0.5 } else { 8.0 };
+                    let mut row: Vec<f32> = (0..v).map(|_| bf(unit() * spread - 12.0)).collect();
+                    for t in (0..v).step_by(97) {
+                        row[t] = row[(t + 1) % v];
+                    }
+                    row[11] = -0.0;
+                    row[12] = 0.0;
+                    if step % 5 != 4 {
+                        for _ in 0..5 {
+                            row[(unit() * v as f32) as usize % v] = bf(unit() * 5.0 + 3.0);
+                        }
+                        for (&t, _) in whole.said.iter().take(6) {
+                            row[t as usize] = 7.5;
                         }
                     }
-                    None => part.sample(&row),
-                };
-                assert_eq!(got, want, "case {n}, step {step}");
+                    let (got, read) = emu::draw(&mut gpu, &row);
+                    let want = whole.sample(&row);
+                    assert_eq!(got, want, "{p:?}, step {step}");
+                    assert!(!read, "{p:?}, step {step}: the row was read");
+                }
             }
-            assert!(used > 60, "case {n}: {used} of 120 draws from the candidates");
         }
+    }
+
+    /// A drafted token checked from a GPU's view of its row (`check_view`) is `check_draft`'s, seed for seed: drafts among the candidates, past them, and out of the draw's list,
+    /// on rows whose list ends among the candidates and past them, with and without a request's changes.
+    #[test]
+    fn a_draft_checked_from_a_view_is_checked_as_from_the_row() {
+        let v = 5000usize;
+        let mut next = xorshift(0xD1B5_4A32_D192_ED03);
+        let mut past = 0;
+        for (name, row) in kinds_of_rows(v, 77) {
+            for (i, base) in samplings().into_iter().enumerate() {
+                for change in [Params::default(), Params { repetition_penalty: 1.2, logit_bias: vec![(3, 2.0)], ..Params::default() }] {
+                    let p = Params { temperature: base.temperature, top_k: base.top_k, top_p: base.top_p, min_p: base.min_p, seed: i as u64, ..change };
+                    let (mut whole, mut gpu) = (Sampler::new(p.clone(), &[3, 9]), Sampler::new(p.clone(), &[3, 9]));
+                    for step in 0..5 {
+                        let top = emu::top(&row);
+                        let draft = match step {
+                            0 => top[0].0,
+                            1 => top[(next() % 64) as usize].0,
+                            _ => (next() % v as u64) as u32,
+                        };
+                        let w = match gpu.proc() {
+                            Some(pr) => pr.resolve(v).apply(&row),
+                            None => row.clone(),
+                        };
+                        let mut view = emu::Row { row: &w, asks: 0 };
+                        let got = gpu.check_view(&mut view, draft);
+                        assert_eq!(got, Some(whole.check_draft(&row, draft)), "{name}, {p:?}, step {step}, draft {draft}");
+                        past += (view.asks > 0) as usize;
+                    }
+                }
+            }
+        }
+        assert!(past > 100, "{past} checks asked past the candidates");
+    }
+
+    /// A view that cannot answer (a query it has no bins for) leaves the generator where it was: the draw is then made from the row, as if the view had not been asked.
+    #[test]
+    fn a_view_that_fails_leaves_the_draw_to_the_row() {
+        struct Cands<'a>(&'a [f32]);
+        impl View for Cands<'_> {
+            fn cands(&mut self) -> Option<Vec<(u32, f32)>> {
+                Some(emu::top(self.0))
+            }
+            fn bins(&mut self, _: &Query) -> Option<Bins> {
+                None
+            }
+            fn tokens(&mut self, _: &Query, _: usize) -> Option<Vec<(u32, f32)>> {
+                None
+            }
+            fn logit(&mut self, _: u32) -> Option<f32> {
+                None
+            }
+        }
+        let row: Vec<f32> = (0..3000).map(|t| ((t * 7919) % 1000) as f32 / 5000.0).collect();
+        let p = Params { temperature: 1.0, top_p: 0.95, seed: 5, ..Params::default() };
+        let (mut a, mut b) = (Sampler::new(p.clone(), &[]), Sampler::new(p, &[]));
+        for _ in 0..5 {
+            assert_eq!(a.sample_view(&mut Cands(&row)), None);
+            assert_eq!(a.sample(&row), b.sample(&row));
+        }
+        assert_eq!(a.check_view(&mut Cands(&row), 3), None);
+    }
+
+    /// What a GPU is asked to put on the row: nothing where the request changes nothing; the bias, the penalties' tokens as the answer grows (the prompt's for the repetition penalty), the allowed
+    /// list and the tokens held back until the least length (and not after); a bias that names a token twice: its last (as the server's JSON object keeps its last key).
+    #[test]
+    fn the_changes_a_gpu_puts_on_the_row() {
+        assert!(Sampler::new(Params { temperature: 0.7, top_k: 5, ..Params::default() }, &[3]).proc().is_none());
+        let mut s = Sampler::new(Params { repetition_penalty: 1.5, presence_penalty: 0.5, logit_bias: vec![(9, 2.0)], ..Params::default() }, &[3, 4, 3]);
+        let r = s.proc().unwrap().resolve(16);
+        assert_eq!(r.words, None);
+        let mut e = r.entries.clone();
+        e.sort_by_key(|e| e.token);
+        assert_eq!(
+            e,
+            vec![
+                Entry { token: 3, bias: None, seen: true, said: 0, rescue: false },
+                Entry { token: 4, bias: None, seen: true, said: 0, rescue: false },
+                Entry { token: 9, bias: Some(2.0), seen: false, said: 0, rescue: false },
+            ]
+        );
+        let row = vec![1.0f32; 16];
+        s.sample(&row);
+        s.sample(&row);
+        // (greedy: token 0 twice, said twice; token 9 is the bias's)
+        let r = s.proc().unwrap().resolve(16);
+        assert!(r.entries.contains(&Entry { token: 9, bias: Some(2.0), seen: true, said: 2, rescue: false }), "{:?}", r.entries);
+        // the allowed list and the tokens held back (past the vocabulary: none)
+        let mut s = Sampler::new(Params { allowed: vec![2, 40, 5, 2, 100], min_tokens: 1, ..Params::default() }, &[]);
+        s.set_suppress(vec![5, 70]);
+        let r = s.proc().unwrap().resolve(64);
+        assert_eq!(r.words, Some(vec![1 << 2, 1 << 8]));
+        s.sample(&[0.0; 64]);
+        assert_eq!(s.proc().unwrap().resolve(64).words, Some(vec![(1 << 2) | (1 << 5), 1 << 8]), "the least length reached: nothing held back");
+        let mut twice = Sampler::new(Params { logit_bias: vec![(1, 1.0), (1, 2.0)], ..Params::default() }, &[]);
+        assert_eq!(twice.proc().unwrap().resolve(4).entries, vec![Entry { token: 1, bias: Some(2.0), seen: false, said: 0, rescue: false }]);
+        assert_eq!(twice.processed(&[0.0; 4]), vec![0.0, 2.0, 0.0, 0.0]);
     }
 
     fn logits() -> Vec<f32> {
@@ -788,188 +1561,51 @@ mod tests {
         assert!(draws(Params { min_p: 0.5, ..base }).is_subset(&[3, 1].into()));
     }
 
-    /// The candidates the GPU returns (the largest logits of a row, equal ones by the smaller token) give the token the whole row gives, draw for draw, for every top-k they cover, and say when they do not.
+    /// The draws keep the distribution the weights say: a token's share of many draws is its weight's share of the list's, for a top-p, a min-p and a whole row.
     #[test]
-    fn the_largest_logits_alone_give_the_same_draws() {
-        // a row of bf16 values with many equal ones
-        let mut x = 0x2545_F491_4F6C_DD1Du64;
-        let mut next = move || {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            x
-        };
-        let row: Vec<f32> = (0..5000).map(|_| f32::from_bits((((next() % 4000) as f32 / 400.0 - 5.0).to_bits()) & 0xFFFF_0000)).collect();
-        let mut by: Vec<u32> = (0..row.len() as u32).collect();
-        by.sort_by(|&a, &b| row[b as usize].partial_cmp(&row[a as usize]).unwrap().then(a.cmp(&b)));
-        let cands: Vec<(u32, f32)> = by[..64].iter().map(|&i| (i, row[i as usize])).collect();
-        for (k, t, tp) in [(20usize, 0.6f32, 0.95f32), (1, 1.0, 1.0), (64, 1.3, 0.8), (5, 0.7, 1.0)] {
-            let p = Params { temperature: t, top_k: k, top_p: tp, seed: 9, ..Params::default() };
-            let (mut a, mut b) = (Sampler::new(p.clone(), &[]), Sampler::new(p, &[]));
-            for _ in 0..200 {
-                assert_eq!(a.sample(&row), b.sample_top(&cands, None).unwrap(), "top-k {k}, temperature {t}, top-p {tp}");
+    fn the_draws_are_distributed_as_the_weights() {
+        let row = vec![2.0f32, 1.5, 0.3, -1.0, 0.9, 1.4, -2.0, 0.0];
+        for p in [
+            Params { temperature: 0.8, seed: 7, ..Params::default() },
+            Params { temperature: 1.0, top_p: 0.9, seed: 8, ..Params::default() },
+            Params { temperature: 1.2, min_p: 0.2, seed: 9, ..Params::default() },
+        ] {
+            let mut s = Sampler::new(p.clone(), &[]);
+            let (idx, w) = s.dist(&mut row.clone());
+            let total: u64 = w.iter().sum();
+            let n = 200_000;
+            let mut c = vec![0f64; row.len()];
+            for _ in 0..n {
+                c[s.sample(&row) as usize] += 1.0;
             }
-        }
-        // where the candidates do not cover what the draw looks at: no top-k, more than the candidates, penalties, or no temperature
-        for p in [
-            Params { temperature: 1.0, ..Params::default() },
-            Params { temperature: 1.0, top_k: 65, ..Params::default() },
-            Params { temperature: 1.0, top_k: 20, repetition_penalty: 1.1, ..Params::default() },
-            Params { temperature: 1.0, top_k: 20, presence_penalty: 0.5, ..Params::default() },
-            Params { temperature: 0.0, top_k: 20, ..Params::default() },
-        ] {
-            assert_eq!(Sampler::new(p, &[]).sample_top(&cands, None), None);
-        }
-    }
-
-    /// The GPU's answer for `row` as the kernels make it: the 64 largest (equal values by the smaller token) and the sum of the exponentials at temperature `t` as expsum_bf16 forms it (each exponential in fp32, eight of them added
-    /// in fp32, the eights in fp64: another order than the host's), `off` further from the host's sum, relative.
-    fn gpu_top(row: &[f32], t: f32, off: f64) -> Top {
-        let mut by: Vec<u32> = (0..row.len() as u32).collect();
-        by.sort_by(|&a, &b| row[b as usize].partial_cmp(&row[a as usize]).unwrap().then(a.cmp(&b)));
-        let max = row[by[0] as usize];
-        let mass: f64 = row.chunks(8).map(|c| c.iter().map(|&v| ((v - max) / t).exp()).sum::<f32>() as f64).sum();
-        Top { cands: by[..64].iter().map(|&i| (i, row[i as usize])).collect(), mass: Some(mass * (1.0 + off)) }
-    }
-
-    /// Rows of 5,000 bf16 logits: a few large values on a low floor (a sure next token), thirty alike, a hundred alike (a doubtful one), and a floor alone (nearly flat).
-    fn rows(n: usize) -> Vec<Vec<f32>> {
-        let mut x = 0x9E37_79B9_7F4A_7C15u64;
-        let mut next = move || {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            x
-        };
-        let bf = |v: f32| f32::from_bits(v.to_bits() & 0xFFFF_0000);
-        (0..n)
-            .map(|i| {
-                let mut row: Vec<f32> = (0..5000).map(|_| bf(-12.0 + (next() % 400) as f32 / 100.0)).collect();
-                let (hot, level) = [(4, 8.0), (30, 4.0), (100, 3.0), (0, 0.0)][i % 4];
-                for _ in 0..hot {
-                    row[(next() % 5000) as usize] = bf(level + (next() % 300) as f32 / 100.0);
-                }
-                row
-            })
-            .collect()
-    }
-
-    /// What a lossy engine does with a step, on the host: ask `top_need`, draw by `sample_with` from the GPU's answer (here `gpu_top`, its sum `off` out), reading the row only where the draw needs it. The same tokens as the draws from the whole row,
-    /// seed for seed, in steps over rows of every kind, whatever the sampling: the Nemotron 3 Super checkpoint's (temperature 1, top-p 0.95, no top-k), the Qwen3.5 ones (top-k 20), and the samplings the candidates cannot serve (the row is read
-    /// every step: a top-k past them, no top-k and no top-p, a min-p with no top-k, penalties, a bias, allowed tokens, no temperature). Returns how many steps read the row.
-    fn steps_like_an_engine(p: &Params, rows: &[Vec<f32>]) -> usize {
-        let (mut whole, mut gpu) = (Sampler::new(p.clone(), &[7]), Sampler::new(p.clone(), &[7]));
-        let mut reads = 0;
-        for (i, row) in rows.iter().enumerate() {
-            let top = gpu.top_need().map(|n| {
-                let t = gpu_top(row, n.temperature, [0.0, 7e-7, -7e-7][i % 3]);
-                Top { mass: t.mass.filter(|_| n.mass), ..t }
-            });
-            let got = gpu.sample_with(top.as_ref(), || {
-                reads += 1;
-                Ok(row.clone())
-            });
-            assert_eq!(got.unwrap(), whole.sample(row), "step {i} of {p:?}");
-        }
-        reads
-    }
-
-    #[test]
-    fn the_gpus_largest_logits_give_the_draws_of_the_row() {
-        let rows = rows(120);
-        let n = rows.len();
-        let base = Params { temperature: 1.0, seed: 17, ..Params::default() };
-        // the checkpoints' own: the rows the 64 largest do not hold 95% of (a hundred alike, a flat one) are read, the others are not
-        let reads = steps_like_an_engine(&Params { top_p: 0.95, ..base.clone() }, &rows);
-        assert!(reads > 0 && reads < n, "Nemotron's sampling reads {reads} of {n} rows");
-        let sure: Vec<Vec<f32>> = rows.iter().step_by(4).cloned().chain(rows.iter().skip(1).step_by(4).cloned()).collect();
-        assert_eq!(steps_like_an_engine(&Params { top_p: 0.95, ..base.clone() }, &sure), 0, "a sure row is not read");
-        assert_eq!(steps_like_an_engine(&Params { temperature: 0.6, top_p: 0.8, ..base.clone() }, &sure), 0);
-        // a top-p that the hundred alike are reached by within 64 (half of the probability) needs no row either
-        assert!(steps_like_an_engine(&Params { top_p: 0.5, ..base.clone() }, &rows) < reads);
-        // a top-k within the candidates never reads the row, with or without top-p and min-p
-        for p in [
-            Params { top_k: 20, top_p: 0.95, temperature: 0.6, ..base.clone() },
-            Params { top_k: 64, temperature: 1.3, ..base.clone() },
-            Params { top_k: 1, ..base.clone() },
-            Params { top_k: 5, min_p: 0.1, top_p: 0.9, ..base.clone() },
-        ] {
-            assert_eq!(steps_like_an_engine(&p, &rows), 0, "{p:?}");
-        }
-        // the samplings the candidates cannot serve read the row at every step
-        for p in [
-            Params { top_k: 65, ..base.clone() },
-            base.clone(),
-            Params { top_p: 0.95, min_p: 0.05, ..base.clone() },
-            Params { top_k: 20, repetition_penalty: 1.1, ..base.clone() },
-            Params { top_p: 0.95, presence_penalty: 0.5, ..base.clone() },
-            Params { top_k: 20, frequency_penalty: 0.3, ..base.clone() },
-            Params { top_k: 20, logit_bias: vec![(4000, 100.0)], ..base.clone() },
-            Params { top_p: 0.95, allowed: vec![5, 6, 7, 4999], ..base.clone() },
-            Params { temperature: 0.0, presence_penalty: 1.0, ..base.clone() },
-        ] {
-            assert_eq!(steps_like_an_engine(&p, &rows), n, "{p:?}");
-        }
-    }
-
-    /// A top-p that a cumulative probability of the candidates comes within the GPU's error of is not drawn from them: the sum could put the cut a token to either side. Two tokens alike on a floor 40 below have 0.5 of the probability
-    /// each less 1e-14, which the host's sum (the floor added to 2, a term at a time) loses, so a top-p of 0.5 keeps one token for the host and would keep both for a sum 1e-6 too high: the row is read, whatever the sum is within the
-    /// error. A top-p of 0.3 keeps the first token for every sum within it, and is drawn from the candidates. A sum that is no sum of the row (missing, zero, not a number, less than the candidates') is not trusted either.
-    #[test]
-    fn a_top_p_too_near_a_cumulative_probability_is_drawn_from_the_row() {
-        let mut row = vec![-40.0f32; 5000];
-        row[10] = 0.0;
-        row[20] = 0.0;
-        let run = |top_p: f32, mass: &dyn Fn(f64) -> Option<f64>| {
-            let p = Params { temperature: 1.0, top_p, seed: 3, ..Params::default() };
-            let (mut a, mut b) = (Sampler::new(p.clone(), &[]), Sampler::new(p, &[]));
-            let (mut reads, mut seen) = (0, std::collections::HashSet::new());
-            for _ in 0..200 {
-                let top = gpu_top(&row, 1.0, 0.0);
-                let top = Top { mass: top.mass.and_then(mass), ..top };
-                let tok = b.sample_with(Some(&top), || {
-                    reads += 1;
-                    Ok(row.clone())
-                });
-                assert_eq!(tok.as_ref().unwrap(), &a.sample(&row));
-                seen.insert(tok.unwrap());
+            for (t, x) in idx.iter().zip(&w) {
+                let (got, want) = (c[*t as usize] / n as f64, *x as f64 / total as f64);
+                assert!((got - want).abs() < 0.005, "{p:?}: token {t} drawn {got:.4} of the time, its weight {want:.4}");
             }
-            (reads, seen)
-        };
-        for off in [0.0, -1e-6, 1e-6, -9e-6] {
-            let (reads, seen) = run(0.5, &|m| Some(m * (1.0 + off)));
-            assert_eq!((reads, seen), (200, [10].into()), "off {off}");
-        }
-        let (reads, seen) = run(0.3, &|m| Some(m * (1.0 - 9e-6)));
-        assert_eq!((reads, seen), (0, [10].into()), "the first token keeps 0.5 for any sum within the error");
-        for bad in [None, Some(0.0), Some(f64::NAN), Some(f64::INFINITY), Some(0.5)] {
-            let (reads, _) = run(0.3, &|_| bad);
-            assert_eq!(reads, 200, "a sum of {bad:?} is not trusted");
         }
     }
 
     #[test]
     fn what_a_draw_asks_of_the_gpu() {
-        let ask = |p: Params| Sampler::new(Params { temperature: 0.7, ..p }, &[]).top_need();
-        let (k, m) = (Some(Need { temperature: 0.7, mass: false }), Some(Need { temperature: 0.7, mass: true }));
-        assert_eq!((ask(Params { top_k: 20, ..Params::default() }), ask(Params { top_k: 64, top_p: 0.9, min_p: 0.1, ..Params::default() })), (k, k));
-        assert_eq!((ask(Params { top_p: 0.95, ..Params::default() }), ask(Params { top_k: 0, top_p: 0.01, ..Params::default() })), (m, m));
-        for none in [
-            Params::default(),
-            Params { top_k: 65, ..Params::default() },
-            Params { top_p: 0.95, min_p: 0.05, ..Params::default() },
-            Params { min_p: 0.05, ..Params::default() },
+        let ask = |p: Params| Sampler::new(p, &[]).total_need();
+        let d = Params { temperature: 0.7, ..Params::default() };
+        for (p, want) in [
+            (Params { top_k: 20, ..d.clone() }, None),
+            (Params { top_k: 200, top_p: 0.9, ..d.clone() }, None),
+            (Params { top_p: 0.95, ..d.clone() }, Some(0.7)),
+            (d.clone(), Some(0.7)),
+            (Params { top_p: 0.95, min_p: 0.05, ..d.clone() }, Some(0.7)),
+            (Params { min_p: 0.05, ..d.clone() }, None),
+            (Params { temperature: 0.0, ..d.clone() }, None),
         ] {
-            assert_eq!(ask(none.clone()), None, "{none:?}");
+            assert_eq!(ask(p.clone()), want, "{p:?}");
         }
-        assert_eq!(Sampler::new(Params { temperature: 0.0, top_k: 20, ..Params::default() }, &[]).top_need(), None);
-        assert_eq!(Sampler::new(Params { temperature: 0.0, ..Params::default() }, &[]).top_need(), None, "greedy asks for nothing");
-        // a least length with tokens to take out: the row until it is reached
+        // (a least length with tokens to take out: the row the draw sees, until it is reached)
         let mut s = Sampler::new(Params { temperature: 1.0, top_k: 20, min_tokens: 1, ..Params::default() }, &[]);
         s.set_suppress(vec![3]);
-        assert_eq!(s.top_need(), None);
+        assert!(s.changes() && s.gpu_ask().1.is_some());
         s.sample(&logits());
-        assert!(s.top_need().is_some());
+        assert!(!s.changes() && s.gpu_ask().1.is_none());
     }
 
     #[test]
@@ -984,7 +1620,7 @@ mod tests {
     }
 
     /// vLLM's logit_bias: the bias is added to the logits of the row before the penalties and the temperature, so it moves greedy choices too, and a token outside the largest 64 can
-    /// be made the choice, which the GPU's candidates cannot show (a request with a bias is drawn from the whole row).
+    /// be made the choice (a request with a bias is drawn from the row with the bias put on it: `Proc`).
     #[test]
     fn a_logit_bias_is_added_to_the_row_before_anything_else() {
         let mut row = logits();
@@ -1013,10 +1649,11 @@ mod tests {
         let mut p = Sampler::new(Params { temperature: 0.0, presence_penalty: 1.5, logit_bias: vec![(250, 100.0)], ..Params::default() }, &[]);
         assert_eq!(p.sample(&row), 250);
         assert_eq!(p.sample(&row), 250, "100 is more than a penalty of 1.5");
-        // the candidates of the GPU cover a draw without a bias only
-        let cands: Vec<(u32, f32)> = vec![(3, 4.0), (1, 3.0), (7, 2.0)];
-        assert_eq!(biased(vec![(250, 100.0)], 1.0, 1).sample_top(&cands, None), None);
-        assert!(Sampler::new(Params { temperature: 1.0, top_k: 3, ..Params::default() }, &[]).sample_top(&cands, None).is_some());
+        // the GPU's candidates are of the row with the bias on it
+        assert!(biased(vec![(250, 100.0)], 1.0, 1).proc().is_some() && biased(vec![], 1.0, 1).proc().is_none());
+        let mut s = biased(vec![(250, 100.0)], 1.0, 1);
+        let w = s.proc().unwrap().resolve(row.len()).apply(&row);
+        assert_eq!(s.sample_view(&mut emu::Row { row: &w, asks: 0 }), Some(250));
         assert!(!Params { logit_bias: vec![(1, 1.0)], ..Params::default() }.greedy());
         assert!(Params::default().greedy());
     }
@@ -1025,13 +1662,7 @@ mod tests {
     /// for the token chosen and for the `k` likeliest, against a plain softmax; the GPU's candidates give the same list as the row.
     #[test]
     fn logprobs_are_the_log_softmax_of_the_raw_row() {
-        let mut x = 0x9E37_79B9_7F4A_7C15u64;
-        let mut next = move || {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            x
-        };
+        let mut next = xorshift(0x9E37_79B9_7F4A_7C15);
         // a row of bf16 values with many equal ones (as the model's are), 5,000 tokens
         let row: Vec<f32> = (0..5000).map(|_| f32::from_bits((((next() % 6000) as f32 / 300.0 - 8.0).to_bits()) & 0xFFFF_0000)).collect();
         // the reference: the plain softmax in f64, tokens by probability (equal ones by the smaller token)
@@ -1065,8 +1696,8 @@ mod tests {
         assert_eq!(logprobs_of(&hot, 8, 0, None).logprob, f64::NEG_INFINITY);
     }
 
-    /// vLLM's allowed_token_ids and min_tokens: the row is cut to the allowed tokens (greedy and drawn, a bias cannot bring one back), and the end tokens are out until the tokens asked for have been chosen; neither
-    /// is a draw from the GPU's candidates.
+    /// vLLM's allowed_token_ids and min_tokens: the row is cut to the allowed tokens (greedy and drawn, a bias cannot bring one back), and the end tokens are out until the tokens asked for
+    /// have been chosen; both are put on the row a GPU's candidates are made of (`Proc`), until the least length is reached.
     #[test]
     fn allowed_tokens_and_a_least_length() {
         let mut row = logits();
@@ -1079,19 +1710,16 @@ mod tests {
         let mut s = Sampler::new(Params { temperature: 0.0, allowed: vec![7], logit_bias: vec![(3, 100.0)], ..Params::default() }, &[]);
         assert_eq!(s.sample(&row), 7, "a bias does not bring back a token that is not allowed");
         assert!(!Params { allowed: vec![1], ..Params::default() }.greedy() && !Params { min_tokens: 1, ..Params::default() }.greedy());
-        assert_eq!(
-            Sampler::new(Params { temperature: 1.0, top_k: 3, allowed: vec![1], ..Params::default() }, &[]).sample_top(&[(3, 4.0), (1, 3.0), (7, 2.0)], None),
-            None
-        );
+        assert!(Sampler::new(Params { temperature: 1.0, top_k: 3, allowed: vec![1], ..Params::default() }, &[]).proc().is_some());
         // min_tokens: the end token (3, the largest) is out for the first two choices and back after
         let mut s = Sampler::new(Params { temperature: 0.0, min_tokens: 2, ..Params::default() }, &[]);
         s.set_suppress(vec![3]);
         assert_eq!((s.sample(&row), s.sample(&row), s.sample(&row)), (1, 1, 3));
         let mut s = Sampler::new(Params { temperature: 1.0, top_k: 3, min_tokens: 1, seed: 2, ..Params::default() }, &[]);
         s.set_suppress(vec![3]);
-        assert_eq!(s.sample_top(&[(3, 4.0), (1, 3.0), (7, 2.0)], None), None, "no draw from the candidates where a token is taken out");
+        assert!(s.proc().is_some(), "a token taken out: the candidates of the row with it out");
         assert_ne!(s.sample(&row), 3);
-        assert!(s.sample_top(&[(3, 4.0), (1, 3.0), (7, 2.0)], None).is_some(), "and after the least length, as any other");
+        assert!(s.proc().is_none(), "and after the least length, the model's own");
     }
 
     /// check_draft's tokens are distributed as sample's, whatever the draft (one the draw favours, one it seldom gives, one its cuts leave out), with top-k, top-p and a temperature.

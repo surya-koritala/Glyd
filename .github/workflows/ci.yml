@@ -184,7 +184,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.platforms == 'true'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -239,9 +239,10 @@ jobs:
             target/ci/glyd$exe -d "$RUNNER_TEMP/in.glyd" -o "$RUNNER_TEMP/out.bin"
             cmp "$RUNNER_TEMP/in.bin" "$RUNNER_TEMP/out.bin"
           done
+      # (the build of the tests and then the tests: a hosted macOS machine took 7.5 minutes to build them and over 12 to run 1,236 of the 1,256 unit tests)
       - name: The engine's tests (the development build)
         if: matrix.part == 'engine'
-        timeout-minutes: 20
+        timeout-minutes: 50
         shell: bash
         run: cargo test --profile ci -p glyd-engine
       - name: The engine program runs
@@ -334,7 +335,7 @@ jobs:
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
         with:
           path: ${{ runner.temp }}/hip-compiled
-          key: hip-compiled-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'glyd-engine/Cargo.toml', 'glyd-engine/src/**', 'glyd-gpu/**', 'gpu/hip.h', 'Cargo.lock', 'rust-toolchain.toml', '.github/workflows/ci.yml') }}
+          key: hip-compiled-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'glyd-engine/Cargo.toml', 'glyd-engine/src/**', 'glyd-gpu/**', 'gpu/hip.h', 'gpu/glyd_gpu_kernels.h', 'Cargo.lock', 'rust-toolchain.toml', '.github/workflows/ci.yml') }}
       # hipcc's bundle of code objects, by the content of what it compiles (the kernels, their HIP header, the build script that says how): a change to the engine's Rust code
       # alone builds the crate against the bundle of an earlier compile (scripts/ci_hipcc_cache.sh), with no ROCm install and no kernel compile.
       - id: bundle
@@ -342,7 +343,7 @@ jobs:
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
         with:
           path: ${{ runner.temp }}/hip-bundle
-          key: hip-bundle-7.2.1-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h') }}
+          key: hip-bundle-7.2.1-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/glyd_gpu_kernels.h') }}
       - if: steps.memo.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -485,6 +486,15 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: The engine's tests (the development build)
         run: cargo test --profile ci -p glyd-engine
+      # (the tests #[ignore]d for their minutes that hold a rule, a random test model's noise floor at most a tenth of the kind's bound and the two references' agreement: the `run` lines of
+      # glyd-engine/tests/ignored-in-gate.txt, the one list; scripts/check_tree.sh fails on an ignored test that is on neither list)
+      - name: The engine's ignored tests that hold a rule (the noise floors, the references' agreement)
+        timeout-minutes: 20
+        run: bash scripts/test_ignored.sh
+      # (R10: each saved checkpoint of tests/data/packs, every pack format Glyd has written, read as its readers read it and run on the CPU reference of the layer kinds, its
+      # logits against the digest recorded for it in glyd-engine/tests/packs; the unit test above holds the same, this prints a line for each format)
+      - name: Every pack format loads to its recorded logits on the CPU (src/packcheck.rs)
+        run: cargo run --profile ci -q -p glyd-engine -- packcheck
       - name: The Rust glyd's hand-off (the engine, the Python tool, GLYD_ENGINE=0)
         run: cargo test --profile ci -p glyd --test cli_python_tool
 

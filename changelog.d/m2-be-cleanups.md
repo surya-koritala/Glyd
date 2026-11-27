@@ -1,0 +1,1 @@
+- `qwenserve --gpus N` (Condor's `GLYD_GPUS=N tools/serve.sh`) picks the card the executor loads Qwen3.8-Flash-Next on. Before, the executor that serves the family ignored the setting and ran on GPU 0. Part of #140.

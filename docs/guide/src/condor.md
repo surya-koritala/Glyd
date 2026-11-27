@@ -1,8 +1,9 @@
 # Condor: a big MoE on one GPU
 
-Condor runs Qwen3.8-Flash-Next, a 180B mixture of experts, on one 12-16 GB NVIDIA GPU with 32-64 GB of RAM. It has its own
-setup script, its own server and chat page. `glyd run` does not take this model yet: it refuses it and points here
-(ROADMAP P8 moves it into `run`).
+Condor runs Qwen3.8-Flash-Next, a 180B mixture of experts, on one 12-16 GB NVIDIA GPU with 32-64 GB of RAM, or with its layers
+cut over two. It has its own setup script, its own server and chat page. `glyd run` takes this model at penguin, every expert
+on the GPUs (`glyd fit` says what that needs), and at the hummingbird level from a codes pack beside its weights (`glyd run DIR:hummingbird`); Condor's own
+scripts serve those packs of experts with `qwenserve`.
 
 ## What you need
 
@@ -43,8 +44,9 @@ because the experts that miss the GPU's cache run on it.
 
 - Chat: `http://127.0.0.1:8080`. OpenAI API at `http://127.0.0.1:8080/v1` (any key, any model name), Anthropic API at `/v1/messages`.
 - Context up to 262,144 tokens; the default is 32,768 (`GLYD_CTX=65536 tools/serve.sh` for more).
-- Two NVIDIA cards: `GLYD_GPUS=0,1 tools/serve.sh`.
-- 4 requests at once by default (`GLYD_USERS=N`, 1 to 8).
+- Two NVIDIA cards: `GLYD_GPUS=0,1 tools/serve.sh` cuts the layers over them, each card holding its layers and a cache of their experts (more of
+  them stay on the GPUs than one card holds); it answers one request at a time. `GLYD_GPUS=1` runs on the second card alone.
+- 4 requests at once by default (`GLYD_USERS=N`, 1 to 64, as many as the card's memory holds).
 
 More: [condor/README.md](https://github.com/surya-koritala/Glyd/blob/main/condor/README.md),
 [condor/docs/CLIENTS.md](https://github.com/surya-koritala/Glyd/blob/main/condor/docs/CLIENTS.md) for what is tested with tools.

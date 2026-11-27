@@ -1,21 +1,73 @@
 //! Gemma 4 (dense: 12B, 31B) as a description: sliding and global attention layers, the sandwich norms, the per-layer scalar, gelu(tanh), the tied
 //! and soft-capped head (models/gemma4/modeling_gemma4.py; the arithmetic is the kernels', as src/gemma4.rs names them).
 
-use super::{ModelDesc, Op, Ring, Rope, Slot};
+use super::attn::{AttnOp, QkNorm, RopeAt};
+use super::{ModelDesc, Op, Slot};
+#[cfg(test)]
+use super::{Ring, Rope};
 use crate::gemma4::{ConfigG4, KindG4};
+
+/// Gemma 4's attention of a layer of head `d`, `nk` key-value heads (the values the keys' projection where !`has_v`): q and k normed with weights `q_norm`, `k_norm`
+/// and each rounding of transformers' bf16 arithmetic, the values normed without one, the rotary of table 0 (sliding) or 1 (global) on `pairs` of the head's
+/// half pairs, scale 1, scores the bf16 of their dot products. `writes`: a draft model's layers read the big model's ring `ring` and write none.
+pub(crate) fn attention(c: &ConfigG4, kind: KindG4, nq: usize, q_norm: usize, k_norm: usize, ring: usize, writes: bool) -> Op {
+    let (d, nk, has_v) = c.attn_of(kind);
+    let sliding = kind == KindG4::Sliding;
+    Op::Attn(AttnOp {
+        src: Slot::Proj,
+        stride: if writes { c.proj_width(kind) } else { nq * d },
+        q_step: d,
+        k_off: nq * d,
+        v_off: (writes && has_v).then_some((nq + nk) * d),
+        d,
+        nq,
+        nk,
+        writes,
+        ring,
+        window: if sliding { c.window } else { 0 },
+        norm: QkNorm::Weight { q: q_norm, k: k_norm },
+        v_norm: writes,
+        rope: Some(RopeAt { table: if sliding { 0 } else { 1 }, span: d, pairs: if sliding { c.head_dim / 2 } else { c.global_rot } }),
+        q_scale: 1.0,
+        scale: 1.0,
+        softcap: 0.0,
+        gate: None,
+        round: true,
+        sbf16: true,
+        picked: false,
+    })
+}
 
 /// Gemma 4's executor description from the config.json in `dir` (R3a): the layer kinds the description builder reads from it, lowered to the executor's operations
 /// (`lower::gemma4`) and sized by the shapes it gives; `c` the same config as the family's reader takes it, for its end tokens and its context. What every loader of
-/// the executor's Gemma 4 runs; `describe` below is the description it is held to.
+/// the executor's Gemma 4 runs (the tests hold it to `describe` below).
 pub fn lowered(dir: &std::path::Path, c: &ConfigG4) -> crate::ffi::Result<ModelDesc> {
-    let p = dir.join("config.json");
-    let text = std::fs::read_to_string(&p).map_err(|e| crate::ffi::Error(format!("{}: {e}", p.display())))?;
-    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| crate::ffi::Error(format!("{}: {e}", p.display())))?;
-    let kinds = crate::runtime::describe::describe(&cfg)?;
-    let lowered = super::lower::gemma4(&kinds, &|n: &str| kinds.shapes.get(n).cloned(), c.eos.clone(), c.max_pos)?;
-    super::lower::agree(lowered, &describe(c), &p.display().to_string())
+    lowered_of(dir, &crate::runtime::config::ModelConfig::load(dir)?, c)
 }
 
+/// `lowered` of a config.json parsed once (`m`: `dir`'s).
+pub fn lowered_of(dir: &std::path::Path, m: &crate::runtime::config::ModelConfig, c: &ConfigG4) -> crate::ffi::Result<ModelDesc> {
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
+    super::lower::gemma4(&kinds, &|n: &str| kinds.shapes.get(n).cloned(), c.eos.clone(), c.max_pos).map_err(|e| e.context(&label))
+}
+
+/// The model in `dir` on the executor as the one-GPU route's plan loads it (src/cli.rs `open_lossy`): its description (`lowered_of`), drafted by the draft model in
+/// `draft` (its directory and the tokens a round) where one is given, its layers reading the big model's rings (`describe_draft`).
+pub fn load_of(
+    dir: &std::path::Path,
+    m: &crate::runtime::config::ModelConfig,
+    draft: Option<(&std::path::Path, usize)>,
+    o: &super::Opts,
+) -> crate::ffi::Result<super::Dyn> {
+    let c = ConfigG4::load_for_of(dir, m, false)?;
+    let spec = match draft {
+        Some((d, k)) => Some(super::DraftSpec { dir: d, desc: describe_draft(&ConfigG4::load_for(d, true)?, &c), k, experts: None }),
+        None => None,
+    };
+    super::Dyn::new(dir, m, lowered_of(dir, m, &c)?, spec, o)
+}
+
+#[cfg(test)]
 pub fn describe(c: &ConfigG4) -> ModelDesc {
     let p = &c.prefix;
     let mats = c.items();
@@ -27,8 +79,8 @@ pub fn describe(c: &ConfigG4) -> ModelDesc {
         small.len() - 1
     };
     let ropes = vec![
-        Rope { theta: c.sliding_theta, dim: c.head_dim, pairs: c.head_dim / 2 },
-        Rope { theta: c.global_theta, dim: c.global_head_dim, pairs: c.global_rot },
+        Rope { theta: c.sliding_theta, dim: c.head_dim, pairs: c.head_dim / 2, trig64: false },
+        Rope { theta: c.global_theta, dim: c.global_head_dim, pairs: c.global_rot, trig64: false },
     ];
     let mut rings = Vec::new();
     let in_norms: Vec<usize> = (0..c.layers).map(|l| name(format!("{p}layers.{l}.input_layernorm.weight"))).collect();
@@ -36,10 +88,10 @@ pub fn describe(c: &ConfigG4) -> ModelDesc {
     let mut layers = Vec::with_capacity(c.layers);
     for (l, &kind) in c.kinds.iter().enumerate() {
         let pl = format!("{p}layers.{l}");
-        let (d, nk, has_v) = c.attn_of(kind);
+        let (d, nk, _) = c.attn_of(kind);
         let sliding = kind == KindG4::Sliding;
         let ring = rings.len();
-        rings.push(Ring { d, nk, window: if sliding { c.window } else { 0 } });
+        rings.push(Ring::kv(d, nk, if sliding { c.window } else { 0 }));
         let (q_norm, k_norm) = (name(format!("{pl}.self_attn.q_norm.weight")), name(format!("{pl}.self_attn.k_norm.weight")));
         let (post_attn, pre_ff) = (name(format!("{pl}.post_attention_layernorm.weight")), name(format!("{pl}.pre_feedforward_layernorm.weight")));
         let (post_ff, scalar) = (name(format!("{pl}.post_feedforward_layernorm.weight")), name(format!("{pl}.layer_scalar")));
@@ -47,19 +99,7 @@ pub fn describe(c: &ConfigG4) -> ModelDesc {
         let w = 4 * l;
         layers.push(vec![
             Op::Linear { w, x: Slot::H, y: Slot::Proj, name: if sliding { "qkv (sliding)" } else { "qk (global)" } },
-            Op::QkvPrep {
-                d,
-                nq: c.heads,
-                nk,
-                has_v,
-                stride: c.proj_width(kind),
-                q_norm,
-                k_norm,
-                rope: if sliding { 0 } else { 1 },
-                rot: if sliding { c.head_dim / 2 } else { c.global_rot },
-                ring,
-            },
-            Op::Attention { d, nq: c.heads, nk, window: if sliding { c.window } else { 0 }, ring },
+            attention(c, kind, c.heads, q_norm, k_norm, ring, true),
             Op::Linear { w: w + 1, x: Slot::Att, y: Slot::O, name: "o" },
             Op::AddNorm { y: Slot::O, post: post_attn, scalar: None, next: pre_ff },
             Op::Linear { w: w + 2, x: Slot::H, y: Slot::Gu, name: "gate_up" },
@@ -93,6 +133,7 @@ pub fn describe(c: &ConfigG4) -> ModelDesc {
         widths,
         mats,
         small,
+        forms: Vec::new(),
         ropes,
         rings,
         first: Op::EmbedNorm { scale: c.embed_scale(), norm: in_norms[0] },
@@ -109,6 +150,8 @@ pub fn describe(c: &ConfigG4) -> ModelDesc {
         v4: None,
         hc: (0.0, 0),
         logit_mult: 0.0,
+        host: Vec::new(),
+        context: Vec::new(),
     }
 }
 
@@ -146,8 +189,6 @@ pub fn describe_draft(dc: &ConfigG4, c: &ConfigG4) -> ModelDesc {
     let mut layers = Vec::with_capacity(dc.layers);
     for (l, &kind) in dc.kinds.iter().enumerate() {
         let pl = format!("{p}layers.{l}");
-        let (d, nk, _) = c.attn_of(kind);
-        let sliding = kind == KindG4::Sliding;
         let q_norm = name(format!("{pl}.self_attn.q_norm.weight"));
         let (post_attn, pre_ff) = (name(format!("{pl}.post_attention_layernorm.weight")), name(format!("{pl}.pre_feedforward_layernorm.weight")));
         let (post_ff, scalar) = (name(format!("{pl}.post_feedforward_layernorm.weight")), name(format!("{pl}.layer_scalar")));
@@ -160,19 +201,7 @@ pub fn describe_draft(dc: &ConfigG4, c: &ConfigG4) -> ModelDesc {
         }
         ops.extend([
             Op::Linear { w, x: Slot::H, y: Slot::Proj, name: "draft" },
-            Op::QkvPrep {
-                d,
-                nq: dc.heads,
-                nk: 0,
-                has_v: false,
-                stride: dc.heads * d,
-                q_norm,
-                k_norm: q_norm,
-                rope: if sliding { 0 } else { 1 },
-                rot: if sliding { c.head_dim / 2 } else { c.global_rot },
-                ring: ring_of(kind),
-            },
-            Op::Attention { d, nq: dc.heads, nk, window: if sliding { c.window } else { 0 }, ring: ring_of(kind) },
+            attention(c, kind, dc.heads, q_norm, q_norm, ring_of(kind), false),
             Op::Linear { w: w + 1, x: Slot::Att, y: Slot::O, name: "draft" },
             Op::AddNorm { y: Slot::O, post: post_attn, scalar: None, next: pre_ff },
             Op::Linear { w: w + 2, x: Slot::H, y: Slot::Gu, name: "draft" },
@@ -208,6 +237,7 @@ pub fn describe_draft(dc: &ConfigG4, c: &ConfigG4) -> ModelDesc {
         widths,
         mats,
         small,
+        forms: Vec::new(),
         ropes: Vec::new(),
         rings: Vec::new(),
         first: Op::DraftIn { scale: c.embed_scale() },
@@ -224,5 +254,7 @@ pub fn describe_draft(dc: &ConfigG4, c: &ConfigG4) -> ModelDesc {
         v4: None,
         hc: (0.0, 0),
         logit_mult: 0.0,
+        host: Vec::new(),
+        context: Vec::new(),
     }
 }

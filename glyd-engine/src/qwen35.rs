@@ -3,6 +3,8 @@
 //! holds. The design: glyd-engine/docs/design/specs/2026-10-06-engine-qwen35-design.md.
 
 use crate::ffi::{err, Error, Result};
+use crate::runtime::config::ModelConfig;
+use crate::runtime::describe::{standard_rope, QWEN35_HEAD, QWEN35_PARTIAL};
 use crate::weights::{eos_ids, num};
 use glyd_gpu::json::{self, Value};
 use std::collections::{HashMap, HashSet};
@@ -13,6 +15,12 @@ use std::path::Path;
 pub enum Kind {
     Linear,
     Full,
+}
+
+/// The words of a refusal of `what` in a Qwen3.5-layout config: the dense reader's (`Config35`) and the lowering's (`dynamic::lower::qwen35`, which the layout
+/// with experts and the dense one both go through) alike, so each refuses a thing the engine does not run in the same words.
+pub(crate) fn not_run(what: &str) -> String {
+    format!("{what}, which the engine does not run")
 }
 
 /// What the engine reads of a Qwen3.5 config.json.
@@ -47,12 +55,29 @@ pub struct Config35 {
     pub vision: bool,
 }
 
+/// What a sequence of the Qwen3.5 layout takes besides its weights, as the costs' sums read it (src/costs.rs; the planner reads the description: src/plan.rs
+/// `sizing::level_of`).
+impl Config35 {
+    /// What one sequence holds besides its KV: every linear layer's fp32 state and bf16 convolution state.
+    pub fn state_bytes(&self) -> u64 {
+        let per = self.lin_v_heads * self.lin_k_dim * self.lin_v_dim * 4 + self.conv_dim() * (self.conv_kernel - 1) * 2;
+        (self.linear_layers() * per) as u64
+    }
+
+    /// A token's keys and values in bf16, over the full-attention layers.
+    pub fn kv_bytes_per_token(&self) -> u64 {
+        (self.full_layers() * 2 * self.kv_heads * self.head_dim * 2) as u64
+    }
+}
+
 impl Config35 {
     pub fn load(dir: &Path) -> Result<Config35> {
-        let p = dir.join("config.json");
-        let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-        Ok(Config35::parse(&text, &p.display().to_string(), generation.as_deref())?.as_saved(dir))
+        Config35::load_of(dir, &ModelConfig::load(dir)?)
+    }
+
+    /// `load` of a config.json parsed once (`m`: `dir`'s).
+    pub fn load_of(dir: &Path, m: &ModelConfig) -> Result<Config35> {
+        Ok(m.read_with(dir, Config35::of)?.as_saved(dir))
     }
 
     /// A glyd-v7 directory (and a lossless glyd-v4 save, glyd/NAME-penguin's) holds the text model under the names transformers' causal LM gives it (`model.layers.*`,
@@ -71,15 +96,23 @@ impl Config35 {
 
     /// A config.json's text (and a generation_config.json's, where there is one): `label` names the file in an error.
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<Config35> {
-        let v = json::parse(text).map_err(|e| Error(format!("{label}: {e}")))?;
+        Config35::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
+    }
+
+    /// `parse` of a config.json parsed once (`ModelConfig`).
+    pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<Config35> {
+        use serde_json::Value;
+        let v = &c.top;
         let arch = v.get("architectures").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("");
         let (t, prefix, vision) = match arch {
             "Qwen3_5ForConditionalGeneration" => {
-                (v.get("text_config").ok_or_else(|| Error(format!("{label}: no text_config")))?, "model.language_model.", true)
+                (v.get("text_config").and_then(Value::as_object).ok_or_else(|| Error(format!("{label}: no text_config")))?, "model.language_model.", true)
             }
-            "Qwen3_5ForCausalLM" => (&v, "model.", false),
+            "Qwen3_5ForCausalLM" => (v, "model.", false),
             "Qwen3_5MoeForConditionalGeneration" | "Qwen3_5MoeForCausalLM" => {
-                return err(format!("{label}: {arch}: a mixture of experts, which the engine runs after the dense Qwen3.5 models"))
+                return err(format!(
+                    "{label}: {arch}: a mixture of experts, whose tensors this list of the dense layout's does not hold (it loads by its description: src/dynamic/qwen35.rs)"
+                ))
             }
             _ => return err(format!("{label}: {arch}: not a Qwen3.5 model")),
         };
@@ -89,7 +122,7 @@ impl Config35 {
         }
         let get = |k: &str| t.get(k).ok_or_else(|| Error(format!("{label}: no {k}")));
         let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
-        let refuse = |what: &str| err(format!("{label}: {what}, which the engine does not run"));
+        let refuse = |what: &str| err(format!("{label}: {}", not_run(what)));
         if t.get("hidden_act").and_then(Value::as_str).is_some_and(|a| a != "silu") {
             return refuse("an activation other than silu");
         }
@@ -111,26 +144,28 @@ impl Config35 {
         }
         let heads = u("num_attention_heads")?;
         let kv_heads = u("num_key_value_heads")?;
-        let head_dim = t.get("head_dim").and_then(Value::as_u64).map(|x| x as usize).unwrap_or(u("hidden_size")? / heads.max(1));
+        // (a config without `head_dim` has transformers' 256: not the hidden size over the heads)
+        let head_dim = t.get("head_dim").and_then(Value::as_u64).map_or(QWEN35_HEAD, |x| x as usize);
         if heads == 0 || kv_heads == 0 || !heads.is_multiple_of(kv_heads) {
             return err(format!("{label}: {heads} query heads to {kv_heads} KV heads"));
         }
-        let rope = get("rope_parameters")?;
-        let rope_type = rope.get("rope_type").and_then(Value::as_str).unwrap_or("default");
+        // (the rope parameters as transformers makes them: a theta and a partial rotary factor they lack from the config's own keys, else 10,000 and a quarter)
+        let rope = serde_json::Value::Object(standard_rope(t, Some(QWEN35_PARTIAL)));
+        let rope_type = rope.get("rope_type").or_else(|| rope.get("type")).and_then(Value::as_str).unwrap_or("default");
         if rope_type != "default" {
             return refuse(&format!("rope of type {rope_type}"));
         }
         let theta = num(rope.get("rope_theta").ok_or_else(|| Error(format!("{label}: no rope_theta")))?, "rope_theta")?;
         let factor = match rope.get("partial_rotary_factor") {
             Some(f) => num(f, "partial_rotary_factor")?,
-            None => 0.25,
+            None => QWEN35_PARTIAL,
         };
         // (transformers: int(head_dim * partial_rotary_factor))
         let rotary_dim = (head_dim as f64 * factor) as usize;
         if rotary_dim == 0 || rotary_dim > head_dim || !rotary_dim.is_multiple_of(2) {
             return err(format!("{label}: a rotary of {rotary_dim} of {head_dim} dims"));
         }
-        if let Some(sec) = rope.get("mrope_section").and_then(Value::as_u64s) {
+        if let Some(sec) = rope.get("mrope_section").and_then(crate::runtime::config::u64s) {
             // with text alone the three position streams are one, and the sections' frequencies are the plain rotary's
             // (the sections' sum, checked: a section past 2^63 or sums that wrap round to the right one are not a model's)
             if sec.iter().try_fold(0u64, |a, &x| a.checked_add(x)) != Some(rotary_dim as u64 / 2) {
@@ -169,7 +204,7 @@ impl Config35 {
         }
         let mut eos = eos_ids(t, generation);
         if eos.is_empty() {
-            eos = eos_ids(&v, None);
+            eos = eos_ids(v, None);
         }
         let tie = v.get("tie_word_embeddings").or_else(|| t.get("tie_word_embeddings")).and_then(Value::as_bool).unwrap_or(false);
         Ok(Config35 {
@@ -231,17 +266,6 @@ impl Config35 {
     pub fn conv_dim(&self) -> usize {
         2 * self.key_dim() + self.value_dim()
     }
-
-    /// What one sequence holds besides its KV: every linear layer's fp32 state and bf16 convolution state.
-    pub fn state_bytes(&self) -> u64 {
-        let per = self.lin_v_heads * self.lin_k_dim * self.lin_v_dim * 4 + self.conv_dim() * (self.conv_kernel - 1) * 2;
-        (self.linear_layers() * per) as u64
-    }
-
-    /// A token's keys and values in bf16, over the full-attention layers.
-    pub fn kv_bytes_per_token(&self) -> u64 {
-        (self.full_layers() * 2 * self.kv_heads * self.head_dim * 2) as u64
-    }
 }
 
 /// One packed matrix: its parts (tensor names and rows) stacked in order, all of `cols` columns. `key` names it (the module of its first part).
@@ -291,7 +315,7 @@ impl Config35 {
 
     /// Every matrix in load order, packable or not: each layer's (full: q with its gate, k and v as one, then o; linear: the queries, keys, values and z as one, b and a
     /// as one, then out; both: gate and up as one, then down), then the embedding and the LM head where the model has its own.
-    fn matrices(&self) -> Vec<Pack35> {
+    pub(crate) fn matrices(&self) -> Vec<Pack35> {
         let (h, hd) = (self.hidden, self.head_dim);
         let mut out = Vec::new();
         let mut pack = |module: String, parts: &[(&str, usize)], cols: usize| {

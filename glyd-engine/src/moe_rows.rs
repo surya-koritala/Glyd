@@ -18,10 +18,9 @@
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Result, Stream};
 use crate::launch;
-use crate::moe::{Act, ExpertStack, MoeCfg};
+use crate::moe::{Act, ExpertStack, Joined, MoeCfg};
 use glyd_gpu::pack::{rows_bits, rows_stride, Tiered};
 
-// The kernels' names: those the .cu sources give them, in every build (kname!).
 /// Outputs a block of `moe_down_rows` takes, the neurons it lists at most, and the blocks it asks for at most beyond one a pair (kernels/moe_rows.cu defines the first two: a test holds them equal).
 pub const ROWS_OUT: usize = 1024;
 pub const ROWS_MAX_INTER: usize = 4096;
@@ -189,6 +188,54 @@ impl Down {
         match self {
             Down::Rows(r) => rows_fit(r.experts, r.rows, r.cols, cfg),
             Down::Block(_) => Ok(()),
+        }
+    }
+}
+
+/// A layer's second matrices on the host, every expert's pack joined, in the layout they are held in.
+pub enum DownHost {
+    Block(Joined),
+    Rows(RowsJoined),
+}
+
+impl DownHost {
+    /// The second matrices of the experts' packs, one each: in a row layout where the first is, else a block layout.
+    pub fn of(packs: &[Tiered]) -> Result<DownHost> {
+        let all: Vec<&Tiered> = packs.iter().collect();
+        if packs.first().is_some_and(|p| rows_bits(p.tiers[0] >> 24).is_some()) {
+            RowsJoined::of(&all).map(DownHost::Rows)
+        } else {
+            Joined::of(&all).map(DownHost::Block)
+        }
+    }
+
+    pub fn upload(&self) -> Result<Down> {
+        Ok(match self {
+            DownHost::Block(j) => Down::Block(ExpertStack::upload(j)?),
+            DownHost::Rows(j) => Down::Rows(RowStack::upload(j)?),
+        })
+    }
+
+    /// Room for `slots` of the layer's experts' second matrices, in the layout they are held in (the expert cache's places).
+    pub fn pooled(&self, slots: usize) -> Result<Down> {
+        Ok(match self {
+            DownHost::Block(j) => Down::Block(ExpertStack::pooled(j.tag, j.tiers, j.experts, slots, j.rows, j.cols)?),
+            DownHost::Rows(j) => Down::Rows(RowStack::pooled(j.tag, j.experts, slots, j.rows, j.cols)?),
+        })
+    }
+
+    /// The bytes of every expert's codes and of its scales, end to end.
+    pub fn bytes(&self) -> [&[u8]; 2] {
+        match self {
+            DownHost::Block(j) => [&j.data, &j.scales],
+            DownHost::Rows(j) => [&j.data, &j.scales],
+        }
+    }
+
+    pub fn experts(&self) -> usize {
+        match self {
+            DownHost::Block(j) => j.experts,
+            DownHost::Rows(j) => j.experts,
         }
     }
 }

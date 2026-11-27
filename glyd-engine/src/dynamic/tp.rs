@@ -11,7 +11,7 @@ use super::{Opts, Stage};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Result, Stream};
 use crate::launch;
-use crate::model::Sample;
+use crate::sched::Sample;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -369,6 +369,8 @@ enum Cmd {
     Logits,
     Logprob(f32),
     Describe,
+    /// A question of the last pass's head rows, answered on the first GPU's engine as one GPU's step answers it (`split::RowAsk`).
+    Row(super::split::RowAsk),
 }
 
 enum Out {
@@ -377,6 +379,7 @@ enum Out {
     Logits(Result<Vec<f32>>),
     Logprob(Result<f32>),
     Text(String),
+    Row(super::split::RowGot),
 }
 
 struct Worker {
@@ -436,6 +439,7 @@ impl Tp {
                             Cmd::Logits => Out::Logits(e.logits()),
                             Cmd::Logprob(l) => Out::Logprob(e.logprob(l)),
                             Cmd::Describe => Out::Text(e.describe()),
+                            Cmd::Row(a) => Out::Row(super::split::row_ask(&mut e, a)),
                         };
                         if otx.send(out).is_err() {
                             break;
@@ -547,19 +551,31 @@ impl Tp {
         self.ctx
     }
 
+    /// Tokens in the cache.
+    pub fn held(&self) -> usize {
+        self.n
+    }
+
+    pub fn eos(&self) -> &[i64] {
+        &self.eos
+    }
+
     /// A reply as `Split::reply` gives one.
-    pub fn reply(&mut self, prompt: &[u32], o: &crate::model::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::model::Finish)> {
-        use crate::model::Finish;
+    pub fn reply(&mut self, prompt: &[u32], o: &crate::sched::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::sched::Finish)> {
+        use crate::sched::Finish;
         if prompt.is_empty() || prompt.len() + 1 > self.ctx {
             return err(format!("{} prompt tokens, where the context holds {}", prompt.len(), self.ctx));
         }
         self.reset()?;
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
+        use super::split::{AsksRows, Last, RowAsk};
+        // (a drawn token: from what the first GPU makes of the pass's head row, the request's changes put on it first, as one GPU's: `sched::draw_row`)
+        self.ask_rows(RowAsk::Procs(vec![sampler.proc()]));
         let mut s = self.prefill(prompt)?;
         let mut out = Vec::new();
         loop {
-            let tok = if greedy { s.token } else { sampler.sample_with(None, || self.logits())? };
+            let tok = if greedy { s.token } else { crate::sched::draw_row(&mut Last(&*self), 0, &mut sampler)?.0 };
             if !o.ignore_eos && (self.eos.contains(&(tok as i64)) || o.stop_ids.contains(&tok)) {
                 return Ok((out, Finish::Stop));
             }
@@ -570,7 +586,18 @@ impl Tp {
             if out.len() >= o.max_new || self.n + 1 > self.ctx {
                 return Ok((out, Finish::Length));
             }
+            self.ask_rows(RowAsk::Procs(vec![sampler.proc()]));
             s = self.step(tok)?;
+        }
+    }
+}
+
+/// The first GPU's engine answers a question of the last pass's head rows: every GPU has the logits whole.
+impl super::split::AsksRows for Tp {
+    fn ask_rows(&self, a: super::split::RowAsk) -> Option<super::split::RowGot> {
+        match self.one(Cmd::Row(a)) {
+            Ok(Out::Row(g)) => Some(g),
+            _ => None,
         }
     }
 }
@@ -588,9 +615,9 @@ impl Drop for Tp {
     }
 }
 
-/// `tpcheck DIR [--tp 0,0] [--tokens 24] [--chunk 64] [--ctx 1024]` (development): the model of `dir` on the first GPU of `--tp` alone and then with every
-/// layer across the GPUs of `--tp`, the same tokens through both (a decode step a token, then the whole list as a prompt in chunks): their logits compared
-/// value for value.
+/// `tpcheck DIR [--tp 0,0] [--split CUT] [--tokens 24] [--chunk 64] [--ctx 1024]` (development): the model of `dir` on the first GPU of `--tp` alone and then with every
+/// layer across the GPUs of `--tp` (with `--split`: its layers cut at CUT into two stages on the first two GPUs of `--tp`, the slots a cut hands over between them),
+/// the same tokens through both (a decode step a token, then the whole list as a prompt in chunks): their logits compared value for value.
 #[cfg(feature = "dev")]
 pub fn check(a: &crate::args::Args) -> Result<()> {
     use super::split::{config_num, open, open_tp, tp_args, Run};
@@ -621,7 +648,10 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         println!("one GPU: {}", one.describe());
         run(&mut one)?
     };
-    let mut tp = open_tp(dir, &o, &gpus)?;
+    let mut tp = match a.flag("split") {
+        Some(c) => open(dir, &o, &[c.parse().map_err(|_| Error(format!("--split {c}: a layer")))?], &[gpus[0], *gpus.get(1).unwrap_or(&gpus[0])])?,
+        None => open_tp(dir, &o, &gpus)?,
+    };
     println!("{}", tp.describe());
     let got = run(&mut tp)?;
     let mut same = 0;
@@ -634,6 +664,15 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         }
     }
     println!("{same} of {} passes the same to the bit", want.len());
+    // (#138: the model across the GPUs served by the scheduler as a step of one slot: a greedy reply through it against the reply alone)
+    let (alone, via) = super::split::sched_reply(&mut tp, &toks[..toks.len().min(8)], 16)?;
+    println!("{} the layers across the GPUs through the scheduler: {via:?}, alone {alone:?}", if alone == via { "PASS" } else { "FAIL" });
+    if same < want.len() {
+        return err(format!("{} of {} passes differ from the model on one GPU", want.len() - same, want.len()));
+    }
+    if alone != via {
+        return err("the reply through the scheduler is not the reply alone");
+    }
     Ok(())
 }
 

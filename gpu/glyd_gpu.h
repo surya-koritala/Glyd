@@ -59,8 +59,19 @@ typedef hipStream_t cudaStream_t;
  * top byte, are unpacked (glyd_gpu_mma_unpack) as before and refused by every other function: pack them again;
  * 16 from glyd_gpu_f8_*, the lossless FP8 (e4m3) weights: pack, unpack, unpack of a list of a stack's matrices, and the product of 1 to 64
  *    tokens with the weights as they are held; 17 from glyd_gpu_mma_moe_placed, the experts' product over an expert cache's places;
- * 18 from glyd_gpu_kv_decode_from, the decode attention over the tokens from a sequence's first one on (a sliding window's). */
-#define GLYD_GPU_API_VERSION 18
+ * 18 from glyd_gpu_kv_decode_from, the decode attention over the tokens from a sequence's first one on (a sliding window's);
+ * 19 from glyd_gpu_kv_prefill, a prompt chunk's attention over its sequence's pages and its own bf16 rows;
+ * 20 from glyd_gpu_kv_prefill_bf16 and glyd_gpu_kv_decode_bf16, the same attentions over a bf16 cache; 21 from glyd_gpu_kv_unpack's
+ * skipping a negative page number (a list as long as the most a sequence can need, filled on the device);
+ * 22 from glyd_gpu_kv_image_bytes, glyd_gpu_kv_save and glyd_gpu_kv_load, pages moved whole to another place and back (their escape chunks and raw slabs lent anew);
+ * 23 from glyd_gpu_kv_decode_workspace's partial outputs on a 16-byte line (the workspace up to 8 bytes larger: an odd count of partials faulted before);
+ * 24 from glyd_gpu_mma_moe_as, glyd_gpu_mma_moe_placed_as and glyd_gpu_mma12_moe_as (and their workspaces): the experts' product of a part of a layer
+ *    (a GPU's slice of each expert's rows, an expert cache's places) cut as the whole layer's, so each row's sum is the whole layer's, bit for bit;
+ * 25 from the experts' products splitting K by the layer's shape alone (an expert's whole rows and the layer's experts), never by the pairs a call holds:
+ *    a pair's sum is the same whatever shares its call (other bits than 24's where a call of few pairs split K; the workspaces no larger);
+ * 26 from the experts' products taking the step products for every call (the tiled GEMM, the rows kernel and Hopper's wgmma route where a development
+ *    build's tuning variable asks): a pair's kernel no longer turns on how many tokens share its call (other bits than 25's for prompts). */
+#define GLYD_GPU_API_VERSION 26
 
 #ifdef __cplusplus
 extern "C" {
@@ -368,6 +379,25 @@ int glyd_gpu_mma_moe_placed(const uint8_t* data, const uint8_t* blocks, const in
                             int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan,
                             int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace,
                             size_t workspace_bytes, int* done, cudaStream_t cs);
+/* The same three (and their workspaces) for a call that holds a part of a layer: wO the rows an expert has in the whole layer (this call's O a GPU's
+ * slice of them), wE the layer's experts (this call's E an expert cache's places); 0: the call's own. The work is cut as the whole layer's call would
+ * cut it (its split of K over blocks, its kernel), so each row of the output is the whole layer's sum, bit for bit. */
+int glyd_gpu_mma_moe_as_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted, int64_t wO, int64_t wE,
+                                  size_t* bytes);
+int glyd_gpu_mma_moe_as(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t E, int64_t O,
+                        int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias,
+                        const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done,
+                        cudaStream_t cs, int64_t wO, int64_t wE);
+int glyd_gpu_mma_moe_placed_as(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t stride,
+                               int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan,
+                               int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace,
+                               size_t workspace_bytes, int* done, cudaStream_t cs, int64_t wO, int64_t wE);
+int glyd_gpu_mma12_moe_as_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted, int64_t wO, int64_t wE,
+                                    size_t* bytes);
+int glyd_gpu_mma12_moe_as(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t E, int64_t O,
+                          int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias,
+                          const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done,
+                          cudaStream_t cs, int64_t wO, int64_t wE);
 int glyd_gpu_mma12_moe_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted,
                                  size_t* bytes);
 int glyd_gpu_mma12_moe(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
@@ -457,7 +487,9 @@ int glyd_gpu_kv_second_bytes(int64_t nslabs, int64_t H, int64_t* bytes);
  * chunk or slab that is freed), [8] the raw pool's slabs taken now, [9] the most taken at once, [10] the pages made raw, [11] the
  * pages made void (no slab for them: the pages written hold a value not as it was; the caller fails what holds them), [12] the
  * ring's head: the number of blocks lost so far, the block of the n-th is [16 + n % ring] - 1, [13] the raw ring's head: the blocks
- * that have a raw page, the block of the n-th is [16 + ring + n % ring] - 1 (ring: 1 to 2^24 places each, status has 16 + 2 ring words). lost, nlost: a bitmap of nlost bits (uint32
+ * that have a raw page, the block of the n-th is [16 + ring + n % ring] - 1, [14] the runs of a call that named a page another run of the same
+ * call named (tokens of one page that do not follow one another): none of them is written, so the page and the pools stay as they were, and [15]
+ * the last such page + 1 (ring: 1 to 2^24 places each, status has 16 + 2 ring words). lost, nlost: a bitmap of nlost bits (uint32
  * words, zero before the first call; null, 0: none), two bits a block (2 b: it has a void page, 2 b + 1: a raw page), that makes each ring name a
  * block once while it stays so; the bits are cleared when the block's first token of layer 0 is written again. escape,
  * nchunks: the escape pool (nchunks 0: none: a page's entries are its arena's), raw, nslabs: the raw pool (nslabs 0: none:
@@ -469,13 +501,32 @@ int glyd_gpu_kv_write(const uint16_t* key, int64_t key_stride, const uint16_t* v
                       int64_t D, int64_t A, uint8_t* escape, int64_t nchunks, uint8_t* raw, int64_t nslabs, int64_t layer,
                       uint32_t* status, uint32_t* lost, int64_t nlost, int64_t ring, cudaStream_t cs);
 
+/* A page moved whole, its 12 bits as they are (a sequence swapped to the host and back): its image is the page's bytes (glyd_gpu_kv_leaf_bytes), then the
+ * entries of the escape chunks its directory names, 256 bytes a chunk at the directory's place (16 places), then its raw slab's bytes where it is raw (kv_second_bytes of one slab):
+ * glyd_gpu_kv_image_bytes apart, 16-byte aligned. Only what the page holds is written: the image's places for chunks and a slab it does not have are left as they were. */
+int glyd_gpu_kv_image_bytes(int64_t H, int64_t D, int64_t A, int64_t* bytes);
+
+/* The pages of the blocks pages[0 .. n) (int32, below nblocks) into images 0 .. n at out (memory the device writes: a mapped host buffer, or the device's), as they are; moved[j]
+ * (uint32, null: none) the bytes written for page j. A page whose chunks or slab the pools do not list as its own (one never written, or void) is saved void (its image's count
+ * word has the void flag): it loads void. The pages are read, not changed; pool, H, D, A, escape and raw as glyd_gpu_kv_write's, layer the pages' (their owner tag). */
+int glyd_gpu_kv_save(const uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* pages, int64_t n, int64_t H, int64_t D, int64_t A, const uint8_t* escape,
+                     int64_t nchunks, const uint8_t* raw, int64_t nslabs, int64_t layer, uint8_t* out, uint32_t* moved, cudaStream_t cs);
+
+/* The images 0 .. n at img (glyd_gpu_kv_save's, of pages of this H, D and A) into the pages of the blocks dst[0 .. n) (int32, below nblocks; any blocks, apart): each page's chunks or
+ * slab first given back to their pools as a page's first token gives them, then the image's bytes, with chunks of the escape pool and a slab of the raw pool lent to the block for
+ * what the image holds (owner tag: layer and block), the page's directory naming them. Read back, a loaded page holds the values the saved one did, bit for bit. A page that
+ * finds no chunk or slab, or whose image is void, is void: its block is named in the status's ring as glyd_gpu_kv_write names one (status[11] counts it); a raw page's block
+ * in the raw ring. status and ring as glyd_gpu_kv_write's. */
+int glyd_gpu_kv_load(const uint8_t* img, const int32_t* dst, int64_t n, uint8_t* pool, int64_t page_stride, int64_t nblocks, int64_t H, int64_t D, int64_t A, uint8_t* escape,
+                     int64_t nchunks, uint8_t* raw, int64_t nslabs, int64_t layer, uint32_t* status, int64_t ring, cudaStream_t cs);
+
 /* The pages of the blocks listed (int32 [n] block numbers, below nblocks: page p at pool + p * page_stride) cleared as a page's first token clears them: a page's chunks or its slab back to their
  * pools (by owner), its count and directory zero, and the block's bits in `lost` (nlost bits, as kv_write's). For blocks that no request holds and whose content is not to be read again;
  * layer, status, escape and raw as kv_write's. */
 int glyd_gpu_kv_release(uint8_t* pool, int64_t page_stride, int64_t nblocks, const int32_t* blocks, int64_t n, int64_t H, int64_t D, int64_t A, uint8_t* escape, int64_t nchunks, uint8_t* raw,
                         int64_t nslabs, int64_t layer, uint32_t* status, uint32_t* lost, int64_t nlost, cudaStream_t cs);
 
-/* The pages pages[0 .. n) (int32) back to bf16: out_k and out_v [n, 16, H, D]. */
+/* The pages pages[0 .. n) (int32) back to bf16: out_k and out_v [n, 16, H, D]; a negative pages[j] is a place no page is in: nothing is written for it. */
 int glyd_gpu_kv_unpack(const uint8_t* pool, int64_t page_stride, const int32_t* pages, int64_t n, const uint8_t* kbase,
                        const uint8_t* vbase, int64_t H, int64_t D, int64_t A, const uint8_t* escape, int64_t nchunks,
                        const uint8_t* raw, int64_t nslabs, uint16_t* out_k, uint16_t* out_v, cudaStream_t cs);
@@ -525,6 +576,41 @@ int glyd_gpu_kv_decode_from(const uint16_t* q, int64_t q_stride, const uint8_t* 
                             const int32_t* first, int64_t round_scores, int64_t B, int64_t splits, int64_t H, int64_t G, int64_t D, int64_t A,
                             const uint8_t* escape, int64_t nchunks, const uint8_t* raw, int64_t nslabs, double scale, uint16_t* out,
                             int64_t out_stride, void* workspace, size_t workspace_bytes, cudaStream_t cs);
+/* The attention of a prompt chunk: n rows (0 to 2^31 - 1 - start) of one sequence at positions start .. start + n - 1, each causal over the keys from
+ * its window's first (position - window + 1; window 0: none, the sequence's first) to itself. The keys before `start` are read from the sequence's
+ * pages (block_table: int32, page j holding its tokens 16 j .. 16 j + 15, the pages from the one of the first key on read; D 128, 256 or 512, not
+ * GLYD_GPU_KV_ONE_STREAM), never unpacked; the chunk's own from its bf16 rows key and value [n][H][D] (row t at key + t * key_stride elements; strides multiples of 8,
+ * at least H D; the pointers 16-byte aligned), which are what glyd_gpu_kv_write was given for them (the caller's staging rows: whether the call is
+ * before or after that write does not matter). key null: the chunk's keys and values are read from the pages too (written before the call;
+ * value is then not read). q and out [n][H G][D] bf16 (row t at q + t * q_stride, out + t * out_stride elements; strides even, at least H G D, the
+ * pointers 4-byte aligned; query head j of kv head h is h G + j; G 1 to 65535 / H: more query heads than the decode takes need no parts here). The
+ * query is used as it is (bf16), never rounded further. A score is the dot product of a query and a key in fp32 (tensor cores), rounded to bf16 where
+ * round_scores is 1 (before the scale, as a bf16 matmul gives it: transformers' attention, Gemma 4's; 0: fp32, the Qwen3.5 layout's), times scale,
+ * then, where softcap > 0, softcap tanh(score / softcap) (transformers' attention soft-capping); sinks: null, or float [H G], each query head's logit
+ * joining the softmax's sum and taking no value (gpt-oss's). fp32 softmax and sums, the probabilities rounded to bf16 for the values, the output
+ * the bf16 of the sum over the sum of the probabilities (as glyd_gpu_kv_decode and FlashAttention do). One launch, no workspace, nothing allocated
+ * or read on the host: a CUDA graph can hold it (the arguments are fixed in it, start too). A void page (glyd_gpu_kv_write's status) reads as
+ * what it holds: the caller fails what was computed from it, as for the decode. cudaErrorNotSupported where the GPU has not the shared memory a
+ * CTA takes (82 KB for D = 512, 50 KB for D = 256, 17 KB for 128). The executor's prompt step: kv_write of the chunk's rows from its staging rows,
+ * then this call with those rows as key and value, in place of unpacking the pages to a bf16 ring for a family's kernel. */
+int glyd_gpu_kv_prefill(const uint16_t* q, int64_t q_stride, const uint16_t* key, int64_t key_stride, const uint16_t* value,
+                        int64_t value_stride, int64_t n, int64_t start, int64_t window, const uint8_t* pool, int64_t page_stride,
+                        const uint8_t* kbase, const uint8_t* vbase, const int32_t* block_table, int64_t H, int64_t G, int64_t D,
+                        int64_t A, const uint8_t* escape, int64_t nchunks, const uint8_t* raw, int64_t nslabs, double scale,
+                        int64_t round_scores, double softcap, const float* sinks, uint16_t* out, int64_t out_stride, cudaStream_t cs);
+/* glyd_gpu_kv_decode_from's attention with the keys and values in a bf16 cache in place of the pages: kc and vc [places][H][D] (4-byte aligned), token p of
+ * sequence b at block_table[b bt_stride + p / 16] * 16 + p % 16, or p modulo cap where block_table is null. D 128, 256 or 512. The same kernel, plan and merge
+ * (with the same splits, ppc and floor): where the cache holds the values the pages hold, the outputs are glyd_gpu_kv_decode_from's bit for bit. */
+int glyd_gpu_kv_decode_bf16(const uint16_t* q, int64_t q_stride, const uint16_t* kc, const uint16_t* vc, const int32_t* block_table, int64_t bt_stride, int64_t cap,
+                         const int32_t* seq_lens, const int32_t* first, int64_t round_scores, int64_t B, int64_t splits, int64_t H, int64_t G, int64_t D, double scale,
+                         uint16_t* out, int64_t out_stride, void* workspace, size_t workspace_bytes, cudaStream_t cs);
+/* glyd_gpu_kv_prefill's attention with the keys and values in a bf16 cache in place of the pages: kc and vc [places][H][D] (16-byte aligned), position p's
+ * place block_table[p / 16] * 16 + p % 16 (int32, the sequence's row of the table), or p modulo cap where block_table is null; the chunk's own keys and values
+ * written there before the call. D 128, 256 or 512. The same kernel, its tiles and its sums in the same order: where the cache holds the values the pages hold
+ * (the pages are lossless), the outputs are glyd_gpu_kv_prefill's bit for bit. One launch, no workspace: a CUDA graph can hold it. */
+int glyd_gpu_kv_prefill_bf16(const uint16_t* q, int64_t q_stride, const uint16_t* kc, const uint16_t* vc, const int32_t* block_table, int64_t cap, int64_t n, int64_t start,
+                          int64_t window, int64_t H, int64_t G, int64_t D, double scale, int64_t round_scores, double softcap, const float* sinks, uint16_t* out,
+                          int64_t out_stride, cudaStream_t cs);
 
 /* ------------------------------------------------------------------------
  * The lossless FP8 weights: W [O, K] of e4m3 bytes (any byte: NaNs, both zeros) held in about 6.7 bits a value, as

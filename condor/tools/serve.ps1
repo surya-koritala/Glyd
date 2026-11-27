@@ -1,8 +1,9 @@
 # The chat page and the API (OpenAI and Anthropic) on http://127.0.0.1:PORT (default 8080).
 #   powershell -ExecutionPolicy Bypass -File tools\serve.ps1 [-Fast | -Best] [PORT]   precise mode by default; -Fast or -Best uses those experts (tools\download.ps1 -Fast or -Best)
 #   $env:GLYD_CTX = 65536; tools\serve.ps1                                        the context in tokens (default 32768, up to 262144)
-#   $env:GLYD_USERS = 2; tools\serve.ps1                                          requests answered at once (default 4, 1 to 8)
-#   $env:GLYD_GPUS = '0,1'; tools\serve.ps1                                       split the layers over two cards
+#   $env:GLYD_USERS = 2; tools\serve.ps1                                          requests answered at once (default 4, 1 to 64: as many as the card holds)
+#   $env:GLYD_GPUS = '0,1'; tools\serve.ps1                                       cut the layers over two cards (each holds its layers and more of their experts; one request at a time)
+#   $env:GLYD_GPUS = '1'; tools\serve.ps1                                         the second card alone (default: the first)
 param([switch]$Fast, [switch]$Best, [int]$Port = 8080)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $(if ($env:GLYD_QWEN) { $env:GLYD_QWEN } else { Join-Path $HOME '.glyd-qwen-3.8-flash' }) 'env.ps1')

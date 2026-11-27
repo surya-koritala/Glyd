@@ -2,8 +2,8 @@
 
 use crate::chat::{Chat, Message, Options};
 use crate::ffi::{err, Result};
-use crate::model::{Engine, Finish, Reply};
 use crate::sampler::Params;
+use crate::sched::{Finish, Reply};
 use crate::tok::Tok;
 
 /// What a request asks for besides its messages.
@@ -338,20 +338,29 @@ pub trait Gen {
     fn held(&self) -> Option<crate::dev::Held> {
         None
     }
-    /// The engine as a scheduler's step for up to `users` sequences at once, with the sequences it made room for; None where it runs one sequence at a time (`server::work_gen`).
+    /// The engine as a scheduler's step for up to `users` sequences at once, with the sequences it made room for (a model that runs one sequence at a time: one); None where
+    /// the engine is not one (`serve` refuses it: every model it serves is a step).
     fn as_step(&mut self, _users: usize) -> Result<Option<(usize, &mut dyn crate::sched::ModelStep)>> {
         Ok(None)
     }
     /// The part (0 to 1) of the GPU's free memory `as_step` makes its keys and values and its sequences' states of (1: all of it; `serve --with` gives the first model half).
     fn share_memory(&mut self, _part: f64) {}
-}
-
-impl Gen for Engine {
-    fn capacity(&self) -> usize {
-        Engine::capacity(self)
+    /// The plan the loader took: `as_step` holds at most its `users` sequences, their keys, values and states in its `kv` bytes (src/plan.rs `LoadPlan`); an engine no
+    /// plan sized takes what the GPU's free memory leaves.
+    fn take_plan(&mut self, _users: usize, _kv: u64) {}
+    /// The images of the next `reply`'s prompt, in order (each one's place in the prompt as many image tokens as its rows): an engine whose model has a vision
+    /// tower reads them; any other refuses them.
+    fn see(&mut self, images: Vec<std::sync::Arc<crate::vision::Image>>) -> Result<()> {
+        if images.is_empty() {
+            Ok(())
+        } else {
+            err("this model reads no images")
+        }
     }
-    fn reply(&mut self, prompt: &[u32], o: &Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, Finish)> {
-        Engine::reply(self, prompt, o, each)
+    /// A reply's speed is this engine's own, for the planner to keep (`plan::observe`): not where the replies are a scheduler's sequences (`server::Remote`), which
+    /// are timed where they run.
+    fn own_speed(&self) -> bool {
+        true
     }
 }
 
@@ -435,7 +444,16 @@ impl Talk<'_> {
             }
             !stops.hit
         };
-        let (out, mut finish) = self.e.reply(prompt, &opts, &mut each)?;
+        let (t0, first) = (std::time::Instant::now(), std::cell::Cell::new(None));
+        let (out, mut finish) = self.e.reply(prompt, &opts, &mut |t| {
+            if first.get().is_none() {
+                first.set(Some(std::time::Instant::now()));
+            }
+            each(t)
+        })?;
+        if let Some(f) = first.get().filter(|_| self.e.own_speed()) {
+            crate::plan::observe(prompt.len(), (f - t0).as_secs_f64(), out.len(), f.elapsed().as_secs_f64());
+        }
         if let Some(f) = failure {
             return Err(f);
         }

@@ -48,6 +48,4 @@ predictable text like code or lists it keeps 4-5 (up to 3.8x). `--no-draft` turn
 
 - Gemma 4 26B-A4B (mixture of experts) and E4B / E2B: not supported yet. 26B-A4B's QAT experts are not exactly 4-bit, so it can't
   be stored exactly this way.
-- Lossless (penguin) for Gemma 4's bf16 models: not yet.
 - Image and audio input: not yet. Text only.
-- One request at a time.

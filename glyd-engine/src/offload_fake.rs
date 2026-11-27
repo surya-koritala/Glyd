@@ -103,7 +103,7 @@ fn truth(host: &HbLayerHost, e: usize) -> (usize, &[u8], &[u8], &HbHost) {
     (g, &h.data[k * h.place.data..(k + 1) * h.place.data], &h.meta[k * h.place.meta..(k + 1) * h.place.meta], h)
 }
 
-/// One call of a layer, in the way `NhMoeHb::experts` makes it for a small call: `run_groups`, the kernels played by `body`. `ids`, `wts` and `z` are what the router and the rotation left. Returns what the kernels were shown.
+/// One call of a layer, in the way `HbMoe::experts` makes it for a small call: `run_groups`, the kernels played by `body`. `ids`, `wts` and `z` are what the router and the rotation left. Returns what the kernels were shown.
 fn call(rig: &Rig, dev: &Dev, host: &HbLayerHost, b: &Buffers, base: usize, (ids, wts, z): (&[i64], &[f32], &[f32]), tokens: usize) -> Shown {
     let pairs = ids.len();
     let hidden = z.len() / tokens;
@@ -192,7 +192,7 @@ fn copy_call(rig: &Rig, dev: &Dev, host: &HbLayerHost, b: &Buffers, base: usize,
     // the pairs' numbers in the group (-1: another group's), as `hb_group_ids` makes them
     let local: Vec<i64> = ids.iter().map(|&e| if host.group_of[e as usize] as usize == g { host.local_of[e as usize] as i64 } else { -1 }).collect();
     b.ids.write(0, &local).unwrap();
-    let c = Call { ids: b.ids.ptr, wts: b.wts.ptr, z: b.z.ptr, way: b.ways[0].ptr, part: b.part.ptr, tokens: pairs / 4, pairs };
+    let c = Call { ids: b.ids.ptr, wts: b.wts.ptr, z: b.z.ptr, way: b.ways[0].ptr, part: b.part.ptr, rows: 0, tokens: pairs / 4, pairs };
     let mut waves = 0;
     let mut body = |stage: Stage, _w: usize, n: usize, _hy: &Hybrid| -> Result<()> {
         if stage == Stage::Products {
@@ -255,8 +255,9 @@ fn fake_gpu_the_expert_cache_with_experts_on_the_disk_is_the_expert_cache_with_a
     let ck = glyd_gpu::safetensors::Checkpoint::open(&out).unwrap();
     let (_, manifest) = crate::weights::v7_manifest(&out).unwrap().unwrap();
     let l = 1;
-    let (host, ix) = (read_layer(&ck, &manifest, &c, l).unwrap(), index_layer(&manifest, &c, l).unwrap());
-    let disk = Arc::new(HbDisk::open(&ck, &c, l, &ix).unwrap());
+    let x = c.hb_names(l);
+    let (host, ix) = (read_layer(&ck, &manifest, &x).unwrap(), index_layer(&manifest, &x).unwrap());
+    let disk = Arc::new(HbDisk::open(&ck, &x, &ix).unwrap());
     let dev = Dev::new(0).unwrap();
     let hidden = c.moe.latent;
     let bufs = || Buffers {

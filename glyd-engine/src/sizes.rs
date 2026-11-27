@@ -1,7 +1,7 @@
 //! Exact sizes from the files' headers (ROADMAP P2b): every tensor of a checkpoint, by name, type, shape and bytes, from the safetensors headers of a directory or,
 //! where the model is not here yet, of the Hub's repo by two ranges a shard (its length, then its JSON): nothing of the weights is downloaded. A table is classified
 //! by name into the parts a plan counts (`Part`: the embedding, the head, attention, dense MLPs, routed experts, shared experts, a vision tower, a multi-token-prediction
-//! head), kept in the cache by repo and commit, and sizes the dynamic route's layers before its files are local (src/cli.rs `size_dynamic`) and the planner's shape
+//! head), kept in the cache by repo and commit, and sizes the dynamic route's layers before its files are local (src/plan.rs `sizing::size_dynamic`) and the planner's shape
 //! (`plan::Shape::with_table`) in place of an estimate from config.json.
 
 use crate::hub;
@@ -52,6 +52,16 @@ pub fn layer_of(name: &str) -> Option<usize> {
     rest.split('.').next()?.parse().ok()
 }
 
+/// Whether the tensor `name` is one routed expert's (a shared expert's is not).
+fn is_routed(name: &str) -> bool {
+    !name.contains("shared_expert") && (name.contains(".experts.") || name.contains(".expert."))
+}
+
+/// The name of the weight a scale tensor (`X.scale`, `X.weight_scale`, `X.weight_scale_inv`) is of, without its `.weight`.
+fn scale_of(name: &str) -> Option<&str> {
+    ["weight_scale_inv", "weight_scale", "scale_inv", "scale"].iter().find_map(|s| name.strip_suffix(s)?.strip_suffix('.'))
+}
+
 /// The part of a model the tensor `name` is, of a model of `layers` layers (a layer past them is a multi-token-prediction one).
 pub fn classify(name: &str, layers: usize) -> Part {
     let has = |words: &[&str]| words.iter().any(|w| name.contains(w));
@@ -73,7 +83,7 @@ pub fn classify(name: &str, layers: usize) -> Part {
     }
     if has(&["shared_expert", "shared_experts"]) {
         Part::SharedExperts
-    } else if has(&[".experts.", ".expert."]) {
+    } else if is_routed(name) {
         Part::RoutedExperts
     } else if has(&["attn", "attention", "mixer", "self_attn", "ssm", "conv1d"]) {
         Part::Attention
@@ -224,11 +234,19 @@ impl Table {
         m
     }
 
-    /// The weights of each part (the tensors whose type tells them; a packed type's bytes are `packed_bits` a weight): the parameters a plan counts.
-    pub fn params_by_part(&self, layers: usize, packed_bits: f64) -> BTreeMap<Part, f64> {
+    /// The weights of each part: a tensor whose type tells them by its shape; a packed type's bytes (the packed weights and their scales together) at the bits the
+    /// release has a weight in, `expert_bits` for a routed expert's and `rest_bits` for the rest's (they differ where only the experts are 4-bit: Kimi-K3's, DeepSeek-V4's).
+    /// Not weights: the scales of weights counted by their shape, and an index table (DeepSeek-V4's hash routing).
+    pub fn params_by_part(&self, layers: usize, rest_bits: f64, expert_bits: f64) -> BTreeMap<Part, f64> {
+        let shaped: std::collections::HashSet<&str> = self.rows.iter().filter(|r| r.params().is_some()).map(|r| r.name.as_str()).collect();
+        let carried = |name: &str| scale_of(name).is_some_and(|w| shaped.contains(format!("{w}.weight").as_str()));
         let mut m = BTreeMap::new();
         for r in &self.rows {
-            let p = r.params().map_or(r.bytes as f64 * 8.0 / packed_bits, |n| n as f64);
+            let p = match r.params() {
+                Some(n) => n as f64,
+                None if r.dtype == "I64" || carried(&r.name) => 0.0,
+                None => r.bytes as f64 * 8.0 / if is_routed(&r.name) { expert_bits } else { rest_bits },
+            };
             *m.entry(classify(&r.name, layers)).or_insert(0.0) += p;
         }
         m
@@ -338,6 +356,7 @@ fn cache_file(root: &Path, repo: &str, commit: &str) -> PathBuf {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::runtime::config::mc;
 
     #[test]
     fn tensors_are_classified_by_name() {
@@ -463,11 +482,14 @@ pub(crate) mod tests {
 
     /// The recorded headers: for each model the files the Hub listed (path, bytes), the index's total, the config.json and the table of tensors, compact
     /// (tests/fixtures/headers/NAME.json; `record_header_fixtures` writes them).
-    const HEADER_FIXTURES: [(&str, &str); 4] = [
+    const HEADER_FIXTURES: [(&str, &str); 7] = [
         ("gemma-4-12B-it", include_str!("../tests/fixtures/headers/gemma-4-12B-it.json")),
         ("Kimi-K3", include_str!("../tests/fixtures/headers/Kimi-K3.json")),
         ("DeepSeek-V4-Flash-0731", include_str!("../tests/fixtures/headers/DeepSeek-V4-Flash-0731.json")),
         ("Qwen3.8-27B", include_str!("../tests/fixtures/headers/Qwen3.8-27B.json")),
+        ("DeepSeek-V4.1-Flash-1017", include_str!("../tests/fixtures/headers/DeepSeek-V4.1-Flash-1017.json")),
+        ("Kimi-K3.1-Pro", include_str!("../tests/fixtures/headers/Kimi-K3.1-Pro.json")),
+        ("Qwen3.8-2.4T-A95B", include_str!("../tests/fixtures/headers/Qwen3.8-2.4T-A95B.json")),
     ];
 
     fn groups_of(v: &serde_json::Value) -> Vec<Group> {
@@ -487,20 +509,37 @@ pub(crate) mod tests {
     }
 
     /// Records the headers of the recent models by ranges from the Hub (the files' headers and the small files; no weights) into tests/fixtures/headers:
-    /// `GLYD_RECORD_HEADERS=1 cargo test -p glyd-engine --lib -- --ignored record_header_fixtures`.
+    /// `GLYD_RECORD_HEADERS=1 cargo test -p glyd-engine --lib -- --ignored record_header_fixtures` (or GLYD_RECORD_HEADERS=REPO,REPO: those of the list alone).
+    /// Recorded and committed so far: nine of the ten repos listed below (gemma-4-12B-it, Kimi-K3, DeepSeek-V4-Flash-0731, Qwen3.8-27B, and
+    /// DeepSeek-V4.1-Flash-1017, the family's newest release, whose config, index and inference code are the first DeepSeek-V4.1-Flash's byte for byte;
+    /// #333's Kimi-K3.1-Pro and Qwen3.8-2.4T-A95B; and GLM-5.3 and DeepSeek-V4-Flash's DSpark drafter). Muse Spark's repo is gated: its header is
+    /// recorded with a token and kept out of the tree, so `runtime::describe_tests::every_recorded_release_describes_or_says_what_it_lacks`, which holds each
+    /// file here, holds it only on a machine that has recorded it. The index's total is recorded where the index is under `Hub::text`'s 16 MiB (Kimi-K3's and Kimi-K3.1-Pro's, 59 MB,
+    /// are not: their total is the index's first lines, read by one range request, and the descriptions' tests hold it).
     #[test]
     #[ignore = "needs the network: GLYD_RECORD_HEADERS=1"]
     fn record_header_fixtures() {
-        if std::env::var_os("GLYD_RECORD_HEADERS").is_none() {
-            return;
-        }
+        let Some(only) = std::env::var_os("GLYD_RECORD_HEADERS").map(|v| v.to_string_lossy().into_owned()) else { return };
+        let only: Vec<&str> = if only == "1" { Vec::new() } else { only.split(',').collect() };
         let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers");
         std::fs::create_dir_all(&out).unwrap();
         let hub = hub::Hub::from_env();
         let root = std::env::temp_dir().join(format!("glyd-record-headers-{}", std::process::id()));
-        for repo in
-            ["google/gemma-4-12B-it", "moonshotai/Kimi-K3", "deepseek-ai/DeepSeek-V4-Flash-0731", "meta-models/Muse-Spark-Open-816B-A42B", "Qwen/Qwen3.8-27B"]
-        {
+        for repo in [
+            "google/gemma-4-12B-it",
+            "moonshotai/Kimi-K3",
+            "moonshotai/Kimi-K3.1-Pro",
+            "deepseek-ai/DeepSeek-V4-Flash-0731",
+            "meta-models/Muse-Spark-Open-816B-A42B",
+            "Qwen/Qwen3.8-27B",
+            "zai-org/GLM-5.3",
+            "Qwen/Qwen3.8-2.4T-A95B",
+            "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+            "deepseek-ai/DeepSeek-V4-Flash-DSpark",
+        ] {
+            if !only.is_empty() && !only.contains(&repo) {
+                continue;
+            }
             let remote = hub.list(repo, "main").unwrap_or_else(|e| panic!("{repo}: {e}"));
             let table = match Table::from_hub_in(&root, &hub, &remote) {
                 Ok(t) => t,
@@ -519,7 +558,8 @@ pub(crate) mod tests {
             let config = hub.text(repo, &remote.commit, "config.json").unwrap_or_default();
             let v = serde_json::json!({
                 "repo": repo, "commit": remote.commit, "listed_safetensors": listed,
-                "index_total_size": index.as_ref().and_then(|i| i["metadata"]["total_size"].as_u64()),
+                // (a total some indexes write as a float: 4892365451008.0)
+                "index_total_size": index.as_ref().and_then(|i| i["metadata"]["total_size"].as_u64().or_else(|| i["metadata"]["total_size"].as_f64().map(|t| t as u64))),
                 "config": config,
                 "groups": groups.iter().map(|g| serde_json::json!({"mask": g.mask, "dtype": g.dtype, "shape": g.shape, "bytes": g.bytes, "layers": g.layers, "experts": g.experts})).collect::<Vec<_>>(),
             });
@@ -530,9 +570,22 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// P2b's acceptance on recorded headers of the recent families (Gemma 4 12B, Kimi-K3, DeepSeek-V4, Muse Spark, Qwen3.8-27B): the tensors the headers list are the
-    /// bytes the Hub lists for the files (their headers are all that differ: under 1%, and the index's total where there is one is exactly them); the model's
-    /// shape counted from them is within 1% of the weights in them less the vision tower and a prediction head not drafted with; and the plan sized from them is made.
+    /// The weights a tensor holds as its release stores them, counted here by the release's formats and not by `params_by_part`'s rule: a float type's by its shape, a
+    /// packed tensor's (an 8-bit word of two 4-bit weights, as the MXFP4 and FP4 experts are stored) twice its bytes; a scale and an index table (DeepSeek-V4's
+    /// hash routing) hold none.
+    fn weights_of(r: &Row) -> f64 {
+        let scale = r.name.rsplit('.').next().is_some_and(|l| l.contains("scale"));
+        match r.dtype.as_str() {
+            "BF16" | "F16" | "F32" | "F8_E4M3" => r.shape.iter().product::<u64>() as f64,
+            "U8" | "I8" if !scale => 2.0 * r.bytes as f64,
+            _ => 0.0,
+        }
+    }
+
+    /// P2b's acceptance on recorded headers of the recent families (Gemma 4 12B, Kimi-K3 and K3.1-Pro, DeepSeek-V4 and V4.1, Qwen3.8 at 27B and 2.4T): the tensors the
+    /// headers list are the bytes the Hub lists for the files (their headers are all that differ: under 1%, and the index's total where there is one is exactly them);
+    /// the model's shape counted from them holds every weight of them less the vision tower and a prediction head not drafted with, as `weights_of` counts them
+    /// (the 4-bit experts of Kimi-K3 and DeepSeek-V4 are 2.7 trillion and 0.3 trillion weights, not a fourth or a half of that); and the plan sized from them is made.
     #[test]
     fn recorded_headers_are_the_hubs_file_sizes() {
         use crate::plan::Shape;
@@ -556,32 +609,76 @@ pub(crate) mod tests {
                     Part::Mtp => sh.mtp,
                     _ => true,
                 })
-                .map(|r| r.params().unwrap_or_else(|| r.bytes * 8 / sh.release_bits.max(1.0) as u64) as f64)
+                .map(weights_of)
                 .sum();
-            assert!((sh.params() / counted - 1.0).abs() < 0.01, "{name}: {:.4e} parameters in the shape, {counted:.4e} in the tensors", sh.params());
+            assert!((sh.params() / counted - 1.0).abs() < 1e-4, "{name}: {:.4e} parameters in the shape, {counted:.4e} in the tensors", sh.params());
+            // (and what a decode step reads of them: the routed experts' share the router picks, from the same count)
+            if sh.is_moe() {
+                let routed: f64 = table.rows.iter().filter(|r| classify(&r.name, layers) == Part::RoutedExperts).map(weights_of).sum();
+                assert!((sh.routed / routed - 1.0).abs() < 1e-4, "{name}: {:.4e} routed in the shape, {routed:.4e} in the tensors", sh.routed);
+            }
         }
     }
 
-    /// The recorded headers of Kimi-K3 and DeepSeek-V4 plan over the GPUs of a machine before any file is here: the layers' bytes and the rest's are the tensors' less the
-    /// vision tower and the prediction head, and the plan fits what its GPUs have free.
+    /// `fit` prints Kimi-K3.1-Pro's parameters from its headers: 92 layers of 896 routed experts of three 3,072 x 3,584 matrices held 4-bit (a weight and its scale at
+    /// 4.25 bits) are 2.72 trillion of its 2.78 trillion, where counting those bytes at the 16 bits of the rest gave 780 billion.
+    #[test]
+    fn kimi_k3_1_pro_counts_its_four_bit_experts_at_their_own_bits() {
+        let (name, text) = HEADER_FIXTURES.iter().find(|f| f.0 == "Kimi-K3.1-Pro").unwrap();
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        let table = Table::expand(&groups_of(&v));
+        let sh = crate::plan::Shape::from_config(v["config"].as_str().unwrap()).unwrap().with_table(&table);
+        let routed = (92u64 * 896 * 3 * 3072 * 3584) as f64;
+        assert!((sh.routed / routed - 1.0).abs() < 1e-9, "{name}: {:.6e} routed, {routed:.6e} in the release", sh.routed);
+        assert!((sh.params() - 2.78e12).abs() < 0.01e12, "{name}: {:.4e} parameters", sh.params());
+        assert_eq!((sh.experts, sh.topk), (896, 16), "{name}");
+        // (a table of bf16 alone is counted as it was: the experts' own bits are the packed ones')
+        let rows =
+            |dtype: &str, shape: Vec<u64>, bytes: u64| Row { name: "model.layers.0.mlp.experts.0.up_proj.weight".into(), dtype: dtype.into(), shape, bytes };
+        let one = |r: Row| Table { rows: vec![r] }.params_by_part(1, 16.0, 4.25)[&Part::RoutedExperts];
+        assert_eq!(one(rows("BF16", vec![4, 8], 64)), 32.0);
+        assert_eq!(one(rows("U8", vec![4, 8], 32)), 32.0 * 8.0 / 4.25);
+    }
+
+    /// The recorded headers of Kimi-K3, DeepSeek-V4 and DeepSeek-V4.1 plan over the GPUs of a machine before any file is here (or are refused, naming the model): the
+    /// layers' bytes and the rest's are the tensors' less the vision tower and the prediction head, an FP8 tensor of other blocks than 128 x 128 (V4.1's) at its
+    /// values in bf16 (twice its bytes, which is how its loader holds it), and the plan fits what its GPUs have free.
     #[test]
     fn the_recorded_dynamic_families_are_planned_from_their_headers() {
         let m = crate::plan::Machine::preset("8xh100").unwrap();
         let devs: Vec<crate::plan::Target> = m.devices.iter().enumerate().map(|(i, d)| crate::plan::Target::of(d, i as i32, Some(m.ram_free))).collect();
         let mut planned = 0;
-        for (name, text) in HEADER_FIXTURES.iter().filter(|f| f.0 == "Kimi-K3" || f.0.starts_with("DeepSeek")) {
+        for (name, text) in HEADER_FIXTURES.iter().filter(|f| f.0.starts_with("Kimi-K3") || f.0.starts_with("DeepSeek")) {
             let v: serde_json::Value = serde_json::from_str(text).unwrap();
             let table = Table::expand(&groups_of(&v));
             let config = v["config"].as_str().unwrap();
-            let family = if *name == "Kimi-K3" { "Kimi-K3" } else { "DeepSeek-V4" };
+            let family = crate::support::row(crate::runtime::config::family_of(config).unwrap()).name;
             let nl = crate::dynamic::split::config_num(config, "num_hidden_layers").unwrap();
             let (per, base) = crate::dynamic::split::layer_bytes_table(&table, nl, 100, 100, &|_| true);
-            let counted: u64 = table.rows.iter().filter(|r| !matches!(classify(&r.name, nl), Part::Vision | Part::Mtp)).map(|r| r.bytes).sum();
+            let shapes: std::collections::HashMap<&str, &[u64]> = table.rows.iter().map(|r| (r.name.as_str(), &r.shape[..])).collect();
+            let other_blocks = |r: &Row| {
+                r.dtype == "F8_E4M3"
+                    && shapes
+                        .get(r.name.replace(".weight", ".scale").as_str())
+                        .is_some_and(|sc| crate::formats::scale_block(r.shape[0] as usize, r.shape[1] as usize, sc).is_some_and(|b| b != [128, 128]))
+            };
+            let counted: u64 = table
+                .rows
+                .iter()
+                .filter(|r| !matches!(classify(&r.name, nl), Part::Vision | Part::Mtp))
+                .map(|r| if other_blocks(r) { 2 * r.bytes } else { r.bytes })
+                .sum();
             assert_eq!(per.iter().sum::<u64>() + base, counted, "{name}: every layer's bytes and the rest's");
             let args = crate::args::Args::from(["run".to_string(), name.to_string()]);
-            match crate::cli::size_dynamic(&args, name, &table, None, config, family, &devs, Some(m.ram_free), &|_| true) {
+            match crate::plan::sizing::size_dynamic(&args, name, &table, None, &mc(config), family, &devs, Some(m.ram_free), &|_| true) {
                 Ok(p) => {
                     assert!(p.gpu_total() <= p.free && p.spread.is_some(), "{name}");
+                    // (each stage's share of the computer's memory: one a stage, adding up to all of it)
+                    let sp = p.spread.as_ref().unwrap();
+                    let stages = if sp.across { 1 } else { sp.cuts.len() + 1 };
+                    assert_eq!(sp.host_per_stage.len(), stages, "{name}");
+                    assert_eq!(sp.host_per_stage.iter().sum::<u64>(), sp.host_bytes, "{name}: {:?} of {}", sp.host_per_stage, sp.host_bytes);
+                    assert!(sp.host_bytes == 0 || sp.host_per_stage.iter().filter(|&&b| b > 0).count() == stages.min(sp.places.len().max(1)), "{name}: {sp:?}");
                     planned += 1;
                 }
                 Err(r) => assert!(r.what.contains(name), "{name}: {}", r.what),

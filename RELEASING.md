@@ -21,24 +21,28 @@ bird: penguin, kestrel, swift, wren, hummingbird.
 - [ ] Each model card's first screen: what the quant is (bits per weight, lossless or not, against what), quality against the
       original (KLD + one non-saturated eval), speed on 2-3 common cards with the machine named, known limits, how-it-works link.
 - [ ] Numbers in the notes and cards match research/*/results/ (no number without a results file).
-- [ ] Binaries built on Ubuntu 22.04 (glibc 2.35 or older), sha256 written down.
+- [ ] Every lossy pack in the release has a quality card that says publish (`quality.json` in the pack; docs/quality.md); `ship` will not upload one without it.
+- [ ] Consumer benchmarks: `scripts/consumer_bench.sh` on each owned GPU's tier (or the `Consumer bench` workflow), the results and page in
+      `benchmarks/consumer/vX.Y.Z/`; the 1x H100 occupancy check held to the last one (benchmarks/consumer/README.md).
+- [ ] Binaries: the tag's workflows build Linux in the manylinux_2_28 image (glibc 2.28) and write each sha256 (step 3).
 - [ ] Clean-install check on a fresh machine: `pip install glyd==X.Y.Z`, `glyd run` each new model, `glyd verify` it.
 - [ ] Plain style everywhere (first person, raw numbers, no adjectives, no comparisons with other projects).
 
 ## Release day (one repository: surya-koritala/Glyd)
 
-1. `scripts/bump_version.py X.Y.Z` (every Cargo.toml, both pyproject.toml, the installer's pin), CHANGELOG `## Unreleased` → `## vX.Y.Z`,
+1. `scripts/bump_version.py X.Y.Z` (the four Cargo.toml and their Cargo.lock entries, both pyproject.toml and `__init__.py`, both installers' pins), CHANGELOG `## Unreleased` → `## vX.Y.Z`,
    with every `changelog.d/*.md` entry put under it and the files removed.
    PR to main, CI green.
 2. `scripts/release_ready.sh X.Y.Z` on the merge commit, then tag `vX.Y.Z` there, push the tag, and right away
    `gh release create vX.Y.Z --verify-tag --notes-file notes.md` (notes below): both workflows upload to that release.
 3. The tag runs both release workflows from this source:
    - `release.yml`: the `glyd` CLI tarballs and wheels attached to the release, `glyd` to PyPI and crates.io.
-   - `release-gpu.yml`: the GPU library, the engine, the `glyd-gpu` wheels to PyPI, and the engine bundles
-     (`glyd-engine-vX.Y.Z-linux-*.tar.gz` and their `.sha256`: `glyd` with the engine linked, `glyd-engine` as a link to it, the GPU
-     library) attached to the same GitHub release (`attach-engine`), which `install.sh` and `condor/tools/install.sh` download.
+   - `release-gpu.yml`: the GPU library (for the Python package), the engine, the `glyd-gpu` wheels to PyPI, and the engine bundles
+     (`glyd-engine-vX.Y.Z-linux-*.tar.gz` and their `.sha256`: `glyd` with the engine linked, `glyd-engine` as a link to it, LICENSE; the engine loads
+     no GPU library, so none is in them; and, where its job succeeded, `glyd-engine-vX.Y.Z-windows-x86_64.zip` with its `.sha256`) attached to the same
+     GitHub release (`attach-engine`), which `install.sh` and `condor/tools/install.sh` download.
    PyPI's trusted publisher for `glyd-gpu` must name this repository and `release-gpu.yml` (environment `pypi`).
-4. Check the release page has the CLI tarballs, the wheels and both engine bundles, each tarball's `.sigstore.json`, `SHA256SUMS`, `SHA256SUMS-engine` and the two SBOMs
+4. Check the release page has the CLI tarballs, the wheels and the engine bundles (the Linux tarballs, and the Windows zip where its job succeeded), each tarball's `.sigstore.json`, `SHA256SUMS`, `SHA256SUMS-engine` and the two SBOMs
    (`*.spdx.json`), and verify one tarball as a user would (docs/verify-releases.md).
 5. getglyd.com: the owner puts the tag's `scripts/install.sh` and `scripts/install.ps1` at the site's root (content type
    `text/plain`, `Cache-Control: no-cache`) and invalidates `/install.sh` and `/install.ps1` in its CDN; the site does not follow

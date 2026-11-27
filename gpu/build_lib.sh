@@ -9,6 +9,8 @@
 #   bash gpu/build_lib.sh [OUT_DIR]      (default: next to glyd_gpu_dev.py)
 # GLYD_GPU_COMPRESS=none|size|...: the fatbin's compression in a release build (default size).
 # GLYD_GPU_NVCC_THREADS=N: nvcc's threads for the compile (default 0: one an architecture; a CI runner of 2 cores and 7 GB takes 2).
+# GLYD_GPU_ARCHS="80 86" (a development build): machine code for these architectures alone, as nvcc's numbers, and the compute_80 PTX where 80 is
+# among them: the library for the GPUs of one machine (scripts/ci_gpu_build.sh gives the engine's, GLYD_ENGINE_ARCHS). Default: all of them, as above.
 # GLYD_GPU_RELEASE=1 (the release build, glyd-gpu-py/build.sh): machine code for those architectures and no PTX,
 # no line or debug information, the library stripped, GLYD_RELEASE defined (the default plans' kernels alone, no tuning variables) and the
 # device code compressed for size (about 24 MB, a development build's is 600 MB of machine code; the wheel must stay under PyPI's 100 MB),
@@ -27,7 +29,20 @@ for a in 100 120; do
     if grep -qx "compute_$a" <<< "$ARCHS"; then BLACKWELL="$BLACKWELL -gencode arch=compute_$a,code=sm_$a"
     elif [ "${GLYD_GPU_RELEASE:-0}" = 1 ]; then echo "glyd_gpu: this nvcc has no compute_$a (CUDA 12.8 on): a release library needs it" >&2; exit 1; fi
 done
+GEN=(-gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89 -gencode arch=compute_90a,code=sm_90a $BLACKWELL)
 PTX=(-gencode arch=compute_80,code=compute_80)
+if [ -n "${GLYD_GPU_ARCHS:-}" ]; then
+    if [ "${GLYD_GPU_RELEASE:-0}" = 1 ]; then echo "glyd_gpu: GLYD_GPU_ARCHS with GLYD_GPU_RELEASE=1: a release library has every architecture" >&2; exit 1; fi
+    GEN=()
+    PTX=()
+    for a in $GLYD_GPU_ARCHS; do
+        # (nvcc lists compute_90, and takes 90a)
+        if ! grep -qx "compute_${a%[af]}" <<< "$ARCHS"; then echo "glyd_gpu: this nvcc has no compute_${a%[af]} (GLYD_GPU_ARCHS=$GLYD_GPU_ARCHS)" >&2; exit 1; fi
+        GEN+=(-gencode "arch=compute_$a,code=sm_$a")
+        if [ "$a" = 80 ]; then PTX=(-gencode arch=compute_80,code=compute_80); fi
+    done
+    if [ ${#GEN[@]} = 0 ]; then echo "glyd_gpu: GLYD_GPU_ARCHS names no architecture" >&2; exit 1; fi
+fi
 STRIP=()
 RELEASE=()
 TMP="$(mktemp -d)"
@@ -46,8 +61,7 @@ fi
 # inside; lib/ for the pip packages' libcudart_static.a (a toolkit's is in lib64/).
 FLAGS=(-O3 -std=c++20 --expt-relaxed-constexpr -isystem "$CUDA/include"
     -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__
-    -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89
-    -gencode arch=compute_90a,code=sm_90a $BLACKWELL
+    "${GEN[@]}"
     ${PTX[@]+"${PTX[@]}"}
     ${RELEASE[@]+"${RELEASE[@]}"}
     -Xcompiler -fPIC,-fvisibility=hidden)

@@ -27,9 +27,9 @@ The service loads only models already pulled, and `glyd run` chats through it wh
 | Flag | What |
 | :--- | :--- |
 | `--port N` | The port. Without it, 8000, then each next port up to 8020 that is free. With it, that port or a refusal. |
-| `--host H` | Listen on H. Without it, only this computer, and a request whose Host or Origin is not this computer's is refused (421, 403). With it, those checks are off. |
+| `--host H` | Listen on H. Without it, only this computer, and a request whose Host or Origin is not this computer's is refused (421, 403). A loopback H keeps both checks; an address that is not loopback keeps the Origin check, lets in any Host the computer has, and needs an API key or `--insecure-no-auth` to start (`--allowed-hosts` and `--allowed-origins` list names). |
 | `--context N` | The context in tokens (`--ctx` is the same). Without it, what fits: [Models](models.md) has each family's default. |
-| `--users N` | How many requests run at once, 4 by default: 1 to 8 on the lossless Qwen3 engine; up to 64 for Gemma 4, Qwen3.8 dense, Nemotron-H, DeepSeek-V4, Muse Spark, Kimi-K3 and GLM-5.3-Flash on one GPU, as many as its memory holds. Other engines take one request at a time and the rest wait in order. |
+| `--users N` | How many requests run at once, 4 by default: 1 to 64 for a model on one GPU, as many as its memory holds (the server says how many). A model with a draft model, a model split across GPUs, or one with an operation that takes one sequence runs one request at a time, and the rest wait in order. |
 | `--with MODEL2` | A second model served by the same process on the same GPU, on `--with-port N` (else the next free port after the first's). Each has its own server; the first loads and takes up to half of the memory left for its sequences, then the second loads in the rest. |
 | `--host-memory GIB` | The computer's memory a mixture of experts may use for its experts. |
 | `MODEL:LEVEL` | A level: [Choosing a level](levels.md). |
@@ -56,7 +56,7 @@ can reach it can use the model, and the traffic is plain HTTP: use a key and an 
 | `GET /v1/models`, `/v1/models/ID` | The one model. `id` is the name you started it with. |
 | `GET /health` | `{"status":"ok"}`, no key needed. |
 | `GET /v1/glyd/info` | What the server is and holds: model, level, precision, device, limits, memory. |
-| `GET /stats` | The scheduler's counts (lossless engine). |
+| `GET /stats` | The scheduler's counts. |
 
 A first request with `curl`:
 

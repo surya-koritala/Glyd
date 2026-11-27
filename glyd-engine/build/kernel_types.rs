@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 /// The C types of the kernels' arguments that are not pointers, and the Rust type passed for each.
-const TYPES: [(&str, &str); 19] = [
+const TYPES: [(&str, &str); 30] = [
     ("int", "i32"),
     ("int32_t", "i32"),
     ("unsigned", "u32"),
@@ -24,8 +24,19 @@ const TYPES: [(&str, &str); 19] = [
     ("signed char", "i8"),
     ("unsigned char", "u8"),
     ("bool", "bool"),
-    ("G4Pf", "crate::gemma4::G4Pf"),
+    ("NextPf", "crate::kern::NextPf"),
     ("C2Segs", "crate::cb2_prefill::Segs"),
+    ("AttnArgs", "crate::dynamic::attn::AttnArgs"),
+    ("glib::kvc::AttnParams", "crate::fold::KvAttnParams"),
+    ("glib::kvc::PrefillParams", "crate::fold::KvPrefillParams"),
+    ("glib::kvc::WriteParams", "crate::fold::KvWriteParams"),
+    ("glib::kvc::RawPool", "crate::fold::KvRawPool"),
+    ("glib::kvc::EscapePool", "crate::fold::KvEscapePool"),
+    ("glib::f8c::F8Pk", "crate::fold::F8Pk"),
+    ("glib::f8c::F8Un", "crate::fold::F8Un"),
+    ("glib::f8c::F8Lin", "crate::fold::F8Lin"),
+    ("glib::MoePairs", "crate::fold::MoePairs"),
+    ("CUtensorMap", "crate::device::TensorMap"),
 ];
 
 /// The source without comments, its continued lines joined.
@@ -109,7 +120,8 @@ fn substitute(s: &str, params: &[String], args: &[String]) -> String {
 
 /// The Rust type of one argument's declaration (`const bf16* __restrict__ x`, `int K`), or an error naming it.
 fn rust_type(decl: &str) -> Result<String, String> {
-    let words: Vec<&str> = decl.split_whitespace().filter(|w| !matches!(*w, "const" | "__restrict__" | "__restrict" | "volatile")).collect();
+    let words: Vec<&str> =
+        decl.split_whitespace().filter(|w| !matches!(*w, "const" | "__restrict__" | "__restrict" | "volatile" | "__grid_constant__")).collect();
     let text = words.join(" ");
     if text.contains('*') {
         return Ok("u64".to_string());
@@ -223,5 +235,11 @@ pub fn generate(sources: &[(String, String)]) -> Result<String, String> {
         ));
     }
     out.push_str(&format!("/// The kernels: {}.\npub const COUNT: usize = {};\n", all.len(), all.len()));
+    // (each kernel with its file: a check's census of what it launched says which of a file's kernels it did not)
+    out.push_str("/// Each kernel's name and its file of kernels/.\npub const NAMES: &[(&str, &str)] = &[\n");
+    for (name, (_, file)) in &all {
+        out.push_str(&format!("    (\"{name}\", \"{file}\"),\n"));
+    }
+    out.push_str("];\n");
     Ok(out)
 }

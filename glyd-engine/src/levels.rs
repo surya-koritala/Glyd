@@ -7,12 +7,29 @@
 use crate::weights::Layout;
 
 /// A level: its name, the layout its weights are packed in (None: penguin, lossless, the normal path), its bits per
-/// weight as messages say them, and whether it gives back the release's weights exactly.
+/// weight as messages say them, whether it gives back the release's weights exactly, and the quality bar a pack at it is
+/// published under (None: the lossless level, which needs none).
 pub struct Level {
     pub name: &'static str,
     pub layout: Option<Layout>,
     pub bits: &'static str,
     pub lossless: bool,
+    pub bar: Option<Bar>,
+}
+
+/// What a lossy pack's quality card (src/quality.rs, docs/quality.md) must show against the lossless level of the same model to be published:
+/// the mean next-token KL over the fixed texts at most `kl_mean`, the best token the lossless level's at `top1` of the prefixes or more, and
+/// each task's accuracy at most `task_drop` below the lossless level's. Set from the measured divergences of the levels' layouts on released
+/// models (research/lossy-2026/kld_study.py: benchmarks/weights/kld-q56-2026-10-09, the cards' kl_bf16, and for hummingbird
+/// benchmarks/weights/moe-quality-2026-10-10/nemotron-hummingbird), about 1.4 times the largest KL measured and three to four points under the
+/// lowest top-1 agreement. Those were taken over WikiText-2 with 64 to 128 tokens a position; the suite's own texts and 20 tokens a position are
+/// to be checked against them by the first cards it writes. `task_drop` (5 to 10 points) has no measurement behind it: it is a choice, held until
+/// the first cards' task figures, and changed as the other bars are.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bar {
+    pub kl_mean: f64,
+    pub top1: f64,
+    pub task_drop: f64,
 }
 
 /// The levels a tag on MODEL names (`Qwen/Qwen3.8-27B:swift`). Wren is the four-bit layout with its plain rounding (exact on a
@@ -21,11 +38,21 @@ pub struct Level {
 /// other matrix six-bit), from `glyd-engine pack MODEL OUT --layout hummingbird --codes DIR` or downloaded pre-packed. The
 /// three-bit layout (`--layout i3`) is no level.
 pub static LEVELS: [Level; 5] = [
-    Level { name: "penguin", layout: None, bits: "about 10.8", lossless: true },
-    Level { name: "kestrel", layout: Some(Layout::Int6), bits: "6.5", lossless: false },
-    Level { name: "swift", layout: Some(Layout::Int5), bits: "5.5", lossless: false },
-    Level { name: "wren", layout: Some(Layout::Int4), bits: "4.5", lossless: false },
-    Level { name: "hummingbird", layout: Some(Layout::Hummingbird), bits: "2-4 on experts", lossless: false },
+    Level { name: "penguin", layout: None, bits: "about 10.8", lossless: true, bar: None },
+    // (six-bit codes: KL 0.0048-0.0147 on the Qwen3.5 / 3.6 / 3.8 cards, top-1 96.9% on Qwen3.8-27B)
+    Level { name: "kestrel", layout: Some(Layout::Int6), bits: "6.5", lossless: false, bar: Some(Bar { kl_mean: 0.02, top1: 0.94, task_drop: 0.05 }) },
+    // (five-bit codes: KL 0.0139-0.0373, top-1 94.3%)
+    Level { name: "swift", layout: Some(Layout::Int5), bits: "5.5", lossless: false, bar: Some(Bar { kl_mean: 0.05, top1: 0.91, task_drop: 0.075 }) },
+    // (four-bit codes without calibration: KL 0.0534, top-1 88.9% on Qwen3.8-27B; a QAT checkpoint's wren is exact)
+    Level { name: "wren", layout: Some(Layout::Int4), bits: "4.5", lossless: false, bar: Some(Bar { kl_mean: 0.08, top1: 0.86, task_drop: 0.10 }) },
+    // (experts at 2-3 bits by use, hb40: KL 0.0831, top-1 93.96%, the record benchmarks/weights/moe-quality-2026-10-10)
+    Level {
+        name: "hummingbird",
+        layout: Some(Layout::Hummingbird),
+        bits: "2-4 on experts",
+        lossless: false,
+        bar: Some(Bar { kl_mean: 0.12, top1: 0.90, task_drop: 0.10 }),
+    },
 ];
 
 /// The names of the levels every build runs (wren too since v0.34.0: before it a release build ran wren on QAT checkpoints alone).
@@ -97,9 +124,18 @@ pub fn layout_of(word: &str) -> Option<Layout> {
     })
 }
 
-/// A model's name on the Hub: the text after its org (`Qwen/Qwen3.8-27B` → `Qwen3.8-27B`).
+/// A model's name on the Hub: the text after its org (`Qwen/Qwen3.8-27B` → `Qwen3.8-27B`); a directory's, its last part by the system's separators
+/// (Windows: `\` as well as `/`).
 pub fn short_name(model: &str) -> String {
-    model.trim_end_matches('/').rsplit('/').next().unwrap_or(model).to_string()
+    model.trim_end_matches(std::path::is_separator).rsplit(std::path::is_separator).next().unwrap_or(model).to_string()
+}
+
+/// The draft model published beside MODEL, by the name its publisher gives it (google/gemma-4-12B-it: google/gemma-4-12B-it-assistant), else None. The
+/// one rule for which downloads bring a draft model: `ship` packs it into the model's pre-packed repos, and the planner keeps room for it (src/plan.rs
+/// `draft_to_come`) where the model is still to come.
+pub fn draft_repo(model: &str) -> Option<String> {
+    let name = short_name(model);
+    name.to_ascii_lowercase().starts_with("gemma-4-").then(|| format!("google/{name}-assistant"))
 }
 
 /// A model's Hub name and the shorter one its pre-packed repos have (glyd-gpu-py's engine.REPO_NAMES is the same table).
@@ -172,6 +208,10 @@ mod tests {
             assert_eq!(layout_of(l.name), Some(l.layout.unwrap_or(Layout::Tiered)));
         }
         assert_eq!(LEVELS.iter().filter(|l| l.lossless).count(), 1);
+        // every lossy level has a quality bar, the lossless one none; a level of fewer bits is held to a looser one
+        assert!(LEVELS.iter().all(|l| l.bar.is_some() != l.lossless));
+        let bars: Vec<Bar> = ["kestrel", "swift", "wren"].iter().map(|n| by_name(n).unwrap().bar.unwrap()).collect();
+        assert!(bars.windows(2).all(|w| w[0].kl_mean < w[1].kl_mean && w[0].top1 > w[1].top1 && w[0].task_drop <= w[1].task_drop));
         assert!(by_name("sparrow").is_none() && layout_of("x").is_none());
         assert_eq!((name_of(Layout::Twelve), name_of(Layout::Int4H), name_of(Layout::Cb2Row), name_of(Layout::Int3)), ("penguin", "wren", "hummingbird", "i3"));
     }

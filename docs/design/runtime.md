@@ -5,13 +5,19 @@ descriptions compose, the seam where vendors plug in, the scheduler and KV cache
 pipelines move onto it, and the per-step ceiling it is measured against. Numbers are measured where a record is named, derived where the
 formula is given. Written 2026-11-20 against main ea26239f; revised the same day for the owner's scope rule below.
 
+**Reading this document.** "Top gaps" and section 1 are the tree the design was written against (main ea26239f, 2026-11-20): the
+files, line numbers and limits they cite are that tree's. Since then the hand-written engines (`model.rs`, `model35.rs`,
+`model_gemma4.rs`, Nemotron-H's and the GLM development engine) have been deleted, and every family runs on the description executor
+through the one scheduler (Qwen3.8-Flash-Next's own engine, `model_qwen4x.rs`, is deleted too: `glyd run`, `serve` and `fit` take its release at penguin on one GPU or with its layers cut over several, and `qwenserve` serves Condor's packs of codebook experts on the executor). What was built is
+marked **As built** or **Built** where it differs from the text around it.
+
 **Scope.** What M2 tests and optimises for are the models released in the last six months (cutoff 2026-05-20): Qwen3.8 (27B dense,
 Flash-Next, 2.4T-A95B), GLM-5.3 (and -Flash), Muse-Spark-Open-816B-A42B, Kimi-K3 (and K3.1-Pro), gemma-4-12B, DeepSeek-V4 (Flash and Pro,
 with their DSpark drafters). Qwen3 (2025), Qwen3.5/3.6, Nemotron-3-Super and gemma-4-31B are legacy: they move onto the runtime so their
-pipelines can be deleted, with parity and nothing more. Batching and paged KV exist today only on the legacy Qwen3 path; giving them to
-the recent families is the first priority.
+pipelines can be deleted, with parity and nothing more. When it was written, batching and paged KV existed only on the legacy Qwen3 path and giving them
+to the recent families was the first priority; every family has them now (see "As built" below).
 
-## Top gaps for the recent families
+## Top gaps for the recent families (2026-11-20, when the design was written)
 
 1. **Qwen3.8 dense (27B) has no lossless level on the engine.** The Qwen3.5 code path it runs on accepts kestrel, swift and wren only
    (`support.rs`, the `Qwen3.5` row: `levels: LOSSY`); penguin runs only through the frozen vLLM plugin. Its penguin pack is ~38 GiB
@@ -24,11 +30,17 @@ the recent families is the first priority.
 4. **Recent releases the engine does not load yet:** GLM-5.3 (the full `GlmMoeDsa` model; -Flash runs), Qwen3.8-2.4T-A95B (refused as a
    Qwen3.5 MoE, `qwen35.rs:492`), Kimi-K3.1-Pro, DeepSeek-V4.1-Flash, and the DSpark drafters (parsed MTP is unused on DeepSeek-V4) (#333).
 
+**As built.** Gap 1: the Qwen3.5 layout runs at penguin and at the lossy levels on the engine (`support.rs`, the `Qwen3.5` row),
+penguin on one GPU or with its layers cut over several. Gap 2: every family runs several sequences at once through the scheduler,
+its keys and values in pages (`glyd-engine usercheck CASE --users 4` and `8`, in the GPU job). Gap 3: the 12-bit lossless pages hold
+heads of 128, 256 and 512 and the latent attention's rows (`kvshapes`, `kv12check`). Gap 4 is #333's.
+
 ## Decisions
 
 1. **Names.** `ModelStep` is what the scheduler drives (today's `sched::Backend`, renamed). `Backend` is a vendor (CUDA, HIP,
    Metal through MLX, CPU) and implements layer kinds. `Device` is the CUDA/HIP device layer under those two backends (R1, R15).
-   `Engine` is the request-level interface the API front ends share (R11); `model::Engine` goes away with `model.rs` (R3c).
+   `Engine` is the request-level interface the API front ends share (R11); `model::Engine` went with `model.rs` (R3c, #139: the plain dense kind is a
+   description on the executor, `src/dynamic/dense.rs`).
 2. **One step over a flat batch.** A step takes a list of sequences, each contributing 1 token (decode), 1+k tokens (decode with
    drafts) or a prompt chunk, packed into one token list. There is no prefill or decode mode; a step is the tokens of every row
    the budget admits, decode rows first, then prompt chunks (Sarathi-Serve, vLLM V1).
@@ -70,22 +82,32 @@ the recent families is the first priority.
 
 ### Two executors and a handful of engines
 
-Today a model runs on one of two kinds of code:
+When the design was written a model ran on one of two kinds of code:
 
 - **Hand-written engines.** `model.rs` (Qwen3 dense), `model35.rs` (Qwen3.5/3.8), `model_gemma4.rs`,
-  `model_qwen4x.rs` (Condor's Qwen3.8-Flash-Next) and the GLM development engine (`model_glm.rs`, `glm_serve.rs`, `glm_cb.rs`,
-  `moe_glm*.rs`, `mla_glm.rs`, `mtp_glm.rs`). Each has its own step, cache and sampling.
+  `model_qwen4x.rs` (Condor's Qwen3.8-Flash-Next) and the GLM development engine (`model_glm.rs`, `mla_glm.rs`, `mtp_glm.rs`). Each has
+  its own step, cache and sampling. **As built (R3d, #140):** `model_qwen4x.rs` is deleted with its development checks; the family's loader is
+  the executor's (`dynamic/qwen4x.rs`: `Dyn::new_with`, its experts the Moe kind's block, `dynamic/experts.rs`, at the hummingbird level of a codes pack `moe_cb.rs` `CbMoe`). **As built (R13, #234):** the GLM development engine is gone (`model_glm.rs`, `mla_glm.rs`, `mtp_glm.rs`,
+  `kcheck_glm.rs`, `glm_serve.rs`, `glm_cb.rs`, `draft_loop.rs`, the codes block of `moe_glm_cb.rs`): GLM-5.3-Flash runs on the executor
+  alone; what the executor and Condor load GLM by is `kern/glm.rs` (the kernel table); since R3a (#136) its weights load by the executor's own
+  loader from its lowered description and its experts are the layer kind's block (`dynamic/experts.rs`: FP8 as released, the block levels,
+  hummingbird, the expert cache's places; `kern_glm.rs`'s weights loader and `moe_glm.rs` are gone). Its MTP drafting went with it:
+  R6 (#145) puts the MtpHead kind on the executor (its CPU reference is `runtime/reference/mtp.rs`).
 - **The description executor** (`dynamic/mod.rs`). A `ModelDesc` (`mod.rs:518-558`) is a list of `Op`s per layer over 25 activation slots;
   `Dyn::op` is a `match` over 60 `Op` variants (`mod.rs:85-482`, `1428-1870`). Ops are named by family more than by kind (`Prep35`,
-  `AttnNh`, `V4Attn`, `GlmPre`, `KimiMixNorm`, `MuseQk`). The executor imports the hand-written engines' kernel tables (`Kern35`,
-  `KernG4`, `KernNh`, `KernGlm`, `mod.rs:22-24`). Qwen3.5, Gemma 4, Nemotron-H, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark run
+  `AttnNh`, `V4Attn`, `GlmPre`, `KimiMixNorm`, `MuseQk`; M2 moves them onto the kinds' operations: the residual streams, the depth mix,
+  the gated residual, the norms, the gated activation and the experts are one operation each, their family differences the kinds'
+  parameters, `StreamsP::rounding` among them; as built, `Op` has 47 operations named by kind and none of those six). The executor imported
+  the hand-written engines' kernel tables (`Kern35`, `KernG4`, `KernMamba2`, `KernGlm`, `mod.rs:22-24`; as built, the tables are `src/kern/`'s). Qwen3.5, Gemma 4, Nemotron-H, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark run
   on it. It holds one contiguous bf16 cache per sequence and swaps sequences with `select` (`mod.rs:2383-2399`); more than one sequence
   is refused for every family but Qwen3.5 (`mod.rs:2352`). Multi-GPU runs as a layer split with activations handed over through host
   memory (`dynamic/split.rs:1-4`) or as row slices with an all-gather after each product (`dynamic/tp.rs`, `tp.cu`); `range.rs` runs a
   stage as its own process for other machines.
 
-Only `model.rs` batches (up to `MAX_ROWS = 8`, `model.rs:71`) and only it has the paged lossless KV cache. Every engine samples on the host
-from GPU top-k candidates (`TopGpu`), and syncs the device every step.
+Only `model.rs` batched (up to `MAX_ROWS = 8`, `model.rs:71`) and only it had the paged lossless KV cache. Every engine sampled on the host
+from GPU top-k candidates (`TopGpu`), and synced the device every step. As built: `model.rs` is deleted, and the executor batches every
+family's rows over paged keys and values (`dynamic/rows.rs`, `dynamic/pages.rs`); `TopGpu` is deleted too, and every route (one GPU, a split's last stage, a
+tensor-parallel group's first GPU, a range worker, drafted rows) draws through `sched::draw_row` from what the GPU makes of the row (`sampler::View`), never the row.
 
 Kernels live in two places. Every `kernels/*.cu` is included into `kernels/engine.cu` (lines 1006-1021) and built into the engine's fatbin;
 the `Kern*` structs call it. The packed dense products (`mma`, `mma12` and unpack), FP8 products, the grouped MoE (`moe`, `moe_way`)
@@ -96,15 +118,15 @@ and the whole lossless KV cache (`kv_write`, `kv_gather`, `kv_decode`, ...) are 
 
 | family (code) | attention | position | norm and residual | FFN | other | KV and state | weights |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Qwen3.8 dense 27B** (also legacy Qwen3.5/3.6) (`model35.rs`, `dynamic/qwen35.rs`) | 3 of 4 layers Gated DeltaNet (conv 4, fp32 state [nv,128,128], chunk 64); 1 of 4 GQA hd 256 with sigmoid output gate | partial rope 64/256, θ 1e7; mrope read as plain for text | (1+w) RMSNorm | SiLU-gated (MoE refused) | MTP and vision not loaded | bf16 contiguous, 1 sequence (Qwen3.5 can hold several and select) | library layouts; **lossy levels only** (no penguin on the engine) |
-| **Qwen3.8-Flash-Next** (Condor, `model_qwen4x.rs`) | 36 GDN layers; 12 sparse attention layers (24 q / 2 kv heads, hd 256; indexer picks 2,048 tokens by 4-token blocks; sigmoid gate) | partial rope 64/256, θ 1e7; M-RoPE for images | four residual streams joined by gated residuals, (1+w); n-gram embedding at layer 1 | MoE: softmax top-10 of 512, SwiGLU, Hadamard-rotated input; gated shared expert 640 | 1 MTP layer (verifies up to 8 rows); vision tower (27 blocks) | bf16 KV, indexer keys, GDN state; sequences swapped, not batched | Int6/5/4 dense, int8 shared and residual, codebook experts cb2/3/4/ternary decoded in `qx_cb_*` |
-| **gemma-4-12B** (also legacy 31B) (`model_gemma4.rs`, `dynamic/gemma4.rs`) | 5 of 6 sliding (hd 256, ring window+chunk); global hd 512, K=V option; q/k norm, weightless v norm | full θ 1e4 (sliding); proportional 64/256, θ 1e6 (global) | sandwich RMSNorm, per-layer scalar | GELU-tanh-gated | embed x sqrt(hidden), tied head, softcap 30, separate "assistant" draft model | bf16 contiguous, ring for sliding | library layouts; Int4-6 via `skinny.cu` for 1-16 rows |
+| **Qwen3.8 dense 27B** (also legacy Qwen3.5/3.6) (`dynamic/qwen35.rs`; `model35.rs` then, removed in R3b) | 3 of 4 layers Gated DeltaNet (conv 4, fp32 state [nv,128,128], chunk 64); 1 of 4 GQA hd 256 with sigmoid output gate | partial rope 64/256, θ 1e7; mrope read as plain for text | (1+w) RMSNorm | SiLU-gated (MoE refused) | MTP and vision not loaded | bf16 contiguous, 1 sequence (Qwen3.5 can hold several and select) | library layouts; penguin on the dynamic route (one GPU, or its layers cut over several), the lossy levels on one GPU or, where one does not hold it, in stages over several by the same rule |
+| **Qwen3.8-Flash-Next** (Condor; `dynamic/qwen4x.rs`, `model_qwen4x.rs` then, removed in R3d) | 36 GDN layers; 12 sparse attention layers (24 q / 2 kv heads, hd 256; indexer picks 2,048 tokens by 4-token blocks; sigmoid gate) | partial rope 64/256, θ 1e7; M-RoPE for images | four residual streams joined by gated residuals, (1+w); n-gram embedding at layer 1 | MoE: softmax top-10 of 512, SwiGLU, Hadamard-rotated input; gated shared expert 640 | 1 MTP layer (verifies up to 8 rows); vision tower (27 blocks) | bf16 KV, indexer keys, GDN state; sequences swapped, not batched (as built: the executor's rows through the scheduler) | Int6/5/4 dense, int8 shared and residual, codebook experts cb2/3/4/ternary decoded in `qx_cb_*` |
+| **gemma-4-12B** (also legacy 31B) (`dynamic/gemma4.rs`; `model_gemma4.rs` then, removed in R3b) | 5 of 6 sliding (hd 256, ring window+chunk); global hd 512, K=V option; q/k norm, weightless v norm | full θ 1e4 (sliding); proportional 64/256, θ 1e6 (global) | sandwich RMSNorm, per-layer scalar | GELU-tanh-gated | embed x sqrt(hidden), tied head, softcap 30, separate "assistant" draft model | bf16 contiguous, ring for sliding | library layouts; Int4-6 via `skinny.cu` for 1-16 rows |
 | **Kimi-K3** (`dynamic/kimi.rs`) | 69 of 93 layers Kimi delta attention (KDA, fp32 state 96x128x128, conv 4); 24 MLA (q 1536, kv 512, nope 128 + 64 shared, v 128, absorbed, sigmoid gate) | none (no rope anywhere) | KimiRMSNorm (two roundings); depth mix: each block's input is a softmax over the embedding and completed 12-layer blocks | layer 0 dense (situ); MoE: sigmoid + bias, top-16 of 896, latent 3584, situ; 2 shared experts as one MLP | - | MLA latent [ctx, 576] bf16 plus KDA state, contiguous | experts MXFP4 as released; rest lossless `Tiered`; expert cache with device-side plan (`dc_plan`, `dc_fill`) |
-| **GLM-5.3-Flash** (`dynamic/glm.rs`, `model_glm.rs`) | 34 of 45 KDA; 11 MLA (nope 256, v 256) with pooled-key indexer (top 2,048) | none (refused) | mHC: 4 streams, Sinkhorn mixing (20 iterations) | layers 0-2 dense SwiGLU clamp 10; MoE: sigmoid + bias, top-8 of 288, x2.5, 1 shared | 1 MTP head (hand-written engine only) | latent 512 + indexer keys + KDA state, contiguous | FP8 128x128 blocks as released; Int6/5/4 or codebook experts on the hand-written path |
+| **GLM-5.3-Flash** (`dynamic/glm.rs`, `kern_glm.rs`, `kern/glm.rs`) | 34 of 45 KDA; 11 MLA (nope 256, v 256) with pooled-key indexer (top 2,048) | none (refused) | mHC: 4 streams, Sinkhorn mixing (20 iterations) | layers 0-2 dense SwiGLU clamp 10; MoE: sigmoid + bias, top-8 of 288, x2.5, 1 shared | 1 MTP head (not loaded; R6 #145) | latent 512 + indexer keys + KDA state, contiguous | FP8 128x128 blocks as released, the block levels and hummingbird (the experts the Moe kind's block: `dynamic/experts.rs`) |
 | **DeepSeek-V4** Flash, Pro (`dynamic/deepseek_v4.rs`) | one shared KV head of 512; window 128 ring plus a per-layer compressed cache (ratio 4 with an FP4-simulated indexer, or every entry); learned sink; grouped low-rank output | partial rope 64/512; YaRN on compressed layers | mHC, 4 streams; FP8 quantized product inputs | every layer MoE: sqrt-softplus + bias, hash routing (token id) in the first layers, SwiGLU limit, 1 FP8 shared | MTP parsed, unused | window ring (E4M3-simulated) + compressed caches + fp32 pooling state | FP8 large matrices kept, FP4 experts exact |
 | **Muse Spark** 816B-A42B (`dynamic/muse.rs`) | GQA hd 64, sliding (rope) and global (no rope); weightless q/k norm, gated output with per-head norm | full rope on sliding layers only | centred (1+w) RMSNorm; learned residual gates X = aX + bO; sandwich | every layer MoE in a latent, sigmoid + bias, per-expert output norm, no shared | logit softcap with multiplier | bf16 rings | bf16, lossless `Tiered` |
-| legacy: Qwen3 dense (`model.rs`) | GQA, hd 128, q/k norm fused with rope (`qk_norm_rope`) | rope, full, no scaling (refused) | RMSNorm pre-norm, residual fused in `rmsnorm_add` | SiLU-gated | tied allowed | paged 12-bit lossless, 16-token pages, 8 rows | `mma`/`mma12` decoded in the library product; long prompts unpack then GEMM |
-| Nemotron-3-Super / Nemotron-H (`dynamic/nemotron.rs`; the hand-written engine is retired, `kern_nh.rs` holds the kernel table and weights) | pattern of Mamba-2 (SSD chunk 128, fp32 state [heads,64,128]) and GQA hd 128 | none | RMSNorm, `x + mixer(norm(x))` | MoE: sigmoid + bias, top-22 of 512, renorm, x5; latent 1024 (Super); relu^2, no gate; full-width shared expert | MTP not loaded | bf16 contiguous plus SSM and conv state | Int6/5/4, hb40 codebook; expert cache with CPU misses (`moe_nh.rs:273-319`) |
+| legacy: the earlier dense engine (`model.rs` then; as built `dynamic/dense.rs`, the plain dense kind) | GQA, hd 128, q/k norm fused with rope (`qk_norm_rope`) | rope, full, no scaling (refused) | RMSNorm pre-norm, residual fused in `rmsnorm_add` | SiLU-gated | tied allowed | paged 12-bit lossless, 16-token pages, 8 rows | `mma`/`mma12` decoded in the library product; long prompts unpack then GEMM |
+| Nemotron-3-Super / Nemotron-H (`dynamic/nemotron.rs`, loaded by the executor's loader from its lowered description; the hand-written engine is retired; its Mamba-2 layers run the kind's kernel table, `kern/mamba2.rs`) | pattern of Mamba-2 (SSD chunk 128, fp32 state [heads,64,128]) and GQA hd 128 | none | RMSNorm, `x + mixer(norm(x))` | MoE: sigmoid + bias, top-22 of 512, renorm, x5; latent 1024 (Super); relu^2, no gate; full-width shared expert | MTP not loaded | bf16 contiguous plus SSM and conv state | Int6/5/4, hb40 codebook; the Moe kind's block with its latent's own projections and the row layout of relu^2 experts, expert cache with CPU misses (`dynamic/experts.rs` `block`, `held`; `moe_hb.rs` `HbMoe`) |
 
 Recent families first, in bold; legacy rows last.
 
@@ -207,8 +229,8 @@ pub struct StepSpec {
 ```
 
 `launch` and `finish` are split so the scheduler's CPU work overlaps the device. At 17 ms a decode step on the 4080 SUPER the host has
-the whole step to admit, page, hash and build the next batch; today `model.rs:990` syncs the device every step and the dynamic path syncs
-inside `sample` (`dynamic/mod.rs:2402-2536`). `Tok::Prev` is how a decode row names a token the host has not seen yet; the device writes
+the whole step to admit, page, hash and build the next batch; when this was written `model.rs:990` synced the device every step and the
+dynamic path synced inside `sample` (`dynamic/mod.rs:2402-2536`). `Tok::Prev` is how a decode row names a token the host has not seen yet; the device writes
 step N's sampled ids into a ring that step N+1's embedding reads. This is SGLang's overlap scheduler and vLLM's async scheduling. A
 stop condition found one step late costs one wasted row-step, which the scheduler discards.
 
@@ -235,11 +257,30 @@ sample on the device -> sampled-ids ring, token ids to pinned host memory
 record the step's fence
 ```
 
-The executor captures this as a graph per row-count bucket where the backend supports capture and every block is capturable
-(`LayerImpl::capturable`). Prompt chunks vary in length; the executor captures decode-only steps by row bucket and runs mixed steps
-eagerly or piecewise (attention outside the graph, products inside), as vLLM's piecewise mode does. A block that must read the router's
-choices on the host (an expert store without a device path) splits the graph at that layer; `dynamic/mod.rs:1201` already refuses to
-capture such a step.
+The executor captures this as a graph per row-count bucket where every operation of the description is capturable (the layer kind's word,
+`dynamic/rows.rs` `capturable`, per operation of the executor). Prompt chunks vary in length; the executor captures decode-only steps by row
+bucket and runs mixed steps eagerly or piecewise (attention outside the graph, products inside), as vLLM's piecewise mode does. A block that
+must read the router's choices on the host (an expert store without a device path) takes no graph at all (`Dyn::rgraph_on`).
+
+Built (#329): a decode-only step's rows are padded to 2, 4, 8, ... and replay one graph. Every operation is capturable: it acts row by row,
+or it takes the step's rows that decode at once, each row through its own block tables and its own states (a table of the rows' state
+addresses the host writes per step, as vLLM's state indices; a padding row is at position -1, its slot -1 and its state entry 0, and reads
+and writes no cache row and no state): the attention kind (picked or not), the latent attention kind (its latents, indexer keys and pools,
+its attention over the latents cut into runs as a decode row's is), the compressed attention's window, compressors, indexer and attention,
+the mean-pooled indexer, the recurrent layers' convolutions and recurrences (Gated DeltaNet, Kimi delta attention, Mamba-2) and the n-gram
+embedding's state. Each row's kernels and sums are its own sequence's pass's on its one token. The ladder's top is the head's rows; where a
+block of experts is in the expert cache planned on the GPU it is that plan's 64 rows of a decode step (`devplan::DEV_STEP_ROWS`): a call of more rows is planned on
+the host, which reads the router's choices, so such a step runs eager; and there every row count has its own graph, unpadded (a padding row's
+choices would join the cache's plan, taking places and sending the host pairs). A latent attention whose ring is in 12-bit pages takes no whole graph:
+each sequence's pages are unpacked into the one staging ring by itself. Every other pass (a prompt's chunk, prompts together, decode rows
+with prompt chunks, decode rows of a description with no whole graph) runs in pieces (`dynamic/pieces.rs`): the runs of row-wise operations
+between the attention and recurrent operations are graphs, the rest eager between them. Pieces are captured for a pass's exact row count,
+not a padded bucket, because a product's kernel (the library's route, cuBLAS's algorithm) turns on its rows: a replay is the eager pass bit
+for bit. The one size captured is a full pass's (the chunk's rows: the prompt budget fills a mixed step to it), when the scheduler's step is
+made, as the decode graphs are, and for descriptions whose decode steps take no whole graph the decode steps' of 2 to 16, 32 and 64 rows;
+the step's metadata (positions, slots, the state table) is one buffer written in one copy, which every graph reads. A pass of another size
+runs eager, and so does a pass whose products take cuBLAS (on an A10, 2026-11-23, in a run whose record was not kept, full gemma-4-12B
+passes in pieces took 0.7% more GPU time than eager; whether cuBLAS keeps its eager algorithm in a capture is not measured).
 
 ## 3. The layer-kind interface
 
@@ -312,7 +353,6 @@ pub trait Backend: Send + Sync {
 
 pub trait LayerImpl<B: Backend>: Send {
     fn workspace(&self, shape: &StepShape) -> u64;            // bytes of the step arena it needs at this shape
-    fn capturable(&self) -> bool;
     fn run(&mut self, cx: &mut StepCx<B>, x: &mut B::Tensor) -> Result<()>;  // enqueue only; never waits on the device
 }
 ```
@@ -336,7 +376,12 @@ against the per-family reference with a bf16 tolerance and against transformers 
 family's pipeline (`glyd-engine/src/runtime/reference`).
 
 - Per kind: random weights at small shapes, the backend's kind against `Ref`'s, a tolerance per kind and format written next to the
-  kind (bf16 accumulation order differs; lossless formats must match the bf16 kernel bit for bit before the tolerance applies).
+  kind (bf16 accumulation order differs; lossless formats must match the bf16 kernel bit for bit before the tolerance applies). On
+  CUDA this is `glyd-engine kindcheck` (`dynamic/kindcheck.rs`): every layer of each recent family's random model, its bodies on
+  the GPU's own inputs and the residual's operations between them, against `Ref`; the bounds and the worst errors an RTX 4080 SUPER
+  measured are the table in `runtime/reference/mod.rs`. The attention's rounding points are a parameter of the kind
+  (`AttnRounding`: f32, FlashAttention's bf16 probabilities, transformers' eager bf16 scores), so the reference rounds where the
+  family's engine does.
 - Per model: tiny random models built from each family's real `config.json` with reduced widths (the `hubslice` approach), whole
   logits against `Ref` (R7).
 - Per checkpoint: the R7 digest of a real model's logits on fixed prompts, against the previous release and the old pipeline.
@@ -368,7 +413,8 @@ R1a (#134, CUDA in M2), R1b (#446, HIP in M5b) and R15 carry the detail; the des
   A step takes workspace from a bump arena that resets when the step's fence passes, so no buffer can be freed while queued work
   reads it, which is what makes the safe API sound without reference counts per launch (R15 lists the unsound functions).
 - **Typed launches.** Each kernel takes one argument struct by value. The struct is defined once in Rust (`#[repr(C)]`, `DevPtr<T>`
-  fields), and `build.rs` writes `kernels/args.h` that the CUDA and HIP sources include. CUDA and HIP pass kernel parameters up to
+  fields), and `build.rs` writes `kernels/args.h` that the CUDA and HIP sources include (not built: the launches are typed in Rust,
+  `src/kern/`, and no header is generated). CUDA and HIP pass kernel parameters up to
   4 KB by value, more than any of today's signatures need; the 255 untyped call sites become one generated function each. Metal gets
   the same structs as argument buffers.
 - **Graphs per bucket.** Captured once per row bucket at load; replay costs ~0.5 µs a launch (`docs/ceiling.md`, measured on the 4080).
@@ -384,17 +430,17 @@ CUDA kind every launch is a direct call on `Device`.
 
 ## 5. The scheduler and the KV cache
 
-### What exists
+### What existed (2026-11-20)
 
-`sched.rs` already does most of the right things for one model: it admits sequences, finds a prompt's pages by a chain of page keys
+`sched.rs` already did most of the right things for one model: it admits sequences, finds a prompt's pages by a chain of page keys
 (`kv::chain_key`, `Pager::lookup`), runs prompt chunks, decodes up to `MAX_ROWS = 8` rows, preempts the newest sequence by recompute
-when pages run out, and retries sequences whose lossless blocks were lost (`MAX_TRIES = 6`). Its 20 tests run on a `Fake` backend. Two
-things tie it to Qwen3: it imports `Row`, `Sample`, `Reply`, `Finish` and `MAX_ROWS` from `model.rs`, and its round is "one prompt pass,
-then one decode step". R4a moves it into `runtime::sched` with its own types and the `ModelStep` above, and keeps the tests.
+when pages run out, and retries sequences whose lossless blocks were lost (`MAX_TRIES = 6`). Its 20 tests ran on a `Fake` backend. Two
+things tied it to Qwen3: it imported `Row`, `Sample`, `Reply`, `Finish` and `MAX_ROWS` from `model.rs`, and its round was "one prompt pass,
+then one decode step". R4a gave it its own types and the `ModelStep` above, and kept the tests (as built it is still `src/sched.rs`).
 
 ### A round is one step
 
-The only batched path today is the legacy Qwen3 one, and its 4080 SUPER records of 2026-11-20 measured what the round structure costs
+The only batched path when this was written was the legacy Qwen3 one, and its 4080 SUPER records of 2026-11-20 measured what the round structure costs
 (Qwen3-8B, `benchmarks/gpu/rtx4080s-batched-prefill-2026-11-20`, `rtx4080s-bar-2026-11-20`). The recent families get the rule these
 measurements lead to, not the old round:
 
@@ -428,12 +474,115 @@ Two details the records found that the policy keeps:
   row count. On the description executor the kernels change at 16 rows and at 64 (`glyd-engine roundcheck`, 2026-11-22): in a step of
   16 rows or fewer each row's logits are its own pass's bit for bit, on every family; in a larger one they differ by the rounding of
   bf16 values (gemma-4-12B at wren, a text's tokens: a KL of 0.002 to 0.005 from the row alone on average, at most 0.04), whether the
-  other rows are a prompt's chunk or other sequences that decode. What the other sequences hold never changes a row's bits. So the
+  other rows are a prompt's chunk or other sequences that decode. What the other sequences hold never changes a row's bits, except where
+  the host computes some experts' pairs (the expert cache's cpu, split and auto modes, the codebook cache): the host sums a pair in another
+  order than the GPU, and which pairs it takes turns on the call and on the places' state, so the checks (`usercheck`, `keepcheck`,
+  `roundcheck`) hold such a row to the row alone at the kind's lossless bound unless the first discrete choice the two runs made apart in its
+  sequence's history (an expert route, an indexer's pick of pools) is a near tie (below 1e-2 on each run's own input): then it is reported. So the
   round that is one step re-rolls that rounding for a reply whenever a prompt runs beside it; so does decoding beside more than 16
   others, and so does cutting a prompt into other chunks (the same 224 to 376 token prompt alone, in chunks of 7 to 127 against one
   pass: 0.0008 to 0.05, and 0.36 at one place where it ends).
 - **Arrival skew.** Requests of a burst arrive over 40-60 ms (tokenizing one after another). The front end tokenizes on its own threads
   (R11) and the scheduler waits at most one decode step's time for more prompts when the queue is non-empty and no row is decoding.
+
+### Launch and finish (built, R4a #138)
+
+`ModelStep::launch` queues a round's step and `finish` returns its samples; between the two the host does the work of the step before.
+`Sched::round_one_step` launches step N+1 before it lands step N (`land`: tokens chosen and sent, ends found, slots given back) where the
+step `overlaps` and every sequence that samples in step N takes its largest logit (greedy, no log-probabilities). A decode row whose token
+step N chose names its head row (`Row::after`, the `Tok::Prev` above); the executor's `step_ids` kernel makes the step's int64 token ids
+from the host's tokens and step N's head (`tok`, the argmax), and the library's `mma_rows` looks the embedding's rows up by them on the GPU,
+bit for bit the rows `unpack` gives. A step that draws, or asks for log-probabilities, lands before the next is launched: its draws are
+made on the host from what the GPU made of its rows; its candidates (the 64 largest logits a row, `top`) and the total of a draw's weights
+or a row's log-sum-exp (`Sum`) are queued with the step and copied back with its samples (`ModelStep::draws`), so a draw whose cut and
+point lie among the candidates waits for nothing more (one past them asks the GPU for ranges of the row: `sampler::select`). Every step of the scheduler goes through `launch` and `finish` (a model whose
+rounds are two passes launches its prompt pass and its decode step each to run at once). A sequence whose token in flight is its last by its length has no row in the next step; one that ends on a stop token
+or the end-of-sequence token has had its row in the next step run, and that row's output is not taken.
+
+On the executor (`src/dynamic/rows.rs` `Lanes`) a step's inputs are copied on the stream from pinned memory (three lanes: one step
+running, the next queued, and the one before for its timings), its samples copied back into the lane, and `finish` waits on the lane's
+event, not the stream. A block table a step changes is copied on the stream from the lane too (`upload_tables_queued`): a step in flight
+reads the tables as they were, and a block given back is written only by the steps after it. No other wait is left in a decode step
+that keeps its blocks; a step that grows a sequence's blocks queues the copy and does not wait either. A recurrent model's states at a
+prompt's end (`mark`) and at a block boundary (`name`) are copied as the next step is launched, before its work: the scheduler asks then
+for the step in flight's sequences (`Sched::launch`), so the copies are of the states after that step's tokens. The 12-bit pages' status
+(the void pages a step made) is copied into the lane with the samples and read from there (`kv12_lost`). The operations that read the
+tokens (an n-gram embedding, routing by token) read the int32 ids `step_ids` writes beside the embedding's. The executor overlaps on one
+GPU where no layer's matrices are in the computer's memory and no block of experts reads the router's choices on the host (the blocks a
+decode graph captures): an expert cache's layers planned on the GPU (`--device`, src/devplan.rs) queue a decode step's call of up to 64 rows (another of up to eight)
+whole, and a call the store plans on the host (a prompt's chunk) synchronizes the stream itself. The store's end of a step
+(`ExpertStore::end_step`) reads what the GPU counted and writes the plan's next settings, so it runs only when a step lands with none
+queued after it: after 16 steps landed with a later one out, the step asks to be quiet (`ModelStep::quiet`) and the scheduler lands it
+before launching the next. `GLYD_ENGINE_OVERLAP=1` turns it on: it is off by default, since a launched step does not yet take the decode rows' one launch a layer,
+their graphs or the pieces. `GLYD_PROF=1` and `GLYD_ENGINE_STEP_PROF=1` time
+each step's GPU work and the GPU's idle time before it from events at its first and last work (`Gaps`).
+
+The models that ran one request at a time through a loop of their own (`server::work_gen`) are the scheduler's steps of one slot: stages
+and layers across GPUs (`ModelStep for Run`: a prompt in one call, a token a step, the logits read for a draw) and a model with a draft
+model (`ModelStep::draft`: a decode step is a drafting round, `spec_round`, each of its tokens sent and added as a step's; a request that
+asks for log-probabilities or a least length has plain steps). Condor's own engine (`qwenserve`, `qwen4x_serve.rs`'s `Qx` over
+`EngineQx`) was not the executor's and kept its loop. As built (R3d, #140): that engine is deleted. The family's description runs on the executor and through the
+scheduler: the release at penguin through `glyd run`, `serve` and `fit` (one GPU, or its layers cut over several), and Condor's packs through `qwenserve CKPT PACK --port` (`dynamic/qwen4x.rs` `http`:
+the chat page and the APIs, up to `--users` requests through `server::work_with`; `--gpus 0,1` cuts the layers over those cards through the generic split; the vision tower runs on the executor; not yet on the executor: the draft head over the expert cache).
+
+What the family's move was held to (`paritycheck` while Condor's engine existed, and `logitscheck` now it is deleted). The two engines gave the same bits
+through the first seven stages of layer 0 (the gated residual's norm, bottleneck, up product and mix; the linear attention's two products
+and its convolution) and parted at the delta rule, where they ran two kernels of one kind with different rounding points: the executor's is
+the kind's (the chunked kernel the Qwen3.5 layout runs: fp32 sums over normed q and k rounded to bf16), Condor's sums pairs of bf16 values
+in two passes. A layer kind has one kernel, so the executor's stays, and the family is held to the kind's CPU reference, not to Condor's
+engine:
+
+1. the stages before the delta rule had the same bits on both engines (checked while Condor's engine existed);
+2. wherever the executor's router chose other experts than the reference's own, the reference's router (fp32) is run on the executor's own
+   input for that token and layer (the block's normed input as the executor made it). Its choice there must be the executor's, or differ
+   from it by less than `kindcheck::NEAR` (1e-2) by its ranks on that same input. A choice that differs by `NEAR` or more on the same input
+   is a router that differs, and fails. How near the two choices are on the reference's own input is printed, and judges nothing;
+3. the executor's logits are within the kind's bound for the lossless level (the Qwen3.5 layout's fixtures': KL mean 1e-4, max 2.5e-4, the
+   best token on 85% of the rows with a clear lead) of the reference run again taking the executor's choices, on every row of both random
+   cases. A family has no bound of its own: the 5e-4 this family's fixture carried was fitted to a run of the executor and is withdrawn;
+4. the best token is the reference's own on every row where the reference's lead clears `CLEAR_LEAD`; the rows below it are printed.
+
+Why 2 and 3 and not a wider bound: the random model's routers leave choices within 1e-2 of the next expert, an engine that rounds anywhere
+takes some of them the other way, and one such choice moves its row, and the rows that read the states its pass wrote, by more than the
+bound allows arithmetic. A wider bound would cover that and a real fault alike. So the arithmetic is held, at the kind's bound, on the same
+choices (3), and the routers are held on the same inputs (2).
+
+Why 2 runs the reference's router on the executor's input and not on the reference's own: `NEAR` is kindcheck's constant, and there every
+body runs on the reference's own input, so a choice taken the other way can come only from the body's own arithmetic. In a whole model a
+later layer's router sees an input that already carries the earlier layers' bf16 roundings: on the first random case both of the family's
+engines are 2.3e-2 from fp32 at the fifth layer's output (its prompt), and on an A10 the executor's routers chose, against the reference's own input, experts
+1.2e-2 to 8.3e-2 apart by its ranks at 2 (`qwen4x`) and 11 (`qwen4x-s2`) tokens and layers, most of them in the long prompt's later
+layers (Condor's engine on `qwen4x`: 3, 1.7e-2 to 3.9e-2), while its logits on its own choices were within a KL of 3.2e-6 of the
+reference's. That margin measures the earlier layers' roundings, not the router. Given the same
+choices everything else is the reference's math (3); what is left to prove is the router itself, so it is held on the input it was given.
+On the same A10, on their own inputs the reference's router made the executor's choice at 25 of its 30 choices apart on `qwen4x` and 39
+of 40 on `qwen4x-s2`, the others near ties (1.7e-3 at most), and Condor's at 28 of its 35 (the rest near ties): every choice that was far
+from the reference's on the reference's own input, Condor's three among them, is the reference router's own on the engine's input.
+The figures against the reference's own choices and input are always printed beside them, and so are Condor's engine's by the same
+measures, its record from before it was deleted.
+
+An indexer's picks are choices of the same sort and are held by the same rule (`logits::held_on_choices`, a case's `on_choices`): GLM-5.3-Flash's
+random case keeps 2 pools of up to 6 by its indexers and 4 experts of 16 by its routers, each expert weighing about 0.6, and rounding its
+residual to bf16 alone moves the case's logits by a KL of 5.3e-3 on the CPU reference (4.1e-4 to 7.0e-3 on five other seeds,
+`logits::tests::glm_reference_with_its_residual_rounded`). The executor records each latent attention's picks with the inputs it scored (its
+queries, head weights and the complete entries' keys, `Dyn::trace_picks`); wherever its picks are not the reference's own, the reference's
+indexer (`reference::mla::choose`, fp32) is run on those inputs and must pick the same pools or a near tie (below `NEAR` by the pools' scores);
+the reference then takes the engine's picks with its experts (`LatentCache::take`), and the logits are held at the kind's bound.
+
+A latent attention's indexer computes its head weights (`weights_proj`) in fp32 on the GPU and keeps them so (kernels/mla.cu `small_linear_f32`),
+as the reference of the kind does, transformers' GlmMoeDsaIndexer does (it keeps `weights_proj` in float32) and vLLM's GLM-5.3-Flash path does (its head
+gate in fp32): rounded to bf16, a weight moves by up to 2^-9 of itself and a near tie of two pools' scores goes the other way. `kindcheck` holds each
+latent attention's head weights to the reference's fp32 product of the same input rows (within 1e-4 of the largest) and its picks to the reference's
+choice on the engine's own queries and keys with those weights (within 1e-4 of the scores, the order of fp32 sums), and prints the rows where bf16
+weights would have picked another set; `logitsmodel glm-dsa DIR --ties` makes GLM-5.3's random model with indexers whose picks the head weights
+decide (two heads' scores cancelling but for a 64th): on an A10 (2026-11-27), its two indexers' 256 traced rows of a prompt of 64 and 64 steps
+all took the reference's choice with fp32 weights, and bf16 weights would have picked another set at 23 of them.
+
+**Exact ties.** Where two scores are equal in fp32 the engine's rule is the reference's: a router takes the expert of the smaller index first
+(`reference::ffn`, kernels/moe.cu; the reference's groups of experts the smaller group first, which the executor refuses), and an indexer the earlier pool or entry first (`reference::mla`,
+`reference::comp`, kernels/mla.cu `idx_pick`), -0 below +0 (`total_cmp`'s order). transformers (`torch.topk`) and exo (`argpartition`) leave the
+order of equal scores unspecified, and vLLM's and SGLang's top-k kernels take theirs as their kernels do; so at an exact tie Glyd's choice is a
+defined one where a reference's may be either. Any difference of the scores, however small, orders them alike everywhere.
 
 ### Rows sized by memory
 
@@ -461,6 +610,31 @@ One block is 16 tokens for every kind. What a block holds depends on the layer g
 Layers whose blocks have the same bytes share a pool; groups whose block bytes differ get pools of their own, and one block id addresses
 the same tokens in every pool, so a sequence has one block table (vLLM's hybrid KV manager does the same with its KV cache groups). A
 model with only sliding and full layers (Gemma 4) holds per sequence window/16 blocks in the sliding group and context/16 in the full one.
+A prompt's room is taken at once as the scheduler lets it in: a full group's blocks to its end and, in a sliding group, the blocks its
+first pass reads, as many as the window and a chunk at its end take; the passes after take theirs as the window moves and give back what
+it leaves (`Pages::grow_from`). So one sequence alone needs no more of a sliding group than its window and a chunk, which is what the pool
+of one user holds. A sequence alone that the step still has no room for ends with an error in words; sent back to wait, it would only be
+let in again to the same end.
+
+What is built for the latent kind (`Op::Mla`, `dynamic/mla.rs`): a latent attention layer's cache is a ring of keys alone (`Ring::values`
+false: no room in the value pool), kv_lora + rope values a token, and GLM-5.3's indexer a second one of [normed key | gate score] a token.
+A pool of `kpool` tokens is keyed when its last token is written, and its key is written over that token's key (only the pooling read it,
+in the same call), so a block that a name or another sequence holds is never written. Both rings sit in the full group's pools, so these
+models take the same page budget, swap (R4d) and prefix sharing (R4c, at the marks of their delta-attention states) as the dense kinds.
+The indexer's pick is one operation and kernel for GLM-5.3's pools and DeepSeek-V4's compressed entries (`IdxPick`, `idx_pick`).
+
+What is built for the compressed kind (`Op::CompKv`, `Compress`, `IdxPick`, `CompAttn`, `dynamic/comp.rs`): DeepSeek-V4's window is a
+ring of keys alone in the window's sliding group, and its compressed entries, the attention's and the indexer's, are rings too
+(`Ring::entries`: a row an entry of `ratio` tokens). A group is the rings of one window and one ratio; a compressed group's blocks are
+16 entries, so a block covers 16 x ratio tokens (64 for the ratio-4 layers, 2,048 for the ratio-128 ones), and its table entry b holds
+the entries of tokens 16 ratio b on (`Pages::covering`). The allocator asks every question in tokens and each group answers it in its
+own blocks: a sequence of n tokens holds a compressed group's blocks to the one its last token is in; a cut into a block another
+sequence holds goes to that block's start; a start is found by name in whole blocks of every group (a compressed block is named for
+the 16-token block that ends it), so DeepSeek-V4's starts are found in steps of 2,048 tokens; a share at a mark inside a compressed
+block copies that block. The pools' budget gives every group as many tokens (`pool_blocks`). The kernels read and write the window and
+the entries through the sequence's block table (`v4_kv_prep`, `v4_comp_out`, `v4_attn_scores`, `v4_attn_out`, `idx_score_bf16`). Its
+states are its compressors' open windows alone (fp32 rows and scores of one or two windows a layer), so it keeps marks too, and the page
+budget, preemption, swap and prefix sharing apply to it as to every paged model.
 
 ### Compressed KV
 
@@ -471,13 +645,37 @@ design keeps it, with two changes:
 - **Deterministic capacity (R4b).** Admission reserves each block's worst-case escape chunks (the tables' `worst_chunks`) for the tokens the
   request may write; the pool is the sum of reservations, not a share of the cache. An admitted request never fails because its keys
   compressed worse than expected. If the reservation leaves less than the bf16 cache would hold, those layers store bf16 pages instead:
-  the planner picks per layer group the format that holds more tokens.
+  the planner picks the format that holds more tokens (as built, one format for the whole cache, not one per layer group: "As planned" below).
 - **Lost blocks become impossible, not rare.** With reservations, `Lost` remains only as a checked invariant: the kernel still writes the
   status word, and a lost block is a bug reported as an error, not a retry.
 
-Today's kernels take head dim 128 and GQA groups of at most 8 (`kv.rs:224-230`), which covers no recent family; widening them to head
-dims 256 and 512 and to MLA latents (576 values a token for Kimi-K3) is its own piece of work (#332), and until it lands those families
-use bf16 pages. Models without tables get bf16 pages; FP8 KV (as released or as a lossy level) is a third page format. The page format is a property of
+Built (R4b, chosen 2026-11-23: reserve the calibrated need, pause the newest request when the spare pool runs out): the
+escape pool is made for the calibrated chunks of every block, so a sequence's blocks reserve its calibrated need as it takes them. Values
+that compress worse make a page raw where the chunks run out (a slab of the raw pool for the page), and a page is void only where no slab
+is free. So a pass may begin only where every raw pool has a slab for every page it writes, beside what the step's growths and the copies
+back in flight have promised (`Dyn::kv12_room`, from the pools' status counts); where not, the named blocks no one holds are dropped, and
+then `ModelStep::grow` says no and the scheduler pauses the newest sequence (swapped or recomputed), whose pages are cleared as it gives
+them up (`glyd_gpu_kv_release`: its chunks and slabs back). Each raw pool holds at least one sequence's pages and a pass more
+(`Lossless::alone_slabs`, counted in the pools' budget), so a sequence alone is never refused for its values. Checked by
+`incompressible_values_pause_the_newest_and_fail_no_request` (the scheduler on the made-up model, every page raw) and on the GPU by
+`usercheck --kv12` with `GLYD_KV12_SHIFT=60 GLYD_KV12_POOL=1,0` (no step taken back, no request ended). Left: a copy back's pages take
+their chunks beside the steps that run meanwhile, which may take them first; such a page is void and its sequence taken back as before.
+
+As planned (#332): the planner counts what the pools take, a token's share of its page, escape room and raw slabs (`kv12::token_bytes`),
+and, once for all users, one sequence's raw slabs and the rows a pass unpacks (`kv12::once_bytes`). It makes each level's plan in both
+formats and takes the 12-bit pages only where they reserve no more than bf16 for the plan (`sizing::one_gpu_pages`; one format for the
+whole cache, not per layer group). One user at a long context then keeps bf16, and several users share the 12-bit pages' fixed cost.
+The plan says which (`kv_format`), and the loader takes the plan's word.
+
+The kernels of 2026-11-20 took head dim 128 and GQA groups of at most 8 (`kv.rs:224-230`), which covered no recent family; widening them to head
+dims 256 and 512 and to MLA latents (576 values a token for Kimi-K3) was its own piece of work (#332; as built, 12-bit pages hold heads of 128,
+256 and 512: `kvshapes`). **As built for latents (`dynamic/kvpages.rs`):** a latent attention's ring is one stream (`KV_ONE_STREAM`: the keys' tiles
+alone), its row in heads of 128 (Kimi-K3's 512 + 64 as 5 with 64 zero channels, GLM-5.3's 512 as 4); the step's
+latents go to staging rows and from there to their pages, and the attention reads a sequence's pages unpacked to bf16 rows (listed on the
+device, so a decode step's graph holds it), then runs the bf16 ring's kernel: the same values in the same order, the same bits. Every
+project gathers a cached latent into a 16-bit workspace for its decompressed prefill this way; the decode's
+reading the 12-bit latent in place (vLLM's Triton MLA reusing the loaded tile as V) is not built, so a latent's
+decode reads more bytes than bf16's, not fewer. GLM-5.3's indexer keys stay bf16. Models without tables get bf16 pages; FP8 KV (as released or as a lossy level) is a third page format. The page format is a property of
 the pool; attention kinds read pages through the pool's decode, as today's `kv_decode` does.
 
 ### Content-addressed blocks and the radix index (R4c)
@@ -521,19 +719,57 @@ The scheduler chooses per sequence by cost: 2,000 tokens of gemma-4-12B are ~49 
 of bf16 KV (the sliding layers hold only the last 1,024 tokens; ~14 ms each way at 25 GB/s). For a GDN or KDA model recompute also
 replays the whole prefix through the recurrent layers, so swap wins by more. Swap needs host memory the expert store may want; the plan gives the swap area a size.
 
+Built (R4d, #328): `ModelStep::swap_out` / `swap_in` / `swap_ready` / `swap_drop`, implemented once for the executor's paged sequences
+(`dynamic/swap.rs`). A swap copies what a step of the sequence reads: in every layer group the blocks of its tokens its table holds (a
+sliding group's window, a shared start's floor: `Pages::held_entries`, `restore`), its recurrent states and their copy at its mark. bf16
+rings move as their bytes, by one launch of a copy kernel over the blocks of every layer; 12-bit rings move as their pages are, in their 12
+bits: an image of each page (its bytes, the escape chunks it holds, its raw slab: `glyd_gpu_kv_save`), loaded into new pages with chunks
+and slabs lent to their new blocks, the directory naming them (`glyd_gpu_kv_load`, C API 22); a page that finds none is void, as one
+written is. The host end is pinned memory mapped into the device's addresses: no GPU staging. Out: the copy runs beside the next steps in
+two parts, the first `head` blocks of each group (the sequences: the most blocks a decode step takes of a group), then the rest and the
+states. The blocks given back keep the part that reads them as a fence (`Pages::release_fenced`); a fenced block is taken after every
+free block without one, a swapped sequence's first entries first, and the step that takes one waits for that part alone
+(`Dyn::fence_wait`); the slot's states are filled when the slot is used again, after the copy. Back: the copy runs on its own stream
+beside the other sequences' steps, and the sequence joins them when it is done. The choice (`Sched::swap_pays`): swap where 2 x bytes / link rate (measured
+on the swaps, `plan::LINK_GBS` before) is less than the sequence's tokens / the measured prompt-pass rate. The area: `plan::swap_area`,
+`SWAP_SHARE` = 2 x the GPU cache it backs (SGLang's `hicache_ratio` default), within the computer's free memory less `HOST_MARGIN`, read
+after the expert store's host tier is pinned; a sequence it has no room for is recomputed. Swapped, a sequence's cache is the same bit for
+bit: with prompts one a pass every reply under preemption is the reply alone (`usercheck` with `GLYD_ENGINE_PAGES`).
+
 ## 6. Expert tiering for every MoE
 
 ### What exists
 
 `offload.rs` is the expert store Condor runs on, and Nemotron-H and Kimi-K3 (`tp_cache.rs`) use parts of it:
 
-- **Slots.** Each MoE layer has GPU slots, `cache GB / ((layers + MTP) x expert bytes)` (`qwen4x_serve.rs:290-295`), replaced LRU among the
+- **Slots.** Each MoE layer has GPU places: the GPU memory the plan leaves (`plan::expert_cache_with`: every user's sequences first, the engine's work next, the places what is left) over the layers' places of an expert's bytes, replaced LRU among the
   experts the current call does not need (`offload.rs:62-110`); a call needing more experts than slots runs in waves (`offload.rs:241`).
 - **Misses.** `Mode` Copy, Cpu, Split or Auto (default Auto, `offload.rs:283-337`): `plan_groups` weighs the copy time against the
   host's time per (token, expert) pair, with smoothed measured costs and the copy stream's backlog (`offload.rs:401-497`). Host compute
   is used for calls of at most `CPU_TOKENS = 64` tokens (`offload.rs:53`).
 - **Promotion.** A miss seen again within 16 calls is copied in behind the call, at most 4 a call (`offload.rs:300-312`); over the
   record's traces a window of 16 found as many hits as 32 or 128 with fewer copies.
+- **Run to run.** Two things follow the copy link's timing:
+  - In the auto and split modes, `plan_groups` weighs measured times to choose which misses the host computes.
+  - In the cpu, split and auto modes, a call's promotions are copied only while the copy stream's backlog is at most `BACKLOG_US`
+    (10 ms). The backlog is the copy batches not yet seen done, at the measured time of a copy.
+
+  So which experts have places, and which pairs the host computes, can change from one run to the next. For example, another
+  process's work on the GPU changes it. A reply's bits change with it only where the host's product of an expert is not the GPU's
+  bits. That holds for two cases:
+  - Kimi-K3 at penguin: the host adds a release-format expert's products in another fp32 order than the GPU's MMA. A pair stays
+    within one bf16 last place, so the reply holds at the kind's bound.
+  - Condor's codes packs, in every mode.
+
+  `tiercheck --mode cpu` on an RTX 4080 SUPER (2026-11-26) measured this. Kimi-K3 at penguin: 11,907 of 20,480 logits differ
+  (copy: 0). Every other family with experts gives 0, at penguin and at every lossy layout (Kimi's too): the Qwen3.5 layout,
+  GLM-5.3 in bf16 and FP8, GLM-DSA, DeepSeek-V4 and V4.1, Muse Spark. So:
+  - Copy mode is bit-stable run to run for every model.
+  - The cpu, split and auto modes are bit-stable for every model except those two.
+
+  A check that holds one run to another to the bit holds the planner's times (`ExpertStore::hold_costs`,
+  `offload::hold_costs_from_now`: no backlog, no measured cost). `usercheck`, the tier checks and `servecheck` do this; a server
+  does not.
 - **Host and disk.** Condor's host tier is the memory-mapped pack (page cache, `will_need` read-ahead); an O_DIRECT pool with 16 reads
   in flight (`disk.rs`) serves hummingbird and Nemotron-H layers kept on NVMe.
 - **Host compute.** AVX2/AVX-512/NEON kernels per format (`cpu_cb.rs`, `cpu_hb.rs`, `cpu_experts.rs`, which skips the ~92% zero relu^2
@@ -586,6 +822,92 @@ Placement uses per-layer statistics, which the ceiling formula needs (`docs/ceil
 `LayerStats` per step, a hit-rate model in the planner calibrated from them, and `dcreplay` to compare the policy to an ideal one
 offline.
 
+What is built (R12b, #327):
+
+- **`LayerStats`** (`offload.rs`): each store layer's calls, rows, pairs, experts asked for and found, misses copied and computed
+  by the host, the host's pairs, the bytes read for the misses (over the link, by the host's kernels), copies behind the calls, and
+  the copy stream's, the host's and the wait's times. The engine ends a step's statistics after each step (`end_step`);
+  `ModelStep::expert_stats` returns the last step's and `/stats` every layer's since the process started (`"experts"`).
+- **One read per missed expert a step.** A step of B rows is one call a layer; its misses are its distinct experts that have no
+  place, each copied once (waves never copy an expert twice). The host's FP4 kernel (`cpu_fp4.rs`: Kimi-K3's experts and
+  DeepSeek-V4's release experts, which now have a host half) and the hummingbird places' of every mixture of experts (`cpu_hbg.rs`)
+  take an expert's pairs together: its rows are decoded once for every row routed to it, each pair's sums the bits it has alone.
+  The legacy route's host kernels (GLM's codebook rows `cpu_cb.rs`, Nemotron-H's `cpu_hb.rs` and `cpu_experts.rs`) still read an
+  expert once a pair, and the statistics count their bytes so.
+- **The copy-or-host choice by rows.** `Costs` prices a miss on the host as its expert's first row (`pair`: its bytes read, then a
+  row's products) plus each further row (`row`: the products alone), both measured from the host's calls by a least-squares step,
+  so a miss of many rows goes to a copy where its rows' products outweigh one. A call whose misses outnumber the places its hits leave is
+  copied whole in waves where the host's share would take longer (`waves_quicker`, `Auto` only).
+- **`storebench`** runs batched decode through the cache and writes each count of rows' statistics; `ceiling --stats` predicts the
+  step from them (`docs/ceiling.md`: DeepSeek-V4 and Kimi-K3 at the release's widths, 18 GB each on the 4080 SUPER, at 1, 8 and 32 rows).
+- **The plan on the GPU** (`devplan.rs`, kernels/moe.cu `xp_plan`/`xp_fill`/`xp_wait`/`xp_take`; `Offload::device`, a development
+  build's `--device-plan`, `tiercheck`/`storebench --device-plan`): a layer whose host half is FP4 experts (DeepSeek-V4's, Kimi-K3's) keeps
+  its places in a table on the GPU; a decode call's plan, its misses' copies (read through the host tier's mapped addresses), the
+  products, the promotions behind them and the wait for the host's pairs are kernels on the engine's stream, and the host's pairs
+  are a thread of the store's that answers the GPU's requests through mapped host memory (a request's number written last, its
+  answer's number read back by `xp_wait`). No host waits inside such a call, so a decode step of them is one graph
+  (`MoeLayer::reads_host` is false, and the one-row step is captured). The misses are split as the store's `plan` splits them
+  (`Params`: the store's `Costs` and mode): the ones with the most pairs copied, as many as make the longer of the copies and the
+  host's pairs shortest, the rest the host's; a hot miss the host keeps is promoted while the host's time leaves room for its copy.
+  A copy is priced at the link's time for an expert, measured once at load (the GPU's own copies are not timed). Calls of up to
+  `DEV_ROWS` (8) rows, and the calls of a step of rows that decode alone of up to `DEV_STEP_ROWS` (64, the most rows a request to the host's
+  half carries: #329's decode graphs of up to 64 rows; `ExpertStore::set_step_rows`), are planned on the GPU, whose misses the places cannot take are
+  the host's; more rows (a prompt's chunk) are the host's plan, whose waves copy every miss where the misses outnumber the places. (The first rule, a miss copied wherever a copy cost less than the host's pairs, ignored that the two run
+  at once and copied every miss at 1 and 8 rows: 62-80% slower than the host's plan on an A10, 2026-11-23, in a run whose record was not kept.) The store's own plan
+  (`LayerCache`) still plans a prompt's chunks: before such a call the GPU's table is read into it, after it written back.
+  On the decode traces of the routing record `benchmarks/moe-skew-2026-10-09` its clock finds 0.5 to 0.6 points fewer of the pairs in places than the least-recently-used
+  cache at one row (60.7, 72.8 and 79.4% at 17, 32 and 46% of the experts), and at 8 rows 5.1 more to 0.6 fewer.
+  Its GPU check, `tiercheck --device-plan` in copy mode (the logits with the plan against the store's own, bit for bit), ran on an A10 on
+  2026-11-25 on random DeepSeek-V4 and Kimi-K3 of release width: 0 of 646,400 and 0 of 20,480 logits differ (the run's record is not
+  in this repository). In the modes where the host computes pairs its logits are not the copy mode's bits, and no bound holds
+  them. `storebench --device-plan` measures speed and is not run. A call planned on the GPU joins the host's pairs as the host's plan
+  does: for a layer whose sum adds each pair's own row (a block layout: DeepSeek-V4's and Kimi-K3's FP4 experts) the host answers
+  each pair's weighted row, `xp_rows` puts it in its pair's row of the workspace beside the GPU's, and the sum adds every pair in the
+  order of its choices, rounded once (`rows_sum`); the host's sums by token added after the GPU's pairs (`xp_take`, as before for
+  other layers) round apart from that, which on an A10 put a random DeepSeek-V4's row past the kind's bound at 8 rows.
+- **`storecheck`** (src/tiering.rs, a development build's) is the batched-decode test of a model larger than the GPU: n prompts
+  alone, then decode steps of n rows (1, 8 and 32) through the cache with fewer places than experts, against the same calls with
+  every expert on the GPU (a smaller cut that fits) or, for a model larger than the GPU, against the cache in copy mode planned on
+  the host. A run's rows are held bit for bit where the host computed no pair, else on the run's own routers' choices at the kind's
+  bound (`logits::Judge`, from a traced rerun whose bits must be the run's); each decode step's bytes read from the computer's memory
+  for its misses against its distinct missed experts' bytes, within 2%; each step's statistics, layer by layer, are the step's output
+  (`ModelStep::expert_stats`); the decode steps replay their graphs where the plan is on the GPU, and where the host plans a call (it
+  reads the router's choices, a wait no graph holds) or a description's decode rows have no tables, the line says why they run eager.
+  On an A10 (2026-11-26) with random models at the releases' widths: in copy mode the rows are the resident model's bits at 1, 8
+  and 32 rows for DeepSeek-V4, Kimi-K3, GLM-5.3-Flash in FP8 and the Qwen3.5 layout with experts (cuts of 13 to 16 GB), and the
+  same bits as the copy-mode cache for models of 26 to 40 GB; every decode step of every mode read its distinct missed experts'
+  bytes exactly (+0.00%; at 8 rows 1.3 to 9.2 GB a step); with the plan on the GPU every step of 1, 8 and 32 rows replayed its graph
+  (DeepSeek-V4, and Kimi-K3 with its latent attention: `kimirandom --real --mla`).
+  Where the host computes pairs at the releases' widths (DeepSeek-V4, Kimi-K3), rows went past the kind's bound within a few
+  steps (KL to 0.1-0.7). The cause is the random draws, not the host: each pair the host computes is the GPU's within one or two
+  bf16 last places (the fp32 order of its sums: `--pairs`, which also replays the host's FP4 pairs in an A10's tensor-core order), and
+  the same draws put the GPU against itself past the bound when only its experts' sums are split over K (`--floor`: KL 0.1-1.3 on
+  the DeepSeek-V4, Kimi-K3 and Qwen3.5-layout cuts, nearly every row a router choice apart by the first decode step). `floortrace`
+  shows the amplification: a reordering moves one layer's output 1e-3 of itself, and the residual's difference grows two to a
+  hundred times a layer from there. So the release-width cuts are drawn for width, not depth: the fewest layers that hold two
+  blocks of experts (Kimi-K3: its dense MLP, then two blocks, its latent attention last, `kimirandom --real --layers 3 --mla`;
+  DeepSeek-V4 `--layers 2`, the first routed by token; the Qwen3.5 layout `--layers 2`, delta attention then full attention; GLM-5.3
+  in FP8 `--layers 2`), the head drawn for logits of an RMS about 0.5 (as GLM-5.3's and Kimi-K3's random models), and Kimi-K3's
+  release width the small model's conditioned draw (its decisive router, the depth mix, values and decay). On an A10 their floors
+  hold (the rows with no choice apart KL mean 4.3e-6 to 4.5e-6 on Kimi-K3 3 x 256 and DeepSeek-V4 2 x 128, 1.5e-6 to 2.1e-6 on the
+  Qwen3.5 layout 2 x 256, 67 to 100% of the rows judged so; GLM-5.3 in FP8 not measured: the library never splits its products),
+  and every host mode, the plan on the GPU too, holds the kind's bound on the run's own choices at 1, 8 and 32 rows (Kimi-K3: the
+  held rows' KL mean 2.4e-7 to 4.4e-6; DeepSeek-V4 without its simulation 5.3e-7 to 4.8e-6, none failed; the Qwen3.5 layout and
+  GLM-5.3 in FP8 have no host half: their rows are the GPU's bits).
+  DeepSeek-V4 with the release's simulated quantizations is held in three parts, as its logits case (`logits::dsv4_also`): the
+  judged lines without them, the quantizing operations bit for bit, the whole model with them printed as INFO. A row whose history
+  first parts at a router prints the routers' inputs there, layer by layer: on the small Kimi-K3 (8 layers) at 32 rows in cpu mode
+  they part by 2.7e-3 after the first block of experts the host computed (one bf16 place of its output) and by 1.1e-2 at layer 7,
+  where the decisive router's margin moved 5.5e-2: the draw's depth, not the host; its three-layer cut (`kimirandom --layers 3`,
+  its latent attention last) holds every mode at 1, 8 and 32 rows. DeepSeek-V4's indexer picks are in the rows' histories now
+  (`Dyn::trace_row_picked`).
+- **The slot policy and the hit-rate model at many rows**, checked on the same record's decode traces (20 generations, 1 to 20
+  rows side by side): a call's experts are asked for in the order of their pairs, fewest first (`by_rows`), so the busiest stay in
+  places across waves (1 to 7 points more pairs found at 16 and 20 rows, never fewer); the planner prices a step's misses as its
+  distinct missed experts (`plan::step_misses`: the distinct experts of U rows, E (1 - (1 - k/E)^U), less the share the places
+  find, f^s at one row and going to f as the rows' experts fill the places), within 19% of the cache's at every point (it had
+  priced one row's misses at any rows: 7.4 experts a layer at 20 rows against 215).
+
 Dense layers in RAM (P2d's last rung before refusing) use the same tiers: a dense layer is a single expert every row routes to, so
 the store's copy-or-compute choice applies to it unchanged.
 
@@ -615,19 +937,20 @@ Recent families first; the legacy pipelines move last, at parity, so they can be
 | 1 | `sched::Backend` renamed `ModelStep`, scheduler types moved out of `model.rs`; `model::Engine` implements it unchanged | R4a #138 | no behaviour change; every later step uses the new names | - |
 | 2 | runtime context, typed errors, arenas, typed launches for the kernels the executor uses | R16 #237, R15 #236, R1a #134 | mechanical, benched per PR, needed by the executor | 56 globals, untyped launches |
 | 3 | layer-kind library and `Ref`; CUDA kinds wrap today's kernels (no new kernels) | R2 #135 | the vocabulary the descriptions need | the family-named `Op` variants, as kinds replace them |
-| 4 | the executor implements `ModelStep` (one sequence first); `work_gen` replaced | R4a #138 | every description reaches the scheduler | `work_gen` |
+| 4 | the executor implements `ModelStep` (one sequence first); `work_gen` replaced (done: drafted and multi-GPU models are steps of one slot) | R4a #138 | every description reaches the scheduler | `work_gen` (deleted) |
 | 5 | **gemma-4-12B and Qwen3.8 dense**: descriptions from `config.json`, batched rows, paged KV (sliding ring, GQA, GDN state slots), graphs per row bucket; Qwen3.8 dense gains its lossless level | R3a #136, R4b #141, #329; Qwen3.8 penguin (#331) | the recent dense models; the first batched paths besides legacy Qwen3 | - |
 | 6 | lossless KV for head dims 256/512 and MLA latents | #332 | the 12-bit format reaches the recent families | - |
 | 7 | **DeepSeek-V4, Kimi-K3, GLM-5.3-Flash, Muse Spark**: batched rows, paged MLA latent and compressed-entry groups, KDA state slots, expert tiering on the MoE kind | R12 #232, #327, R13 #234 | the large recent families; single-user parity on their reference boxes first, then rows | `tp_cache.rs` special cases, the GLM development engine |
 | 8 | content-addressed blocks and the radix index; state snapshots for GDN/KDA | R4c #142 | needs paged KV on the recent families first | `Pager`'s 64-bit chain |
-| 9 | **Qwen3.8-Flash-Next (Condor)** | R3d #140 | the shipping consumer path; within 3% of v0.33.0 | `model_qwen4x.rs`, `Qx`, `qwen4x_serve.rs` sizing |
-| 10 | recent releases not loaded yet: GLM-5.3, Qwen3.8-2.4T-A95B, Kimi-K3.1-Pro, DeepSeek-V4.1, DSpark drafters | #333 | descriptions on the kinds steps 5-9 built | - |
+| 9 | **Qwen3.8-Flash-Next (Condor)** | R3d #140 | the shipping consumer path; within 3% of v0.33.0 | `model_qwen4x.rs`, `Qx`, `qwen4x_serve.rs` sizing (deleted) |
+| 10 | recent releases not loaded on 2026-11-20 (GLM-5.3 and DeepSeek-V4.1 are loaded since, at penguin: `support.rs`): GLM-5.3, Qwen3.8-2.4T-A95B, Kimi-K3.1-Pro, DeepSeek-V4.1, DSpark drafters | #333 | descriptions on the kinds steps 5-9 built | - |
 | 11 | the standard families: Llama 3, Mistral, Qwen 2/2.5, Phi-4, Granite, OLMo, SmolLM (the M2 gate's list) | F1a #166, F1b #167, F1d #169, F1e #170, F1h #173 | one GQA + SwiGLU kind with parameters; proves "config only" | the vLLM plugin path for them (F7, later) |
 | 12 | legacy at parity: Qwen3.5/3.6 and gemma-4-31B (same code as step 5), Nemotron-3-Super/Nemotron-H, Qwen3 dense with its lossless paged KV | R3b #137, R3c #139 | pipelines deleted; no optimisation beyond parity | `model35.rs`, `model_gemma4.rs`, `model_nh.rs`, `model.rs` |
 
-Steps 5 and 6 run in parallel once step 4 has landed, and step 7 can start with 5. The legacy Qwen3 path keeps serving until step 12;
-its measured numbers (59.9 tok/s at 1 user, 452.7 at 8 on the 4080 SUPER) are the parity bar there and the reference for what batching
-must give the recent families in step 5.
+Steps 5 and 6 run in parallel once step 4 has landed, and step 7 can start with 5. The old dense path served until step 12.
+Step 12's dense part is R3c (#139): every config the description builder's `llama` reading takes (the plain dense kind), lowered to
+the shared operations (`lower::dense`) and served by the scheduler with paged keys and values; `model.rs` and what only it used are
+deleted.
 
 ## 8. Prior art
 
@@ -754,19 +1077,19 @@ tied; 10.9 B body parameters and a 1.0 B head. A token reads 6.74 GB (the tied e
 copy rate (736 on the spec sheet), ~104 TFLOPS bf16 with fp32 accumulation; wren's 4-bit weights are decoded to bf16 for the tensor
 cores, so flops are at the bf16 rate. Flops a token: 23.8 GFLOP, plus attention (0.67 GFLOP a token in the sliding layers once the window
 is full, and 0.26 MFLOP per token of context in the global ones). KV a token: 327,680 bytes in the sliding layers (up to the window),
-8,192 in the global ones, bf16 (no 12-bit tables for these head dims yet).
+8,192 in the global ones, bf16 (there were no 12-bit tables for these head dims when this was measured).
 
 | step | bytes (weights + KV) | at 702 GB/s | flops | at 104 TFLOPS | ceiling | measured |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
 | decode, 1 row, ~30 tokens of context | 6.74 GB | 9.60 ms | 24 GFLOP | 0.23 ms | 104 tok/s | 11.22 ms, 89 tok/s (86%) |
-| decode, 8 rows, 4,096 context | 6.74 + 2.95 GB | 13.81 ms | 0.20 TFLOP | 1.97 ms | 72 tok/s a user, 579 total | not possible today (one sequence) |
-| decode, 64 rows, ~370 context | 6.74 + 7.52 GB | 20.32 ms | 1.54 TFLOP | 14.85 ms | 49 tok/s a user, 3,150 total | not possible today (the M2 gate) |
+| decode, 8 rows, 4,096 context | 6.74 + 2.95 GB | 13.81 ms | 0.20 TFLOP | 1.97 ms | 72 tok/s a user, 579 total | not possible when written (one sequence); not measured since |
+| decode, 64 rows, ~370 context | 6.74 + 7.52 GB | 20.32 ms | 1.54 TFLOP | 14.85 ms | 49 tok/s a user, 3,150 total | not possible when written (the M2 gate); not measured since |
 | prompt, 8 x 30 tokens | 6.74 GB | 9.6 ms | 5.7 TFLOP | 55 ms | 55 ms | one prompt at a time |
 | prompt, 2,000 tokens | 6.74 GB | 9.6 ms | 49 TFLOP | 473 ms | 473 ms | not recorded |
 | prompt, 4,000 tokens | 6.74 GB | 9.6 ms | 100 TFLOP | 959 ms | 959 ms | not recorded |
 
 The one-row measurement is `research/ceiling/gemma4-12b-wren-4080-2026-10-17.txt` (12.47 ms; in git history since the raw-data move,
-commit 26faee41) and GLY-312's prefetch change after it (11.32 to 11.22 ms, commit 4f245566). That record's profile: the four products
+commit 26faee41) and the prefetch change after it (11.32 to 11.22 ms, commit 4f245566). That record's profile: the four products
 take 10.18 ms against 8.80 ideal (86% of the copy rate), and norms, attention, prep and the activation 1.42 ms.
 
 - Decode is memory-bound only up to ~42 rows here (6.74 GB / 702 GB/s equals rows x 23.8 GFLOP / 104 TFLOPS), against ~103 for an
@@ -829,7 +1152,7 @@ with expert parallelism across nodes (D4). That is a planner fact, not a runtime
 | risk | effect | what we do |
 | :--- | :--- | :--- |
 | The generic executor loses fusions the hand-written engines have (Qwen3's fused `gemm3f` epilogue, Kimi's six-product KDA) | decode a few percent slower; the bench gate blocks the move | fusions live inside a block's `LayerImpl`, where they are today; a kind may take its neighbour's norm and residual |
-| Worst-case escape reservation eats the lossless KV's gain | fewer tokens than bf16 for some models | measure per model in R4b; the planner picks bf16 pages for a group where they hold more |
+| Worst-case escape reservation eats the lossless KV's gain | fewer tokens than bf16 for some models | measure per model in R4b; the planner takes bf16 pages where the 12-bit pages reserve more (one format for the plan: `kv_format`) |
 | A host-planned expert store breaks the step graph | ~10-20 µs a MoE layer on consumer cards | the device plan where copies dominate; the host plan only where host compute is the common case |
 | Recurrent-state snapshots are large (434 MB a sequence for Kimi-K3) | prefix reuse costs memory on KDA/GDN models | snapshots at turn ends only, LRU, counted in the plan |
 | MLX's lazy graph and our explicit queues disagree on when work runs | the Metal backend is slower than MLX alone | the spike (step 0) runs a kind through `mlx-c` before R2 lands |

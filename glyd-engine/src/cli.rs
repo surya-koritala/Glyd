@@ -5,25 +5,22 @@ use crate::args::Args;
 use crate::chat::{Chat, Message};
 use crate::conv::{Gen, Part, Request, Splitter, Talk};
 use crate::dev::{Dev, Gpu};
-use crate::ffi::Blas;
-use crate::fit;
+use crate::gpu_ops::GpuOps;
 use crate::hub::{self, Hub};
 use crate::levels::{self, is_qat, layout_for, QAT_WREN};
 pub use crate::levels::{packed_repo, ship_layout, short_name};
 use crate::machine;
-use crate::model::{Engine, Opts};
-use crate::nemotron::{pack_layout, ConfigNemotronH, NhKind};
-use crate::offload::{CachePlan, ExpertStore};
-use crate::plan::{reserve_of, Kind, LoadPlan, Target, GEMMA_CHUNK, GEMMA_DRAFT_BYTES, HOST_MARGIN, LOSSY_CTX, LOSSY_MIN_CTX, LOSSY_WORK};
-use crate::qwen35::Config35;
-use crate::qwen35::Pack35;
+use crate::offload::ExpertStore;
+use crate::plan::sizing::{bits, lossy_plan_over, qwen3_plan, rooms, size, size_dynamic, static_family, target};
+use crate::plan::{Kind, LoadPlan, Target, HOST_MARGIN, LOSSY_CTX};
+use crate::runtime::config::ModelConfig;
 use crate::sampler::{self, Params};
 use crate::server::{self, Job, Piece};
 use crate::status::{Status, STATUS};
 use crate::store;
 use crate::tok::Tok;
 use crate::ui::{fmt_time, gb, gib, Done, Refusal, Ui};
-use crate::weights::{choose_layout, packed_bytes, packed_layout, v7_manifest, Config, Layout};
+use crate::weights::{v7_manifest, Config, Layout};
 use glyd_gpu::json::{self, Value};
 use glyd_gpu::save::Source;
 use std::cell::RefCell;
@@ -81,25 +78,17 @@ fn dim(s: &str, on: bool) -> String {
 }
 
 /// The level MODEL asks for, as a refusal where its tag is no level this build runs (src/levels.rs has the table and the rules).
-fn level(model: &str, lossy: bool) -> Done<(&str, Option<Layout>)> {
+pub(crate) fn level(model: &str, lossy: bool) -> Done<(&str, Option<Layout>)> {
     levels::parse(model, lossy).map_err(|e| Refusal::new(e.what, e.fix))
 }
 
-/// Whether MODEL is a Gemma 4 model: a directory whose config says so, or a Hub name of one (google/gemma-4-..., glyd/gemma-4-...).
-fn is_gemma4_model(model: &str) -> bool {
-    match std::fs::read_to_string(Path::new(model).join("config.json")) {
-        Ok(text) => crate::gemma4::is_gemma4(&text),
-        Err(_) => short_name(model).to_ascii_lowercase().starts_with("gemma-4"),
-    }
-}
-
 /// A level's name from its layout.
-fn level_name(layout: Layout) -> &'static str {
+pub(crate) fn level_name(layout: Layout) -> &'static str {
     levels::name_of(layout)
 }
 
-/// The wren repo of a Gemma 4 model that has one (the instruction-tuned 12B and 31B, packed exact from Google's QAT checkpoint), from its Hub name or its penguin repo's.
-fn gemma_wren(model: &str) -> Option<String> {
+/// The wren repo of a model packed exact from its publisher's QAT checkpoint (src/levels.rs `QAT_WREN`), from its Hub name or its penguin repo's.
+pub(crate) fn qat_wren(model: &str) -> Option<String> {
     let repo = match model.strip_prefix("glyd/").and_then(|n| n.strip_suffix("-penguin")) {
         Some(n) => format!("glyd/{n}-wren"),
         None if is_qat(model) => packed_repo(model, "wren"),
@@ -124,10 +113,35 @@ fn v7_level(model: &str, have: Option<Layout>, asked: Option<Layout>) -> Done<Op
     }
 }
 
-/// The level run, serve and preflight take MODEL at: a glyd-v7 directory's own, else the one asked; a Gemma 4 model without one is penguin (it runs on the engine's Gemma path, its packs lossless:
-/// the levels' route with the lossless layout).
+/// Whether MODEL is a plain dense decoder (the dense kind on the executor: src/dynamic/dense.rs), by its config.json alone (`config_text`: the directory's, the
+/// cache's, else the Hub's). A name says nothing of the kind: where the config is not to be had the model has no level here, and the path that reads it says why.
+#[cfg(test)]
+fn is_dense_model(model: &str) -> bool {
+    model_config(model).is_ok_and(|c| c.is_dense())
+}
+
+/// The level run, serve and preflight take MODEL at: a glyd-v7 directory's own, else the one asked, else its row's first (`row_level`).
 fn run_level(model: &str, asked: Option<Layout>) -> Done<Option<Layout>> {
-    Ok(v7_level(model, v7_layout(model)?, asked)?.or_else(|| (is_gemma4_model(model) || dynamic_family(model).is_some()).then_some(Layout::Tiered)))
+    Ok(v7_level(model, v7_layout(model)?, asked)?.or_else(|| row_level(model)))
+}
+
+/// The first level of MODEL's row in the table (src/support.rs; penguin for every row: each runs on the description executor or the dynamic route, its packs
+/// lossless), as a layout (penguin's the lossless one). The row is its config.json's (`model_config`: the directory's, the cache's, else the Hub's, the one parse
+/// every later step reads), never its name's: no level needs choosing before the config can be read, since every step after this one reads it too. Where the
+/// config is not to be had, or names no family, it has no level here, and the path that reads it says why (`unrun`: the Hub's refusal of a gated repo, ...).
+fn row_level(model: &str) -> Option<Layout> {
+    let row = crate::support::row(model_config(model).ok()?.family()?);
+    levels::by_name(row.levels.first()?).map(|l| l.layout.unwrap_or(Layout::Tiered))
+}
+
+/// The refusal of MODEL where no engine of this build takes it (`run_level` gives it no level): what `supported` says of its config, in the words the program that hands
+/// a model to another runner reads.
+fn unrun(model: &str) -> Refusal {
+    let name = short_name(model);
+    match config_text(model).and_then(|text| supported(&name, &text)) {
+        Err(r) => r,
+        Ok(()) => Refusal::unsupported(format!("{name}: no engine of this build runs it"), unrun_fix()),
+    }
 }
 
 /// The level `fit` plans for MODEL on this machine (plan.rs `planned`, with this command's own flags: --users, --ctx), as a layout: penguin's is the lossless one. None where the planner
@@ -150,9 +164,8 @@ fn planner(a: &Args, model: &str) -> Option<crate::plan::Planned> {
 /// The level run, serve and preflight load MODEL at (`run_level`), where nothing is asked the one `fit` printed: a Gemma 4 model or a family of the dynamic route takes
 /// penguin by default (`run_level`), which a 16 GB card cannot hold for Gemma 4 12B; the planner's level is what the printed plan said would load (P16, #221). A tag, --lossy,
 /// a glyd-v7 directory and a pre-packed repo are their own level.
-/// A family whose default is no level at all here (`run_level` None: Qwen3.5 to 3.8, which run at their lossy levels alone, and the Qwen3 dense models) takes the planner's level
-/// where it is a lossy one: Qwen3.8-27B on a 24 GB card is swift (the M1 gate on Windows, an A10G), where it was refused as penguin; a Qwen3 model the planner keeps lossless stays
-/// on its own path (None).
+/// A family whose default is penguin takes the planner's level where it is a lossy one: Qwen3.8-27B on a 24 GB card is swift (the M1 gate on Windows, an A10G), its penguin
+/// needing two such cards or a larger one; a model the planner keeps lossless stays at penguin.
 fn load_level(a: &Args, model: &str, asked: Option<Layout>) -> Done<Option<Layout>> {
     let layout = run_level(model, asked)?;
     // (a tag is its own level, `:penguin` too, whose layout is the untagged one's: the ladder, not the planner, settles what a tagged model that does not fit loads at)
@@ -187,24 +200,36 @@ fn load_level(a: &Args, model: &str, asked: Option<Layout>) -> Done<Option<Layou
     Ok(layout)
 }
 
-/// The family of a model the dynamic engine runs from its release (DeepSeek-V4, GLM-5.3-Flash, Muse Spark, Nemotron-H; GLY-354), by its config; None for
-/// another path's, a glyd-v7 directory's, or a config not to be had (offline).
+/// The family of a model the dynamic engine runs from its release (DeepSeek-V4, GLM-5.3-Flash, Muse Spark, Nemotron-H, the Qwen3.5 layout), by
+/// its config; None for another path's, a glyd-v7 directory's, or a config not to be had (offline).
 fn dynamic_family(model: &str) -> Option<&'static str> {
     if v7_layout(model).ok().flatten().is_some() {
         return None;
     }
-    crate::dynamic::split::family(&config_text(model).ok()?)
+    crate::dynamic::split::family_in(&*model_config(model).ok()?)
+}
+
+/// Whether a family of the dynamic route takes `layout` on the one-GPU path of the lossy levels instead (`load_lossy`'s own): every level but penguin of a
+/// family whose row has lossy levels (Nemotron-H, the Qwen3.5 layout); the others run penguin and hummingbird on the dynamic route alone.
+fn lossy_route(family: &str, layout: Layout) -> bool {
+    layout != Layout::Tiered && crate::support::row_named(family).is_some_and(|r| r.allows("kestrel"))
 }
 
 // ---- the GPU --------------------------------------------------------------------------------------------------------------------------------------------
 
 /// A failure of what this engine does that vLLM does not need: the status that hands the model to it.
-fn cannot(e: impl std::fmt::Display) -> Refusal {
+pub(crate) fn cannot(e: impl std::fmt::Display) -> Refusal {
     Refusal::unsupported(e.to_string(), "")
 }
 
 /// The GPU a run uses: the one with the most free memory of those the driver shows (CUDA_VISIBLE_DEVICES applied), as the earlier release chose; the contexts the look at the others made are let go.
 fn gpu_pick() -> Done<Gpu> {
+    gpus_pick().map(|g| g.0)
+}
+
+/// `gpu_pick`'s GPU and every GPU of the Ampere generation or newer the driver shows, that one among them (a lossy level's layers cut into stages over them:
+/// `plan_level`); their contexts are made again by the stages that use them.
+fn gpus_pick() -> Done<(Gpu, Vec<Gpu>)> {
     let gpus = Dev::probe_all().map_err(|e| {
         if e.kind == crate::ffi::Kind::NoDriver {
             Refusal::unsupported(
@@ -219,13 +244,14 @@ fn gpu_pick() -> Done<Gpu> {
     for other in gpus.iter().map(|x| x.ordinal).filter(|&i| i != g.ordinal) {
         Dev::release(other);
     }
+    let all: Vec<Gpu> = gpus.into_iter().filter(|x| x.cc.0 >= 8).collect();
     if g.cc.0 < 8 {
         return Err(Refusal::unsupported(
             format!("{} (compute capability {}.{}) is older than the engine runs on", g.name, g.cc.0, g.cc.1),
             "glyd run needs the Ampere generation or newer: RTX 30 and 40 series, A10, A100, L4, L40S, H100",
         ));
     }
-    Ok(g)
+    Ok((g, all))
 }
 
 /// The machine code this build carries (`sm_80 sm_86 ...`, build.rs), or "none" for a build without kernels.
@@ -289,271 +315,164 @@ fn engine_refusal(e: crate::ffi::Error, name: &str, fit: &LoadPlan, gpu: &Gpu) -
 
 // ---- a model made ready -------------------------------------------------------------------------------------------------------------------------------
 
-struct Prepared {
-    dir: PathBuf,
-    tables: PathBuf,
-    ctx: usize,
-    fit: LoadPlan,
-}
-
-fn architecture(cfg_text: &str) -> Option<(String, bool)> {
-    let v = json::parse(cfg_text).ok()?;
-    let arch = v.get("architectures")?.as_array()?.first()?.as_str()?.to_string();
-    let scaled = v.get("rope_scaling").is_some_and(|r| *r != Value::Null);
-    Some((arch, scaled))
-}
-
-/// What a Qwen3 config.json sets that the engine does not do (it would run such a model wrongly, and without a word): a sliding window or layers that are not full attention, biases in the attention,
-/// an activation other than silu.
-fn unsupported_setting(cfg_text: &str) -> Option<&'static str> {
-    let v = json::parse(cfg_text).ok()?;
-    let on = |k: &str| v.get(k).is_some_and(|x| !matches!(x, Value::Null | Value::Bool(false)));
-    if on("sliding_window") && v.get("use_sliding_window").is_some_and(|x| *x != Value::Bool(false)) {
-        return Some("a sliding window");
-    }
-    if v.get("layer_types").and_then(Value::as_array).is_some_and(|t| t.iter().any(|l| l.as_str().is_some_and(|l| l != "full_attention"))) {
-        return Some("layers that are not full attention");
-    }
-    if v.get("attention_bias") == Some(&Value::Bool(true)) {
-        return Some("biases in the attention");
-    }
-    if v.get("hidden_act").and_then(Value::as_str).is_some_and(|a| a != "silu") {
-        return Some("an activation other than silu");
-    }
-    None
+/// What a plain dense decoder's description holds that the dense kind's lowering refuses, in the words a refusal says it in: biases in the attention, a rope with
+/// scaling, an activation other than silu. None for the rest, which the lowering's own sentence names.
+fn dense_lacks(d: &crate::runtime::describe::Described) -> Option<&'static str> {
+    use crate::runtime::kinds::{Act, Body, Ffn, Mixer, RopeScaling};
+    d.desc.blocks.iter().find_map(|b| match &b.body {
+        Body::Mixer(Mixer::Attention(a)) if a.bias => Some("biases in the attention"),
+        Body::Mixer(Mixer::Attention(a)) if a.rope.as_ref().is_some_and(|r| r.scaling != RopeScaling::None) => Some("rope scaling"),
+        Body::Ffn(Ffn::Mlp(m)) if m.act != Act::Silu => Some("an activation other than silu"),
+        _ => None,
+    })
 }
 
 /// What to do with a model the engine does not run (yet): vLLM runs it where it is installed, else the whole tool does.
-fn unrun_fix() -> String {
+pub(crate) fn unrun_fix() -> String {
     machine::instead("Run it with the vLLM-based glyd, which is installed here", &format!("The engine does not run it yet: {}", machine::FULL_TOOL))
 }
 
-/// The engine runs Qwen3 dense models (Qwen3ForCausalLM) with no rope scaling: a Refusal (exit 3) for the rest.
-fn supported(name: &str, cfg_text: &str) -> Done<()> {
-    let Some((arch, scaled)) = architecture(cfg_text) else {
-        return Err(Refusal::unsupported(format!("{name}: its config.json does not say what kind of model it is"), "The engine runs Qwen3 models so far"));
-    };
-    if crate::nemotron::is_nemotron_h(cfg_text) {
-        return Err(Refusal::unsupported(
-            format!("{name} is a Nemotron-H model: this engine runs it at the hummingbird, swift and kestrel levels, not lossless"),
-            machine::instead(
-                "Run it at a level: glyd run MODEL:hummingbird on a 16 to 32 GB card (or :swift, :kestrel on a 96 GB one or larger); lossless it runs with the vLLM-based glyd, which is installed here",
-                &format!("Run it at a level: glyd run MODEL:hummingbird on a 16 to 32 GB card (or :swift, :kestrel on a 96 GB one or larger); lossless, {}", machine::FULL_TOOL),
-            ),
-        ));
+/// A model's config.json against what the description executor runs of its kind, with no file read but the config. A plain dense decoder (`dynamic::dense::is_dense`)
+/// is held to the dense kind's own lowering (`runtime::describe`, then `dynamic::lower::dense`): what that takes runs, and what it refuses is refused here in the
+/// same words, before anything is downloaded. A family of another route is that route's to check; a config the table has no family for is refused (exit 3) with what
+/// is missing: the description of its architecture (src/support.rs `family`).
+pub(crate) fn supported(name: &str, cfg_text: &str) -> Done<()> {
+    supported_in(name, &*model_config_of(cfg_text, name)?)
+}
+
+/// `supported` of a config.json parsed once (src/runtime/config.rs).
+pub(crate) fn supported_in(name: &str, c: &crate::runtime::config::ModelConfig) -> Done<()> {
+    if !c.is_dense() {
+        return crate::support::family_in(c, name).map(|_| ());
     }
-    if arch != "Qwen3ForCausalLM" {
-        return Err(Refusal::unsupported(
-            format!("{name} is a {arch} model, and this engine runs Qwen3 models so far"),
-            machine::instead(
-                "Other models run with the vLLM-based glyd, which is installed here",
-                &format!("Pick a Qwen3 model (glyd run Qwen/Qwen3-8B), or {}", machine::FULL_TOOL),
-            ),
-        ));
+    let d = crate::runtime::describe::describe_config(c).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
+    let max_pos = c.shared.max_position_embeddings.unwrap_or(crate::support::DEFAULT_CTX);
+    match crate::dynamic::lower::dense(&d, Vec::new(), max_pos) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(Refusal::unsupported(
+            match dense_lacks(&d) {
+                Some(what) => format!("{name} has {what}, which this engine does not run yet"),
+                None => format!("{name}: {}", e.msg),
+            },
+            unrun_fix(),
+        )),
     }
-    if scaled {
-        return Err(Refusal::unsupported(format!("{name} uses rope scaling, which this engine does not run yet"), unrun_fix()));
-    }
-    if let Some(what) = unsupported_setting(cfg_text) {
-        return Err(Refusal::unsupported(format!("{name} has {what}, which this engine does not run yet"), unrun_fix()));
-    }
-    Ok(())
-}
-
-/// A dense product for the long prompts (cuBLAS where it is, else the engine's own on Ampere, Ada and Hopper): the decoded matrix and the larger chunk that goes with it.
-fn dense_product(cc: (i32, i32)) -> bool {
-    Blas::present() || (matches!(cc.0, 8 | 9) && crate::tune!("GLYD_ENGINE_GEMM").map_or(true, |v| v != "lib"))
-}
-
-/// The GPU `run` picked, as a plan sees it, and the computer's memory the experts may take.
-fn target(gpu: &Gpu) -> Target {
-    Target { ordinal: gpu.ordinal, name: gpu.name.clone(), cc: gpu.cc, total: gpu.total, free: gpu.free, host: crate::offload::host_memory() }
-}
-
-/// The layout and the fit of a model on a GPU: what `prepare` settles before it downloads a thing, and `preflight` before it says the engine will run the model. `packed`: the layout of a
-/// directory `pack` made, which is the layout there.
-pub(crate) fn plan(a: &Args, cfg: &Config, name: &str, gpu: &Gpu, packed: Option<Layout>, users: usize) -> Done<(Layout, String, LoadPlan)> {
-    plan_for(a, cfg, name, &target(gpu), packed, users)
-}
-
-fn plan_for(a: &Args, cfg: &Config, name: &str, t: &Target, packed: Option<Layout>, users: usize) -> Done<(Layout, String, LoadPlan)> {
-    let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
-    crate::support::context_check(name, crate::support::row(crate::support::Family::Qwen3), cfg.max_pos, asked)?;
-    let (layout, why) = match packed {
-        Some(l) => (l, "as packed".to_string()),
-        None => choose_layout(a.layout()?, t.cc, t.total, cfg.matrix_bytes(), 0),
-    };
-    // (what the last load of this model here took beyond its plan is planned as already taken: `calibrated`)
-    let extra = calibration(name, levels::name_of(layout), &t.name);
-    let mut fit = fit::plan(cfg, name, &t.name, t.free.saturating_sub(extra), layout, asked, users, dense_product(t.cc))?;
-    calibrated(&mut fit, t.free, extra);
-    Ok((layout, why, fit))
-}
-
-/// The bytes of this GPU's free memory the planner takes as already used for `model` at `level`: what the last load took beyond its plan (src/plan.rs
-/// `calibration_in`; the one-GPU paths' only: the others' loads do not count their weights apart).
-fn calibration(model: &str, level: &str, gpu: &str) -> u64 {
-    crate::plan::calibration_in(&store::cache_root(), model, level, gpu)
-}
-
-/// `plan` made for the GPU's free memory less `extra`, said as it is: the free memory as it was, and `extra` a part of the reserve.
-pub(crate) fn calibrated(p: &mut LoadPlan, free: u64, extra: u64) {
-    p.free = free;
-    p.reserve += extra;
-}
-
-/// The plan `run` loads MODEL (its config.json `text`) at `level` on the GPU `t`, with the flags of `a`, or the refusal `run` gives: what `fit` prints
-/// and `run`, `serve` and `preflight` size with. `users`: the sequences a server holds at once (the Qwen3 path's; the lossy paths hold one). Ok(None): this
-/// family's path is not sized by its loader yet, and the planner's estimate stands (src/plan.rs).
-pub(crate) fn size(
-    a: &Args,
-    model: &str,
-    text: &str,
-    level: &'static str,
-    devs: &[Target],
-    t: &Target,
-    reach: &dyn Fn(&[i32]) -> bool,
-    users: usize,
-) -> Done<Option<LoadPlan>> {
-    use crate::support::Family;
-    let name = short_name(model);
-    match crate::support::row(crate::support::family(text, &name)?).family {
-        Family::Qwen3 => {
-            supported(&name, text)?;
-            let cfg = Config::parse(text, "config.json", None).map_err(cannot)?;
-            let (_, _, p) = plan_for(a, &cfg, &name, t, None, users)?;
-            shape_checks(&name, &cfg, &p)?;
-            Ok(Some(p))
-        }
-        Family::Qwen35 | Family::Gemma4 | Family::NemotronH => {
-            let Some(layout) = levels::layout_of(level) else { return Ok(None) };
-            if layout == Layout::Tiered && crate::nemotron::is_nemotron_h(text) {
-                return size_local_dynamic(a, model, text, "Nemotron-H", devs, reach);
-            }
-            lossy_plan_with(a, model, layout_for(model, layout), text, None, t.free, &t.name, None, t.host).map(Some)
-        }
-        Family::Kimi => size_local_dynamic(a, model, text, "Kimi-K3", devs, reach),
-        Family::Glm => size_local_dynamic(a, model, text, "GLM-5.3-Flash", devs, reach),
-        Family::DeepSeekV4 => size_local_dynamic(a, model, text, "DeepSeek-V4", devs, reach),
-        Family::Muse => size_local_dynamic(a, model, text, "Muse Spark", devs, reach),
-        Family::FlashNext => Ok(None),
-    }
-}
-
-/// `size_dynamic` of a model by its files' headers: a directory's or the Hub cache's, else the Hub's by ranges before anything is downloaded (src/sizes.rs;
-/// ROADMAP P2b); Ok(None) where the headers cannot be had (offline, the Hub does not answer), and the planner's estimate stands.
-fn size_local_dynamic(a: &Args, model: &str, text: &str, family: &'static str, devs: &[Target], reach: &dyn Fn(&[i32]) -> bool) -> Done<Option<LoadPlan>> {
-    let Some(table) = crate::sizes::Table::find(model) else { return Ok(None) };
-    // (the files where they are here: a hummingbird directory's experts are not in the table)
-    let dir = if Path::new(model).join("config.json").exists() { Some(PathBuf::from(model)) } else { Source::find(model).ok().map(|s| s.dir) };
-    let host = devs.first().and_then(|t| t.host);
-    size_dynamic(a, &short_name(model), &table, dir.as_deref(), text, family, devs, host, reach).map(Some)
 }
 
 /// The model's shape against what the engine's KV cache takes, and its context against what the tables cover: refused before anything is downloaded.
-fn shape_checks(name: &str, cfg: &Config, fit: &LoadPlan) -> Done<()> {
+pub(crate) fn shape_checks(name: &str, cfg: &Config, fit: &LoadPlan) -> Done<()> {
     match machine::config_refusal(name, cfg).or_else(|| machine::context_refusal(name, fit.context)) {
         Some(r) => Err(r),
         None => Ok(()),
     }
 }
 
-/// What a first run writes (the download, and the packed copy) against the disks, and a refusal the tables' rule gave this model before: refused before anything is downloaded. `source`: the model
+/// The bytes of the packed copy a first run writes into the engine's cache: `pack` (the plan's weights), and none where the copy is made already (a glyd-v7 save at
+/// the layout in the model's place in the cache).
+fn first_run_pack_bytes(pack: u64, layout: Layout, source: Option<&Source>) -> u64 {
+    let made = source.is_some_and(|s| store::cached_pack(&store::packed_dir(s, layout), layout));
+    if made {
+        0
+    } else {
+        pack
+    }
+}
+
+/// What a first run writes (the download, and the packed copy of `pack` bytes: the plan's weights) against the disks: refused before anything is downloaded. `source`: the model
 /// where it is on this computer already; `download`: the bytes still to fetch.
-fn first_run_checks(name: &str, cfg: &Config, fit: &LoadPlan, layout: Layout, source: Option<&Source>, download: u64) -> Done<()> {
-    let made = source.is_some_and(|s| store::is_packed(&store::packed_dir(s, layout)));
-    let pack = if made { 0 } else { (cfg.matrix_bytes() as f64 * fit::bits(layout) / 16.0) as u64 };
+fn first_run_checks(name: &str, pack: u64, layout: Layout, source: Option<&Source>, download: u64) -> Done<()> {
+    let pack = first_run_pack_bytes(pack, layout, source);
     let (models, cache) = (store::existing_ancestor(&hub::hub_cache()), store::existing_ancestor(&store::cache_root()));
     if let Some(r) = machine::disk_refusal(name, hub::disk_free(&models), hub::disk_free(&cache), store::same_filesystem(&models, &cache), download, pack) {
         return Err(r);
     }
-    if let (Some(s), Ok(tier)) = (source, crate::kvcal::check_positions(fit.context)) {
-        for l in [Layout::Tiered, Layout::Twelve] {
-            if let Some(why) = store::known_refusal(&store::packed_dir(s, l), tier) {
-                return Err(Refusal::unsupported(why, ""));
-            }
-        }
-    }
     Ok(())
 }
 
-fn prepare(a: &Args, gpu: &Gpu, ui: &RefCell<Ui>, with_tables: bool, users: usize) -> Done<Prepared> {
-    let model = a.need(1, "MODEL")?;
+/// The directory a level's engine reads MODEL from at `layout` on `gpu`, made ready (a run's steps before its load, and all of `glyd prepare`): a glyd-v7 directory as
+/// it is; else the pack in the cache or the pre-packed repo (`pre_packed`); else the model, downloaded where it is not here and packed once into the cache, its plan
+/// made (`plan_level`) and the disks checked before anything is fetched. The directory, the glyd-v7 directory it is, and the layout as packed (wren of a QAT
+/// checkpoint is the exact four-bit one).
+fn level_dir(a: &Args, model: &str, layout: Layout, gpu: &Gpu, gpus: &[Gpu], ui: &RefCell<Ui>) -> Done<(PathBuf, Option<PathBuf>, Layout)> {
     let name = short_name(model);
-    let direct = Path::new(model);
-    // a directory `pack` made
-    if direct.join("glyd.json").exists() {
-        if let Some(why) = crate::weights::earlier_format(direct) {
-            return Err(Refusal::unsupported(format!("{model} is {why}"), "Pack the model again: glyd pack MODEL DIR"));
-        }
-        supported(&name, &std::fs::read_to_string(direct.join("config.json")).map_err(|e| Refusal::unsupported(format!("{model}/config.json: {e}"), ""))?)?;
-        let cfg = Config::load(direct).map_err(cannot)?;
-        let (_, _, fit) = plan(a, &cfg, &name, gpu, Some(packed_layout(direct).unwrap_or(Layout::Tiered)), users)?;
-        shape_checks(&name, &cfg, &fit)?;
-        let tables = match a.flag("tables") {
-            Some(t) => PathBuf::from(t),
-            None if direct.join("kv-tables.safetensors").exists() => direct.join("kv-tables.safetensors"),
-            None if !with_tables => PathBuf::new(),
-            None => store::tables(direct, model, fit.context, gpu.ordinal, ui)?,
-        };
-        return Ok(Prepared { dir: direct.to_path_buf(), tables, ctx: fit.context, fit });
-    }
-    // a Hub-format directory, or a repo in the cache, else the Hub
-    let source: Source = match Source::find(model) {
-        Ok(s) => s,
-        Err(_) => {
-            let (hub, remote, wanted) = store::hub_plan(model, ui)?;
-            // what kind of model it is, and whether it fits, before its weights are fetched
-            let text = hub.text(model, "main", "config.json").map_err(|e| match e {
-                hub::HubError::Denied(_) => store::hub_refusal(model),
-                e => Refusal::new(format!("cannot read {model} from the Hugging Face Hub ({e})"), "Check the network connection and run this again"),
-            })?;
-            supported(&name, &text)?;
-            let small: Vec<hub::Entry> = wanted.iter().filter(|e| e.path == "config.json" || e.path == "generation_config.json").cloned().collect();
-            hub.fetch(&remote, &small, &|_, _| {})?;
-            let cfg = Config::load(&hub.snapshot(&remote)).map_err(cannot)?;
-            let (layout, _, fit) = plan(a, &cfg, &name, gpu, None, users)?;
-            shape_checks(&name, &cfg, &fit)?;
-            first_run_checks(&name, &cfg, &fit, layout, None, hub.missing(&remote, &wanted))?;
-            store::download(&hub, &remote, &wanted, model, ui)?;
-            Source::find(model).map_err(cannot)?
-        }
+    let mut packed = v7_layout(model)?.map(|_| PathBuf::from(model));
+    let first = match packed {
+        None => Some(plan_level(a, model, layout, &*model_config(model)?, None, gpu, gpus, None)?),
+        Some(_) => None,
     };
-    supported(
-        &name,
-        &std::fs::read_to_string(source.dir.join("config.json")).map_err(|e| Refusal::unsupported(format!("{}: {e}", source.dir.display()), ""))?,
-    )?;
-    let cfg = Config::load(&source.dir).map_err(cannot)?;
-    let (layout, why, fit) = plan(a, &cfg, &name, gpu, None, users)?;
-    shape_checks(&name, &cfg, &fit)?;
-    first_run_checks(&name, &cfg, &fit, layout, Some(&source), 0)?;
-    ui.borrow_mut().line(&format!(
-        "{name}: {} on the GPU with Glyd, instead of {}; layout {}: {why}.",
-        gib(fit.weights),
-        gib(cfg.matrix_bytes()),
-        layout.name()
-    ));
-    let expect = (cfg.matrix_bytes() as f64 * fit::bits(layout) / 16.0) as u64;
-    let dir = store::pack(&source, model, layout, expect, ui)?;
-    let tables = if with_tables { store::tables(&dir, model, fit.context, gpu.ordinal, ui)? } else { PathBuf::new() };
-    Ok(Prepared { dir, tables, ctx: fit.context, fit })
+    if packed.is_none() {
+        packed = pre_packed(model, layout, ui)?;
+    }
+    let pack_bytes = first.as_ref().map_or(0, |p| p.weights);
+    let dir = match &packed {
+        Some(d) => d.clone(),
+        None if Path::new(model).join("config.json").exists() => PathBuf::from(model),
+        None => match Source::find(model) {
+            Ok(s) => s.dir,
+            Err(_) => {
+                let (hub, remote, wanted) = store::hub_plan(model, ui)?;
+                first_run_checks(&name, pack_bytes, layout, None, hub.missing(&remote, &wanted))?;
+                store::download(&hub, &remote, &wanted, model, ui)?;
+                Source::find(model).map_err(cannot)?.dir
+            }
+        },
+    };
+    // (a pre-packed repo given by its own name is a glyd-v7 directory once downloaded; a bf16 model is packed into the cache once, and read from there)
+    if packed.is_none() {
+        packed = v7_manifest(&dir).map_err(cannot)?.map(|_| dir.clone());
+    }
+    if let Some(d) = &packed {
+        // (the layout as packed: wren of a QAT checkpoint is the exact four-bit one)
+        let layout = v7_level(model, v7_manifest(d).map_err(cannot)?.map(|m| m.0), Some(layout))?.unwrap_or(layout);
+        return Ok((dir, packed, layout));
+    }
+    if layout == Layout::Hummingbird {
+        return Err(Refusal::unsupported(
+            format!("{name} at the hummingbird level comes as a finished download or directory only: its experts' codes are made apart"),
+            format!("Download the pre-packed model: glyd/{name}-hummingbird"),
+        ));
+    }
+    let source = Source::find(model).map_err(cannot)?;
+    first_run_checks(&name, pack_bytes, layout, Some(&source), 0)?;
+    let dir = store::pack(&source, model, &*model_config(model)?, layout, pack_bytes, ui)?;
+    Ok((dir.clone(), Some(dir), layout))
 }
 
-struct Ready {
-    engine: Engine,
-    tok: Tok,
-    chat: Option<Chat>,
-    defaults: Params,
-    name: String,
-    /// Sequences the engine runs at once (1: the one-reply way).
-    users: usize,
-    /// The directory the model is read from, and the GPU it runs on.
-    dir: PathBuf,
-    gpu: Gpu,
+/// MODEL made ready at its level, the directory the engine reads (`glyd prepare`): a run's own steps up to its load, for every family this build runs. The level is
+/// the one `serve` would load (`served`: the tag's, a packed directory's own, else the planner's; a step the ladder asks about needs --yes or GLYD_DEGRADE=yes), held to the
+/// table as a run's is. A family of the dynamic route is its release's directory (downloaded where it is not here; its hummingbird directory at that level) sized
+/// over this machine's GPUs as its load sizes it (`dynamic_dir`, `dynamic_plan`); every other is its level's glyd-v7 directory, pre-packed or packed here once, and
+/// planned as the load plans it (`level_dir`, `plan_level`). What cannot be made ready is refused by the step that lacks something, in that step's own words.
+fn prepare(a: &Args, ui: &RefCell<Ui>) -> Done<PathBuf> {
+    a.need(1, "MODEL")?;
+    let (a, layout) = served(a, ui)?;
+    let model = a.need(1, "MODEL")?.to_string();
+    let Some(layout) = layout else { return Err(unrun(&model)) };
+    let name = short_name(&model);
+    if let Some(family) = dynamic_family(&model).filter(|f| !lossy_route(f, layout)) {
+        let layout = hb_level(&model, layout);
+        if !matches!(layout, Layout::Tiered | Layout::Hummingbird) {
+            return Err(penguin_only(&name, family, &model));
+        }
+        crate::plan::sizing::name_pack(&a);
+        let dir = dynamic_dir(&model, &name, family, layout == Layout::Hummingbird, ui)?;
+        dynamic_plan(&a, &name, family, &dir, layout == Layout::Hummingbird)?;
+        return Ok(dir);
+    }
+    let (gpu, gpus) = gpus_pick()?;
+    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true, machine::ANY_FAMILY) {
+        return Err(r);
+    }
+    let (dir, packed, layout) = level_dir(&a, &model, layout_for(&model, layout), &gpu, &gpus, ui)?;
+    // (the plan of the directory as it now is, the one the load makes: a refusal of it is said here, not at the run)
+    let read = |f: &str| std::fs::read_to_string(dir.join(f)).ok();
+    let c = model_config_of(&read("config.json").ok_or_else(|| cannot(format!("{}: no config.json", dir.display())))?, &name)?;
+    plan_level(&a, &model, layout, &c, read("generation_config.json").as_deref(), &gpu, &gpus, packed.as_deref())?;
+    Ok(dir)
 }
 
-/// Sequences a server runs at once: --users, else 4 (1 to MAX_USERS; the dense Qwen3 engine takes at most MAX_ROWS of them, a level's engine as many as its memory holds).
-fn users_of(a: &Args) -> Done<usize> {
+/// Sequences a server runs at once: --users, else 4 (1 to MAX_USERS; a level's engine as many as its memory holds).
+pub(crate) fn users_of(a: &Args) -> Done<usize> {
     use crate::sched::MAX_USERS;
     let n: usize = a.num("users", 4usize).map_err(|e| Refusal::new(e.msg, format!("Give a number from 1 to {MAX_USERS}: --users 4")))?;
     if !(1..=MAX_USERS).contains(&n) {
@@ -562,60 +481,16 @@ fn users_of(a: &Args) -> Done<usize> {
     Ok(n)
 }
 
-fn start(a: &Args, ui: &RefCell<Ui>, several: bool) -> Done<Ready> {
-    // (the dense engine's decode step takes at most MAX_ROWS rows)
-    let users = if several { users_of(a)?.min(crate::model::MAX_ROWS) } else { 1 };
-    let t0 = Instant::now();
-    let gpu = gpu_pick()?;
-    // (the machine checks of every other path: the CPU architecture, the driver, a MIG slice)
-    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true, machine::ANY_FAMILY) {
-        return Err(r);
-    }
-    let model = a.need(1, "MODEL")?.to_string();
-    let name = short_name(&model);
-    let p = prepare(a, &gpu, ui, true, users)?;
-    ui.borrow_mut().line(&format!("Plan: {}.", p.fit.text()));
-    if let Some(n) = machine::cuda12_note(gpu.driver, crate::dev::has_kernels12()) {
-        ui.borrow_mut().line(&format!("Note: {n}"));
-    }
-    ui.borrow_mut().status(&format!("Loading {name} onto the GPU..."));
-    let o = Opts {
-        ctx: p.ctx,
-        chunk: p.fit.chunk,
-        tables: Some(p.tables.clone()),
-        graph: !(cfg!(feature = "dev") && a.has("no-graph")),
-        pool: if several { crate::tune!("GLYD_ENGINE_POOL").and_then(|v| v.parse().ok()).unwrap_or(p.ctx * users) } else { 0 },
-        users: if several { users } else { 0 },
-        device: gpu.ordinal,
-        ..Opts::default()
-    };
-    let engine = Engine::new(&p.dir, &o).map_err(|e| engine_refusal(e, &name, &p.fit, &gpu))?;
-    loaded_report(&model, &p.fit, &[&gpu], engine.w.bytes as u64);
-    let tok = Tok::load(&p.dir).map_err(cannot)?;
-    let chat = Chat::load(&p.dir).map_err(cannot)?;
-    let mut defaults = sampler::generation_defaults(&p.dir);
-    if let Some(t) = a.flag("temp") {
-        defaults.temperature = t.parse().map_err(|_| Refusal::new(format!("--temp {t}: not a number"), ""))?;
-    }
-    ui.borrow_mut().line(&format!(
-        "Ready in {}: {name} on the {}, {} of weights, {} tokens of context{}.",
-        fmt_time(t0.elapsed().as_secs_f64()),
-        gpu.name,
-        gib(engine.w.bytes as u64),
-        engine.capacity(),
-        if several { format!(", {users} users at once") } else { String::new() }
-    ));
-    if crate::tune!("GLYD_ENGINE_VERBOSE").is_some() {
-        ui.borrow_mut().line(&engine.describe());
-    }
-    Ok(Ready { engine, tok, chat, defaults, name: model, users, dir: p.dir, gpu })
-}
-
 /// What the load took of the GPU against the plan: the weights the engine counts and the memory the GPU lost since the plan was made. A development build
 /// writes it as JSON to `GLYD_PLAN_REPORT` (the GPU check reads it) and says it with `GLYD_ENGINE_VERBOSE`: the numbers the planner is calibrated on.
-fn loaded_report(model: &str, plan: &LoadPlan, gpus: &[&Gpu], weights: u64) {
-    let used = gpus.iter().map(|gpu| Dev::probe(gpu.ordinal).map_or(0, |g| gpu.free.saturating_sub(g.free))).sum::<u64>();
+fn loaded_report(model: &str, c: &ModelConfig, plan: &LoadPlan, gpus: &[&Gpu], weights: u64) {
+    // (each GPU looked at made current in turn: the engine's own current again after, `keeping_context`)
+    let used = crate::dev::keeping_context(|| gpus.iter().map(|gpu| Dev::probe(gpu.ordinal).map_or(0, |g| gpu.free.saturating_sub(g.free))).sum::<u64>());
     crate::plan::remember_in(&store::cache_root(), model, plan, weights, used);
+    // (the replies that follow are measured against the plan's prediction and kept with it: src/plan.rs `observe`)
+    if let Ok(sh) = crate::plan::shape_of(model, c) {
+        crate::plan::watch_in(&store::cache_root(), model, plan, sh, crate::plan::Machine::probe());
+    }
     if let Some(path) = crate::tune!("GLYD_PLAN_REPORT") {
         let _ = std::fs::write(path, plan.report(model, weights, used));
     }
@@ -675,11 +550,8 @@ fn access_check(a: &Args) -> std::result::Result<(), Refusal> {
     Ok(())
 }
 
-fn listen(a: &Args, name: &str, window: usize, tx: mpsc::Sender<Job>) -> Done<std::net::SocketAddr> {
-    listen_after(a, name, window, tx, None)
-}
-
-/// `listen`, where no --port is given, from the port after `after` (the first model's of `serve --with`) instead of 8000.
+/// The server of a model on --port (8000 where none is given, else the first free one after it), or where no --port is given the port after `after` (the first model's of
+/// `serve --with`).
 fn listen_after(a: &Args, name: &str, window: usize, tx: mpsc::Sender<Job>, after: Option<u16>) -> Done<std::net::SocketAddr> {
     access_check(a)?;
     let host = a.flag("host").unwrap_or("127.0.0.1").to_string();
@@ -845,7 +717,7 @@ fn tagged(a: &Args) -> Done<(Args, Option<Layout>)> {
 fn table_check(model: &str, layout: Option<Layout>) -> Done<()> {
     if v7_layout(model)?.is_none() && levels::repo_level(model).is_none() {
         if let Ok(text) = config_text(model) {
-            crate::support::check(&text, model, &short_name(model), layout.map_or("penguin", level_name))?;
+            crate::support::check_in(&*model_config_of(&text, &short_name(model))?, model, &short_name(model), layout.map_or("penguin", level_name))?;
         }
     }
     Ok(())
@@ -880,14 +752,14 @@ pub(crate) fn degrade_gate(a: &Args, model: &str, layout: Option<Layout>, intera
     if v7_layout(model)?.is_some() || levels::repo_level(model).is_some() {
         return same();
     }
-    let Ok(text) = config_text(model) else { return same() };
+    let Ok(c) = model_config(model) else { return same() };
     let name = short_name(model);
-    let Ok(family) = crate::support::family(&text, &name) else { return same() };
+    let Ok(family) = crate::support::family_in(&c, &name) else { return same() };
     let row = crate::support::row(family);
     // (the machine the planner that picks an untagged run's level plans for: --machine's preset, else this one)
     let machine = a.flag("machine").and_then(crate::plan::Machine::preset).unwrap_or_else(crate::plan::Machine::probe);
     // (the shape `fit` prices the steps on: the model's tensors where their headers can be had, so the run asks where fit says it will)
-    let Ok(sh) = crate::plan::shape_of(model, &text) else { return same() };
+    let Ok(sh) = crate::plan::shape_of(model, &c) else { return same() };
     let asked = layout.map_or("penguin", level_name);
     if !row.levels_now(model).contains(&asked) {
         return same();
@@ -897,7 +769,7 @@ pub(crate) fn degrade_gate(a: &Args, model: &str, layout: Option<Layout>, intera
     let want = a.flag("context").and_then(|c| c.parse().ok()).unwrap_or_else(|| row.default_ctx.unwrap_or(LOSSY_CTX).min(sh.max_ctx));
     let size = |l: &'static str, ctx: usize| {
         let q = if ctx == want { a.clone() } else { a.with(&["context", "ctx"], ctx.to_string()) };
-        size(&q, model, &text, l, &devs, &target, &*reach, users)
+        size(&q, model, &c, l, &devs, &target, &*reach, users)
     };
     let ladder = crate::plan::ladder(&sh, &machine, row, model, asked, want, &size);
     if ladder.is_as_asked() || ladder.plan.is_none() || ladder.steps.is_empty() {
@@ -940,7 +812,6 @@ pub fn serve(a: &Args) -> i32 {
         return serve_two(a, with.to_string());
     }
     let ui = RefCell::new(Ui::new());
-    let started = crate::monitor::clock();
     status_file(a);
     // (before the GPU is looked at and the model is read: an address that may not be served is refused first)
     if let Err(r) = access_check(a) {
@@ -948,64 +819,20 @@ pub fn serve(a: &Args) -> i32 {
     }
     // the level is run's, read before the GPU is looked at; the name served keeps the tag
     let given = a.pos.get(1).cloned().unwrap_or_default();
-    let asked = requested(&given, a.has("lossy"));
     // (a server never stops for an answer: a step it asks about is taken only with --yes)
     let (a, layout) = match served(a, &ui) {
         Ok(x) => x,
         Err(r) => return fail(&ui, &r),
     };
     let a = &a;
-    if let Some(layout) = layout {
-        return serve_lossy(a, layout, given, &ui, None);
+    // (every model this build runs is the description executor's, at a level; one with none is refused in the words the other runner reads)
+    match layout {
+        Some(layout) => serve_lossy(a, layout, given, &ui, None),
+        None => fail(&ui, &unrun(a.pos.get(1).map_or("", String::as_str))),
     }
-    let mut ready = match start(a, &ui, true) {
-        Ok(r) => r,
-        Err(r) => return fail(&ui, &r),
-    };
-    ready.name = given;
-    let (tx, rx) = mpsc::channel();
-    let window = ready.engine.capacity();
-    let addr = match listen(a, &ready.name, window, tx.clone()) {
-        Ok(x) => x,
-        Err(r) => return fail(&ui, &r),
-    };
-    let mut about = about(&ready.name, &ready.dir, asked, "penguin", true, "penguin level: lossless, every weight the original's", None, &ready.gpu);
-    about.push(("costs", crate::costs::served(&ready.dir, &ready.name, asked, window, ready.engine.chunk(), None)));
-    let _ = crate::runtime::context::Context::process().info.set(server::Info {
-        about,
-        gpu: Some(ready.gpu.ordinal),
-        held: None,
-        concurrency: ready.users,
-        window,
-        refused: &[],
-        started,
-    });
-    STATUS.ready(); // (serving: from here a failure is the engine's to say, and nothing is started again)
-    access_notes(&ui, a);
-    ui.borrow_mut().line(&format!("{} is served at http://{addr}: the chat page at /, the API at /v1 (OpenAI-compatible). Ctrl-C stops it.", ready.name));
-    let Ready { mut engine, tok, chat, defaults, name, users, .. } = ready;
-    let vocab = engine.w.cfg.vocab;
-    server::work(
-        &mut engine,
-        Arc::new(server::Shared {
-            vocab,
-            tok,
-            chat,
-            name,
-            defaults,
-            window,
-            thinking: None,
-            refused: &[],
-            rt: crate::runtime::context::Context::process().clone(),
-        }),
-        &rx,
-        &tx,
-        users,
-    );
-    0
 }
 
-/// What `serve` serves: the arguments with the level's tag read and its degrade steps taken, and the lossy level's layout (None: the lossless engine).
+/// What `serve` serves: the arguments with the level's tag read and its degrade steps taken, and the level's layout (None: no engine of this build takes the model).
 fn served(a: &Args, ui: &RefCell<Ui>) -> Done<(Args, Option<Layout>)> {
     tagged(a).and_then(|(a, l)| {
         let model = a.pos.get(1).cloned().unwrap_or_default();
@@ -1111,10 +938,12 @@ fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>, pair: O
     }
     let window = step_window.map_or(e.capacity(), |w| w.min(e.capacity()));
     if let Some(k) = several {
-        ui.borrow_mut().line(&format!(
-            "Up to {k} users at once{}.",
-            if k < users { format!(" (the GPU's free memory holds {k} of the {users} asked for)") } else { String::new() }
-        ));
+        // (one where more were asked for: the GPU's memory holds one, or the model runs one sequence at a time, across GPUs or with a draft model)
+        ui.borrow_mut().line(&match k {
+            1 if users > 1 => format!("One user at a time, of the {users} asked for."),
+            _ if k < users => format!("Up to {k} users at once (the GPU's free memory holds {k} of the {users} asked for)."),
+            _ => format!("Up to {k} users at once."),
+        });
         if window < e.capacity() {
             ui.borrow_mut().line(&format!("A request holds up to {window} tokens of the {} of context: the GPU's memory holds no more for one.", e.capacity()));
         }
@@ -1154,12 +983,12 @@ fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>, pair: O
     }
     access_notes(ui, a);
     ui.borrow_mut().line(&format!("{name} is served at http://{addr}: the chat page at /, the API at /v1 (OpenAI-compatible). Ctrl-C stops it."));
-    let refused = if several.is_some() { &[][..] } else { server::ONE_AT_A_TIME };
     let shared =
-        Arc::new(server::Shared { vocab, tok, chat, name, defaults, window, thinking: None, refused, rt: crate::runtime::context::Context::current() });
+        Arc::new(server::Shared { vocab, tok, chat, name, defaults, window, thinking: None, refused: &[], rt: crate::runtime::context::Context::current() });
     match e.as_step(users) {
         Ok(Some((k, step))) => server::work_with(&mut crate::sched::Sched::new(step, k), shared, &rx, &tx),
-        _ => server::work_gen(&mut *e, shared, &rx, &tx),
+        Ok(None) => return fail(ui, &cannot(crate::ffi::Error("this engine is not a scheduler's step".into()))),
+        Err(err) => return fail(ui, &cannot(err)),
     }
     0
 }
@@ -1212,7 +1041,7 @@ pub fn run(a: &Args) -> i32 {
     let thinking = if a.has("no-think") { Some(false) } else { None };
     // one answer for a prompt given, or piped in: a pipe is read once the engine is up, for where it stops before that the program that runs the model another way finds standard input as it was
     // (a pipe that is known to hold nothing, a file of no bytes or /dev/null, is refused now)
-    let mut prompt = a.flag("prompt").map(str::to_string);
+    let prompt = a.flag("prompt").map(str::to_string);
     let piped = prompt.is_none() && !a.has("chat") && !std::io::stdin().is_terminal();
     if piped && stdin_is_empty() {
         return fail(&ui, &no_prompt());
@@ -1222,73 +1051,23 @@ pub fn run(a: &Args) -> i32 {
             return fail(&ui, &Refusal::new("the prompt is empty", "Give one: --prompt \"Say hello\""));
         }
     }
+    // (`--image PATH`, once for each image: read with the prompt, in order, where the model reads images)
+    let images: Vec<String> = a.flags.iter().filter(|(k, _)| k == "image").filter_map(|(_, v)| v.clone()).collect();
+    if !images.is_empty() && prompt.is_none() && !piped {
+        return fail(&ui, &Refusal::new("--image is read with a prompt", "Give one: --image PATH --prompt \"What is in this picture?\""));
+    }
     sig::install();
-    if let Some(layout) = layout {
-        return run_lossy(a, layout, &ui, prompt, piped, thinking);
+    match layout {
+        Some(layout) => run_lossy(a, layout, &ui, prompt, piped, thinking, &images),
+        None => fail(&ui, &unrun(a.pos.get(1).map_or("", String::as_str))),
     }
-    let mut ready = match start(a, &ui, prompt.is_none() && !piped) {
-        Ok(r) => r,
-        Err(r) => return fail(&ui, &r),
-    };
-    STATUS.ready(); // (up: from here a failure is the engine's to say, and nothing is started again)
-    if piped {
-        let mut t = String::new();
-        let _ = std::io::stdin().read_to_string(&mut t);
-        if t.trim().is_empty() {
-            return fail(&ui, &no_prompt());
-        }
-        prompt = Some(t);
-    }
-    if let Some(p) = prompt {
-        let defaults = ready.defaults.clone();
-        return once(&mut Talk { e: &mut ready.engine, tok: &ready.tok, chat: ready.chat.as_ref() }, &defaults, p.trim(), thinking, &ui);
-    }
-    let window = ready.engine.capacity();
-    let (tx, rx) = mpsc::channel();
-    let addr = match listen(a, &ready.name, window, tx.clone()) {
-        Ok(x) => Some(x),
-        Err(r) => {
-            ui.borrow_mut().note(&r.to_string());
-            None
-        }
-    };
-    match addr {
-        Some(addr) => {
-            access_notes(&ui, a);
-            ui.borrow_mut().line(&format!("Chat here, or open http://{addr} in a browser. /bye leaves, /clear starts again, /think turns thinking on or off."));
-        }
-        None => ui.borrow_mut().line("Chat here. /bye leaves, /clear starts again, /think turns thinking on or off."),
-    }
-    let defaults = ready.defaults.clone();
-    let chat_tx = tx.clone();
-    let tty = std::io::stdout().is_terminal();
-    let t = std::thread::spawn(move || chat_loop(chat_tx, defaults, thinking, tty));
-    let Ready { mut engine, tok, chat, defaults, name, users, .. } = ready;
-    let vocab = engine.w.cfg.vocab;
-    server::work(
-        &mut engine,
-        Arc::new(server::Shared {
-            vocab,
-            tok,
-            chat,
-            name,
-            defaults,
-            window,
-            thinking: None,
-            refused: &[],
-            rt: crate::runtime::context::Context::process().clone(),
-        }),
-        &rx,
-        &tx,
-        users,
-    );
-    let _ = t.join();
-    0
 }
 
-/// One answer on stdout (the thinking on stderr), and the exit status.
-fn once(talk: &mut Talk, defaults: &Params, prompt: &str, thinking: Option<bool>, ui: &RefCell<Ui>) -> i32 {
-    let messages = vec![Message::new("user", prompt)];
+/// One answer on stdout (the thinking on stderr), and the exit status. `images`: the files of the prompt's images, in order, before its text (a model with a
+/// vision tower reads them: `vision::PREP`).
+fn once(talk: &mut Talk, defaults: &Params, prompt: &str, thinking: Option<bool>, ui: &RefCell<Ui>, images: &[String]) -> i32 {
+    let content = format!("{}{prompt}", crate::tools::IMAGE_PLACE.repeat(images.len()));
+    let messages = vec![Message::new("user", &content)];
     let mut request = Request { params: defaults.clone(), thinking, ..Request::default() };
     request.params.seed = sampler::fresh_seed();
     let mut split = Splitter::new(talk.opens_thinking(&messages, &request));
@@ -1313,16 +1092,37 @@ fn once(talk: &mut Talk, defaults: &Params, prompt: &str, thinking: Option<bool>
             }
         }
     };
-    let r = talk.reply(&messages, &request, &mut |t| {
-        show(split.feed(t));
-        true
-    });
+    // (the images read, each one's place in the prompt made as long as its tokens, and given to the engine for this reply)
+    let mut seen = || -> crate::ffi::Result<Option<Vec<u32>>> {
+        if images.is_empty() {
+            return Ok(None);
+        }
+        let prep = crate::vision::PREP.get().ok_or_else(|| crate::ffi::Error("this model reads no images (no vision tower is loaded)".into()))?;
+        let read: Vec<std::sync::Arc<crate::vision::Image>> = images
+            .iter()
+            .map(|p| prep.image(&std::fs::read(p).map_err(|e| crate::ffi::Error(format!("{p}: {e}")))?).map(std::sync::Arc::new))
+            .collect::<crate::ffi::Result<_>>()?;
+        let ids = crate::vision::expand(&talk.prompt_ids(&messages, &request)?, prep.image_token, &read)?;
+        talk.e.see(read)?;
+        Ok(Some(ids))
+    };
+    let r = match seen() {
+        Ok(Some(ids)) => talk.reply_to(&ids, &request, &mut |t| {
+            show(split.feed(t));
+            true
+        }),
+        Ok(None) => talk.reply(&messages, &request, &mut |t| {
+            show(split.feed(t));
+            true
+        }),
+        Err(e) => Err(e),
+    };
     show(split.finish());
     match r {
         Ok(o) => {
             out("\n");
             if !answered {
-                let why = if o.finish == crate::model::Finish::Length && thought {
+                let why = if o.finish == crate::sched::Finish::Length && thought {
                     "The model was still thinking when it ran out of room: ask again with --no-think"
                 } else {
                     "The model sent no answer"
@@ -1450,7 +1250,7 @@ fn chat_loop(tx: mpsc::Sender<Job>, defaults: Params, mut thinking: Option<bool>
                     messages.pop();
                     eprintln!(
                         "{}",
-                        if o.finish == crate::model::Finish::Length {
+                        if o.finish == crate::sched::Finish::Length {
                             "The model was still thinking when it ran out of room: turn thinking off with /think, or start a new chat with /clear"
                         } else {
                             "The model sent no answer"
@@ -1477,367 +1277,17 @@ fn chat_loop(tx: mpsc::Sender<Job>, defaults: Params, mut thinking: Option<bool>
     let _ = tx.send(Job::Stop);
 }
 
-// ---- the lossy levels: a Qwen3.5-family or Nemotron 3 Super model at about 6.5 bits per weight (:kestrel, which --lossy is: six-bit block codes), 5.5 (:swift: five-bit) or 4.5 (:wren: four-bit; Nemotron's experts alone, the rest six-bit), one user at a time ------
+// ---- the lossy levels: a model of a family whose row has them (the plain dense kind, Gemma 4, the Qwen3.5 layout, the Nemotron-H layout) at about 6.5 bits per weight (:kestrel, which --lossy is: six-bit block codes), 5.5 (:swift: five-bit) or 4.5 (:wren: four-bit; the Nemotron-H layout's experts alone, the rest six-bit), one user at a time ------
 
 // (the lossy paths' work, context bounds, host margin and Gemma's draft and chunk are src/plan.rs's constants, with the one reserve)
 
-/// The Gemma 4 draft model ("-assistant") to draft with: `--draft DIR`, else the model directory's `draft/` where it has a config.json; none with `--no-draft`.
-fn gemma_draft(a: &Args, dir: Option<&Path>) -> Option<PathBuf> {
+/// The draft model to draft with (a row's own draft model, src/support.rs `Lossy::draft`: Gemma 4's "-assistant"): `--draft DIR`, else the model directory's `draft/`
+/// where it has a config.json; none with `--no-draft`.
+pub(crate) fn draft_dir(a: &Args, dir: Option<&Path>) -> Option<PathBuf> {
     if a.has("no-draft") {
         return None;
     }
     a.flag("draft").map(PathBuf::from).or_else(|| dir.map(|d| d.join("draft")).filter(|d| d.join("config.json").exists()))
-}
-
-/// `--expert-cache GIB`: the GPU memory to give the places of the expert cache, in GiB.
-fn cache_flag(a: &Args) -> Done<Option<u64>> {
-    let Some(v) = a.flag("expert-cache") else { return Ok(None) };
-    match v.parse::<f64>() {
-        Ok(g) if g.is_finite() && g > 0.0 => Ok(Some((g * (1u64 << 30) as f64) as u64)),
-        _ => Err(Refusal::new(format!("--expert-cache {v}: not a number of GiB"), "Give the GPU memory for the experts, in GiB: --expert-cache 12")),
-    }
-}
-
-/// `--host-memory GIB|auto`: the computer's memory the experts may take, in GiB; None for `auto` (and where it is not given): what the computer has free less a reserve (`HOST_MARGIN`), at most all the experts. Less than all
-/// of them, the Hummingbird level keeps the rest in its packed directory and reads them as the router asks for them (src/offload.rs `Tier`).
-pub fn host_flag(a: &Args) -> Done<Option<u64>> {
-    match a.flag("host-memory") {
-        None | Some("auto") => Ok(None),
-        Some(v) => match v.parse::<f64>() {
-            Ok(g) if g.is_finite() && g > 0.0 => Ok(Some((g * (1u64 << 30) as f64) as u64)),
-            _ => Err(Refusal::new(
-                format!("--host-memory {v}: not a number of GiB"),
-                "Give the computer's memory the experts may take, in GiB: --host-memory 20 (auto: what the computer has free, less 6 GiB for the system)",
-            )),
-        },
-    }
-}
-
-/// The bytes of `experts_bytes` of experts the computer's memory holds (`CachePlan::ram`): what `asked` is (`--host-memory`), else what the computer has free (`host`; None: it does not say, and is taken to have enough)
-/// less the reserve; at most all of them.
-pub fn held_in_memory(experts_bytes: u64, asked: Option<u64>, host: Option<u64>) -> u64 {
-    match (asked, host) {
-        (Some(b), _) => b.min(experts_bytes),
-        (None, Some(h)) => h.saturating_sub(HOST_MARGIN).min(experts_bytes),
-        (None, None) => experts_bytes,
-    }
-}
-
-/// The expert cache a Nemotron model in the glyd-v7 directory `dir` (at `layout`) gets on a GPU of `free` bytes free, in a computer with `host` bytes of memory to give: what `run` gives it (`lossy_plan_with` on the
-/// directory's own config and packs); None where the GPU holds the model whole. For `glyd-engine generate --expert-cache auto`.
-pub fn expert_cache_for(dir: &Path, layout: Layout, free: u64, gpu: &str, host: Option<u64>) -> Done<Option<CachePlan>> {
-    let file = |f: &str| std::fs::read_to_string(dir.join(f));
-    let text = file("config.json").map_err(|e| Refusal::new(format!("{}: {e}", dir.join("config.json").display()), ""))?;
-    let (generation, name) = (file("generation_config.json").ok(), dir.to_string_lossy().into_owned());
-    let packed = dir.join("glyd.json").exists().then_some(dir);
-    Ok(lossy_plan_with(&Args::from(["run".to_string(), name.clone()]), &name, layout, &text, generation.as_deref(), free, gpu, packed, host)?.experts)
-}
-
-/// Nemotron 3 Super with its experts in the computer's memory (pinned) and a cache of them on the GPU: the context, and the cache, which takes what the GPU has left besides the rest of the model, the states, the
-/// workspaces and the context's keys and values (or `asked` bytes of it); why not, in words, where the GPU cannot hold even that rest and the least cache (a step's choices and as many again; the choices alone for
-/// an asked cache), or the computer cannot hold the experts. At the Hummingbird level a computer that cannot hold them all (or `--host-memory`, `asked_host`, that gives it less) keeps the rest in the packed directory:
-/// `CachePlan::ram` is what it holds, refused where that is less than a step's choices in each width of each layer.
-#[allow(clippy::too_many_arguments)]
-fn offloaded(
-    cfg: &ConfigNemotronH,
-    layout: Layout,
-    weights: u64,
-    state: u64,
-    per: u64,
-    free: u64,
-    host: Option<u64>,
-    ctx: Option<usize>,
-    asked: Option<u64>,
-    asked_host: Option<u64>,
-    gpu: &str,
-) -> Result<(usize, CachePlan), String> {
-    let (layers, experts, k) = (cfg.layers_of(NhKind::Moe), cfg.moe.experts, cfg.moe.top_k);
-    let each = crate::moe_nh::expert_bytes(cfg, layout).map_err(|e| e.msg)?;
-    let experts_bytes = (layers * experts) as u64 * each;
-    let ctx = ctx.unwrap_or(LOSSY_CTX).min(cfg.max_pos.max(LOSSY_MIN_CTX));
-    // (the plan's weights are at fit::bits a weight, a little over the experts' exact bytes: the rest of the model is taken as what is left)
-    let rest = weights.saturating_sub(experts_bytes) + state + LOSSY_WORK + reserve_of(free) + ctx as u64 * per.max(1);
-    let least = if asked.is_some() { k } else { 2 * k };
-    let need = rest + (layers * least) as u64 * each;
-    let budget = asked.unwrap_or_else(|| free.saturating_sub(rest));
-    if asked.is_some_and(|b| rest.saturating_add(b) > free) {
-        return Err(format!(
-            "a cache of {} for the experts and the {} the rest of the model takes are more than the {gpu}'s {} free",
-            gib(budget),
-            gib(rest),
-            gib(free)
-        ));
-    }
-    let host_need = experts_bytes + HOST_MARGIN;
-    // (the Hummingbird level's experts can stay in the packed directory: it needs only the memory for what it holds, and a step's choices in each of a layer's two widths)
-    let disk = layout == Layout::Hummingbird;
-    let ram = held_in_memory(experts_bytes, asked_host, host);
-    let least_ram = if disk { (layers * 2 * k) as u64 * each } else { experts_bytes };
-    let Some(plan) = crate::moe_nh::cache_plan(cfg, layout, budget, least).map_err(|e| e.msg)?.filter(|p| p.gpu_bytes() + rest <= free) else {
-        return Err(format!(
-            "with its experts in the computer's memory it needs at least {} of GPU memory (and {} of the computer's)",
-            gib(need),
-            gib(if disk { least_ram + HOST_MARGIN } else { host_need })
-        ));
-    };
-    if !disk {
-        if let Some(h) = host.filter(|&h| h < host_need) {
-            return Err(format!("with its experts in the computer's memory it needs {} of the computer's memory besides at least {} of GPU memory, and this computer has {} free", gib(host_need), gib(need), gib(h)));
-        }
-        return Ok((ctx, plan));
-    }
-    if let Some(h) = host.filter(|&h| asked_host.is_some() && ram.saturating_add(HOST_MARGIN) > h) {
-        return Err(format!("--host-memory {}: the computer has {} free and keeps {} of them for the system", gib(ram), gib(h), gib(HOST_MARGIN)));
-    }
-    if ram < least_ram {
-        return Err(format!("with its experts read from the disk it needs at least {} of the computer's memory for them ({} for a step's choices in each width of each layer), and {} are to be given", gib(least_ram + HOST_MARGIN), gib(least_ram), gib(ram)));
-    }
-    Ok((ctx, CachePlan { ram, ..plan }))
-}
-
-/// The model's config as a lossy level reads it (Qwen3.5, Qwen3.6 and Qwen3.8 dense: their config says `qwen3_5`; Nemotron 3 Super: `nemotron_h`, at the kestrel, swift and wren levels), and what it takes in `layout` of
-/// `free` bytes of GPU memory at the context asked for (else up to LOSSY_CTX, as much as fits): refused where it does not fit at LOSSY_MIN_CTX. A pack is sized in its own layout (`pack_layout`: Nemotron's experts
-/// alone are four-bit at wren). `packed`: the glyd-v7 directory the model is, where its packs' bytes are the ones it holds.
-pub(crate) fn lossy_plan(a: &Args, model: &str, layout: Layout, text: &str, gen: Option<&str>, free: u64, gpu: &str, packed: Option<&Path>) -> Done<LoadPlan> {
-    lossy_plan_with(a, model, layout, text, gen, free, gpu, packed, crate::offload::host_memory())
-}
-
-/// `lossy_plan` for a computer that has `host` bytes of memory to give (None: it does not say). A Nemotron model that does not fit the GPU whole, or that `--expert-cache GIB` asks for, keeps its experts in the
-/// computer's memory and a cache of them on the GPU (`offloaded`); it is refused, with the memory it needs of each, where the GPU or the computer has too little for that.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn lossy_plan_with(
-    a: &Args,
-    model: &str,
-    layout: Layout,
-    text: &str,
-    gen: Option<&str>,
-    free: u64,
-    gpu: &str,
-    packed: Option<&Path>,
-    host: Option<u64>,
-) -> Done<LoadPlan> {
-    // (what the last load of this model here took beyond its plan is planned as already taken: `calibrated`)
-    let extra = calibration(&short_name(model), level_name(layout), gpu);
-    let mut p = lossy_plan_inner(a, model, layout, text, gen, free.saturating_sub(extra), gpu, packed, host)?;
-    calibrated(&mut p, free, extra);
-    Ok(p)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn lossy_plan_inner(
-    a: &Args,
-    model: &str,
-    layout: Layout,
-    text: &str,
-    gen: Option<&str>,
-    free: u64,
-    gpu: &str,
-    packed: Option<&Path>,
-    host: Option<u64>,
-) -> Done<LoadPlan> {
-    let name = short_name(model);
-    let tag = level_name(layout);
-    if crate::gemma4::is_gemma4(text) {
-        return gemma_plan(a, &name, tag, layout, text, gen, free, gpu, packed);
-    }
-    // the matrices and the tensors kept as they are, what a sequence holds (its states, a token's KV) and the longest context
-    let nemotron = crate::nemotron::is_nemotron_h(text);
-    let (packs, kept, state, per, max_pos) = if nemotron {
-        if !matches!(layout, Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Hummingbird) {
-            return Err(Refusal::unsupported(format!("{name}: the {tag} level is not built for Nemotron 3 Super, whose experts are held at the kestrel, swift and wren levels, or at the hummingbird level"), format!("Run it at the wren, swift or kestrel level: glyd run {model}:wren")));
-        }
-        let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
-        // (the hummingbird kernels take experts on a latent that is a power of two from 128 to 1,024, Nemotron 3 Super's: src/moe_hb.rs; the
-        // experts of a model with no latent, Nemotron 3.5 Lightning's, read its width)
-        let l = cfg.moe.latent;
-        if layout == Layout::Hummingbird && !(l.is_power_of_two() && (128..=1024).contains(&l)) {
-            return Err(Refusal::unsupported(
-                format!("{name}: the hummingbird level takes Nemotron-H experts on a latent of 128 to 1,024 (Nemotron 3 Super's); this model's experts read its width of {}", cfg.hidden),
-                format!("Run it at the swift or kestrel level: glyd run {model}:swift"),
-            ));
-        }
-        (cfg.packs(), cfg.kept(), cfg.state_bytes(), cfg.kv_bytes_per_token(), cfg.max_pos)
-    } else {
-        if layout == Layout::Hummingbird {
-            return Err(Refusal::unsupported(
-                format!("{name}: the hummingbird level is built for Nemotron 3 Super alone"),
-                "Run it at the kestrel, swift or wren level: glyd run MODEL:swift",
-            ));
-        }
-        let cfg = Config35::parse(text, "config.json", gen).map_err(|e| {
-            Refusal::unsupported(
-                format!("{name}: the {tag} level runs {} models so far ({})", "Qwen3.5, Qwen3.6, Qwen3.8 and Nemotron 3 Super", e.msg),
-                format!("Run it lossless: glyd run {model}"),
-            )
-        })?;
-        let cfg = match packed {
-            Some(d) => cfg.as_saved(d),
-            None => cfg,
-        };
-        (cfg.packs(), cfg.kept(), cfg.state_bytes(), cfg.kv_bytes_per_token(), cfg.max_pos)
-    };
-    let ck = packed.map(|d| glyd_gpu::safetensors::Checkpoint::open(d).map_err(cannot)).transpose()?;
-    let (mut weights, mut bf16) = (0u64, 0u64);
-    for p in packs {
-        let b = (p.rows() * p.cols * 2) as u64;
-        bf16 += b;
-        // (a matrix the directory holds as bf16 is packed as it loads: sized as without one, in the layout it is packed in)
-        let saved = ck.as_ref().map_or(0, |ck| p.parts.iter().filter_map(|x| packed_bytes(ck, Pack35::saved(&x.0))).sum::<u64>());
-        let own = if nemotron { pack_layout(layout, &p.key) } else { layout };
-        weights += if saved > 0 {
-            saved
-        } else if p.packable() {
-            (b as f64 * fit::bits(own) / 16.0) as u64
-        } else {
-            b
-        };
-    }
-    for t in kept {
-        let b = t.shape.iter().product::<u64>() * if t.dtype == "F32" { 4 } else { 2 };
-        bf16 += b;
-        weights += b;
-    }
-    let reserve = reserve_of(free);
-    let fixed = weights + state + LOSSY_WORK + reserve;
-    let per = per.max(1);
-    let family = if nemotron { "Nemotron-H" } else { "Qwen3.5" };
-    let kind = if nemotron { Kind::NemotronH } else { Kind::Qwen35 };
-    let mk = |ctx: usize, cache: Option<CachePlan>| LoadPlan {
-        kind,
-        family,
-        level: level_name(layout),
-        layout,
-        context: ctx,
-        users: 1,
-        chunk: 2048,
-        weights,
-        bf16,
-        kv: ctx as u64 * per + state,
-        work: LOSSY_WORK,
-        draft: 0,
-        reserve,
-        free,
-        gpu: gpu.to_string(),
-        experts: cache,
-        spread: None,
-    };
-    let room = (free.saturating_sub(fixed) / per) as usize;
-    let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
-    let fam = if nemotron { crate::support::Family::NemotronH } else { crate::support::Family::Qwen35 };
-    crate::support::context_check(&name, crate::support::row(fam), max_pos, asked)?;
-    let ctx = asked.unwrap_or_else(|| room.min(LOSSY_CTX)).min(max_pos.max(LOSSY_MIN_CTX));
-    let fits = !(ctx < LOSSY_MIN_CTX.min(asked.unwrap_or(LOSSY_MIN_CTX)) || ctx > room);
-    let cache = cache_flag(a)?;
-    if cache.is_some() && !nemotron {
-        return Err(Refusal::new(format!("--expert-cache: {name} has no experts to keep in the computer's memory"), "It is for Nemotron 3 Super"));
-    }
-    let host_asked = host_flag(a)?;
-    if host_asked.is_some() && !nemotron {
-        return Err(Refusal::new(format!("--host-memory: {name} has no experts to keep in the computer's memory"), "It is for Nemotron 3 Super"));
-    }
-    let mut also = String::new();
-    if nemotron && (!fits || cache.is_some()) {
-        let cfg = ConfigNemotronH::parse(text, "config.json", gen).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
-        match offloaded(&cfg, layout, weights, state, per, free, host, asked, cache, host_asked, gpu) {
-            Ok((ctx, plan)) => return Ok(mk(ctx, Some(plan))),
-            Err(why) if cache.is_some() => {
-                return Err(Refusal::unsupported(
-                    format!("{name} at the {tag} level with --expert-cache: {why}"),
-                    "Close programs that use the GPU (nvidia-smi lists them), ask for a smaller cache, or use a GPU or a computer with more memory",
-                ))
-            }
-            Err(why) => also = format!("; {why}"),
-        }
-    }
-    if !fits {
-        return Err(Refusal::unsupported(
-            format!(
-                "{name} at the {tag} level takes about {} of GPU memory at {} tokens of context, and the {gpu} has {} free{also}",
-                gib(fixed + ctx.max(LOSSY_MIN_CTX) as u64 * per),
-                ctx.max(LOSSY_MIN_CTX),
-                gib(free)
-            ),
-            if also.is_empty() {
-                "Close programs that use the GPU (nvidia-smi lists them), ask for less context (--context 4096), or use a GPU with more memory"
-            } else {
-                "Close programs that use the GPU (nvidia-smi lists them) or the computer's memory, or use a GPU or a computer with more memory"
-            },
-        ));
-    }
-    Ok(mk(ctx, None))
-}
-
-/// `lossy_plan` for a Gemma 4 dense model: its packed weights (as a glyd-v7 directory holds them, else at `layout`), the sliding layers' rings, a draft model where one is found, and the
-/// context the rest of the GPU holds in the global layers' keys and values.
-#[allow(clippy::too_many_arguments)]
-fn gemma_plan(a: &Args, name: &str, tag: &str, layout: Layout, text: &str, gen: Option<&str>, free: u64, gpu: &str, packed: Option<&Path>) -> Done<LoadPlan> {
-    if !matches!(layout, Layout::Tiered | Layout::Int6 | Layout::Int5 | Layout::Int4 | Layout::Int4H) {
-        return Err(Refusal::unsupported(
-            format!("{name}: the {tag} level is not built for Gemma 4"),
-            format!("Run it lossless (penguin) or at the kestrel or swift level: glyd run {name}:kestrel"),
-        ));
-    }
-    let cfg = crate::gemma4::ConfigG4::parse(text, gen, false).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), ""))?;
-    let ck = packed.map(|d| glyd_gpu::safetensors::Checkpoint::open(d).map_err(cannot)).transpose()?;
-    let (weights, bf16) = cfg.weight_bytes(layout, ck.as_ref());
-    // (a model not on this computer yet comes as its pre-packed repo, which holds its draft model: planned with it, the larger of the two plans)
-    let typed = a.pos.get(1).map_or(name, |m| level(m, false).map_or(m.as_str(), |(m, _)| m));
-    let draft_to_come = packed.is_none() && !a.has("no-draft") && short_name(typed).to_ascii_lowercase().starts_with("gemma-4-"); // (ship's `draft_repo`: Google's "-assistant" model of each Gemma 4)
-    let draft = if gemma_draft(a, packed).is_some() || draft_to_come { GEMMA_DRAFT_BYTES } else { 0 };
-    let asked = if a.has("context") || a.has("ctx") { Some(a.either("context", "ctx", 0usize)?) } else { None };
-    crate::support::context_check(name, crate::support::row(crate::support::Family::Gemma4), cfg.max_pos, asked)?;
-    // (12-bit lossless pages where the run asks for them and has no draft model, whose executor then pages its cache: src/dynamic/kvpages.rs)
-    let twelve = std::env::var("GLYD_KV").as_deref() == Ok("lossless") && a.has("no-draft");
-    let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, asked.unwrap_or(LOSSY_CTX).max(LOSSY_MIN_CTX), twelve);
-    let reserve = reserve_of(free);
-    let fixed = weights + rings + draft + LOSSY_WORK + reserve;
-    let room = (free.saturating_sub(fixed) / per.max(1)) as usize;
-    // (served with no draft model, the scheduler gives each of --users a room of its own, its sliding layers' rings and its context (src/dynamic/rows.rs): the context not asked for is what the room gives
-    // each of them, at least LOSSY_MIN_CTX (where that leaves room for fewer, the server takes fewer))
-    let users = if draft == 0 && a.pos.first().is_some_and(|c| c == "serve") { users_of(a)? as u64 } else { 1 };
-    let each = (free.saturating_sub(fixed + rings * (users - 1)) / (per.max(1) * users)) as usize;
-    let ctx = asked.unwrap_or_else(|| each.max(LOSSY_MIN_CTX).min(room).min(LOSSY_CTX)).min(cfg.max_pos.max(LOSSY_MIN_CTX)) / 16 * 16;
-    if ctx < LOSSY_MIN_CTX.min(asked.unwrap_or(LOSSY_MIN_CTX)) || ctx > room {
-        let fix = "lose programs that use the GPU (nvidia-smi lists them), ask for less context (--context 4096), run without the draft model (--no-draft), or use a GPU with more memory";
-        // (penguin that does not fit, of a model with a wren repo that does: that repo first, with its draft model, at the shortest context a plan takes)
-        let wren = gemma_wren(typed).filter(|_| layout == Layout::Tiered).and_then(|repo| {
-            let need = cfg.weight_bytes(Layout::Int4H, None).0 + rings + GEMMA_DRAFT_BYTES + LOSSY_WORK + reserve + LOSSY_MIN_CTX as u64 * per;
-            (need <= free).then(|| {
-                format!(
-                    "glyd run {repo} fits: the wren level, about {} at {LOSSY_MIN_CTX} tokens of context (Google's QAT checkpoint, bit for bit)\nOr c{fix}",
-                    gib(need)
-                )
-            })
-        });
-        return Err(Refusal::unsupported(
-            format!(
-                "{name} at the {tag} level takes about {} of GPU memory at {} tokens of context, and the {gpu} has {} free",
-                gib(fixed + ctx.max(LOSSY_MIN_CTX) as u64 * per),
-                ctx.max(LOSSY_MIN_CTX),
-                gib(free)
-            ),
-            wren.unwrap_or_else(|| format!("C{fix}")),
-        ));
-    }
-    Ok(LoadPlan {
-        kind: Kind::Gemma4,
-        family: "Gemma 4",
-        level: level_name(layout),
-        layout,
-        context: ctx,
-        users: users as usize,
-        chunk: GEMMA_CHUNK,
-        weights,
-        bf16,
-        kv: users * (rings + ctx as u64 * per),
-        work: LOSSY_WORK,
-        draft,
-        reserve,
-        free,
-        gpu: gpu.to_string(),
-        experts: None,
-        spread: None,
-    })
 }
 
 /// The terminal's replies on the one sequence of `e` (chat_loop's jobs, on this thread): the jobs a server would send never come, as no port is held.
@@ -1883,7 +1333,26 @@ fn pre_packed(model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<Option<Path
     Ok(held(&repo))
 }
 
-/// The lossy level's engine as `run` loads it (Qwen3.5's or Nemotron 3 Super's), with its tokenizer, chat template and sampling defaults, the size of its vocabulary, the line that says it is ready, and what
+/// The plan of MODEL (its config.json `c`, parsed once; its generation_config.json's `gen`) at `layout` on `gpu`, as `load_lossy`, `check_lossy` and `prepare` make it, by
+/// the kind its config describes: a plain dense decoder's on the executor (`ModelConfig::is_dense`; sized as `fit` sizes it: penguin at the layout this GPU is fastest
+/// in, a lossy level at its own; a server's sequences in shared pages), else the lossy levels' (`lossy_plan_over`, its layers in stages over `gpus`, the machine's,
+/// where its row cuts them at this level and `gpu` does not hold it; `packed`: the glyd-v7 directory it is).
+#[allow(clippy::too_many_arguments)]
+fn plan_level(a: &Args, model: &str, layout: Layout, c: &ModelConfig, gen: Option<&str>, gpu: &Gpu, gpus: &[Gpu], packed: Option<&Path>) -> Done<LoadPlan> {
+    if !c.is_dense() {
+        let devs: Vec<crate::plan::Target> = gpus.iter().map(target).collect();
+        return lossy_plan_over(a, model, layout, c, gen, gpu.free, &gpu.name, packed, crate::offload::host_memory(), &devs);
+    }
+    let name = short_name(model);
+    supported_in(&name, c)?;
+    let cfg = Config::of(c, "config.json", gen).map_err(cannot)?;
+    let users = if a.pos.first().is_some_and(|c| c == "serve") { users_of(a)? } else { 1 };
+    let (_, _, p) = qwen3_plan(a, &cfg, &name, gpu, Some(layout).filter(|l| *l != Layout::Tiered), users)?;
+    shape_checks(&name, &cfg, &p)?;
+    Ok(p)
+}
+
+/// The level's engine as `run` loads it (Gemma 4's, the plain dense kind's, the Qwen3.5 layout's or the Nemotron-H layout's), with its tokenizer, chat template and sampling defaults, the size of its vocabulary, the line that says it is ready, and what
 /// /v1/glyd/info says of it served as `served` (MODEL as typed).
 #[allow(clippy::type_complexity)]
 fn load_lossy(
@@ -1894,67 +1363,39 @@ fn load_lossy(
 ) -> Done<(Box<dyn Gen>, Tok, Option<Chat>, Params, usize, String, Option<server::Info>)> {
     let (t0, started) = (Instant::now(), crate::monitor::clock());
     let model = a.need(1, "MODEL")?.to_string();
+    // (`--image-pixels N`: the most pixels an image is resized to, where the model reads images; before the model loads its tower)
+    if let Some(p) = a.flag("image-pixels") {
+        let n = p
+            .parse::<usize>()
+            .ok()
+            .filter(|&n| n > 0)
+            .ok_or_else(|| Refusal::new(format!("--image-pixels {p}: a number of pixels"), "As --image-pixels 1048576"))?;
+        let _ = crate::dynamic::images::MAX_PIXELS.set(n);
+    }
     match dynamic_family(&model) {
-        Some("Nemotron-H") if layout != Layout::Tiered => {}
+        Some(family) if lossy_route(family, layout) => {}
         Some(family) => return load_dynamic(a, &model, family, hb_level(&model, layout), served, ui),
         None => {}
     }
-    let mut layout = layout_for(&model, layout);
     let name = short_name(&model);
-    let mut packed = v7_layout(&model)?.map(|_| PathBuf::from(&model));
-    let gpu = gpu_pick()?;
+    let (gpu, gpus) = gpus_pick()?;
     if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true, machine::ANY_FAMILY) {
         return Err(r);
     }
-    let first = match packed {
-        None => Some(lossy_plan(a, &model, layout, &config_text(&model)?, None, gpu.free, &gpu.name, None)?),
-        Some(_) => None,
-    };
-    if packed.is_none() {
-        packed = pre_packed(&model, layout, ui)?;
-    }
-    let mut dir = match &packed {
-        Some(d) => d.clone(),
-        None if Path::new(&model).join("config.json").exists() => PathBuf::from(&model),
-        None => match Source::find(&model) {
-            Ok(s) => s.dir,
-            Err(_) => {
-                let (hub, remote, wanted) = store::hub_plan(&model, ui)?;
-                store::download(&hub, &remote, &wanted, &model, ui)?;
-                Source::find(&model).map_err(cannot)?.dir
-            }
-        },
-    };
-    // (a pre-packed repo given by its own name is a glyd-v7 directory once downloaded; a bf16 model is packed into the cache once, and read from there)
-    if packed.is_none() {
-        packed = v7_manifest(&dir).map_err(cannot)?.map(|_| dir.clone());
-    }
-    if let Some(d) = &packed {
-        // (the layout as packed: wren of a QAT checkpoint is the exact four-bit one)
-        layout = v7_level(&model, v7_manifest(d).map_err(cannot)?.map(|m| m.0), Some(layout))?.unwrap_or(layout);
-    } else if let Some(first) = first {
-        if layout == Layout::Hummingbird {
-            return Err(Refusal::unsupported(
-                format!("{name} at the hummingbird level comes as a finished download or directory only: its experts' codes are made apart"),
-                format!("Download the pre-packed model: glyd/{name}-hummingbird"),
-            ));
-        }
-        dir = store::pack(&Source::find(&model).map_err(cannot)?, &model, layout, first.weights, ui)?;
-        packed = Some(dir.clone());
-    }
+    // (the directory made ready, as `glyd prepare` makes it: downloaded, packed once)
+    let (dir, packed, layout) = level_dir(a, &model, layout_for(&model, layout), &gpu, &gpus, ui)?;
     let read = |f: &str| std::fs::read_to_string(dir.join(f)).ok();
-    let plan = lossy_plan(
-        a,
-        &model,
-        layout,
-        &read("config.json").ok_or_else(|| cannot(format!("{}: no config.json", dir.display())))?,
-        read("generation_config.json").as_deref(),
-        gpu.free,
-        &gpu.name,
-        packed.as_deref(),
-    )?;
-    // (a Nemotron-H model's layouts differ by pack: the bits a weight are what its bytes come to)
-    let bits = if plan.kind == Kind::NemotronH { plan.weights as f64 * 16.0 / plan.bf16 as f64 } else { fit::bits(layout) };
+    // (the directory's config.json parsed once: the plan's, and the report's after the load)
+    let c = model_config_of(&read("config.json").ok_or_else(|| cannot(format!("{}: no config.json", dir.display())))?, &name)?;
+    let plan = plan_level(a, &model, layout, &c, read("generation_config.json").as_deref(), &gpu, &gpus, packed.as_deref())?;
+    // (the GPUs the plan's stages are on, where its layers are cut: `open_lossy` opens them)
+    let used: Vec<&Gpu> = match &plan.spread {
+        Some(sp) => gpus.iter().filter(|g| sp.devices.contains(&g.ordinal)).collect(),
+        None => vec![&gpu],
+    };
+    // (a row whose loader packs some matrices in another layout than the level's: the bits a weight are what its bytes come to)
+    let own = crate::support::row_named(plan.family).and_then(|r| r.lossy).is_some_and(|l| l.pack.is_some());
+    let bits = if own { plan.weights as f64 * 16.0 / plan.bf16 as f64 } else { bits(layout) };
     let on_gpu = plan.weights_on_gpu();
     let exact = match layout {
         Layout::Tiered => "lossless: every weight is the original's",
@@ -1975,11 +1416,56 @@ fn load_lossy(
         };
         ui.borrow_mut().line(&format!("{} experts of {} a layer are on the GPU, chosen as the router asks for them; {held}.", c.slots, c.experts));
     }
+    if let Some(sp) = &plan.spread {
+        let nl = c.num("num_hidden_layers").unwrap_or(0);
+        let b: Vec<usize> = std::iter::once(0).chain(sp.cuts.iter().copied()).chain(std::iter::once(nl)).collect();
+        let stages: Vec<String> = sp.devices.iter().zip(b.windows(2)).map(|(d, w)| format!("layers {}..{} on GPU {d}", w[0], w[1])).collect();
+        ui.borrow_mut().line(&format!("Its layers in stages, one sequence at a time: {}.", stages.join(", ")));
+    }
     ui.borrow_mut().line(&format!("Plan: {}.", plan.text()));
     if let Some(n) = machine::cuda12_note(gpu.driver, crate::dev::has_kernels12()) {
         ui.borrow_mut().line(&format!("Note: {n}"));
     }
     ui.borrow_mut().status(&format!("{} {name} and loading it onto the GPU...", if packed.is_some() { "Reading" } else { "Packing" }));
+    let (mut e, bytes, vocab) = open_lossy(a, &plan, &dir, &c, &gpu, &name, ui)?;
+    loaded_report(&model, &c, &plan, &used, if plan.spread.is_some() { 0 } else { bytes as u64 });
+    // (the model's first load on this GPU: a reply timed, its speeds measured here from then on)
+    crate::plan::first_use(&mut *e, vocab);
+    let tok = Tok::load_with(&dir, &c).map_err(cannot)?;
+    let chat = Chat::load(&dir).map_err(cannot)?;
+    let mut defaults = sampler::generation_defaults(&dir);
+    if let Some(t) = a.flag("temp") {
+        defaults.temperature = t.parse().map_err(|_| Refusal::new(format!("--temp {t}: not a number"), ""))?;
+    }
+    // (served, the users it holds are said once its step is made: `serve_lossy`)
+    let distinct = used.iter().map(|g| g.ordinal).collect::<std::collections::BTreeSet<_>>().len();
+    let on = if distinct > 1 { format!("{distinct} GPUs") } else { format!("the {}", used.first().map_or(gpu.name.as_str(), |g| g.name.as_str())) };
+    let line = format!(
+        "Ready in {}: {name} on {on}, {} of weights, {} tokens of context{}.",
+        fmt_time(t0.elapsed().as_secs_f64()),
+        gib(bytes as u64),
+        plan.context,
+        if served.is_empty() { ", one user at a time" } else { "" }
+    );
+    // (what /v1/glyd/info says of it, where it is served)
+    let info = (!served.is_empty()).then(|| {
+        let (held, lossless) = (e.held(), matches!(layout, Layout::Tiered | Layout::Int4H));
+        let weights = format!("{} level: about {bits:.1} bits per weight, {exact}", level_name(layout));
+        let mut about = about(served, &dir, requested(served, a.has("lossy")), level_name(layout), lossless, &weights, held.as_ref(), &gpu);
+        let first = used.first().map_or(gpu.ordinal, |g| g.ordinal);
+        about.push(("costs", crate::costs::served(&dir, &c, served, requested(served, a.has("lossy")), e.capacity(), plan.chunk, held, first)));
+        server::Info { about, gpu: Some(first), held, concurrency: 1, window: e.capacity(), refused: &[], started }
+    });
+    Ok((e, tok, chat, defaults, vocab, line, info))
+}
+
+/// The engine of a level's plan (Gemma 4's, Qwen3's, Nemotron-H's or Qwen3.5's description on the executor) from the directory `dir`, on `gpu`: everything it holds is the
+/// plan's (its context, its prompt chunk, its layout, its draft model, its expert cache, its sequences and their keys, values and states); nothing is sized here. The
+/// engine, its weights' bytes and its vocabulary. A plan of stages (`LoadPlan::spread`) is opened as the dynamic route opens one (`split::open_plan`): each stage
+/// its layers at the level on its GPU by the description's loader, the residual handed over between them, each stage's places of the experts where the plan has
+/// them. `m`: the directory's config.json, parsed once (the plan's).
+fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, m: &ModelConfig, gpu: &Gpu, name: &str, ui: &RefCell<Ui>) -> Done<(Box<dyn Gen>, usize, usize)> {
+    let o = crate::dynamic::Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device: gpu.ordinal, layout: Some(plan.layout) };
     let oom = |e: crate::ffi::Error| {
         if e.out_of_memory() {
             Refusal::unsupported(
@@ -1990,41 +1476,41 @@ fn load_lossy(
             cannot(e.msg)
         }
     };
-    let (e, bytes, vocab): (Box<dyn Gen>, usize, usize) = if plan.kind == Kind::Gemma4 {
+    if plan.spread.is_some() {
+        let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.msg, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
+        let e = crate::dynamic::split::open_plan(dir, m, plan, offload).map_err(|e| {
+            if e.out_of_memory() {
+                Refusal::unsupported(
+                    format!("a GPU ran out of memory loading {name} in stages"),
+                    "Close programs that use the GPUs (nvidia-smi lists them), or ask for less context: --context 4096",
+                )
+            } else {
+                cannot(e.msg)
+            }
+        })?;
+        let vocab = crate::runtime::config::ModelConfig::load(dir).map_err(cannot)?.num("vocab_size").unwrap_or(0);
+        return Ok((Box::new(e), plan.weights_on_gpu() as usize, vocab));
+    }
+    let (mut e, bytes, vocab): (Box<dyn Gen>, usize, usize) = if plan.kind == Kind::Gemma4 {
         // (drafted where a draft model is found: the big model checks every draft token, so the tokens are its own; greedy replies draft, sampled ones step)
-        let draft = gemma_draft(a, Some(&dir)).map(|d| (d, a.num("draft-tokens", 8usize).unwrap_or(8).clamp(1, GEMMA_CHUNK - 1)));
+        let draft = draft_dir(a, Some(dir)).filter(|_| plan.draft > 0).map(|d| (d, a.num("draft-tokens", 8usize).unwrap_or(8).clamp(1, plan.chunk - 1)));
         if let Some((d, k)) = &draft {
             ui.borrow_mut().line(&format!("Drafting with {} ({k} tokens a round; --no-draft runs without it).", d.display()));
         }
         // the dynamic engine (GLY-326): Gemma 4's description and, where one is found, its draft model's
-        let c = crate::gemma4::ConfigG4::load(&dir).map_err(cannot)?;
-        let spec = match &draft {
-            Some((d, k)) => {
-                let dc = crate::gemma4::ConfigG4::load_for(d, true).map_err(cannot)?;
-                Some(crate::dynamic::DraftSpec { dir: d, desc: crate::dynamic::gemma4::describe_draft(&dc, &c), k: *k })
-            }
-            None => None,
-        };
-        let o = crate::dynamic::Opts { ctx: plan.context, chunk: GEMMA_CHUNK, graph: true, device: gpu.ordinal, layout: Some(layout) };
-        let mut e = crate::dynamic::Dyn::new(&dir, crate::dynamic::gemma4::lowered(&dir, &c).map_err(cannot)?, spec, &o).map_err(oom)?;
-        // (12-bit lossless KV pages where the scheduler pages the cache, a run with no draft model: GLYD_KV=lossless until admission reserves their room;
-        // the tables made on the model's first run and kept in the cache)
-        if draft.is_none() && std::env::var("GLYD_KV").as_deref() == Ok("lossless") {
-            let t0 = std::time::Instant::now();
-            let (t, made) = crate::dynamic::kv12::tables_for(&mut e, &dir, &short_name(&model)).map_err(cannot)?;
-            if made {
-                ui.borrow_mut().line(&format!(
-                    "Made the 12-bit KV tables of {} in {:.0} s (once: kept in the cache).",
-                    short_name(&model),
-                    t0.elapsed().as_secs_f64()
-                ));
-            }
-            e.set_kv12(Some(t));
+        let mut e = crate::dynamic::gemma4::load_of(dir, m, draft.as_ref().map(|(d, k)| (d.as_path(), *k)), &o).map_err(oom)?;
+        if draft.is_none() {
+            twelve_bit_pages(&mut e, plan, dir, m, name, ui)?;
         }
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
+    } else if plan.kind == Kind::Qwen3 {
+        // the executor (R3c, #139): a Llama-style dense model's description from its config, its products at the plan's level
+        let mut e = crate::dynamic::dense::load_of(dir, m, &o).map_err(|e| engine_refusal(e, name, plan, gpu))?;
+        twelve_bit_pages(&mut e, plan, dir, m, name, ui)?;
+        let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
+        (Box::new(e), bytes, vocab)
     } else if plan.kind == Kind::NemotronH {
-        let o = crate::dynamic::Opts { ctx: plan.context, chunk: 2048, graph: true, device: gpu.ordinal, layout: Some(layout) };
         let store = ExpertStore::new();
         // (the experts the computer's memory does not hold stay in the packed directory: src/offload.rs `Tier`)
         if let Some(c) = plan.experts.filter(|c| c.ram < c.host_bytes()) {
@@ -2053,56 +1539,47 @@ fn load_lossy(
             }
         }
         store.set_offload(offload);
-        let (plain, cached) = (crate::moe_nh::factory(layout), plan.experts.map(|c| crate::moe_nh::factory_cached(layout, c.slots, &store)));
-        let make: crate::kern_nh::MoeFactory<'_> = match &cached {
-            Some(f) => f,
-            None => &plain,
-        };
-        // the executor (GLY-354): Nemotron-H's description, its blocks of experts (an expert cache's) as `make` makes them
-        let layers = crate::nemotron::ConfigNemotronH::load(&dir).map_err(cannot)?.layers;
-        let e = crate::dynamic::nemotron::load_with(&dir, &o, make, crate::dynamic::Stage::whole(layers)).map_err(oom)?;
+        // the executor (GLY-354): Nemotron-H's description, its blocks of experts the Moe kind's, in the expert cache of the plan's places where it has one
+        let cache = plan.experts.map(|c| (c.slots, &store));
+        let mut e = crate::dynamic::nemotron::load_whole_of(dir, m, &o, plan.layout, cache).map_err(oom)?;
+        twelve_bit_pages(&mut e, plan, dir, m, name, ui)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     } else {
-        // the dynamic engine (GLY-326): Qwen3.5's description
-        let o = crate::dynamic::Opts { ctx: plan.context, chunk: 2048, graph: true, device: gpu.ordinal, layout: Some(layout) };
-        let e = crate::dynamic::qwen35::load(&dir, &o).map_err(oom)?;
+        // the dynamic engine (GLY-326): Qwen3.5's description; the layout with experts' experts in the expert cache of the plan's places where it has one (every
+        // expert in the computer's memory at the level, src/tiering.rs)
+        let mut e = match plan.experts {
+            Some(c) => {
+                let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.msg, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
+                let caching = crate::hbg_store::HbCaching { places: c.slots, ram: None, offload, dense: 0 };
+                let layers = crate::dynamic::qwen35::ends(dir, m).map_err(cannot)?.0;
+                crate::dynamic::qwen35::stage(dir, m, &o, crate::dynamic::Stage::whole(layers), Some(&caching)).map_err(oom)?
+            }
+            None => crate::dynamic::qwen35::load_of(dir, m, &o).map_err(oom)?,
+        };
+        twelve_bit_pages(&mut e, plan, dir, m, name, ui)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
     };
-    loaded_report(&model, &plan, &[&gpu], bytes as u64);
-    let tok = Tok::load(&dir).map_err(cannot)?;
-    let chat = Chat::load(&dir).map_err(cannot)?;
-    let mut defaults = sampler::generation_defaults(&dir);
-    if let Some(t) = a.flag("temp") {
-        defaults.temperature = t.parse().map_err(|_| Refusal::new(format!("--temp {t}: not a number"), ""))?;
+    // (its sequences, their keys, values and states the plan's: the pools take its bytes, no more)
+    e.take_plan(plan.users, plan.kv);
+    Ok((e, bytes, vocab))
+}
+
+/// The 12-bit lossless KV pages for `e` where its plan has them (`LoadPlan::kv12`: GLYD_KV=lossless asked for them for a server, its description's attention kinds
+/// have rings they take, and they reserve no more than bf16 for the plan; off unless asked for), on every path that loads a plan on the executor: the tables made
+/// on the model's first run and kept in the cache (`kv12::tables_for`).
+fn twelve_bit_pages(e: &mut crate::dynamic::Dyn, plan: &LoadPlan, dir: &Path, m: &ModelConfig, name: &str, ui: &RefCell<Ui>) -> Done<()> {
+    if !plan.kv12 {
+        return Ok(());
     }
-    let line = format!(
-        "Ready in {}: {name} on the {}, {} of weights, {} tokens of context, one user at a time.",
-        fmt_time(t0.elapsed().as_secs_f64()),
-        gpu.name,
-        gib(bytes as u64),
-        plan.context
-    );
-    // (what /v1/glyd/info says of it, where it is served)
-    let info = (!served.is_empty()).then(|| {
-        let (held, lossless) = (e.held(), matches!(layout, Layout::Tiered | Layout::Int4H));
-        let weights = format!("{} level: about {bits:.1} bits per weight, {exact}", level_name(layout));
-        let mut about = about(served, &dir, requested(served, a.has("lossy")), level_name(layout), lossless, &weights, held.as_ref(), &gpu);
-        about.push((
-            "costs",
-            crate::costs::served(
-                &dir,
-                served,
-                requested(served, a.has("lossy")),
-                e.capacity(),
-                if plan.kind == Kind::Gemma4 { GEMMA_CHUNK } else { 2048 },
-                held,
-            ),
-        ));
-        server::Info { about, gpu: Some(gpu.ordinal), held, concurrency: 1, window: e.capacity(), refused: server::ONE_AT_A_TIME, started }
-    });
-    Ok((e, tok, chat, defaults, vocab, line, info))
+    let t0 = std::time::Instant::now();
+    let (t, made) = crate::dynamic::kv12::tables_for(e, dir, m, name).map_err(cannot)?;
+    if made {
+        ui.borrow_mut().line(&format!("Made the 12-bit KV tables of {} in {:.0} s (once: kept in the cache).", name, t0.elapsed().as_secs_f64()));
+    }
+    e.set_kv12(Some(t));
+    Ok(())
 }
 
 /// The GPUs the dynamic route uses (Ampere or newer, as the driver lists them) and the first, which the machine's checks are of.
@@ -2122,427 +1599,6 @@ fn dynamic_gpus() -> Done<(Vec<Gpu>, Gpu)> {
     Ok((gpus, first))
 }
 
-/// Kimi-K3's expert cache over these GPUs (`split::places_plan`): the cuts, their GPUs, each stage's places a layer, the bytes on the GPUs, the experts' bytes in the computer's
-/// memory, the experts a layer has; refused with the numbers where the computer's memory does not hold every expert or a GPU has room for fewer than a token's experts.
-fn kimi_cache(
-    table: &crate::sizes::Table,
-    text: &str,
-    nl: usize,
-    room: &[(i32, u64)],
-    name: &str,
-    ctx: usize,
-    twelve: bool,
-    host: Option<u64>,
-) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize, (usize, u64))> {
-    let c = crate::kimi::ConfigKimi::parse(text, "config.json", None).map_err(cannot)?;
-    // (its bf16 matrices in the 12-bit layout where `twelve`: an HBM GPU's faster product, a few hundred places fewer)
-    let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
-    let (mut dense, base) =
-        crate::dynamic::split::layer_bytes_table(table, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !n.contains(".block_sparse_moe.experts."));
-    // (each layer's cache for the context too: a latent attention's latents, ctx of kv_rank + rope bf16; a delta attention's state, heads 128 x 128 fp32, and its convolution's tail)
-    let qd = c.kda.heads * c.kda.dim;
-    for (l, d) in dense.iter_mut().enumerate() {
-        *d += match c.kinds.get(l) {
-            Some(crate::glm::GlmKind::Mla) => (ctx * (c.mla.kv_rank + c.mla.rope) * 2) as u64,
-            _ => (c.kda.heads * c.kda.dim * c.kda.dim * 4 + 3 * 3 * qd * 2) as u64,
-        };
-    }
-    let expert = crate::dynamic::kimi::expert_bytes(&c).map_err(cannot)?;
-    let e = &c.experts;
-    let layers = c.moe.iter().filter(|&&m| m).count();
-    let all = (layers * e.experts) as u64 * expert;
-    let host = host.unwrap_or(0);
-    if all + HOST_MARGIN > host {
-        return Err(Refusal::unsupported(
-            format!(
-                "{name} keeps the {} experts the GPUs do not hold in the computer's memory: they take {}, and {} is free",
-                layers * e.experts,
-                gib(all),
-                gib(host)
-            ),
-            "A machine with that much memory runs it",
-        ));
-    }
-    // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
-    let ram = crate::dynamic::split::ram_bytes_table(table, text, nl, "Kimi-K3", crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
-    let Some((cuts, devices, places, held, freed)) = crate::dynamic::split::places_plan_dense(&dense, base, &c.moe, room, expert, e.experts, e.top_k, &ram)
-    else {
-        return Err(Refusal::unsupported(
-            format!(
-                "{name}: its weights besides the experts take {}, and the GPUs here leave too little room for its experts",
-                gib(dense.iter().sum::<u64>() + base)
-            ),
-            "A machine whose GPUs have more memory free runs it",
-        ));
-    };
-    let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
-    let on_gpus = dense.iter().sum::<u64>() - freed
-        + base
-        + bounds.windows(2).zip(&places).map(|(w, &p)| c.moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * expert).sum::<u64>();
-    Ok((cuts, devices, places, on_gpus, all, e.experts, (held, ram_held(&ram, &dense, held))))
-}
-
-/// The bytes the last `held` layers' dense matrices take in the computer's memory (`split::places_plan_dense`'s layers).
-fn ram_held(ram: &[u64], dense: &[u64], held: usize) -> u64 {
-    let n = ram.len().min(dense.len());
-    (n - held.min(n)..n).map(|l| ram[l].min(dense[l])).sum()
-}
-
-/// A hummingbird directory's expert cache on the dynamic route (src/hbg_store.rs) where its GPUs do not hold all its experts, for any family: each layer's weights besides its experts and its share of the cache for `ctx` tokens
-/// on the GPUs, places for the busiest experts with the room left (`split::places_plan`, at the mean of the experts' bytes), and every expert in the computer's memory (`host` bytes free, less `HOST_MARGIN`) or, where it holds
-/// less, its share there and the rest read from the expert files as the router asks for them (the disk). The cuts, their GPUs, each stage's places a layer, the GPUs' bytes, all the experts' bytes, the experts a layer, and
-/// the bytes of experts the computer's memory holds; or the refusal.
-#[allow(clippy::type_complexity)]
-fn hb_cache(
-    dir: &Path,
-    text: &str,
-    nl: usize,
-    room: &[(i32, u64)],
-    name: &str,
-    ctx: usize,
-    twelve: bool,
-    host: Option<u64>,
-) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize, u64, (usize, u64))> {
-    let hb = crate::hb_pack::HbDir::open(dir).map_err(cannot)?.ok_or_else(|| cannot(format!("{}: not a hummingbird directory", dir.display())))?;
-    let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
-    let (mut dense, base) = crate::dynamic::split::layer_bytes_with(dir, nl, crate::dynamic::split::CODED_PCT, bf16, &|_| true, false).map_err(cannot)?;
-    // (each layer's share of the cache for the context: the model's KV a token and its recurrent state, over its layers)
-    let sh = crate::plan::Shape::from_config(text).map_err(cannot)?;
-    let kv = (sh.kv_full * ctx as f64 + sh.kv_sliding * ctx.min(sh.window.max(1)) as f64 + sh.state) / nl.max(1) as f64;
-    dense.iter_mut().for_each(|d| *d += kv as u64);
-    let mut moe = vec![false; nl];
-    let (mut all, mut experts, mut count) = (0u64, 0usize, 0usize);
-    for r in &hb.layers {
-        if let Some(m) = moe.get_mut(r.block / 2) {
-            *m = true;
-        }
-        all += crate::hbg_store::layer_store_bytes(r).map_err(cannot)?;
-        experts = experts.max(r.bits.len());
-        count += r.bits.len();
-    }
-    let mean = all / count.max(1) as u64;
-    let host = host.unwrap_or(0);
-    // (the computer's memory for the experts: all of them, else what it has less the margin; at least a token's experts in every layer)
-    let ram = all.min(host.saturating_sub(HOST_MARGIN));
-    let token = hb.layers.len() as u64 * sh.topk.max(1) as u64 * mean;
-    if ram < token {
-        return Err(Refusal::unsupported(
-            format!(
-                "{name} at the hummingbird level keeps its experts in the computer's memory and on the disk: they take {}, and {} of memory is free",
-                gib(all),
-                gib(host)
-            ),
-            "A machine with more memory runs it",
-        ));
-    }
-    // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
-    let family = crate::dynamic::split::family(text).unwrap_or("");
-    let rb = crate::dynamic::split::ram_bytes(dir, nl, family, crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
-    let Some((cuts, devices, places, held, freed)) = crate::dynamic::split::places_plan_dense(&dense, base, &moe, room, mean, experts, sh.topk.max(1), &rb)
-    else {
-        return Err(Refusal::unsupported(
-            format!(
-                "{name}: its weights besides the experts take {}, and the GPUs here leave too little room for its experts",
-                gib(dense.iter().sum::<u64>() + base)
-            ),
-            "A machine whose GPUs have more memory free runs it",
-        ));
-    };
-    let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
-    let on_gpus = dense.iter().sum::<u64>() - freed
-        + base
-        + bounds.windows(2).zip(&places).map(|(w, &p)| moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * mean).sum::<u64>();
-    Ok((cuts, devices, places, on_gpus, all, experts, ram, (held, ram_held(&rb, &dense, held))))
-}
-
-/// A release's expert cache on the dynamic route where its experts are each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4 experts; GLM-5.3-Flash's FP8 ones, each packed on its own in places of
-/// the largest's bytes: about 7 bits a value where the release's bytes, which size the places here, are 8; Muse Spark's bf16 ones in the lossless tiered layout, about 11 bits of 16) and its GPUs do not hold them all: each layer's weights besides its experts and
-/// its share of the cache for `ctx` tokens on the GPUs, places for the busiest experts with the room left, and every expert in the computer's memory (`host` bytes free, less `HOST_MARGIN`: the disk holds hummingbird
-/// directories' experts alone). The cuts, their GPUs, each stage's places a layer, the GPUs' bytes, all the experts' bytes and the experts a layer; or the refusal.
-#[allow(clippy::type_complexity)]
-fn release_cache(
-    table: &crate::sizes::Table,
-    text: &str,
-    nl: usize,
-    room: &[(i32, u64)],
-    name: &str,
-    ctx: usize,
-    twelve: bool,
-    host: Option<u64>,
-) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize, (usize, u64))> {
-    let expert = |n: &str| n.contains(".experts.");
-    let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
-    let (mut dense, base) = crate::dynamic::split::layer_bytes_table(table, nl, crate::dynamic::split::CODED_PCT, bf16, &|n| !expert(n));
-    let (per, _) = crate::dynamic::split::layer_bytes_table(table, nl, 100, 100, &expert);
-    let sh = crate::plan::Shape::from_config(text).map_err(cannot)?;
-    let kv = (sh.kv_full * ctx as f64 + sh.kv_sliding * ctx.min(sh.window.max(1)) as f64 + sh.state) / nl.max(1) as f64;
-    dense.iter_mut().for_each(|d| *d += kv as u64);
-    let moe: Vec<bool> = per.iter().map(|&b| b > 0).collect();
-    let (all, layers, experts) = (per.iter().sum::<u64>(), moe.iter().filter(|&&m| m).count(), sh.experts.max(1));
-    let mean = all / (layers * experts).max(1) as u64;
-    let host = host.unwrap_or(0);
-    if all + HOST_MARGIN > host {
-        return Err(Refusal::unsupported(
-            format!("{name} keeps the experts its GPUs do not hold in the computer's memory: they take {}, and {} is free", gib(all), gib(host)),
-            "A machine with that much memory runs it, or its hummingbird level, whose experts the disk holds too",
-        ));
-    }
-    // (no room for a token's experts on one GPU: the last layers' dense matrices in the computer's memory, src/dense_ram.rs)
-    let family = crate::dynamic::split::family(text).unwrap_or("");
-    let rb = crate::dynamic::split::ram_bytes_table(table, text, nl, family, crate::dynamic::split::CODED_PCT, bf16).map_err(cannot)?;
-    let Some((cuts, devices, places, held, freed)) = crate::dynamic::split::places_plan_dense(&dense, base, &moe, room, mean, experts, sh.topk.max(1), &rb)
-    else {
-        return Err(Refusal::unsupported(
-            format!(
-                "{name}: its weights besides the experts take {}, and the GPUs here leave too little room for its experts",
-                gib(dense.iter().sum::<u64>() + base)
-            ),
-            "A machine whose GPUs have more memory free runs it",
-        ));
-    };
-    let bounds: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).chain(std::iter::once(nl)).collect();
-    let on_gpus = dense.iter().sum::<u64>() - freed
-        + base
-        + bounds.windows(2).zip(&places).map(|(w, &p)| moe[w[0]..w[1]].iter().filter(|&&m| m).count() as u64 * p as u64 * mean).sum::<u64>();
-    Ok((cuts, devices, places, on_gpus, all, experts, (held, ram_held(&rb, &dense, held))))
-}
-
-/// `kimi_cache` with every layer across all the GPUs of `room` (src/dynamic/tp.rs): each GPU holds its slice of the rows of each big matrix (the embedding
-/// whole, and every matrix too small or of rows that do not divide), the caches for the context whole, and the same places a layer, each a slice of an
-/// expert's; the least room of the GPUs sets the places.
-fn kimi_cache_tp(
-    table: &crate::sizes::Table,
-    text: &str,
-    room: &[(i32, u64)],
-    name: &str,
-    ctx: usize,
-    twelve: bool,
-    host: Option<u64>,
-) -> Done<(Vec<usize>, Vec<i32>, Vec<usize>, u64, u64, usize)> {
-    let c = crate::kimi::ConfigKimi::parse(text, "config.json", None).map_err(cannot)?;
-    let n = room.len().max(1) as u64;
-    let bf16 = if twelve { crate::dynamic::split::TWELVE_PCT } else { crate::dynamic::split::TIERED_PCT };
-    let mut held = 0u64;
-    for t in &table.rows {
-        if t.name.contains(".block_sparse_moe.experts.")
-            || matches!(crate::sizes::classify(&t.name, c.layers), crate::sizes::Part::Vision | crate::sizes::Part::Mtp)
-        {
-            continue;
-        }
-        let matrix = t.shape.len() == 2 && t.shape.iter().all(|&d| d >= 256);
-        let b = if t.dtype == "BF16" && matrix { t.bytes * bf16 / 100 } else { t.bytes };
-        let sliced = matrix && !t.name.contains("embed_tokens") && t.shape[0] % (64 * n) == 0 && t.bytes >= 16 << 20;
-        held += if sliced { b / n } else { b };
-    }
-    let qd = c.kda.heads * c.kda.dim;
-    held += c
-        .kinds
-        .iter()
-        .map(|k| match k {
-            crate::glm::GlmKind::Mla => (ctx * (c.mla.kv_rank + c.mla.rope) * 2) as u64,
-            _ => (c.kda.heads * c.kda.dim * c.kda.dim * 4 + 3 * 3 * qd * 2) as u64,
-        })
-        .sum::<u64>();
-    let e = &c.experts;
-    let layers = c.moe.iter().filter(|&&m| m).count() as u64;
-    let expert = crate::dynamic::kimi::expert_bytes(&c).map_err(cannot)?;
-    let all = layers * e.experts as u64 * expert;
-    let host = host.unwrap_or(0);
-    if all + HOST_MARGIN > host {
-        return Err(Refusal::unsupported(
-            format!(
-                "{name} keeps the {} experts the GPUs do not hold in the computer's memory: they take {}, and {} is free",
-                layers as usize * e.experts,
-                gib(all),
-                gib(host)
-            ),
-            "A machine with that much memory runs it",
-        ));
-    }
-    let least = room.iter().map(|r| r.1).min().unwrap_or(0);
-    let places = ((least.saturating_sub(held)) / (layers.max(1) * (expert / n)).max(1)).min(e.experts as u64) as usize;
-    if places < e.top_k {
-        return Err(Refusal::unsupported(
-            format!("{name}: its weights besides the experts take {} a GPU across {n} GPUs, and they leave too little room for its experts", gib(held)),
-            "A machine whose GPUs have more memory free runs it",
-        ));
-    }
-    let on_gpus = n * (held + layers * places as u64 * (expert / n));
-    Ok((Vec::new(), room.iter().map(|r| r.0).collect(), vec![places; room.len()], on_gpus, all, e.experts))
-}
-
-/// Each GPU's room for weights on the dynamic route: its free memory less the reserve and the route's work (the KV, the scratch and the graphs together;
-// ponytail: that work is a fixed margin, 3 GiB and 5% with the reserve; the description's own numbers where it proves too little or too much)
-fn rooms(gpus: &[Gpu]) -> Vec<(i32, u64)> {
-    gpus.iter().map(|g| (g.ordinal, crate::plan::dynamic_room_of(g.free))).collect()
-}
-
-/// The table's name of a dynamic family (`dynamic_family`'s words are these).
-fn static_family(family: &str) -> &'static str {
-    ["Kimi-K3", "GLM-5.3-Flash", "DeepSeek-V4", "Muse Spark", "Nemotron-H"].into_iter().find(|f| *f == family).unwrap_or("DeepSeek-V4")
-}
-
-/// Whether the GPUs of `devs` are HBM ones (A100, H100, B200: compute capability 8.0, 9.0, 10.0), whose FP8 matrices take layout H (src/f8.rs `layout_h`).
-fn hbm_of(devs: &[Target]) -> bool {
-    devs.iter().any(|t| t.cc.1 == 0 && (8..=10).contains(&t.cc.0))
-}
-
-/// The plan `run` loads a model of the dynamic route (`dynamic_family`) from `dir` at penguin on the GPUs `devs`: the layers cut over them as their room holds
-/// them (`--split CUTS --devices GPUS` chooses), or every layer across them (src/dynamic/tp.rs; `reach`: whether they reach each other directly), the FP8
-/// matrices coded where only that fits, Kimi-K3's experts kept in the computer's memory (`host` bytes) with places on the GPUs where they do not all fit; or
-/// the refusal `run` gives. What `load_dynamic` loads, `check_dynamic` checks and `fit` prints.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn size_dynamic(
-    a: &Args,
-    name: &str,
-    table: &crate::sizes::Table,
-    dir: Option<&Path>,
-    text: &str,
-    family: &'static str,
-    devs: &[Target],
-    host: Option<u64>,
-    reach: &dyn Fn(&[i32]) -> bool,
-) -> Done<LoadPlan> {
-    let nl = crate::dynamic::split::config_num(text, "num_hidden_layers").unwrap_or(0);
-    let room: Vec<(i32, u64)> = devs.iter().map(|t| (t.ordinal, crate::plan::dynamic_room_of(t.free))).collect();
-    let hbm = hbm_of(devs);
-    let kimi = family == "Kimi-K3";
-    // (a hummingbird directory, src/hb_pack.rs: its routed experts are files of their own, which no table of tensors lists)
-    let hb_dir = dir.filter(|d| matches!(crate::hb_pack::HbDir::open(d), Ok(Some(_))));
-    let hb = hb_dir.is_some();
-    let hb_experts = match hb_dir {
-        Some(d) => crate::dynamic::split::hb_layer_bytes(d, nl).map_err(cannot)?,
-        None => Vec::new(),
-    };
-    let ((per, base), cut, coded, mut twelve) = crate::dynamic::split::fit_table_with(table, nl, &room, hbm, kimi, &hb_experts);
-    let mut total = per.iter().sum::<u64>() + base;
-    let chosen = a.flag("split").is_some() || a.flag("devices").is_some();
-    let model_max = crate::dynamic::split::config_num(text, "max_position_embeddings").unwrap_or(usize::MAX);
-    let row = crate::support::row_named(family).expect("a dynamic family has a row");
-    let ctx = a.num("context", crate::support::default_context(row, model_max)).map_err(|e| Refusal::new(e.msg, "--context 8192"))?;
-    crate::support::context_check(&name, row, model_max, a.flag("context").map(|_| ctx))?;
-    // (every layer across the GPUs, src/dynamic/tp.rs: by default on datacenter GPUs that reach each other directly, where no split is asked for; a
-    // development build's GLYD_TP=1 or 0 says so itself, GLYD_TP_GPUS which GPUs)
-    let tp_room: Vec<(i32, u64)> = match crate::tune!("GLYD_TP_GPUS") {
-        Some(v) => room.iter().copied().filter(|r| v.split(',').any(|x| x.trim().parse::<i32>().ok() == Some(r.0))).collect(),
-        None => room.clone(),
-    };
-    let tp_devs: Vec<i32> = tp_room.iter().map(|r| r.0).collect();
-    let across = matches!(family, "Kimi-K3" | "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark")
-        && tp_room.len() > 1
-        && !chosen
-        && match crate::tune!("GLYD_TP").as_deref() {
-            Some("1") => true,
-            Some(_) => false,
-            None => matches!(family, "Kimi-K3" | "DeepSeek-V4") && hbm && reach(&tp_devs),
-        };
-    // Kimi-K3 where the GPUs do not hold its experts: the expert cache (each GPU's room after the other weights as places for its layers' experts, every
-    // expert in the computer's memory)
-    // (a hummingbird directory's own expert cache for any family, its layers cut over the GPUs, never every layer across them)
-    // (a release whose experts the cache takes, src/tiering.rs: DeepSeek-V4's FP4 experts, GLM-5.3-Flash's FP8 ones, Muse Spark's lossless ones; its cache where its GPUs do not hold it)
-    let release_cached = matches!(family, "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark") && !hb && cut.is_none() && !chosen;
-    let across = across && !hb && !release_cached;
-    let mut ram = None;
-    // (the last layers' dense matrices in the computer's memory where a token's experts do not fit beside them on one GPU: how many, their bytes)
-    let mut dense_ram = (0usize, 0u64);
-    let cache = if let Some(dir) = hb_dir.filter(|_| cut.is_none() && !chosen) {
-        let k = hb_cache(dir, text, nl, &room, name, ctx, hbm, host)?;
-        (ram, dense_ram) = (Some(k.6), k.7);
-        Some((k.0, k.1, k.2, k.3, k.4, k.5))
-    } else if release_cached {
-        // (R12: its experts in the cache, every one in the computer's memory)
-        let k = release_cache(table, text, nl, &room, name, ctx, hbm, host)?;
-        (ram, dense_ram) = (Some(k.4), k.6);
-        Some((k.0, k.1, k.2, k.3, k.4, k.5))
-    } else if kimi && !hb && cut.is_none() && !chosen {
-        Some(if across {
-            kimi_cache_tp(table, text, &tp_room, name, ctx, hbm, host)?
-        } else {
-            let k = kimi_cache(table, text, nl, &room, name, ctx, hbm, host)?;
-            dense_ram = k.6;
-            (k.0, k.1, k.2, k.3, k.4, k.5)
-        })
-    } else {
-        None
-    };
-    if let Some(k) = &cache {
-        total = k.3;
-        twelve = hbm;
-    }
-    let (cuts, devices) = if let Some(k) = &cache {
-        (k.0.clone(), k.1.clone())
-    } else if across {
-        // (each GPU its slice of the big matrices and the rest whole: about its share of the bytes and the embedding's and head's)
-        // ponytail: the share is an estimate; a GPU that runs out of memory says so at the load
-        (Vec::new(), tp_devs.clone())
-    } else if chosen {
-        crate::dynamic::split::split_args(a).map_err(|e| Refusal::new(e.msg, "--split 31 --devices 0,1: the layers before 31 on GPU 0, the rest on GPU 1"))?
-    } else {
-        cut.ok_or_else(|| {
-            Refusal::unsupported(
-                format!(
-                    "{name} needs about {} of GPU memory at penguin, and the {} GPU{} here have {} free",
-                    gib(total),
-                    devs.len(),
-                    if devs.len() == 1 { "" } else { "s" },
-                    gib(devs.iter().map(|t| t.free).sum::<u64>())
-                ),
-                "A machine whose GPUs have that much memory free runs it (nvidia-smi lists what uses them)",
-            )
-        })?
-    };
-    let used: Vec<&Target> = devs.iter().filter(|t| devices.contains(&t.ordinal)).collect();
-    let (free, work) = (used.iter().map(|t| t.free).sum::<u64>(), used.iter().map(|t| crate::plan::dynamic_work_of(t.free)).sum::<u64>());
-    let host_bytes = cache.as_ref().map_or(0, |k| k.4);
-    // (a hummingbird directory's cache: its places, the experts' bytes at their mean, the memory and the disk they take)
-    let experts = cache.as_ref().zip(ram).map(|(k, ram)| {
-        // (its layers of experts: a hummingbird directory's own; a release's, the layers the table lists experts of)
-        let layers = match hb_dir.and_then(|d| crate::hb_pack::HbDir::open(d).ok().flatten()) {
-            Some(d) => d.layers.len(),
-            None => crate::dynamic::split::layer_bytes_table(table, nl, 100, 100, &|n| n.contains(".experts.")).0.iter().filter(|&&b| b > 0).count(),
-        };
-        crate::offload::CachePlan {
-            layers,
-            experts: k.5,
-            slots: k.2.iter().min().copied().unwrap_or(0),
-            expert_bytes: k.4 / (layers * k.5).max(1) as u64,
-            in_place: true,
-            ram,
-        }
-    });
-    Ok(LoadPlan {
-        kind: Kind::Dynamic,
-        family,
-        level: if hb { "hummingbird" } else { "penguin" },
-        layout: if twelve { Layout::Twelve } else { Layout::Tiered },
-        context: ctx,
-        users: 1,
-        chunk: 256,
-        weights: total + host_bytes + dense_ram.1,
-        bf16: 0,
-        kv: 0,
-        work,
-        draft: 0,
-        reserve: used.len() as u64 * crate::plan::CONTEXT_FLOOR,
-        free,
-        gpu: used.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "),
-        experts,
-        spread: Some(crate::plan::Spread {
-            cuts,
-            devices,
-            across,
-            coded,
-            twelve,
-            places: cache.as_ref().map_or(Vec::new(), |k| k.2.clone()),
-            experts_per_layer: cache.as_ref().map_or(0, |k| k.5),
-            host_bytes,
-            gpu_bytes: total,
-            dense: dense_ram.0,
-            dense_bytes: dense_ram.1,
-        }),
-    })
-}
-
 // ponytail: penguin only on the dynamic route; GLM's and Nemotron-H's other levels when their packs run here
 fn penguin_only(name: &str, family: &str, model: &str) -> Refusal {
     let base = model.split_once(':').map_or(model, |m| m.0);
@@ -2552,6 +1608,11 @@ fn penguin_only(name: &str, family: &str, model: &str) -> Refusal {
 /// The hummingbird directory of a model on the dynamic route (src/hb_pack.rs): MODEL itself where it is one, else its pre-packed repo
 /// (`glyd/NAME-hummingbird`) where it is here, else downloaded where `ui` is given and the Hub has it; or the refusal that says how to pack it.
 fn hb_dir_for(model: &str, name: &str, family: &str, ui: Option<&RefCell<Ui>>) -> Done<PathBuf> {
+    // (a family whose experts come from a codes pack at the hummingbird level: the model's own directory, its pack beside its weights)
+    if codes_row(family) {
+        let dir = if Path::new(model).join("config.json").exists() { Some(PathBuf::from(model)) } else { Source::find(model).ok().map(|s| s.dir) };
+        return dir.filter(|d| crate::plan::sizing::codes_of(d).is_some()).ok_or_else(|| crate::plan::sizing::no_codes_pack(name, family, model));
+    }
     let is_hb = |d: &Path| matches!(crate::hb_pack::HbDir::open(d), Ok(Some(_)));
     if Path::new(model).join("glyd.json").exists() && is_hb(Path::new(model)) {
         return Ok(PathBuf::from(model));
@@ -2589,7 +1650,7 @@ fn hb_level(model: &str, layout: Layout) -> Layout {
 /// The words a dynamic-route plan says its level in.
 fn dynamic_level_words(layout: Layout) -> &'static str {
     if layout == Layout::Hummingbird {
-        "the hummingbird level (the routed experts at 3 and 2 bits by use, the rest the release's weights exactly)"
+        "the hummingbird level (the routed experts a few bits each, packed by their use, the rest the release's weights exactly)"
     } else {
         "the penguin level (lossless: the release's weights exactly)"
     }
@@ -2601,9 +1662,11 @@ fn dynamic_level_words(layout: Layout) -> &'static str {
 fn dynamic_line(name: &str, family: &str, p: &LoadPlan) -> String {
     let sp = p.spread.as_ref().expect("the dynamic route's plan spreads the model");
     let level = p.level;
+    // (the tables its description reads on the host: src/dynamic/tables.rs)
+    let tables = if sp.tables > 0 { format!(", {} of tables read by rows from the checkpoint's files", gib(sp.tables)) } else { String::new() };
     if sp.host_bytes > 0 && level == "hummingbird" {
         return format!(
-            "{name} ({family}): about {} on {} GPUs at the hummingbird level, {} of experts in the computer's memory and {} on the disk",
+            "{name} ({family}): about {} on {} GPUs at the hummingbird level, {} of experts in the computer's memory and {} on the disk{tables}",
             gib(p.weights_on_gpu()),
             sp.devices.len(),
             gib(p.ram_bytes()),
@@ -2612,14 +1675,18 @@ fn dynamic_line(name: &str, family: &str, p: &LoadPlan) -> String {
     }
     if sp.host_bytes > 0 {
         return format!(
-            "{name} ({family}): about {} on {} GPUs at the penguin level, {} of experts in the computer's memory",
+            "{name} ({family}): about {} on {} GPUs at the penguin level, {} of experts in the computer's memory{tables}",
             gib(p.weights_on_gpu()),
             sp.devices.len(),
             gib(sp.host_bytes)
         );
     }
     let n = sp.devices.len();
-    format!("{name} ({family}): about {} on {} at the {level} level", gib(p.weights_on_gpu()), if n == 1 { "one GPU".to_string() } else { format!("{n} GPUs") })
+    format!(
+        "{name} ({family}): about {} on {} at the {level} level{tables}",
+        gib(p.weights_on_gpu()),
+        if n == 1 { "one GPU".to_string() } else { format!("{n} GPUs") }
+    )
 }
 
 fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<String> {
@@ -2629,6 +1696,7 @@ fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCe
     }
     let hb = layout == Layout::Hummingbird;
     let level = if hb { "hummingbird" } else { "penguin" };
+    crate::plan::sizing::name_pack(a);
     let (gpus, _) = dynamic_gpus()?;
     crate::ffi::Lib::find().map_err(cannot)?;
     let room = rooms(&gpus);
@@ -2642,16 +1710,15 @@ fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCe
     };
     let (bytes, gpus_used) = match &local {
         Some(dir) => {
-            let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| cannot(format!("{}: {e}", dir.display())))?;
+            let c = dir_config(dir, &name)?;
             let targets: Vec<Target> = gpus.iter().map(target).collect();
             // (the plan `run` loads, or the refusal it gives, with Kimi-K3's expert cache where the GPUs do not hold its experts)
-            let table = crate::sizes::Table::from_dir(dir).map_err(cannot)?;
-            let p =
-                size_dynamic(a, &name, &table, Some(dir), &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
+            let p = plan_in(a, &name, family, dir, &c, hb, &targets)?;
             return Ok(dynamic_line(&name, family, &p));
         }
         None => {
             let text = config_text(model)?;
+            let c = model_config_of(&text, &name)?;
             let (hub, remote, wanted) = store::hub_plan_as(model, ui, true)?;
             let need = hub.missing(&remote, &wanted);
             let models = store::existing_ancestor(&hub::hub_cache());
@@ -2666,22 +1733,26 @@ fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCe
             // the exact plan from the files' headers by ranges, nothing downloaded (src/sizes.rs)
             if let Some(table) = crate::sizes::Table::find(model) {
                 let targets: Vec<Target> = gpus.iter().map(target).collect();
-                let p =
-                    size_dynamic(a, &name, &table, None, &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
+                let p = size_dynamic(a, &name, &table, None, &c, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
                 return Ok(dynamic_line(&name, family, &p));
             }
             // (headers not to be had: a bf16 release at penguin's 72% at most; an FP8 or FP4 one as it is; the cut is made once it is here)
             let bytes = if text.contains("\"quantization_config\"") { need } else { need * 72 / 100 };
-            // ponytail: Kimi-K3 not yet here, its experts (about 93% of it) in the computer's memory and the rest on the GPUs; the exact plan is made once it is here
-            if family == "Kimi-K3" && bytes > all {
+            // ponytail: a model not yet here whose row keeps its experts in the computer's memory at this level, larger than its GPUs: its experts (their share of
+            // its release by its config's shape) there and the rest on the GPUs; the exact plan is made once it is here
+            let row = crate::support::row_named(family).filter(|r| r.experts_in_ram_levels.contains(&level));
+            let share =
+                crate::plan::Shape::from_model(&c).ok().filter(|s| s.routed > 0.0).map(|s| s.routed * s.expert_bits_released() / 8.0 / s.release_bytes());
+            if let (Some(_), Some(share), true) = (row, share, bytes > all) {
+                let (experts, rest) = ((bytes as f64 * share) as u64, (bytes as f64 * (1.0 - share)) as u64);
                 let host = crate::offload::host_memory().unwrap_or(0);
-                if bytes * 93 / 100 + HOST_MARGIN > host || bytes * 7 / 100 > all {
-                    return Err(Refusal::unsupported(format!("{name} keeps the experts its GPUs do not hold in the computer's memory: about {} of experts, {} free, and about {} for the GPUs, {} free", gib(bytes * 93 / 100), gib(host), gib(bytes * 7 / 100), gib(all)), "A machine with that much memory runs it"));
+                if experts + HOST_MARGIN > host || rest > all {
+                    return Err(Refusal::unsupported(format!("{name} keeps the experts its GPUs do not hold in the computer's memory: about {} of experts, {} free, and about {} for the GPUs, {} free", gib(experts), gib(host), gib(rest), gib(all)), "A machine with that much memory runs it"));
                 }
                 return Ok(format!(
-                    "{name} ({family}): about {} on the GPUs at the penguin level, about {} of experts in the computer's memory",
-                    gib(bytes * 7 / 100),
-                    gib(bytes * 93 / 100)
+                    "{name} ({family}): about {} on the GPUs at the {level} level, about {} of experts in the computer's memory",
+                    gib(rest),
+                    gib(experts)
                 ));
             }
             (bytes, (bytes <= all).then_some(gpus.len()))
@@ -2704,6 +1775,54 @@ fn check_dynamic(a: &Args, model: &str, family: &str, layout: Layout, ui: &RefCe
     }
 }
 
+/// The directory the dynamic route reads MODEL from, made ready (a run's first step, and `glyd prepare`'s): its hummingbird directory where `hb` (`hb_dir_for`),
+/// else the model's own, the cache's copy, else downloaded.
+fn dynamic_dir(model: &str, name: &str, family: &str, hb: bool, ui: &RefCell<Ui>) -> Done<PathBuf> {
+    if hb {
+        return hb_dir_for(model, name, family, Some(ui));
+    }
+    if Path::new(model).join("config.json").exists() {
+        return Ok(PathBuf::from(model));
+    }
+    match Source::find(model) {
+        Ok(s) => Ok(s.dir),
+        Err(_) => {
+            let (hub, remote, wanted) = store::hub_plan_as(model, ui, true)?;
+            store::download(&hub, &remote, &wanted, model, ui)?;
+            Ok(Source::find(model).map_err(cannot)?.dir)
+        }
+    }
+}
+
+/// Whether the family's experts come from a codes pack at the hummingbird level (`ExpertCache::Codes`: src/moe_cb.rs).
+fn codes_row(family: &str) -> bool {
+    crate::support::row_named(family).is_some_and(|r| r.route.expert_cache == crate::support::ExpertCache::Codes)
+}
+
+/// The plan of the dynamic route's model in `dir` over this machine's GPUs (`size_dynamic` on its files' headers; at the hummingbird level (`hb`) of a family
+/// whose experts come from a codes pack, that pack's beside its weights: `codes_plan`), or its refusal: the directory's config.json, the GPUs, the first of
+/// them and the plan.
+pub(crate) fn dynamic_plan(a: &Args, name: &str, family: &str, dir: &Path, hb: bool) -> Done<(Arc<ModelConfig>, Vec<Gpu>, Gpu, LoadPlan)> {
+    let c = dir_config(dir, name)?;
+    let (gpus, first) = dynamic_gpus()?;
+    let targets: Vec<Target> = gpus.iter().map(target).collect();
+    let plan = plan_in(a, name, family, dir, &c, hb, &targets)?;
+    Ok((c, gpus, first, plan))
+}
+
+/// `dynamic_plan`'s plan of the model in `dir` (its config.json `c`, parsed once) on the GPUs `targets`.
+fn plan_in(a: &Args, name: &str, family: &str, dir: &Path, c: &ModelConfig, hb: bool, targets: &[Target]) -> Done<LoadPlan> {
+    let table = crate::sizes::Table::from_dir(dir).map_err(cannot)?;
+    let host = crate::offload::host_memory();
+    match crate::plan::sizing::codes_of(dir).filter(|_| hb && codes_row(family)) {
+        Some(pack) => {
+            let row = crate::support::row_named(family).ok_or_else(|| cannot(format!("no family named {family}")))?;
+            crate::plan::sizing::codes_plan(a, name, &table, c, row, &pack, targets, host)
+        }
+        None => size_dynamic(a, name, &table, Some(dir), c, static_family(family), targets, host, &crate::dynamic::tp::reach),
+    }
+}
+
 /// `run`/`serve` of a model the dynamic engine runs from its release's directory (`dynamic_family`), at penguin: the release's weights exactly (an FP8 or
 /// FP4 release's as it has them, a bf16 one's lossless). The directory is the model's own, the cache's copy, else downloaded; its layers are cut over the
 /// machine's GPUs as their free memory holds them (`--split CUTS --devices GPUS` chooses), and `--context N` (8,192) is the KV's. What load_lossy gives.
@@ -2721,28 +1840,12 @@ fn load_dynamic(
         return Err(penguin_only(&name, family, model));
     }
     let hb = layout == Layout::Hummingbird;
-    let dir = if hb {
-        hb_dir_for(model, &name, family, Some(ui))?
-    } else if Path::new(model).join("config.json").exists() {
-        PathBuf::from(model)
-    } else {
-        match Source::find(model) {
-            Ok(s) => s.dir,
-            Err(_) => {
-                let (hub, remote, wanted) = store::hub_plan_as(model, ui, true)?;
-                store::download(&hub, &remote, &wanted, model, ui)?;
-                Source::find(model).map_err(cannot)?.dir
-            }
-        }
-    };
-    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| cannot(format!("{}: {e}", dir.display())))?;
-    let (gpus, first) = dynamic_gpus()?;
-    let nl = crate::dynamic::split::config_num(&text, "num_hidden_layers").unwrap_or(0);
-    let targets: Vec<Target> = gpus.iter().map(target).collect();
-    let table = crate::sizes::Table::from_dir(&dir).map_err(cannot)?;
-    let plan = size_dynamic(a, &name, &table, Some(&dir), &text, static_family(family), &targets, crate::offload::host_memory(), &crate::dynamic::tp::reach)?;
+    crate::plan::sizing::name_pack(a);
+    let dir = dynamic_dir(model, &name, family, hb, ui)?;
+    let (c, gpus, first, plan) = dynamic_plan(a, &name, family, &dir, hb)?;
+    let nl = c.num("num_hidden_layers").unwrap_or(0);
     let sp = plan.spread.clone().expect("the dynamic route's plan spreads the model");
-    let (total, coded, twelve, across, ctx) = (plan.weights_on_gpu(), sp.coded, sp.twelve, sp.across, plan.context);
+    let (total, coded, across) = (plan.weights_on_gpu(), sp.coded, sp.across);
     let (cuts, devices) = (sp.cuts.clone(), sp.devices.clone());
     let cache = (sp.host_bytes > 0).then_some(&sp);
     let gpu_name = |d: i32| gpus.iter().find(|g| g.ordinal == d).map_or_else(|| format!("GPU {d}"), |g| g.name.clone());
@@ -2788,28 +1891,8 @@ fn load_dynamic(
         crate::ffi::Lib::find().and_then(|l| l.f8h_plain(Some(false))).map_err(cannot)?;
         ui.borrow_mut().line("Its FP8 matrices are held coded (the same values in about 7 bits of 8) for it to fit; as they are, they do not.");
     }
-    // (penguin's bf16 matrices in its 12-bit layout where it fits an HBM GPU: lossless as the smallest, a faster one-token product there)
-    // (a hummingbird directory holds the rest of the model as released: its matrices are packed as at penguin, and the loader reads the experts' rows itself)
-    let rest = if hb { Layout::Tiered } else { layout };
-    let o = crate::dynamic::Opts { ctx, chunk: 256, graph: true, device: devices[0], layout: Some(if twelve { Layout::Twelve } else { rest }) };
     ui.borrow_mut().status(&format!("Reading {name} and loading it onto the GPU{}...", if devices.len() == 1 { "" } else { "s" }));
-    // (a hummingbird directory's experts in its own cache: each stage its places, the computer's memory for its share of the experts, the copy-or-compute policy of the flags)
-    let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.msg, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
-    let ram = plan.experts.filter(|c| c.ram < c.host_bytes()).map(|c| crate::offload::HostMemory { bytes: c.ram, total: c.host_bytes() });
-    let opened = match &cache {
-        Some(k) if hb || matches!(family, "DeepSeek-V4" | "GLM-5.3-Flash" | "Muse Spark") => crate::dynamic::split::open_cached(
-            &dir,
-            &o,
-            &cuts,
-            &devices,
-            k.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect(),
-        ),
-        Some(k) if across => crate::dynamic::split::open_kimi_tp(&dir, &o, &devices, k.places[0]),
-        Some(k) => crate::dynamic::split::open_kimi(&dir, &o, &cuts, &devices, k.places.clone(), sp.dense),
-        None if across => crate::dynamic::split::open_tp(&dir, &o, &devices),
-        None => crate::dynamic::split::open(&dir, &o, &cuts, &devices),
-    };
-    let e = opened.map_err(|e| {
+    let mut e = open_dynamic(a, &plan, &dir, &c)?.map_err(|e| {
         if e.out_of_memory() {
             Refusal::unsupported(
                 format!("a GPU ran out of memory loading {name} ({})", stages.join(", ")),
@@ -2819,10 +1902,17 @@ fn load_dynamic(
             cannot(e.msg)
         }
     })?;
+    // (its keys and values in 12-bit pages where the plan has them: a server's pools with the whole model on one GPU, `size_dynamic_at`)
+    match &mut e {
+        crate::dynamic::split::Run::One(d) => twelve_bit_pages(d, &plan, &dir, &c, &name, ui)?,
+        _ if plan.kv12 => return Err(cannot("a plan of 12-bit KV pages holds the whole model on one GPU")),
+        _ => {}
+    }
     // (the weights the engine holds on one GPU; stages and layers across GPUs hold theirs on their own threads and say none: 0)
     let weights = crate::conv::Gen::held(&e).map_or(0, |h| h.weights);
-    loaded_report(model, &plan, &gpus.iter().filter(|g| devices.contains(&g.ordinal)).collect::<Vec<_>>(), weights);
-    let tok = Tok::load(&dir).map_err(cannot)?;
+    loaded_report(model, &c, &plan, &gpus.iter().filter(|g| devices.contains(&g.ordinal)).collect::<Vec<_>>(), weights);
+    crate::plan::first_use(&mut e, c.num("vocab_size").unwrap_or(0));
+    let tok = Tok::load_with(&dir, &c).map_err(cannot)?;
     // (DeepSeek-V4's and Kimi-K3's releases have their chat formats in Python alone: ours as templates)
     let own = match family {
         "DeepSeek-V4" => Some(crate::chat::DSV4_CHAT),
@@ -2836,30 +1926,39 @@ fn load_dynamic(
     }
     let distinct = devices.iter().collect::<std::collections::BTreeSet<_>>().len();
     let on = if distinct == 1 { format!("the {}", gpu_name(devices[0])) } else { format!("{distinct} GPUs") };
+    // (served, the users it holds are said once its step is made: `serve_lossy`)
     let line = format!(
-        "Ready in {}: {name} on {on}, {} of weights, {} tokens of context, one user at a time.",
+        "Ready in {}: {name} on {on}, {} of weights, {} tokens of context{}.",
         fmt_time(t0.elapsed().as_secs_f64()),
         gib(total),
-        e.capacity()
+        e.capacity(),
+        if served.is_empty() { ", one user at a time" } else { "" }
     );
     let info = (!served.is_empty()).then(|| {
         let held = e.held();
         let gpu = gpus.iter().find(|g| g.ordinal == devices[0]).unwrap_or(&first);
         let (level, exact, words) = if hb {
-            ("hummingbird", false, "hummingbird level: the routed experts at 3 and 2 bits by use, the rest the release's weights exactly")
+            ("hummingbird", false, "hummingbird level: the routed experts a few bits each, packed by their use, the rest the release's weights exactly")
         } else {
             ("penguin", true, "penguin level: the release's weights exactly")
         };
         let about = about(served, &dir, requested(served, a.has("lossy")), level, exact, words, held.as_ref(), gpu);
-        server::Info { about, gpu: Some(devices[0]), held, concurrency: 1, window: e.capacity(), refused: server::ONE_AT_A_TIME, started }
+        server::Info { about, gpu: Some(devices[0]), held, concurrency: 1, window: e.capacity(), refused: &[], started }
     });
-    let vocab = crate::dynamic::split::config_num(&text, "vocab_size").unwrap_or(0);
+    let vocab = c.num("vocab_size").unwrap_or(0);
     Ok((Box::new(e), tok, chat, defaults, vocab, line, info))
+}
+
+/// The engine of a dynamic-route plan from the directory `dir` (src/dynamic/split.rs `open_plan`: it loads what the plan says), the flags' copy-or-compute policy
+/// of its expert cache; `m`: the directory's config.json, parsed once (the plan's).
+fn open_dynamic(a: &Args, plan: &LoadPlan, dir: &Path, m: &ModelConfig) -> Done<std::result::Result<crate::dynamic::split::Run, crate::ffi::Error>> {
+    let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.msg, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
+    Ok(crate::dynamic::split::open_plan(dir, m, plan, offload))
 }
 
 /// `run MODEL:kestrel` (or `:swift`, or `--lossy`): the model (a directory in the Hub's layout, the cache's copy, else downloaded), every weight rounded and packed in `layout` once into the cache and read from there (a glyd-v7 directory: read
 /// as it is, at its level; a model with a pre-packed repo on the Hub, `glyd/NAME-LEVEL`: that is downloaded in place of the bf16 model), then one answer or the terminal's chat.
-fn run_lossy(a: &Args, layout: Layout, ui: &RefCell<Ui>, mut prompt: Option<String>, piped: bool, thinking: Option<bool>) -> i32 {
+fn run_lossy(a: &Args, layout: Layout, ui: &RefCell<Ui>, mut prompt: Option<String>, piped: bool, thinking: Option<bool>, images: &[String]) -> i32 {
     let started = load_lossy(a, layout, "", ui);
     let (mut e, tok, chat, defaults, _vocab, line, _) = match started {
         Ok(x) => x,
@@ -2875,8 +1974,16 @@ fn run_lossy(a: &Args, layout: Layout, ui: &RefCell<Ui>, mut prompt: Option<Stri
         }
         prompt = Some(t);
     }
+    // (a development build's GLYD_PROF=1: the executor's GPU profile of the run, on stderr at its end: src/dynamic/prof.rs)
+    let profile = || {
+        if crate::dynamic::prof::on() {
+            eprint!("{}", crate::dynamic::prof::text(&crate::dynamic::prof::snapshot(false)));
+        }
+    };
     if let Some(p) = prompt {
-        return once(&mut Talk { e: &mut *e, tok: &tok, chat: chat.as_ref() }, &defaults, p.trim(), thinking, ui);
+        let code = once(&mut Talk { e: &mut *e, tok: &tok, chat: chat.as_ref() }, &defaults, p.trim(), thinking, ui, images);
+        profile();
+        return code;
     }
     ui.borrow_mut().line("Chat here. /bye leaves, /clear starts again, /think turns thinking on or off.");
     let (tx, rx) = mpsc::channel();
@@ -2885,6 +1992,7 @@ fn run_lossy(a: &Args, layout: Layout, ui: &RefCell<Ui>, mut prompt: Option<Stri
     let t = std::thread::spawn(move || chat_loop(tx, chat_defaults, thinking, tty));
     work_lossy(&mut *e, &tok, chat.as_ref(), &rx);
     let _ = t.join();
+    profile();
     0
 }
 
@@ -2911,6 +2019,32 @@ pub(crate) fn config_text(model: &str) -> Done<String> {
     ))
 }
 
+/// MODEL's config.json (`config_text`) parsed once a process: every step of a command that reads it (its family, its level, its plan, its refusals) shares the one
+/// parse (`model_config_of`). The refusal `run` gives where it cannot be had, or a key is of another type than the engine reads it as.
+pub(crate) fn model_config(model: &str) -> Done<Arc<ModelConfig>> {
+    model_config_of(&config_text(model)?, &short_name(model))
+}
+
+/// The config.json of the model directory `dir` (`model_config_of`; `name`: the model's short name, for the words).
+fn dir_config(dir: &Path, name: &str) -> Done<Arc<ModelConfig>> {
+    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| cannot(format!("{}: {e}", dir.display())))?;
+    model_config_of(&text, name)
+}
+
+/// A config.json's `text` parsed once a process (`support::parsed`): the same text again is the same parse, whichever step of the command reads it (`name`: the
+/// model's short name, for the words of a refusal).
+pub(crate) fn model_config_of(text: &str, name: &str) -> Done<Arc<ModelConfig>> {
+    static PARSED: std::sync::Mutex<Vec<(String, Arc<ModelConfig>)>> = std::sync::Mutex::new(Vec::new());
+    if let Some(c) = PARSED.lock().ok().and_then(|m| m.iter().find(|(t, _)| t == text).map(|(_, c)| c.clone())) {
+        return Ok(c);
+    }
+    let c = Arc::new(ModelConfig::parse(text).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?);
+    if let Ok(mut m) = PARSED.lock() {
+        m.push((text.to_string(), c.clone()));
+    }
+    Ok(c)
+}
+
 /// Whether the engine runs MODEL: exit 0 where it does, 3 (with the reason on stderr) where it does not, 1 where that cannot be told. The kind of model, and its level where one is asked (`MODEL:LEVEL`, or
 /// `--lossy`), against the table `fit` and `run` read (src/support.rs): no GPU is looked at (`preflight` looks at the computer).
 pub fn supports(a: &Args) -> i32 {
@@ -2927,8 +2061,8 @@ pub fn supports(a: &Args) -> i32 {
     }
 }
 
-/// `supports`' answer for `tagged` (MODEL with its level, if one is asked): the family, at the level where there is one, and for Qwen3 the settings its path does not run. A model packed at a level (a glyd-v7
-/// directory, a pre-packed repo) is at its own.
+/// `supports`' answer for `tagged` (MODEL with its level, if one is asked): the family, at the level where there is one, and for a plain dense decoder what the dense kind's lowering does not take
+/// (`supported`). A model packed at a level (a glyd-v7 directory, a pre-packed repo) is at its own.
 fn supports_check(tagged: &str, lossy: bool) -> Done<()> {
     let (model, layout) = level(tagged, lossy)?;
     // (a level is asked by a tag or --lossy; the lossless one has no layout, so a tag's presence says it)
@@ -2938,12 +2072,14 @@ fn supports_check(tagged: &str, lossy: bool) -> Done<()> {
     if v7_layout(model)?.is_some() || levels::repo_level(model).is_some() {
         return Ok(());
     }
-    let family = crate::support::family(&text, &name)?;
+    // (config.json parsed once)
+    let c = crate::support::parsed(&text, &name)?;
+    crate::support::family_in(&c, &name)?;
     if let Some(level) = asked {
-        crate::support::check(&text, model, &name, level)?;
+        crate::support::check_in(&c, model, &name, level)?;
     }
-    if family == crate::support::Family::Qwen3 {
-        supported(&name, &text)?;
+    if c.is_dense() {
+        supported_in(&name, &c)?;
     }
     Ok(())
 }
@@ -2998,71 +2134,41 @@ fn check(a: &Args, ui: &RefCell<Ui>) -> Done<String> {
     if let Some(m) = model {
         table_check(m, layout)?;
     }
-    if let (Some(m), Some(layout)) = (model, layout) {
-        return check_lossy(a, m, layout, ui);
-    }
-    // the kind of model, from its config.json alone
-    let cfg = match model {
-        Some(m) => {
-            let text = config_text(m)?;
-            supported(&short_name(m), &text)?;
-            Some(Config::parse(&text, "config.json", None).map_err(cannot)?)
+    match (model, layout) {
+        (Some(m), Some(layout)) => check_lossy(a, m, layout, ui),
+        (Some(m), None) => Err(unrun(m)),
+        // the GPU a run would use and its driver, with no model
+        (None, _) => {
+            let gpu = gpu_pick()?;
+            if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true, machine::ANY_FAMILY) {
+                return Err(r);
+            }
+            Ok(format!("{} ({} free)", gpu.name, gib(gpu.free)))
         }
-        None => None,
-    };
-    // the GPU a run would use, its driver, and the engine's own files on it
-    let gpu = gpu_pick()?;
-    // (GLYD_ENGINE=1, passed on by glyd run and glyd serve; or no vLLM here, so nothing for the list to choose)
-    let asked = machine::engine_chosen(std::env::var("GLYD_ENGINE_ASKED").map_or(false, |v| v.trim() == "1"));
-    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, asked, machine::QWEN3) {
-        return Err(r);
     }
-    let (Some(model), Some(cfg)) = (model, cfg) else {
-        return Ok(format!("{} ({} free)", gpu.name, gib(gpu.free)));
-    };
-    let name = short_name(model);
-    let dir = Path::new(model);
-    let packed = dir.join("glyd.json").exists();
-    if let (true, Some(why)) = (packed, crate::weights::earlier_format(dir)) {
-        return Err(Refusal::unsupported(format!("{model} is {why}"), "Pack the model again: glyd pack MODEL DIR"));
-    }
-    // the model on this GPU: its memory at the context asked for, its shape, the tables' reach
-    let users = a.num("users", 1usize).map_err(|e| Refusal::new(e.msg, "Give a number from 1 to 8: --users 4"))?.clamp(1, crate::model::MAX_ROWS);
-    let (layout, _, fit) = plan(a, &cfg, &name, &gpu, packed.then(|| packed_layout(dir).unwrap_or(Layout::Tiered)), users)?;
-    shape_checks(&name, &cfg, &fit)?;
-    crate::ffi::Lib::find().map_err(cannot)?;
-    Dev::new(gpu.ordinal).map_err(|e| engine_refusal(e, &name, &fit, &gpu))?;
-    let line = format!("{}: {name}, {} tokens of context", gpu.name, fit.context);
-    if packed {
-        return Ok(line); // (nothing to download or pack)
-    }
-    // what a first run writes (the Hub says what is still to be downloaded, and refuses a checkpoint that is not bf16 here, before anything is), and a refusal given before
-    let source = Source::find(model).ok();
-    let download = match &source {
-        Some(_) => 0,
-        None => {
-            let (hub, remote, wanted) = store::hub_plan(model, ui)?;
-            hub.missing(&remote, &wanted)
-        }
-    };
-    first_run_checks(&name, &cfg, &fit, layout, source.as_ref(), download)?;
-    Ok(line)
 }
 
 /// `preflight MODEL:kestrel` (or `:swift`, or `--lossy`): the kind of model, the GPU and its driver (the list of GPUs measured against vLLM is not looked at: vLLM has no lossy levels), the memory, the disk a
 /// download takes.
 fn check_lossy(a: &Args, model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<String> {
     match dynamic_family(model) {
-        Some("Nemotron-H") if layout != Layout::Tiered => {}
+        Some(family) if lossy_route(family, layout) => {}
         Some(family) => return check_dynamic(a, model, family, hb_level(model, layout), ui),
         None => {}
     }
-    let text = config_text(model)?;
-    let gpu = gpu_pick()?;
-    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, true, machine::ANY_FAMILY) {
+    let c = model_config(model)?;
+    let (gpu, gpus) = gpus_pick()?;
+    // (a plain dense decoder at penguin goes to the engine by the measured list, `machine::GPUS`, where vLLM is here to run it otherwise: GLYD_ENGINE=1, passed on by glyd run
+    // and glyd serve, asks for the engine by name; every other path is the engine's whatever the list)
+    let dense = c.is_dense() && layout == Layout::Tiered;
+    let (asked, family) = match dense {
+        true => (machine::engine_chosen(std::env::var("GLYD_ENGINE_ASKED").is_ok_and(|v| v.trim() == "1")), machine::QWEN3),
+        false => (true, machine::ANY_FAMILY),
+    };
+    if let Some(r) = machine::gpu_refusal(&gpu, std::env::consts::ARCH, asked, family) {
         return Err(r);
     }
-    let plan = lossy_plan(a, model, layout, &text, None, gpu.free, &gpu.name, v7_layout(model)?.map(|_| Path::new(model)))?;
+    let plan = plan_level(a, model, layout, &c, None, &gpu, &gpus, v7_layout(model)?.map(|_| Path::new(model)))?;
     crate::ffi::Lib::find().map_err(cannot)?;
     Dev::new(gpu.ordinal).map_err(|e| cannot(e.msg))?;
     let (level, repo) = (level_name(layout), packed_repo(model, level_name(layout)));
@@ -3087,13 +2193,12 @@ fn check_lossy(a: &Args, model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<
     Ok(format!("{}: {}, {} tokens of context, {} level", gpu.name, short_name(model), plan.context, level_name(layout)))
 }
 
-/// MODEL made ready but for the KV tables (downloaded, packed for this GPU), which are the part that needs the GPU's time: what `run` does first.
+/// MODEL made ready at its level (downloaded, packed for this GPU): what `run` does first, for any model it runs. The directory is printed.
 pub fn prepare_cmd(a: &Args) -> i32 {
     let ui = RefCell::new(Ui::new());
-    let r = gpu_pick().and_then(|g| prepare(a, &g, &ui, false, 1));
-    match r {
-        Ok(p) => {
-            println!("{}", p.dir.display());
+    match prepare(a, &ui) {
+        Ok(dir) => {
+            println!("{}", dir.display());
             0
         }
         Err(r) => fail(&ui, &r),
@@ -3108,7 +2213,7 @@ pub fn fetch(a: &Args) -> i32 {
         // MODEL:LEVEL fetches the level's pre-packed repo (google/gemma-4-12B-it:wren is glyd/gemma-4-12B-wren)
         let (rest, layout) = level(tagged, false)?;
         table_check(rest, layout)?;
-        let dynamic = dynamic_family(rest).filter(|f| *f != "Nemotron-H" || layout.map_or(true, |l| l == Layout::Tiered));
+        let dynamic = dynamic_family(rest).filter(|f| !layout.is_some_and(|l| lossy_route(f, l)));
         if let (Some(family), Some(l)) = (dynamic, layout) {
             if l != Layout::Tiered {
                 return Err(penguin_only(&short_name(rest), family, rest));
@@ -3121,9 +2226,10 @@ pub fn fetch(a: &Args) -> i32 {
             hub::HubError::Denied(_) => store::hub_refusal(model),
             e => Refusal::new(format!("cannot read {model} from the Hugging Face Hub ({e})"), "Check the network connection and run this again"),
         })?;
-        // (a pre-packed level's model is one the levels' engines run, which the run checks; so is a Gemma 4 model, its draft model too, which runs penguin without a tag)
-        if packed.is_none() && dynamic.is_none() && !crate::gemma4::is_gemma4(&text) {
-            supported(&short_name(model), &text)?;
+        // (a pre-packed level's model is one the levels' engines run, which the run checks; any other is held to the table here, as `table_check` held its name)
+        let c = model_config_of(&text, &short_name(model))?;
+        if packed.is_none() && dynamic.is_none() {
+            supported_in(&short_name(model), &c)?;
         }
         store::download(&hub, &remote, &wanted, model, &ui)
     })();
@@ -3298,6 +2404,9 @@ fn h_endpoint() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan::sizing::{expert_cache, expert_cache_for, hb_dir_experts, held_in_memory, lossy_plan, lossy_plan_with, release_experts};
+    use crate::plan::{GEMMA_CHUNK, LOSSY_MIN_CTX, LOSSY_WORK};
+    use crate::runtime::config::mc;
 
     /// `serve --with`'s two models in step: what one tells the other arrives in order, and a model that fails (its thread ended, its end of the pair gone) ends the other's wait at
     /// once (None) instead of leaving it waiting for a model that is not coming.
@@ -3321,7 +2430,7 @@ mod tests {
         assert!(t.elapsed() < std::time::Duration::from_secs(1));
     }
 
-    /// R12: a release's expert cache on the dynamic route (`release_cache`), a tiny DeepSeek-V4's: with the GPU's room for its weights besides the experts and a third of the experts, places for some of each layer's on one
+    /// R12: a release's expert cache on the dynamic route (`release_experts`, `expert_cache`), a tiny DeepSeek-V4's: with the GPU's room for its weights besides the experts and a third of the experts, places for some of each layer's on one
     /// GPU and every expert in memory; with less memory than its experts, refused (the disk tier is hummingbird's).
     #[test]
     fn a_releases_experts_are_cached_in_memory() {
@@ -3339,14 +2448,15 @@ mod tests {
         let kv = ((sh.kv_full * 16.0 + sh.kv_sliding * 16f64.min(sh.window.max(1) as f64) + sh.state) / nl as f64) as u64 * nl as u64;
         let room = vec![(0, dense.iter().sum::<u64>() + base + kv + all / 3)];
         let table = crate::sizes::Table::from_dir(&dir).unwrap();
-        let (cuts, devices, places, on_gpus, got_all, experts, dense) =
-            release_cache(&table, &text, nl, &room, "tiny", 16, false, Some(all + HOST_MARGIN + (1 << 30))).unwrap();
+        let src = release_experts(&table, &mc(&text), nl, false).unwrap();
+        let k = expert_cache(&src, &room, "tiny", &[], Some(all + HOST_MARGIN + (1 << 30)), true).unwrap();
+        let experts = k.experts;
         // (room for a token's experts beside the layers' weights: no dense layer in the computer's memory; DeepSeek-V4's loader keeps none there)
-        assert_eq!(dense, (0, 0));
-        assert!(cuts.is_empty() && devices == vec![0] && places[0] > 0 && places[0] < experts, "{places:?} of {experts}");
-        assert_eq!(got_all, all);
-        assert!(on_gpus <= room[0].1);
-        let e = release_cache(&table, &text, nl, &room, "tiny", 16, false, Some(all / 2 + HOST_MARGIN)).unwrap_err();
+        assert_eq!(k.dense, (0, 0));
+        assert!(k.cuts.is_empty() && k.devices == vec![0] && k.places[0] > 0 && k.places[0] < experts, "{:?} of {experts}", k.places);
+        assert_eq!((k.all, k.ram), (all, all));
+        assert!(k.on_gpus <= room[0].1);
+        let e = expert_cache(&src, &room, "tiny", &[], Some(all / 2 + HOST_MARGIN), true).unwrap_err();
         assert!(e.what.contains("keeps the experts its GPUs do not hold in the computer's memory"), "{}", e.what);
         // (the plan `run` loads and `fit` prints, on a GPU of that room: the cache's layers are the model's layers of experts, and its bytes all the experts')
         let free = (0..40).fold((0u64, 64u64 << 30), |(lo, hi), _| {
@@ -3357,16 +2467,17 @@ mod tests {
                 (mid + 1, hi)
             }
         });
-        let gpu = Target { ordinal: 0, name: "NVIDIA GeForce RTX 4080 SUPER".into(), cc: (8, 9), total: free.1, free: free.1, host: None };
+        let gpu = Target { ordinal: 0, name: "NVIDIA GeForce RTX 4080 SUPER".into(), cc: (8, 9), total: free.1, free: free.1, host: None, cublas: Some(false) };
         let host = Some(all + HOST_MARGIN + (1 << 30));
-        let p = size_dynamic(&args(&["run", "tiny", "--context", "16"]), "tiny", &table, Some(&dir), &text, "DeepSeek-V4", &[gpu], host, &|_| false).unwrap();
+        let p =
+            size_dynamic(&args(&["run", "tiny", "--context", "16"]), "tiny", &table, Some(&dir), &mc(&text), "DeepSeek-V4", &[gpu], host, &|_| false).unwrap();
         let c = p.experts.expect("a release's expert cache is in the plan");
         assert_eq!((c.layers, c.experts), (per.iter().filter(|&&b| b > 0).count(), experts));
         assert_eq!((c.host_bytes(), p.ram_bytes(), p.disk_bytes()), (all, all, 0));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A hummingbird directory's expert cache on the dynamic route (`hb_cache`), a tiny GLM-5.3-Flash's: with the GPU's room for its weights besides the experts and a third of the experts, places for some of each layer's
+    /// A hummingbird directory's expert cache on the dynamic route (`hb_dir_experts`, `expert_cache`), a tiny GLM-5.3-Flash's: with the GPU's room for its weights besides the experts and a third of the experts, places for some of each layer's
     /// on one GPU and every expert in memory where the computer has room for them; its memory less than all of them, the rest on the disk; less than a token's experts in every layer, refused.
     #[test]
     fn a_hummingbird_directory_is_cached_in_memory_and_on_the_disk() {
@@ -3394,18 +2505,20 @@ mod tests {
         let sh = crate::plan::Shape::from_config(&text).unwrap();
         let kv = ((sh.kv_full * 16.0 + sh.kv_sliding * 16f64.min(sh.window.max(1) as f64) + sh.state) / nl as f64) as u64 * nl as u64;
         let room = vec![(0, dense.iter().sum::<u64>() + base + kv + all / 3)];
-        let (cuts, devices, places, on_gpus, got_all, experts, ram, dense) =
-            hb_cache(&out, &text, nl, &room, "tiny", 16, false, Some(all + HOST_MARGIN + (1 << 30))).unwrap();
-        assert_eq!(dense, (0, 0));
-        assert!(cuts.is_empty() && devices == vec![0] && places.len() == 1, "{cuts:?} {devices:?} {places:?}");
-        assert!(places[0] > 0 && places[0] < experts, "{places:?} of {experts}");
-        assert_eq!((got_all, ram), (all, all));
-        assert!(on_gpus <= room[0].1);
+        // (each layer's sequences beside its weights: here the room's share of them)
+        let kv_layers = vec![kv / nl as u64; nl];
+        let src = hb_dir_experts(&out, &mc(&text), nl, false).unwrap();
+        let k = expert_cache(&src, &room, "tiny", &kv_layers, Some(all + HOST_MARGIN + (1 << 30)), true).unwrap();
+        assert_eq!(k.dense, (0, 0));
+        assert!(k.cuts.is_empty() && k.devices == vec![0] && k.places.len() == 1, "{:?} {:?} {:?}", k.cuts, k.devices, k.places);
+        assert!(k.places[0] > 0 && k.places[0] < k.experts, "{:?} of {}", k.places, k.experts);
+        assert_eq!((k.all, k.ram), (all, all));
+        assert!(k.on_gpus <= room[0].1);
         // memory for half of them: the rest on the disk
-        let (.., ram, _) = hb_cache(&out, &text, nl, &room, "tiny", 16, false, Some(all / 2 + HOST_MARGIN)).unwrap();
-        assert_eq!(ram, all / 2);
+        let k = expert_cache(&src, &room, "tiny", &kv_layers, Some(all / 2 + HOST_MARGIN), true).unwrap();
+        assert_eq!(k.ram, all / 2);
         // none to give: refused
-        let e = hb_cache(&out, &text, nl, &room, "tiny", 16, false, Some(HOST_MARGIN)).unwrap_err();
+        let e = expert_cache(&src, &room, "tiny", &kv_layers, Some(HOST_MARGIN), true).unwrap_err();
         assert!(e.what.contains("in the computer's memory and on the disk"), "{}", e.what);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -3432,7 +2545,11 @@ mod tests {
     }
     use crate::ui::CANNOT;
 
-    const QWEN3: &str = r#"{"architectures": ["Qwen3ForCausalLM"], "hidden_size": 4096, "num_hidden_layers": 36, "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128, "intermediate_size": 12288,
+    /// The plain dense kind's sizing case (a pre-norm dense decoder of 36 layers of 4,096, 32 query heads over 8 of 128: no release's by name), and a config of a
+    /// kind this engine has no description of. `architectures` and `model_type` are what the description builder reads: its input, not a subject.
+    const OTHER: &str =
+        r#"{"architectures": ["OtherForCausalLM"], "model_type": "other", "hidden_size": 4096, "num_hidden_layers": 32, "num_attention_heads": 32}"#;
+    const DENSE: &str = r#"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "hidden_size": 4096, "num_hidden_layers": 36, "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128, "intermediate_size": 12288,
         "vocab_size": 151936, "rms_norm_eps": 1e-06, "rope_theta": 1000000, "max_position_embeddings": 40960, "tie_word_embeddings": false, "rope_scaling": null, "sliding_window": null, "use_sliding_window": false}"#;
 
     fn dir_with(name: &str, config: &str) -> PathBuf {
@@ -3462,25 +2579,28 @@ mod tests {
             out.split_whitespace().nth(1).unwrap().parse().unwrap()
         };
         let (tx, _rx) = mpsc::channel();
-        let own = listen(&args(&["serve", "m", "--port", "0"]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        let own = listen_after(&args(&["serve", "m", "--port", "0"]), "m", 4096, tx.clone(), None).map_err(|r| r.to_string()).unwrap();
         assert!(own.ip().is_loopback(), "the default address is {own}");
         assert_eq!((status(own, "evil.example"), status(own, "localhost:8000"), status(own, "127.0.0.1")), (421, 200, 200));
-        let chosen = listen(&args(&["serve", "m", "--host", "127.0.0.1", "--port", "0"]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        let chosen =
+            listen_after(&args(&["serve", "m", "--host", "127.0.0.1", "--port", "0"]), "m", 4096, tx.clone(), None).map_err(|r| r.to_string()).unwrap();
         assert_eq!((status(chosen, "evil.example"), status(chosen, "localhost:8000")), (421, 200));
         // an address that is not this computer's own: refused with no key, answered with one or with the user's word (and then any Host is, there being no list of names)
         for host in ["0.0.0.0", "::", "192.168.1.5"] {
-            let refused = listen(&args(&["serve", "m", "--host", host, "--port", "0"]), "m", 4096, tx.clone()).map(|_| ()).unwrap_err();
+            let refused = listen_after(&args(&["serve", "m", "--host", host, "--port", "0"]), "m", 4096, tx.clone(), None).map(|_| ()).unwrap_err();
             assert!(refused.to_string().contains("--insecure-no-auth") && refused.to_string().contains("GLYD_API_KEY"), "{host}: {refused}");
         }
-        let keyed =
-            listen(&args(&["serve", "m", "--host", "0.0.0.0", "--port", "0", "--api-key", "k"]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        let keyed = listen_after(&args(&["serve", "m", "--host", "0.0.0.0", "--port", "0", "--api-key", "k"]), "m", 4096, tx.clone(), None)
+            .map_err(|r| r.to_string())
+            .unwrap();
         assert_eq!((keyed.ip().is_unspecified(), status(keyed, "192.168.1.5:8000")), (true, 200));
-        let said =
-            listen(&args(&["serve", "m", "--host", "0.0.0.0", "--port", "0", "--insecure-no-auth"]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        let said = listen_after(&args(&["serve", "m", "--host", "0.0.0.0", "--port", "0", "--insecure-no-auth"]), "m", 4096, tx.clone(), None)
+            .map_err(|r| r.to_string())
+            .unwrap();
         assert_eq!(status(said, "glyd.example.com"), 200);
         // the lists of what the user lets in are checked before the server starts
         for bad in ["*", "localhost:5173", "http://a/b"] {
-            let e = listen(&args(&["serve", "m", "--port", "0", "--allowed-origins", bad]), "m", 4096, tx.clone()).map(|_| ()).unwrap_err();
+            let e = listen_after(&args(&["serve", "m", "--port", "0", "--allowed-origins", bad]), "m", 4096, tx.clone(), None).map(|_| ()).unwrap_err();
             assert!(e.to_string().contains("--allowed-origins"), "{bad}: {e}");
         }
         // the refusal comes before the model is loaded, from `serve` and `run` themselves
@@ -3502,16 +2622,18 @@ mod tests {
         };
         let (tx, _rx) = mpsc::channel();
         let p = free();
-        let own = listen(&args(&["serve", "m", "--port", "0", "--ollama-port", &p.to_string()]), "m", 4096, tx.clone()).map_err(|r| r.to_string()).unwrap();
+        let own = listen_after(&args(&["serve", "m", "--port", "0", "--ollama-port", &p.to_string()]), "m", 4096, tx.clone(), None)
+            .map_err(|r| r.to_string())
+            .unwrap();
         assert_ne!(own.port(), p);
         // (the engine's thread is not running here: a connection that is answered by the listener alone, the Host check, shows the port is the server's)
         assert!(version(p, "evil.example").contains("421"), "the Host check is the server's own");
         // a port in use: the server starts all the same
         let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let q = busy.local_addr().unwrap().port();
-        assert!(listen(&args(&["serve", "m", "--port", "0", "--ollama-port", &q.to_string()]), "m", 4096, tx.clone()).is_ok());
+        assert!(listen_after(&args(&["serve", "m", "--port", "0", "--ollama-port", &q.to_string()]), "m", 4096, tx.clone(), None).is_ok());
         // not a port: said, and the server starts
-        assert!(listen(&args(&["serve", "m", "--port", "0", "--ollama-port", "x"]), "m", 4096, tx).is_ok());
+        assert!(listen_after(&args(&["serve", "m", "--port", "0", "--ollama-port", "x"]), "m", 4096, tx, None).is_ok());
     }
 
     #[test]
@@ -3526,55 +2648,107 @@ mod tests {
         assert_eq!(key_of(None, &env(&[("GLYD_API_KEY", "")])), None);
     }
 
+    /// The config decides, by its kind: a plain dense decoder runs whatever its architecture is called, and a kind with no description is refused with that, not
+    /// with a list of families.
     #[test]
     fn what_the_engine_runs() {
-        let qwen3 = r#"{"architectures": ["Qwen3ForCausalLM"], "rope_scaling": null}"#;
-        assert!(supported("Qwen3-8B", qwen3).is_ok());
-        assert!(supported("Qwen3-8B", QWEN3).is_ok());
-        let llama = supported("Llama-3.1-8B", r#"{"architectures": ["LlamaForCausalLM"]}"#).unwrap_err();
-        assert_eq!(llama.code, 3);
-        assert!(llama.what.contains("LlamaForCausalLM"));
-        assert_eq!(supported("x", r#"{"architectures": ["Qwen3ForCausalLM"], "rope_scaling": {"type": "yarn"}}"#).unwrap_err().code, 3);
+        assert!(supported("dense-36l", DENSE).is_ok());
+        assert!(supported("dense-36l", &DENSE.replace("Qwen3ForCausalLM", "AnotherNameForCausalLM")).is_ok(), "the architecture's name is not read");
+        for other_type in ["mistral", "llama"] {
+            assert!(supported("dense-36l", &DENSE.replace(r#""model_type": "qwen3""#, &format!(r#""model_type": "{other_type}""#))).is_ok(), "{other_type}");
+        }
+        let other = supported("other", OTHER).unwrap_err();
+        assert_eq!(other.code, 3);
+        assert_eq!(other.what, "other is a OtherForCausalLM model, which this engine has no description of yet");
+        assert!(!other.what.contains("Qwen3") && !other.fix.contains("Qwen3 model") && !other.fix.contains("Qwen3-"), "{other:?}");
         assert_eq!(supported("x", "{}").unwrap_err().code, 3);
-        // Nemotron-H is known by name and refused lossless with its own reason (exit 3, as any other model the engine does not run), in a release build as in a development one: its levels are named
-        let nemo = supported("NVIDIA-Nemotron-3-Super-120B-A12B-BF16", r#"{"architectures": ["NemotronHForCausalLM"]}"#).unwrap_err();
-        assert_eq!(nemo.code, 3);
-        assert!(
-            nemo.what.contains("Nemotron-H model")
-                && nemo.what.contains("hummingbird, swift and kestrel levels, not lossless")
-                && nemo.fix.contains("MODEL:hummingbird on a 16 to 32 GB card")
-                && !nemo.fix.contains("wren"),
-            "{}",
-            nemo.what
-        );
-        assert_eq!(short_name("Qwen/Qwen3-8B"), "Qwen3-8B");
+        assert_eq!(short_name("google/gemma-4-12B-it"), "gemma-4-12B-it");
         assert_eq!(short_name("/models/mine/"), "mine");
     }
 
-    /// A Qwen3 config that sets what the engine does not do is not run by it: a sliding window that is on, layers of another kind, biases, another activation. What it has set off, or null, is nothing.
+    /// The dense route is taken by the config's kind alone: a directory whose name begins as an older release's did and whose config is another architecture has no
+    /// level; a plain dense decoder under any name, of any of the builder's model types, is penguin; a name with no config to read says nothing.
     #[test]
-    fn a_qwen3_that_sets_what_the_engine_does_not_do_goes_to_vllm() {
-        let with = |extra: &str| format!(r#"{{"architectures": ["Qwen3ForCausalLM"], {extra}}}"#);
-        for fine in [
-            r#""sliding_window": null, "use_sliding_window": false"#,
-            r#""sliding_window": 4096, "use_sliding_window": false"#,
-            r#""sliding_window": 4096"#,
-            r#""use_sliding_window": true"#,
-            r#""layer_types": ["full_attention", "full_attention"]"#,
-            r#""attention_bias": false, "hidden_act": "silu""#,
-        ] {
+    fn the_dense_route_is_the_configs_not_the_names() {
+        let named = dir_with("qwen3-named-other", OTHER).join("qwen3-8b");
+        std::fs::create_dir_all(&named).unwrap();
+        std::fs::write(named.join("config.json"), OTHER).unwrap();
+        let n = named.to_str().unwrap();
+        assert!(short_name(n).starts_with("qwen3-") && !is_dense_model(n));
+        assert_eq!(run_level(n, None).unwrap(), None);
+        let ui = RefCell::new(Ui::silent());
+        let r = check(&args(&["preflight", n]), &ui).unwrap_err();
+        assert!(r.code == 3 && r.what.contains("OtherForCausalLM") && r.what.contains("no description"), "{r}");
+        for model_type in ["qwen3", "mistral", "llama"] {
+            let d = dir_with(&format!("any-name-{model_type}"), &DENSE.replace(r#""model_type": "qwen3""#, &format!(r#""model_type": "{model_type}""#)));
+            let m = d.to_str().unwrap();
+            assert!(is_dense_model(m), "{model_type}");
+            assert_eq!(run_level(m, None).unwrap(), Some(Layout::Tiered), "{model_type}");
+            assert!(table_check(m, None).is_ok() && table_check(m, Some(Layout::Int5)).is_ok(), "{model_type}");
+            // (and its plan is the dense kind's, by the config: an A100's free memory holds it)
+            let p =
+                plan_level(&args(&["run", m]), m, Layout::Tiered, &mc(&config_text(m).unwrap()), None, &gpu("NVIDIA A100-SXM4-80GB", (8, 0), 70), &[], None)
+                    .unwrap();
+            assert!(p.kind == Kind::Qwen3 && p.family == crate::dynamic::dense::FAMILY, "{model_type}: {}", p.family);
+            std::fs::remove_dir_all(&d).unwrap();
+        }
+        assert!(!is_dense_model("/nonexistent/qwen3-8b"));
+        assert_eq!(run_level("/nonexistent/qwen3-8b", None).unwrap(), None);
+        // (nor does any family's name: a Gemma 4 name with no config to read has no level, where it was penguin by its name; its config gives its row's first)
+        assert_eq!(run_level("/nonexistent/gemma-4-12B-it", None).unwrap(), None);
+        let g = dir_with("by-config", include_str!("../tests/fixtures/gemma4_12b_config.json"));
+        assert_eq!(run_level(g.to_str().unwrap(), None).unwrap(), Some(Layout::Tiered));
+        std::fs::remove_dir_all(&g).unwrap();
+        std::fs::remove_dir_all(named.parent().unwrap()).unwrap();
+    }
+
+    /// `prepare` takes the path `run` and `serve` take, whatever the family: the level and the table are read first, from the config, and a refusal is a run's own
+    /// (a kind with no description; a level the family does not run; a tag that is no level), said before a GPU is looked at. No family is told it is not the one
+    /// the command serves.
+    #[test]
+    fn prepare_reads_the_level_and_the_table_as_a_run_does() {
+        let ui = RefCell::new(Ui::silent());
+        let other = dir_with("prepare-other", OTHER);
+        let r = prepare(&args(&["prepare", other.to_str().unwrap()]), &ui).unwrap_err();
+        assert!(r.code == CANNOT && r.what.contains("is a OtherForCausalLM model, which this engine has no description of yet"), "{r}");
+        let g = fixture_dir("prepare-g4", "gemma4_12b_config.json");
+        let gp = g.to_str().unwrap();
+        let r = prepare(&args(&["prepare", &format!("{gp}:hummingbird")]), &ui).unwrap_err();
+        assert!(r.code == CANNOT && r.what.ends_with("(Gemma 4) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird"), "{r}");
+        let r = prepare(&args(&["prepare", &format!("{gp}:sparrow")]), &ui).unwrap_err();
+        assert!(r.code == 1 && r.what == ":sparrow is not a level", "{r}");
+        let dense = dir_with("prepare-dense", DENSE);
+        let r = prepare(&args(&["prepare", &format!("{}:hummingbird", dense.to_str().unwrap())]), &ui).unwrap_err();
+        assert!(r.code == CANNOT && r.what.contains("(plain dense) runs at the penguin, kestrel, swift and wren levels"), "{r}");
+        assert_eq!(prepare(&args(&["prepare"]), &ui).unwrap_err().code, 1);
+        for d in [other, g, dense] {
+            std::fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    /// A plain dense decoder that sets what the dense kind's lowering does not take is refused before anything is downloaded, with the setting named: biases in the
+    /// attention, a rope with scaling, another activation. A sliding window is the attention kind's parameter and runs; what a config sets off, or null, is nothing.
+    #[test]
+    fn a_dense_config_the_lowering_refuses_is_refused_with_what_it_sets() {
+        let with = |extra: &str| DENSE.replacen('{', &format!("{{{extra}, "), 1);
+        for fine in [r#""attention_bias": false, "hidden_act": "silu""#, r#""layer_types": null"#] {
             assert!(supported("m", &with(fine)).is_ok(), "{fine}");
         }
         for (setting, said) in [
-            (r#""sliding_window": 4096, "use_sliding_window": true"#, "a sliding window"),
-            (r#""layer_types": ["full_attention", "sliding_attention"]"#, "layers that are not full attention"),
-            (r#""layer_types": ["linear_attention"]"#, "layers that are not full attention"),
-            (r#""attention_bias": true"#, "biases in the attention"),
-            (r#""hidden_act": "gelu""#, "an activation other than silu"),
+            (r#""attention_bias": true"#, "m has biases in the attention, which this engine does not run yet"),
+            (r#""hidden_act": "gelu""#, "m has an activation other than silu, which this engine does not run yet"),
         ] {
             let r = supported("m", &with(setting)).unwrap_err();
-            assert!(r.code == CANNOT && r.what.contains(said), "{setting}: {r}");
+            assert!(r.code == CANNOT && r.what == said, "{setting}: {r}");
         }
+        let scaled = DENSE.replace(r#""rope_scaling": null"#, r#""rope_scaling": {"rope_type": "linear", "factor": 2.0}"#);
+        let r = supported("m", &scaled).unwrap_err();
+        assert!(r.code == CANNOT && r.what == "m has rope scaling, which this engine does not run yet", "{r}");
+        // (a window is a parameter of the attention kind: the lowering takes it)
+        let windowed = DENSE
+            .replace(r#""model_type": "qwen3""#, r#""model_type": "mistral""#)
+            .replace(r#""sliding_window": null, "use_sliding_window": false"#, r#""sliding_window": 4096"#);
+        assert!(supported("m", &windowed).is_ok());
     }
 
     fn fixture_dir(name: &str, file: &str) -> PathBuf {
@@ -3604,7 +2778,7 @@ mod tests {
         assert!(e.code == 1 && e.what.contains(":sparrow is not a level"), "{e:?}");
         let e = supports_check(&format!("{gp}:swift"), true).unwrap_err();
         assert!(e.what.contains("--lossy is :kestrel"), "{e:?}");
-        // Qwen3.5 to 3.8 runs at its lossy levels alone
+        // Qwen3.5 to 3.8 runs lossless and at the lossy levels; not at hummingbird, which is for experts
         let q35: Value = json::parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/qwen35_configs.json")).unwrap()).unwrap();
         let first = match &q35 {
             Value::Object(m) => m[0].1.clone(),
@@ -3615,37 +2789,59 @@ mod tests {
         let qp = q.to_str().unwrap();
         assert!(supports_check(qp, false).is_ok());
         assert!(supports_check(&format!("{qp}:swift"), false).is_ok());
-        let e = supports_check(&format!("{qp}:penguin"), false).unwrap_err();
+        assert!(supports_check(&format!("{qp}:penguin"), false).is_ok());
+        let e = supports_check(&format!("{qp}:hummingbird"), false).unwrap_err();
         assert!(
             e.code == 3
-                && e.what.ends_with("(Qwen3.5) runs at the kestrel, swift and wren levels in this engine, not penguin")
-                && e.fix == format!("Run it at the kestrel level: glyd run {qp}:kestrel"),
+                && e.what.ends_with("(Qwen3.5) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird")
+                && e.fix == format!("Run it lossless: glyd run {qp}"),
             "{e:?}"
         );
-        // Qwen3 is lossless alone, and keeps its own refusals; another kind of model keeps its words at any level
-        let q3 = dir_with("supports-q3", QWEN3);
-        let q3p = q3.to_str().unwrap();
-        assert!(supports_check(&format!("{q3p}:penguin"), false).is_ok());
-        let e = supports_check(&format!("{q3p}:swift"), false).unwrap_err();
-        assert!(e.code == 3 && e.what.ends_with("(Qwen3) runs at the penguin level in this engine, not swift"), "{e:?}");
-        let scaled = dir_with("supports-scaled", r#"{"architectures": ["Qwen3ForCausalLM"], "rope_scaling": {"type": "yarn"}}"#);
-        assert!(supports_check(scaled.to_str().unwrap(), false).unwrap_err().what.contains("rope scaling"));
-        let l = dir_with("supports-llama", r#"{"architectures": ["LlamaForCausalLM"]}"#);
+        // a plain dense decoder runs at penguin and the block levels, and keeps the dense kind's own refusals; a kind with no description keeps its words at any level
+        let dense = dir_with("supports-dense", DENSE);
+        let dp = dense.to_str().unwrap();
+        assert!(
+            supports_check(dp, false).is_ok()
+                && supports_check(&format!("{dp}:penguin"), false).is_ok()
+                && supports_check(&format!("{dp}:swift"), false).is_ok()
+        );
+        let e = supports_check(&format!("{dp}:hummingbird"), false).unwrap_err();
+        assert!(e.code == 3 && e.what.ends_with("(plain dense) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird"), "{e:?}");
+        let biased = dir_with("supports-biased", &DENSE.replacen('{', r#"{"attention_bias": true, "#, 1));
+        assert!(supports_check(biased.to_str().unwrap(), false).unwrap_err().what.contains("biases in the attention"));
+        let l = dir_with("supports-llama", OTHER);
         for tag in ["", ":kestrel"] {
             let e = supports_check(&format!("{}{tag}", l.to_str().unwrap()), false).unwrap_err();
-            assert!(e.code == 3 && e.what.contains("is a LlamaForCausalLM model, and this engine runs Qwen3 models so far"), "{e:?}");
+            assert!(e.code == 3 && e.what.contains("is a OtherForCausalLM model, which this engine has no description of yet"), "{e:?}");
         }
         // a model that cannot be read is "not told", whatever the level
         assert_eq!(supports_check("/nonexistent/model:kestrel", false).unwrap_err().code, 1);
-        for d in [g, q, q3, scaled, l] {
+        for d in [g, q, dense, biased, l] {
             std::fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    /// The dynamic route takes the Qwen3.5 layout at penguin; its lossy levels stay on the one-GPU lossy path; Kimi-K3's hummingbird stays on the dynamic route.
+    #[test]
+    fn the_route_of_each_level() {
+        let q35: Value = json::parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/qwen35_configs.json")).unwrap()).unwrap();
+        let q38 = json::to_compact(q35.get("Qwen/Qwen3.8-27B").unwrap());
+        assert_eq!(crate::dynamic::split::family(&q38), Some("Qwen3.5"));
+        for (family, layout, lossy) in [
+            ("Qwen3.5", Layout::Tiered, false),
+            ("Qwen3.5", Layout::Int6, true),
+            ("Qwen3.5", Layout::Int4, true),
+            ("Kimi-K3", Layout::Hummingbird, false),
+            ("GLM-5.3-Flash", Layout::Tiered, false),
+        ] {
+            assert_eq!(lossy_route(family, layout), lossy, "{family} {layout:?}");
         }
     }
 
     #[test]
     fn supports_is_the_kind_of_model_alone() {
-        let q = dir_with("supports-q", QWEN3);
-        let l = dir_with("supports-l", r#"{"architectures": ["LlamaForCausalLM"]}"#);
+        let q = dir_with("supports-q", DENSE);
+        let l = dir_with("supports-l", OTHER);
         assert_eq!(supports(&args(&["supports", q.to_str().unwrap()])), 0);
         assert_eq!(supports(&args(&["supports", l.to_str().unwrap()])), 3);
         assert_eq!(supports(&args(&["supports", "/nonexistent/model"])), 1); // (cannot be told: the engine's own refusal comes with the run)
@@ -3653,8 +2849,8 @@ mod tests {
         // the preflight says the same of a model of another kind before it looks at a GPU
         let ui = RefCell::new(Ui::silent());
         let r = check(&args(&["preflight", l.to_str().unwrap()]), &ui).unwrap_err();
-        assert!(r.code == 3 && r.what.contains("LlamaForCausalLM"), "{r}");
-        assert_eq!(config_text(q.to_str().unwrap()).unwrap(), QWEN3);
+        assert!(r.code == 3 && r.what.contains("OtherForCausalLM"), "{r}");
+        assert_eq!(config_text(q.to_str().unwrap()).unwrap(), DENSE);
         std::fs::remove_dir_all(&q).unwrap();
         std::fs::remove_dir_all(&l).unwrap();
     }
@@ -3717,14 +2913,14 @@ mod tests {
         }
         // what is not all letters after the last ':' is no tag: the model is left alone, --lossy or not
         for plain in [
-            "Qwen/Qwen3-8B",
+            "org/dense-36l",
             "/models/mine/",
             "mine",
-            "/mnt/disk:1/Qwen3",
+            "/mnt/disk:1/model",
             "./a:b/c",
             "/data/x:kestrel/model",
             "C:\\models\\Qwen",
-            "Qwen/Qwen3-8B:",
+            "org/dense-36l:",
             "m:v2",
             "m:4bit",
             "m:ké",
@@ -3748,7 +2944,7 @@ mod tests {
             ("kestrel", "swift", "wren", "i3", "hummingbird")
         );
         assert_eq!(
-            (format!("{:.1}", fit::bits(Layout::Int6)), format!("{:.1}", fit::bits(Layout::Int5)), format!("{:.1}", fit::bits(Layout::Int4))),
+            (format!("{:.1}", bits(Layout::Int6)), format!("{:.1}", bits(Layout::Int5)), format!("{:.1}", bits(Layout::Int4))),
             ("6.5".to_string(), "5.5".to_string(), "4.5".to_string())
         );
     }
@@ -3767,12 +2963,12 @@ mod tests {
         for tag in ["sparrow", "falcon"] {
             assert_eq!(serve(&args(&["serve", &format!("Qwen/Qwen3.8-27B:{tag}")])), 1, "{tag}");
         }
-        // penguin's tag is off the model that is looked up: the directory it names is the one read (a Llama: status 3), whatever the tag's case
-        let l = dir_with("level-l", r#"{"architectures": ["LlamaForCausalLM"]}"#);
+        // penguin's tag is off the model that is looked up: the directory it names is the one read (a kind with no description: status 3), whatever the tag's case
+        let l = dir_with("level-l", OTHER);
         let m = l.to_str().unwrap();
         for tagged in [m.to_string(), format!("{m}:penguin"), format!("{m}:PENGUIN")] {
             let r = check(&args(&["preflight", &tagged]), &ui).unwrap_err();
-            assert!(r.code == 3 && r.what.contains("LlamaForCausalLM"), "{tagged}: {r}");
+            assert!(r.code == 3 && r.what.contains("OtherForCausalLM"), "{tagged}: {r}");
         }
         std::fs::remove_dir_all(&l).unwrap();
     }
@@ -3791,28 +2987,29 @@ mod tests {
         assert!(r.code == 1 && r.what == "/models/q-wren is packed at the wren level, not :swift", "{r}");
     }
 
-    /// A lossy level's plan sizes the weights in its layout (fit::bits), and its refusals name the level.
+    /// A lossy level's plan sizes the weights in its layout (plan.rs `sizing::bits`), and its refusals name the level.
     #[test]
     fn a_lossy_plan_is_sized_in_its_levels_layout() {
         let text = include_str!("../../research/lossy-2026/qwen38-config.json");
         let (a, model) = (args(&["run", "Qwen/Qwen3.8-27B"]), "Qwen/Qwen3.8-27B");
-        let plan = |layout, free_gib: u64| lossy_plan(&a, model, layout, text, None, free_gib << 30, "NVIDIA A100", None);
+        let plan = |layout, free_gib: u64| lossy_plan(&a, model, layout, &mc(text), None, free_gib << 30, "NVIDIA A100", None);
         let (six, five, four) = (plan(Layout::Int6, 80).unwrap(), plan(Layout::Int5, 80).unwrap(), plan(Layout::Int4, 80).unwrap());
         assert_eq!(six.bf16, five.bf16);
         assert_eq!(five.bf16, four.bf16);
         // (what is packed is bits/16 of its bf16 bytes, the rest as it is: the ratio is a little above the layouts')
         let ratio = five.weights as f64 / six.weights as f64;
-        assert!(ratio > fit::bits(Layout::Int5) / fit::bits(Layout::Int6) && ratio < 0.9, "{ratio}");
+        assert!(ratio > bits(Layout::Int5) / bits(Layout::Int6) && ratio < 0.9, "{ratio}");
         let ratio = four.weights as f64 / five.weights as f64;
-        assert!(ratio > fit::bits(Layout::Int4) / fit::bits(Layout::Int5) && ratio < 0.9, "{ratio}");
+        assert!(ratio > bits(Layout::Int4) / bits(Layout::Int5) && ratio < 0.9, "{ratio}");
         for (layout, level) in [(Layout::Int6, "kestrel"), (Layout::Int5, "swift"), (Layout::Int4, "wren")] {
             let r = plan(layout, 8).err().unwrap();
             assert!(r.code == CANNOT && r.what.starts_with(&format!("Qwen3.8-27B at the {level} level takes about ")), "{r}");
-            let r = lossy_plan(&a, "Qwen/Qwen3-8B", layout, QWEN3, None, 80 << 30, "NVIDIA A100", None).err().unwrap();
+            let r = lossy_plan(&a, "org/dense-36l", layout, &mc(DENSE), None, 80 << 30, "NVIDIA A100", None).err().unwrap();
+            // (the plain dense kind's lossy levels are its own sizer's, `dense_fit`: this path takes the rows sized on one GPU, by the table)
             assert!(
                 r.code == CANNOT
-                    && r.what.starts_with(&format!("Qwen3-8B: the {level} level runs Qwen3.5"))
-                    && r.fix == "Run it lossless: glyd run Qwen/Qwen3-8B",
+                    && r.what == format!("dense-36l: the {level} level on this path takes the Qwen3.5, Nemotron-H, Gemma 4 rows, not the plain dense one")
+                    && r.fix == "Run it lossless: glyd run org/dense-36l",
                 "{r}"
             );
         }
@@ -3826,17 +3023,17 @@ mod tests {
         // (Google's gemma-4-12B-it config.json: penguin, a lossless save of it, is planned as the block levels are; i3 is not built for Gemma 4)
         let text = include_str!("../tests/fixtures/gemma4_12b_config.json");
         let model = "google/gemma-4-12B-it";
-        let plan = |layout| lossy_plan_with(&args(&["run", model]), model, layout, text, None, 22 << 30, "NVIDIA RTX 4090", None, None);
+        let plan = |layout| lossy_plan_with(&args(&["run", model]), model, layout, &mc(text), None, 22 << 30, "NVIDIA RTX 4090", None, None);
         let (penguin, kestrel) = (plan(Layout::Tiered).unwrap(), plan(Layout::Int6).unwrap());
         assert!((penguin.kind == Kind::Gemma4) && (kestrel.kind == Kind::Gemma4) && penguin.bf16 == kestrel.bf16);
         let ratio = penguin.weights as f64 / penguin.bf16 as f64;
         assert!((0.66..0.69).contains(&ratio), "penguin at {ratio} of bf16");
         assert!(penguin.weights > kestrel.weights && penguin.context >= LOSSY_MIN_CTX);
         let r = plan(Layout::Int3).err().unwrap();
-        assert!(r.code == CANNOT && r.what.contains("the i3 level is not built for Gemma 4"), "{r}");
+        assert!(r.code == CANNOT && r.what.ends_with("(Gemma 4) runs at the penguin, kestrel, swift and wren levels in this engine, not i3"), "{r}");
         // (penguin short of room on a 16 GB card: the wren repo, which fits, is named first; at 6 GiB nothing fits and the fix is the plain one; the base model has no wren)
         let small = |m: &str, free_gib: u64| {
-            lossy_plan_with(&args(&["run", m]), m, Layout::Tiered, text, None, free_gib << 30, "NVIDIA GeForce RTX 4080 SUPER", None, None).err().unwrap()
+            lossy_plan_with(&args(&["run", m]), m, Layout::Tiered, &mc(text), None, free_gib << 30, "NVIDIA GeForce RTX 4080 SUPER", None, None).err().unwrap()
         };
         for m in [model, "google/gemma-4-12B-it:penguin", "glyd/gemma-4-12B-penguin"] {
             let r = small(m, 15);
@@ -3847,28 +3044,36 @@ mod tests {
         }
         assert!(small(model, 6).fix.starts_with("Close programs") && small("google/gemma-4-12B", 15).fix.starts_with("Close programs"));
         assert_eq!(
-            (gemma_wren("google/gemma-4-31B-it").as_deref(), gemma_wren("glyd/gemma-4-31B-penguin").as_deref()),
+            (qat_wren("google/gemma-4-31B-it").as_deref(), qat_wren("glyd/gemma-4-31B-penguin").as_deref()),
             (Some("glyd/gemma-4-31B-wren"), Some("glyd/gemma-4-31B-wren"))
         );
-        assert_eq!((gemma_wren("glyd/gemma-4-12B-base-penguin"), gemma_wren("Qwen/Qwen3.8-27B")), (None, None));
+        assert_eq!((qat_wren("glyd/gemma-4-12B-base-penguin"), qat_wren("Qwen/Qwen3.8-27B")), (None, None));
         // (served to --users at once with no draft model: each user's room and context fit beside the others'; run, and a context asked for, keep one user's)
         let free = 14u64 << 30;
-        let at = |argv: &[&str]| lossy_plan_with(&args(argv), model, Layout::Int4, text, None, free, "NVIDIA GeForce RTX 4080 SUPER", None, None).unwrap();
+        let at = |argv: &[&str]| lossy_plan_with(&args(argv), model, Layout::Int4, &mc(text), None, free, "NVIDIA GeForce RTX 4080 SUPER", None, None).unwrap();
         let cfg = crate::gemma4::ConfigG4::parse(text, None, false).unwrap();
         let (one, eight) = (at(&["run", model, "--no-draft"]), at(&["serve", model, "--users", "8", "--no-draft"]));
         assert_eq!((one.context, one.users), (LOSSY_CTX, 1));
         assert!(eight.context >= LOSSY_MIN_CTX && eight.context < one.context && eight.users == 8, "{}", eight.context);
+        // (each user's rings and context, and the pools' block 0 of the sliding and the global layers, `rows::SeqRoom`)
         let (rings, per) = cfg.kv_bytes(GEMMA_CHUNK, eight.context, false);
-        assert_eq!(eight.kv, 8 * (rings + eight.context as u64 * per));
+        assert_eq!(eight.kv, 8 * (rings + eight.context as u64 * per) + crate::plan::sizing::block_zero(&cfg.group_token_bytes()));
         assert!(eight.weights + LOSSY_WORK + eight.reserve + eight.kv <= free, "8 users at {} tokens", eight.context);
         assert_eq!(at(&["serve", model, "--users", "1", "--no-draft"]).context, LOSSY_CTX);
         assert_eq!(at(&["serve", model, "--users", "8", "--no-draft", "--ctx", "8192"]).context, 8192);
-        // (a draft model to come with the download: drafted, one user at a time, the context of one)
-        assert_eq!(at(&["serve", model, "--users", "8"]).users, 1);
-        // (run, serve and preflight alike: Gemma 4 without a tag is penguin, with one the level asked; other models without one take the lossless route of old)
+        // (a draft model to come with the download: one user drafted, the context of one; eight held as asked, with no draft model (a drafted engine runs one
+        // sequence at a time), the same plan as --no-draft's)
+        let (one, eight_drafted) = (at(&["serve", model, "--users", "1"]), at(&["serve", model, "--users", "8"]));
+        assert!(one.users == 1 && one.draft > 0, "{one:?}");
+        assert_eq!(eight_drafted, eight);
+        // (fit --users N plans that server: N users, no draft model where N > 1; fit alone run's one user, drafted)
+        assert_eq!(at(&["fit", model, "--users", "8"]), eight);
+        assert!(at(&["fit", model]).users == 1 && at(&["fit", model]).draft > 0);
+        // (run, serve and preflight alike: Gemma 4 without a tag is penguin, with one the level asked; so is a plain dense decoder, on the executor too)
         assert_eq!(run_level(model, None).unwrap(), Some(Layout::Tiered));
         assert_eq!(run_level(model, Some(Layout::Int4)).unwrap(), Some(Layout::Int4));
-        assert_eq!(run_level("Qwen/Qwen3-8B", None).unwrap(), None);
+        let dense = dir_with("run-level-dense", DENSE);
+        assert_eq!(run_level(dense.to_str().unwrap(), None).unwrap(), Some(Layout::Tiered));
     }
 
     /// A run whose context does not fit at the level asked loads at the shorter one the ladder takes (on a 16 GB card, gemma-4-12B at kestrel with 262144 tokens loads
@@ -3908,7 +3113,7 @@ mod tests {
         let on_tag = Args::from(["run", tagged.as_str(), "--machine", "rtx4080s"].iter().map(|s| s.to_string()));
         assert_eq!(load_level(&on_tag, m, None).unwrap(), Some(Layout::Tiered));
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
-        // Qwen3.8-27B runs at its lossy levels alone: untagged, it loads the planner's (swift on a 24 GB card), and the table takes it, where it was refused as penguin
+        // Qwen3.8-27B untagged loads the planner's level: a lossy one on a 24 GB card (its penguin does not fit one), which the table takes, as it takes penguin
         let q35: Value = json::parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/qwen35_configs.json")).unwrap()).unwrap();
         let q38 = match &q35 {
             Value::Object(m) => m.iter().find(|(k, _)| k.as_str() == "Qwen/Qwen3.8-27B").map(|(_, v)| v.clone()).unwrap(),
@@ -3919,7 +3124,8 @@ mod tests {
         let onq = |machine: &str| Args::from(["serve", qp, "--machine", machine].iter().map(|s| s.to_string()));
         let l = load_level(&onq("rtx4090"), qp, None).unwrap();
         assert!(matches!(l, Some(Layout::Int6 | Layout::Int5 | Layout::Int4)), "{l:?}");
-        assert!(table_check(qp, l).is_ok() && table_check(qp, None).is_err());
+        assert!(table_check(qp, l).is_ok() && table_check(qp, None).is_ok());
+        assert_eq!(run_level(qp, None).unwrap(), Some(Layout::Tiered), "penguin where nothing is asked, as the dynamic route's families");
         assert_eq!(l, planner_level(&onq("rtx4090"), qp));
         // on a 16 GB card nothing fits: fit's refusal (run's own sizing, in its words), before anything is downloaded
         let e = load_level(&onq("rtx4080s"), qp, None).unwrap_err();
@@ -3928,10 +3134,10 @@ mod tests {
         if crate::support::machine(&crate::plan::Machine::preset("rtx4060-laptop").unwrap()).is_some() {
             assert!(load_level(&onq("rtx4060-laptop"), qp, None).is_ok());
         }
-        // a Qwen3 dense model the planner keeps lossless stays on its own path
-        let q3 = dir_with("load-level-q3", QWEN3);
-        let q3p = q3.to_str().unwrap();
-        assert_eq!(load_level(&Args::from(["serve", q3p, "--machine", "rtx4090"].iter().map(|s| s.to_string())), q3p, None).unwrap(), None);
+        // a plain dense decoder the planner keeps lossless loads at penguin, on the executor
+        let dense = dir_with("load-level-dense", DENSE);
+        let dp = dense.to_str().unwrap();
+        assert_eq!(load_level(&Args::from(["serve", dp, "--machine", "rtx4090"].iter().map(|s| s.to_string())), dp, None).unwrap(), Some(Layout::Tiered));
     }
 
     #[test]
@@ -3940,7 +3146,7 @@ mod tests {
         let (a, model) = (args(&["run", "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"]), "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16");
         // (a computer of 8 GiB cannot take the experts in its memory: the GPU has to hold the model whole)
         let lossy_plan = |a: &Args, model: &str, layout: Layout, text: &str, gen: Option<&str>, free: u64, gpu: &str, packed: Option<&Path>| {
-            lossy_plan_with(a, model, layout, text, gen, free, gpu, packed, Some(8 << 30))
+            lossy_plan_with(a, model, layout, &mc(text), gen, free, gpu, packed, Some(8 << 30))
         };
         let plan = |layout, free_gib: u64| lossy_plan(&a, model, layout, text, None, free_gib << 30, "NVIDIA H200", None);
         let (six, five, four) = (plan(Layout::Int6, 140).unwrap(), plan(Layout::Int5, 140).unwrap(), plan(Layout::Int4, 140).unwrap());
@@ -3988,10 +3194,40 @@ mod tests {
         assert!(asked("262144").is_err());
         // the three-bit layout is no level of it
         let r = plan(Layout::Int3, 140).err().unwrap();
-        assert!(r.code == CANNOT && r.what.contains("the i3 level is not built for Nemotron 3 Super") && r.fix.ends_with(&format!("{model}:wren")), "{r}");
+        assert!(
+            r.code == CANNOT && r.what.ends_with("(Nemotron-H) runs at the penguin, kestrel, swift, wren and hummingbird levels in this engine, not i3"),
+            "{r}"
+        );
+        // and penguin, the dynamic route's, is no level of its experts on this path
+        let r = plan(Layout::Tiered, 140).err().unwrap();
+        assert!(
+            r.code == CANNOT
+                && r.what.contains("its experts are held at the kestrel, swift and wren levels on this path")
+                && r.fix.ends_with(&format!("{model}:kestrel")),
+            "{r}"
+        );
         // a config the engine does not run (here one with a convolution without its bias) is said in the config's own words
         let r = plan_of(&a, model, text.replace("\"use_conv_bias\": true", "\"use_conv_bias\": false")).err().unwrap();
         assert!(r.code == CANNOT && r.what.contains("a convolution without its bias"), "{r}");
+    }
+
+    /// The one level reader reads Nemotron-H's description: its weights at each level are its typed reader's packs and kept tensors (`ConfigNemotronH::packs`,
+    /// `kept`) at the layouts its loader packs them in (`pack_layout`), to the byte, and its states and keys and values a token its typed reader's.
+    #[test]
+    fn the_level_reader_reads_nemotron_from_its_description() {
+        let text = include_str!("../tests/fixtures/nemotron_h_config.json");
+        let cfg = crate::nemotron::ConfigNemotronH::parse(text, "n", None).unwrap();
+        let a = args(&["run", "nvidia/N"]);
+        for layout in [Layout::Int6, Layout::Int5, Layout::Int4, Layout::Hummingbird] {
+            let lv = crate::plan::sizing::level_of(&a, "nvidia/N", "N", layout, &mc(text), None, None, None).unwrap();
+            let at = |p: &crate::qwen35::Pack35| {
+                let b = (p.rows() * p.cols * 2) as u64;
+                (b as f64 * bits(crate::nemotron::pack_layout(layout, &p.key)) / 16.0) as u64
+            };
+            let kept: u64 = cfg.kept().iter().map(|t| t.shape.iter().product::<u64>() * if t.dtype == "F32" { 4 } else { 2 }).sum();
+            assert_eq!(lv.weights, cfg.packs().iter().map(at).sum::<u64>() + kept, "{layout:?}");
+            assert_eq!((lv.state, lv.per[0]), (cfg.state_bytes(), cfg.kv_bytes_per_token()), "{layout:?}");
+        }
     }
 
     /// Nemotron 3 Super at swift on a GPU that cannot hold it whole runs with its experts in the computer's memory (77.5 GB of them pinned, and a margin) and a cache of them on the GPU: the cache is what the GPU has left
@@ -4002,7 +3238,7 @@ mod tests {
         let text = include_str!("../tests/fixtures/nemotron_h_config.json");
         let (a, model) = (args(&["run", "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"]), "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16");
         let plan = |layout, free_gib: f64, host_gib: u64| {
-            lossy_plan_with(&a, model, layout, text, None, (free_gib * (1u64 << 30) as f64) as u64, "NVIDIA RTX 4090", None, Some(host_gib << 30))
+            lossy_plan_with(&a, model, layout, &mc(text), None, (free_gib * (1u64 << 30) as f64) as u64, "NVIDIA RTX 4090", None, Some(host_gib << 30))
         };
         for (free, slots) in [(16.0, 56), (23.0, 106), (31.0, 163), (47.0, 276)] {
             let p = plan(Layout::Int5, free, 128).unwrap();
@@ -4028,7 +3264,17 @@ mod tests {
         );
         assert!(plan(Layout::Int5, 23.0, 78).is_err() && plan(Layout::Int5, 23.0, 79).is_ok());
         // a computer that does not say how much it has is taken to have enough (the allocation says if it has not)
-        assert!(lossy_plan_with(&a, model, Layout::Int5, text, None, 23 << 30, "NVIDIA RTX 4090", None, None).unwrap().experts.is_some());
+        assert!(lossy_plan_with(&a, model, Layout::Int5, &mc(text), None, 23 << 30, "NVIDIA RTX 4090", None, None).unwrap().experts.is_some());
+        // (a server's plan, `fit --users N`, at the gate's 4,096 tokens: every user's states, their copies at its mark and its context beside the cache, which holds
+        // fewer places for more users, all within what is free; its Mamba-2 states are large, so 64 users do not fit here and 8 do)
+        let served = |users: &str| {
+            let w = ["fit", model, "--users", users, "--context", "4096"];
+            lossy_plan_with(&args(&w), model, Layout::Int5, &mc(text), None, 23 << 30, "NVIDIA RTX 4090", None, Some(128 << 30)).unwrap()
+        };
+        let (one, two, many) = (served("1"), served("2"), served("8"));
+        let (c1, c8) = (one.experts.expect("a cache"), many.experts.expect("a cache"));
+        assert!((one.users, many.users) == (1, 8) && many.kv == one.kv + 7 * (two.kv - one.kv) && c8.slots < c1.slots, "{one:?} {many:?}");
+        assert!(many.gpu_total() <= 23 << 30, "{}", many.text());
     }
 
     /// `expert_cache_for` is what `run` would give the directory: the plan of its own config on the memory the GPU has free (a directory of a config alone is sized by the plan's bits a weight), the places of 23 GiB
@@ -4075,7 +3321,7 @@ mod tests {
                 &args(&["run", model, "--expert-cache", cache]),
                 model,
                 Layout::Int5,
-                text,
+                &mc(text),
                 None,
                 free_gib << 30,
                 "NVIDIA L40S",
@@ -4107,7 +3353,7 @@ mod tests {
             &args(&["run", "Qwen/Qwen3.8-27B", "--expert-cache", "8"]),
             "Qwen/Qwen3.8-27B",
             Layout::Int5,
-            qwen,
+            &mc(qwen),
             None,
             80 << 30,
             "NVIDIA A100",
@@ -4131,7 +3377,7 @@ mod tests {
         let plan = |flag: &[&str], layout, host_gib: f64| {
             let mut v = vec!["run", model];
             v.extend_from_slice(flag);
-            lossy_plan_with(&args(&v), model, layout, text, None, 23 * gib, "NVIDIA RTX 4090", None, Some((host_gib * gib as f64) as u64))
+            lossy_plan_with(&args(&v), model, layout, &mc(text), None, 23 * gib, "NVIDIA RTX 4090", None, Some((host_gib * gib as f64) as u64))
         };
         let hb = Layout::Hummingbird;
         let all = 40 * 512 * 2_056_068u64;
@@ -4164,7 +3410,7 @@ mod tests {
             &args(&["run", "Qwen/Qwen3.8-27B", "--host-memory", "8"]),
             "Qwen/Qwen3.8-27B",
             Layout::Int5,
-            qwen,
+            &mc(qwen),
             None,
             80 << 30,
             "NVIDIA A100",
@@ -4187,7 +3433,7 @@ mod tests {
     }
 
     fn plan_of(a: &Args, model: &str, text: String) -> Done<LoadPlan> {
-        lossy_plan(a, model, Layout::Int5, &text, None, 140 << 30, "NVIDIA H200", None)
+        lossy_plan(a, model, Layout::Int5, &mc(&text), None, 140 << 30, "NVIDIA H200", None)
     }
 
     /// `run`, `serve`, `preflight` and `fetch` all check the family and the level against the table first (src/support.rs), in its words: a kind the engine does not run, a
@@ -4201,14 +3447,14 @@ mod tests {
             std::fs::write(d.join("config.json"), config).unwrap();
             d.to_string_lossy().into_owned()
         };
-        let llama =
-            model("Llama-3.1-8B", r#"{"architectures": ["LlamaForCausalLM"], "hidden_size": 4096, "num_hidden_layers": 32, "num_attention_heads": 32}"#);
-        let r = table_check(&llama, None).unwrap_err();
-        assert!(r.code == CANNOT && r.what.contains("is a LlamaForCausalLM model"), "{r}");
-        let qwen3 = model("Qwen3-8B", QWEN3);
-        assert!(table_check(&qwen3, None).is_ok() && table_check(&qwen3, Some(Layout::Tiered)).is_ok());
-        let r = table_check(&qwen3, Some(Layout::Int5)).unwrap_err();
-        assert!(r.code == CANNOT && r.what.contains("runs at the penguin level in this engine, not swift"), "{r}");
+        let other = model("other", OTHER);
+        let r = table_check(&other, None).unwrap_err();
+        assert!(r.code == CANNOT && r.what.contains("is a OtherForCausalLM model"), "{r}");
+        let dense = model("dense-36l", DENSE);
+        assert!(table_check(&dense, None).is_ok() && table_check(&dense, Some(Layout::Tiered)).is_ok());
+        assert!(table_check(&dense, Some(Layout::Int5)).is_ok());
+        let r = table_check(&dense, Some(Layout::Hummingbird)).unwrap_err();
+        assert!(r.code == CANNOT && r.what.contains("runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird"), "{r}");
         // (a model whose config is not to be had is the paths' own to say)
         assert!(table_check(&dir.join("nowhere").to_string_lossy(), Some(Layout::Int5)).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -4232,67 +3478,66 @@ mod tests {
     /// The plan of a model on a GPU is a status 3 wherever it fails for the computer or the model (not for what the user typed): the memory, the context, the shape.
     #[test]
     fn what_a_model_needs_of_a_gpu_is_decided_before_anything_is_downloaded() {
-        let cfg = Config::parse(QWEN3, "config.json", None).unwrap();
+        let cfg = Config::parse(DENSE, "config.json", None).unwrap();
         let l4 = gpu("NVIDIA L4", (8, 9), 22);
-        let (layout, _, fit) = plan(&args(&["run", "Qwen/Qwen3-8B"]), &cfg, "Qwen3-8B", &l4, None, 1).unwrap();
-        assert!(fit.context == 8192 && layout == Layout::Tiered && shape_checks("Qwen3-8B", &cfg, &fit).is_ok());
+        let (layout, _, fit) = qwen3_plan(&args(&["run", "org/dense-36l"]), &cfg, "dense-36l", &l4, None, 1).unwrap();
+        assert!(fit.context == 8192 && layout == Layout::Tiered && shape_checks("dense-36l", &cfg, &fit).is_ok());
         // a card with too little room: the vLLM way, with the numbers
-        let small = plan(&args(&["run", "Qwen/Qwen3-8B"]), &cfg, "Qwen3-8B", &gpu("NVIDIA L4", (8, 9), 8), None, 1).unwrap_err();
-        assert!(small.code == CANNOT && small.what.contains("does not fit this GPU"), "{small}");
+        let small = qwen3_plan(&args(&["run", "org/dense-36l"]), &cfg, "dense-36l", &gpu("NVIDIA L4", (8, 9), 8), None, 1).unwrap_err();
+        assert!(small.code == CANNOT && small.what.contains("takes about") && small.what.contains("has 8.0 GiB free"), "{small}");
         // a context that does not fit
-        let big = plan(&args(&["run", "Qwen/Qwen3-8B", "--context", "40960"]), &cfg, "Qwen3-8B", &gpu("NVIDIA L4", (8, 9), 13), None, 1).unwrap_err();
+        let big = qwen3_plan(&args(&["run", "org/dense-36l", "--context", "40960"]), &cfg, "dense-36l", &gpu("NVIDIA L4", (8, 9), 13), None, 1).unwrap_err();
         assert!(big.code == CANNOT && big.fix.contains("--context"), "{big}");
         // a context past the tables' reach on a model whose own window is longer
         let long = Config { max_pos: 262_144, ..cfg.clone() };
         // (the table's limit, which `fit` and `preflight` give in the same words)
-        let r = plan(&args(&["run", "m", "--context", "100000"]), &long, "m", &gpu("NVIDIA A100-SXM4-80GB", (8, 0), 70), None, 1).unwrap_err();
+        let r = qwen3_plan(&args(&["run", "m", "--context", "100000"]), &long, "m", &gpu("NVIDIA A100-SXM4-80GB", (8, 0), 70), None, 1).unwrap_err();
         assert!(r.code == CANNOT && r.what.contains("100000") && r.what.contains("40960"), "{r}");
-        let (_, _, fit) = plan(&args(&["run", "m"]), &long, "m", &l4, None, 1).unwrap();
+        let (_, _, fit) = qwen3_plan(&args(&["run", "m"]), &long, "m", &l4, None, 1).unwrap();
         assert_eq!(fit.context, 8192); // (the default context is the engine's, whatever the window)
         assert!(shape_checks("m", &long, &fit).is_ok());
         // what the user typed is the user's to fix: status 1
-        assert_eq!(plan(&args(&["run", "m", "--layout", "tiny"]), &cfg, "m", &l4, None, 1).unwrap_err().code, 1);
-        assert_eq!(plan(&args(&["run", "m", "--context", "abc"]), &cfg, "m", &l4, None, 1).unwrap_err().code, 1);
+        assert_eq!(qwen3_plan(&args(&["run", "m", "--layout", "tiny"]), &cfg, "m", &l4, None, 1).unwrap_err().code, 1);
+        assert_eq!(qwen3_plan(&args(&["run", "m", "--context", "abc"]), &cfg, "m", &l4, None, 1).unwrap_err().code, 1);
     }
 
-    /// What the cache's tables said of a model the last time is said again before anything is downloaded or made: for the context's tier, under whichever layout the packed copy is in. (This test
-    /// is the only one that reads GLYD_CACHE.)
+    /// What a first run writes is held to the disks before anything is downloaded: a packed copy that is made already (a glyd-v7 save at the level) is not written again.
+    /// (This test is the only one that reads GLYD_CACHE.)
     #[test]
-    fn a_model_the_tables_refused_is_refused_again_before_anything_is_made() {
+    fn a_first_run_counts_the_pack_it_has_not_made() {
         let root = std::env::temp_dir().join(format!("glyd-engine-first-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::env::set_var("GLYD_CACHE", &root);
-        let cfg = Config::parse(QWEN3, "config.json", None).unwrap();
+        // (the packed copy's bytes: the plan's weights at the level)
+        let pack = (Config::parse(DENSE, "config.json", None).unwrap().matrix_bytes() as f64 * bits(Layout::Tiered) / 16.0) as u64;
         let source = Source { dir: "/x".into(), repo: "org/model".into(), revision: Some("0123456789abcdef0123456789abcdef01234567".into()) };
-        let fit = fit::plan(&cfg, "model", "NVIDIA L4", 22 << 30, Layout::Tiered, None, 1, true).unwrap();
-        // a packed copy that is made already: a first run writes no more than the tables
-        for l in [Layout::Tiered, Layout::Twelve] {
-            let d = store::packed_dir(&source, l);
-            std::fs::create_dir_all(&d).unwrap();
-            std::fs::write(d.join("engine.safetensors"), b"x").unwrap();
-        }
-        assert!(first_run_checks("model", &cfg, &fit, Layout::Tiered, Some(&source), 0).is_ok());
-        let why = "the model's values compress too poorly (worst kind of text left out: K 0.210%, V 0.050%, the limit 0.15%)";
-        // refused at another tier: nothing to say of this context; at this one, under the layout it was packed in, or the other's: refused, with the reason, for the other runner
-        store::note_refusal(&store::packed_dir(&source, Layout::Twelve), 16384, why);
-        assert!(first_run_checks("model", &cfg, &fit, Layout::Tiered, Some(&source), 0).is_ok());
-        store::note_refusal(&store::packed_dir(&source, Layout::Twelve), 8192, why);
-        let r = first_run_checks("model", &cfg, &fit, Layout::Tiered, Some(&source), 0).unwrap_err();
-        assert!(r.code == CANNOT && r.what == why, "{r}");
+        // (not made yet: the copy's bytes are counted, and a disk that has not that much left over refuses the run)
+        assert!(pack > 0 && first_run_pack_bytes(pack, Layout::Tiered, Some(&source)) == pack && first_run_pack_bytes(pack, Layout::Tiered, None) == pack);
+        assert!(machine::disk_refusal("model", Some(pack), Some(pack), true, 0, pack).is_some());
+        assert!(first_run_checks("model", pack, Layout::Tiered, Some(&source), 0).is_ok());
+        let d = store::packed_dir(&source, Layout::Tiered);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("glyd.json"), r#"{"format": "glyd-v7", "layout": "mma", "level": "penguin", "packs": {}}"#).unwrap();
+        // (made: nothing is counted for it, at that layout alone, and the same disk takes the run)
+        assert!(store::cached_pack(&d, Layout::Tiered));
+        assert_eq!(first_run_pack_bytes(pack, Layout::Tiered, Some(&source)), 0);
+        assert_eq!(first_run_pack_bytes(pack, Layout::Int6, Some(&source)), pack);
+        assert!(machine::disk_refusal("model", Some(pack), Some(pack), true, 0, 0).is_none());
+        assert!(first_run_checks("model", pack, Layout::Tiered, Some(&source), 0).is_ok());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// Every way of loading the engine failing says it in words, and hands the model to the other runner.
     #[test]
     fn a_failure_to_load_the_engine_hands_the_model_to_vllm() {
-        let cfg = Config::parse(QWEN3, "config.json", None).unwrap();
+        let cfg = Config::parse(DENSE, "config.json", None).unwrap();
         let g = gpu("NVIDIA L4", (8, 9), 22);
-        let f = fit::plan(&cfg, "Qwen3-8B", &g.name, g.free, Layout::Tiered, None, 1, true).unwrap();
-        let said = |e: &str| engine_refusal(crate::ffi::Error(e.to_string()), "Qwen3-8B", &f, &g);
+        let f = crate::plan::sizing::qwen3_fit(&cfg, "dense-36l", &g.name, g.free, Layout::Tiered, None, 1, true).unwrap();
+        let said = |e: &str| engine_refusal(crate::ffi::Error(e.to_string()), "dense-36l", &f, &g);
         // (an error of the kind, whatever its words; then errors that come as words alone, as from another process: the status their words end in)
-        let r = engine_refusal(crate::ffi::Error::of(crate::ffi::Kind::OutOfMemory, "no room for a KV cache"), "Qwen3-8B", &f, &g);
+        let r = engine_refusal(crate::ffi::Error::of(crate::ffi::Kind::OutOfMemory, "no room for a KV cache"), "dense-36l", &f, &g);
         assert!(r.code == CANNOT && r.what.contains("ran out of memory"), "{r}");
-        let r = engine_refusal(crate::ffi::Error::of(crate::ffi::Kind::of_status(2), "cuMemAlloc: no words for it"), "Qwen3-8B", &f, &g);
+        let r = engine_refusal(crate::ffi::Error::of(crate::ffi::Kind::of_status(2), "cuMemAlloc: no words for it"), "dense-36l", &f, &g);
         assert!(r.what.contains("ran out of memory"), "{r}");
         for (e, text) in [
             ("cuMemAlloc: out of memory (2)", "ran out of memory"),
@@ -4312,7 +3557,7 @@ mod tests {
         // the same error on a driver below the build's minimum is the driver's
         let old = Gpu { driver: machine::driver_min(g.cc) - 1, ..g.clone() };
         let r =
-            engine_refusal(crate::ffi::Error("cuModuleLoadData: no kernel image is available for execution on the device (209)".into()), "Qwen3-8B", &f, &old);
+            engine_refusal(crate::ffi::Error("cuModuleLoadData: no kernel image is available for execution on the device (209)".into()), "dense-36l", &f, &old);
         assert!(r.what.contains("driver cannot run the engine's kernels") && r.fix.contains("Update the NVIDIA driver"), "{r}");
     }
 
@@ -4324,7 +3569,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("why");
         let ui = RefCell::new(Ui::silent());
-        let cannot = Refusal::unsupported("Qwen3-8B does not fit this GPU: it needs about 14.2 GiB.", "Close programs that use the GPU");
+        let cannot = Refusal::unsupported("dense-36l does not fit this GPU: it needs about 14.2 GiB.", "Close programs that use the GPU");
         let own = Refusal::new("port 8000 is in use by another program", "Choose another: --port 8001");
         // no file named: said on the terminal, nothing written
         let none = Status::new();
@@ -4333,7 +3578,7 @@ mod tests {
         let st = Status::new();
         st.set(file.clone());
         assert_eq!(refuse_to(&ui, &cannot, &st), 3);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "Qwen3-8B does not fit this GPU: it needs about 14.2 GiB\n");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "dense-36l does not fit this GPU: it needs about 14.2 GiB\n");
         assert_eq!(refuse_to(&ui, &own, &st), 1);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "port 8000 is in use by another program\n");
         // up: the file says so, and a refusal leaves it so
@@ -4341,10 +3586,10 @@ mod tests {
         assert_eq!(refuse_to(&ui, &own, &st), 1);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "ready\n");
         // the flag, as the program that starts the engine gives it, among the user's own
-        let a = args(&["run", "--status-file", file.to_str().unwrap(), "Qwen/Qwen3-8B", "--prompt", "hi"]);
+        let a = args(&["run", "--status-file", file.to_str().unwrap(), "org/dense-36l", "--prompt", "hi"]);
         assert_eq!(
             (a.pos.clone(), a.flag("status-file"), a.flag("prompt")),
-            (vec!["run".to_string(), "Qwen/Qwen3-8B".to_string()], Some(file.to_str().unwrap()), Some("hi"))
+            (vec!["run".to_string(), "org/dense-36l".to_string()], Some(file.to_str().unwrap()), Some("hi"))
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -4437,5 +3682,120 @@ mod tests {
         assert_eq!(nv_version("NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  595.91.07  Release Build  (dvs-builder@U22-I3-AF03-09-1)  Thu Sep 11 22:53:16 UTC 2025\nGCC version:  gcc version 13.2.0"), Some("595.91.07".to_string()));
         assert_eq!(nv_version("NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.65.06  Sun Jul 27 07:09:24 UTC 2025"), Some("580.65.06".to_string()));
         assert_eq!(nv_version(""), None);
+    }
+
+    /// /v1/glyd/info's `precision.kv` is the format the keys and values were loaded in, in the words of the plan's `kv_format` (`fit --json`): `bf16`, or `12-bit` where the engine holds them in
+    /// the executor's lossless 12-bit pages (`Dyn::held`: the tables the loader set from the plan's `kv12`). Before, it said `bf16` for every model.
+    #[test]
+    fn the_info_says_the_format_the_keys_and_values_were_loaded_in() {
+        let root = std::env::temp_dir().join(format!("glyd-engine-cli-kvformat-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let said = |twelve: bool| {
+            let held = crate::dev::Held { kv_type: crate::plan::kv_format_of(twelve), state_type: "fp32", ..Default::default() };
+            let v = crate::tools::obj(about("m", &root, None, "penguin", true, "w", Some(&held), &gpu("g", (8, 9), 15)));
+            v.get("precision").and_then(|p| p.get("kv")).cloned()
+        };
+        assert_eq!((said(false), said(true)), (Some(Value::from("bf16")), Some(Value::from("12-bit"))));
+        // (no engine's account of itself: null, as before)
+        let none = crate::tools::obj(about("m", &root, None, "penguin", true, "w", None, &gpu("g", (8, 9), 15)));
+        assert_eq!(none.get("precision").and_then(|p| p.get("kv")), Some(&Value::Null));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// #136: a model's config.json is parsed once by `fit`, `run` and `serve`: the planner's parse is the loaders' and every typed reader's, not read and parsed
+    /// again at each stage (the stage loaders, the family readers, the description, the images and the tokenizer's end tokens). Counted on this thread by
+    /// `ModelConfig::parse`, on every family's random model: `fit`'s plan; `run`'s and `serve`'s (the plan their level makes and the engine it opens from the
+    /// directory, as far as a computer with no GPU goes: its first call), on the dynamic route and on the lossy levels'.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_models_config_is_parsed_once_by_fit_run_and_serve() {
+        use crate::runtime::config::parses;
+        let dir = std::env::temp_dir().join(format!("glyd-cli-parsed-once-{}", std::process::id()));
+        let big =
+            Target { ordinal: 0, name: "NVIDIA GeForce RTX 4080 SUPER".into(), cc: (8, 9), total: 16 << 30, free: 15 << 30, host: None, cublas: Some(false) };
+        let (mut counts, mut bad) = (Vec::new(), Vec::new());
+        // (the text of each model's config.json is its own in this process: the planner's cache of a text parsed would hide its parse)
+        let fresh = |case: &str, what: &str| {
+            let _ = std::fs::remove_dir_all(&dir);
+            crate::logits::random_model(case, &dir).unwrap();
+            let path = dir.join("config.json");
+            let mut c: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            c["_name_or_path"] = format!("parsed-once-{}-{case}-{what}", std::process::id()).into();
+            std::fs::write(&path, c.to_string()).unwrap();
+        };
+        let name = dir.to_string_lossy().into_owned();
+        for case in ["qwen35", "qwen35moe", "glm", "glm-dsa", "kimi", "kimi-dsa", "deepseek-v4", "muse", "qwen4x", "nemotron"] {
+            for what in ["fit", "run", "serve"] {
+                fresh(case, what);
+                let before = parses();
+                if what == "fit" {
+                    let _ = crate::plan::planned(&args(&["fit", &name, "--machine", "rtx4080s", "--users", "4"]));
+                } else {
+                    // (what `load_dynamic` does: the directory's config, its plan on the GPU, the engine the plan opens)
+                    let c = dir_config(&dir, &name).unwrap();
+                    let family = crate::dynamic::split::family_in(&c).unwrap();
+                    let plan = plan_in(&args(&[what, &name, "--context", "64"]), &name, family, &dir, &c, false, std::slice::from_ref(&big))
+                        .unwrap_or_else(|r| panic!("{case}: {}", r.what));
+                    let _ = crate::dynamic::split::open_plan(&dir, &c, &plan, Default::default());
+                }
+                let n = parses() - before;
+                counts.push(format!("{what} {case}: {n}"));
+                if n != 1 {
+                    bad.push(format!("{what} {case}: {n}"));
+                }
+            }
+        }
+        // (`load_lossy`'s: the plan of the directory's config at a level, and the engine of that plan: the lossy route's families, Nemotron-H at kestrel)
+        let (gpu, ui) = (gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 15), RefCell::new(Ui::silent()));
+        for (case, layout) in [("gemma4", Layout::Tiered), ("dense", Layout::Tiered), ("qwen35", Layout::Tiered), ("nemotron", Layout::Int6)] {
+            for what in ["run", "serve"] {
+                fresh(case, &format!("lossy-{what}"));
+                let before = parses();
+                let a = args(&[what, &name, "--context", "64"]);
+                let c = dir_config(&dir, &name).unwrap();
+                let plan = plan_level(&a, &name, layout, &c, None, &gpu, std::slice::from_ref(&gpu), None).unwrap_or_else(|r| panic!("{case}: {}", r.what));
+                let _ = open_lossy(&a, &plan, &dir, &c, &gpu, &name, &ui);
+                let n = parses() - before;
+                counts.push(format!("{what} {case} (lossy route): {n}"));
+                if n != 1 {
+                    bad.push(format!("{what} {case} (lossy route): {n}"));
+                }
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+        eprintln!("parses of a model's config.json:\n{}", counts.join("\n"));
+        assert!(bad.is_empty(), "a config.json parsed more than once (or not at all): {bad:?}");
+    }
+
+    /// #136: `pack` parses the model's config.json once too, a GLM-5.3-Flash release's whose keys do not parse included: it was parsed again there to say which key
+    /// (the refusal's words are the same). GLM-5.3-Flash's row runs no block level: its save at kestrel is refused in run's words, from that one parse.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn pack_parses_a_models_config_once() {
+        use crate::runtime::config::parses;
+        let dir = std::env::temp_dir().join(format!("glyd-cli-pack-parsed-once-{}", std::process::id()));
+        let mut counts = Vec::new();
+        for (case, key_of_another_type) in [("qwen35", false), ("glm", false), ("glm", true)] {
+            let _ = std::fs::remove_dir_all(&dir);
+            crate::logits::random_model(case, &dir).unwrap();
+            if key_of_another_type {
+                let path = dir.join("config.json");
+                let mut c: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                c["text_config"]["num_hidden_layers"] = "eight".into();
+                std::fs::write(&path, c.to_string()).unwrap();
+            }
+            let before = parses();
+            let packed = crate::pack::run_with(&dir.to_string_lossy(), &dir.join("packed"), 1, Layout::Int6, true);
+            counts.push((case, key_of_another_type, parses() - before));
+            if key_of_another_type {
+                assert!(packed.unwrap_err().msg.contains("num_hidden_layers"), "the key is named");
+            } else if case == "glm" {
+                assert!(packed.unwrap_err().msg.contains("runs at the penguin and hummingbird levels in this engine, not kestrel"), "refused by its row");
+            } else {
+                packed.unwrap();
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(counts, [("qwen35", false, 1), ("glm", false, 1), ("glm", true, 1)]);
     }
 }

@@ -1,11 +1,11 @@
 //! Nemotron 3 Super (`NemotronHForCausalLM`, 2026) as the engine reads it: its config (a hybrid of Mamba-2 layers, attention layers without any positional encoding, and latent
 //! mixture-of-experts layers, in the order of `hybrid_override_pattern`), the tensors it loads and how they are packed, and what a sequence holds. The reference: transformers 5.19.0's
-//! modeling_nemotron_h.py and vLLM's nemotron_h.py (research/nemotron3-super-offload.md has the numbers); the layers' math is tools/nemotron_ref.py, the layers on the GPU src/kern_nh.rs.
+//! modeling_nemotron_h.py and vLLM's nemotron_h.py (research/nemotron3-super-offload.md has the numbers); the layers' math is tools/nemotron_ref.py, the layers on the GPU src/dynamic/nemotron.rs.
 
-use crate::ffi::{err, Error, Result};
+use crate::ffi::{err, Result};
 use crate::qwen35::{Pack35, Tensor35};
-use crate::weights::{eos_ids, num, saved_parts, Layout};
-use glyd_gpu::json::{self, Value};
+use crate::runtime::config::ModelConfig;
+use crate::weights::{eos_ids, saved_parts, Layout};
 use glyd_gpu::safetensors::Checkpoint;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -86,7 +86,7 @@ pub fn skipped(name: &str) -> bool {
 /// directory is read in the layout each entry names (`weights::read_v7`): one with a block layout's down matrices runs the dense product. At the Hummingbird level the routed experts are the level's own (the codebook rows
 /// of the calibration, c3r or c2r by expert: src/moe_hb.rs reads them from the directory, nothing packs them from bf16) and every other matrix is six-bit, as at wren.
 pub fn pack_layout(level: Layout, key: &str) -> Layout {
-    let own = if matches!(level, Layout::Int4 | Layout::Hummingbird) && !key.contains(".mixer.experts.") { Layout::Int6 } else { level };
+    let own = if key.contains(".mixer.experts.") { level } else { dense_layout(level) };
     if key.contains(".mixer.experts.") && key.ends_with(".down_proj") && crate::tune!("GLYD_ENGINE_DENSE_DOWN").is_none() {
         own.row_of().unwrap_or(own)
     } else {
@@ -94,58 +94,104 @@ pub fn pack_layout(level: Layout, key: &str) -> Layout {
     }
 }
 
+/// `pack_layout` of every matrix but the routed experts' (the layers', the latent projections', the shared experts', the embedding and the head): the level's,
+/// six-bit codes at wren and hummingbird. What the executor's loader packs them in (src/dynamic/nemotron.rs).
+pub fn dense_layout(level: Layout) -> Layout {
+    if matches!(level, Layout::Int4 | Layout::Hummingbird) {
+        Layout::Int6
+    } else {
+        level
+    }
+}
+
 /// Whether a config.json is a NemotronH model's (what the dispatcher asks first).
 pub fn is_nemotron_h(text: &str) -> bool {
-    json::parse(text)
-        .ok()
-        .and_then(|v| v.get("architectures").and_then(Value::as_array).and_then(|a| a.first().and_then(Value::as_str).map(|s| s == "NemotronHForCausalLM")))
-        .unwrap_or(false)
+    crate::runtime::config::family_of(text) == Some(crate::support::Family::NemotronH)
+}
+
+/// Nemotron-H's own keys (the shared ones are `runtime::config::Shared`'s), typed from the one parse of its config.json.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct Keys {
+    mamba_hidden_act: Option<String>,
+    mlp_hidden_act: Option<String>,
+    use_bias: Option<bool>,
+    mlp_bias: Option<bool>,
+    attention_bias: Option<bool>,
+    mamba_proj_bias: Option<bool>,
+    use_conv_bias: Option<bool>,
+    mamba_ssm_cache_dtype: Option<String>,
+    layers_block_type: Option<Vec<String>>,
+    routed_scaling_factor: crate::runtime::config::Given<f64>,
+    norm_topk_prob: Option<bool>,
+    n_group: Option<u64>,
+    topk_group: Option<u64>,
+    layer_norm_epsilon: crate::runtime::config::Given<f64>,
+    norm_eps: crate::runtime::config::Given<f64>,
+    conv_kernel: Option<usize>,
+    chunk_size: Option<usize>,
+}
+
+/// What a sequence of the Nemotron-H layout takes besides its weights, as the costs' sums read it (src/costs.rs; the planner reads the description: src/plan.rs
+/// `sizing::level_of`).
+impl ConfigNemotronH {
+    /// What one sequence holds besides its KV: every Mamba-2 layer's fp32 state and bf16 convolution state.
+    pub fn state_bytes(&self) -> u64 {
+        let per = self.m_heads * self.m_head_dim * self.m_state * 4 + self.conv_dim() * (self.conv_kernel - 1) * 2;
+        (self.layers_of(NhKind::Mamba) * per) as u64
+    }
+
+    /// A token's keys and values in bf16, over the attention layers.
+    pub fn kv_bytes_per_token(&self) -> u64 {
+        (self.layers_of(NhKind::Attention) * 2 * self.kv_heads * self.head_dim * 2) as u64
+    }
 }
 
 impl ConfigNemotronH {
     pub fn load(dir: &Path) -> Result<ConfigNemotronH> {
-        let p = dir.join("config.json");
-        let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-        ConfigNemotronH::parse(&text, &p.display().to_string(), generation.as_deref())
+        ModelConfig::read(dir, ConfigNemotronH::of)
     }
 
     /// A config.json's text (and a generation_config.json's, where there is one): `label` names the file in an error.
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<ConfigNemotronH> {
-        let v = json::parse(text).map_err(|e| Error(format!("{label}: {e}")))?;
-        let arch = v.get("architectures").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("");
-        if arch != "NemotronHForCausalLM" {
-            return err(format!("{label}: {arch}: not a NemotronH model"));
+        ConfigNemotronH::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
+    }
+
+    /// `parse` of a config.json parsed once (`ModelConfig`).
+    pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<ConfigNemotronH> {
+        use crate::runtime::config::Given;
+        if c.arch != "NemotronHForCausalLM" {
+            return err(format!("{label}: {}: not a NemotronH model", c.arch));
         }
-        if let Some(kind) = v.get("model_type").and_then(Value::as_str).filter(|k| *k != "nemotron_h") {
-            return err(format!("{label}: the model is {kind:?}, where a NemotronH has nemotron_h"));
+        if !c.model_type.is_empty() && c.model_type != "nemotron_h" {
+            return err(format!("{label}: the model is {:?}, where a NemotronH has nemotron_h", c.model_type));
         }
-        let get = |k: &str| v.get(k).ok_or_else(|| Error(format!("{label}: no {k}")));
-        let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
+        let (s, k): (&crate::runtime::config::Shared, Keys) = (&c.shared, c.own(label)?);
+        let need = |v: Option<usize>, key: &str| ModelConfig::need(v, label, key);
         let refuse = |what: &str| err(format!("{label}: {what}, which the engine does not run"));
-        let text_of = |k: &str, want: &str| v.get(k).and_then(Value::as_str).is_some_and(|a| a != want);
-        if text_of("mamba_hidden_act", "silu") {
+        let not = |v: &Option<String>, want: &str| v.as_deref().is_some_and(|a| a != want);
+        if not(&k.mamba_hidden_act, "silu") {
             return refuse("a Mamba-2 activation other than silu");
         }
-        if text_of("mlp_hidden_act", "relu2") {
+        if not(&k.mlp_hidden_act, "relu2") {
             return refuse("an expert activation other than relu2");
         }
-        for k in ["use_bias", "mlp_bias", "attention_bias", "mamba_proj_bias"] {
-            if v.get(k).and_then(Value::as_bool) == Some(true) {
-                return refuse(&format!("biases ({k})"));
+        for (key, on) in [("use_bias", k.use_bias), ("mlp_bias", k.mlp_bias), ("attention_bias", k.attention_bias), ("mamba_proj_bias", k.mamba_proj_bias)] {
+            if on == Some(true) {
+                return refuse(&format!("biases ({key})"));
             }
         }
-        if v.get("use_conv_bias").and_then(Value::as_bool) == Some(false) {
+        if k.use_conv_bias == Some(false) {
             return refuse("a convolution without its bias");
         }
-        if v.get("sliding_window").is_some_and(|w| *w != Value::Null) {
+        if s.sliding_window.is_some() {
             return refuse("a sliding window");
         }
-        if text_of("mamba_ssm_cache_dtype", "float32") {
+        if not(&k.mamba_ssm_cache_dtype, "float32") {
             return refuse("a Mamba-2 state other than float32");
         }
         // the layer pattern: M Mamba-2, * attention, E latent mixture of experts, from the string or the list of types (transformers' layers_block_type)
-        let kinds: Vec<NhKind> = if let Some(p) = v.get("hybrid_override_pattern").and_then(Value::as_str) {
+        let kinds: Vec<NhKind> = if let Some(p) = &s.hybrid_override_pattern {
             p.chars()
                 .map(|c| match c {
                     'M' => Ok(NhKind::Mamba),
@@ -154,82 +200,90 @@ impl ConfigNemotronH {
                     other => err(format!("{label}: a layer {other:?} in hybrid_override_pattern, where this model has M, * and E")),
                 })
                 .collect::<Result<_>>()?
-        } else if let Some(a) = v.get("layers_block_type").or_else(|| v.get("layer_types")).and_then(Value::as_array) {
+        } else if let Some(a) = k.layers_block_type.as_ref().or(s.layer_types.as_ref()) {
             a.iter()
                 .map(|k| match k.as_str() {
                     // (Nemotron 3.5's configs name them mamba and attention)
-                    Some("linear_attention" | "mamba") => Ok(NhKind::Mamba),
-                    Some("full_attention" | "attention") => Ok(NhKind::Attention),
-                    Some("moe") => Ok(NhKind::Moe),
-                    other => {
-                        err(format!("{label}: a layer of type {other:?}, where this model has mamba (linear_attention), attention (full_attention) and moe"))
-                    }
+                    "linear_attention" | "mamba" => Ok(NhKind::Mamba),
+                    "full_attention" | "attention" => Ok(NhKind::Attention),
+                    "moe" => Ok(NhKind::Moe),
+                    other => err(format!(
+                        "{label}: a layer of type {:?}, where this model has mamba (linear_attention), attention (full_attention) and moe",
+                        Some(other)
+                    )),
                 })
                 .collect::<Result<_>>()?
         } else {
             return err(format!("{label}: no hybrid_override_pattern"));
         };
         let layers = kinds.len();
-        if layers == 0 || v.get("num_hidden_layers").and_then(Value::as_u64).is_some_and(|n| n as usize != layers) {
-            return err(format!("{label}: {layers} layers in the pattern, num_hidden_layers {:?}", v.get("num_hidden_layers").and_then(Value::as_u64)));
+        if layers == 0 || s.num_hidden_layers.is_some_and(|n| n != layers) {
+            return err(format!("{label}: {layers} layers in the pattern, num_hidden_layers {:?}", s.num_hidden_layers.map(|n| n as u64)));
         }
-        let (m_heads, m_head_dim, m_groups) = (u("mamba_num_heads")?, u("mamba_head_dim")?, u("n_groups")?);
+        let (m_heads, m_head_dim, m_groups) =
+            (need(s.mamba_num_heads, "mamba_num_heads")?, need(s.mamba_head_dim, "mamba_head_dim")?, need(s.n_groups, "n_groups")?);
         if m_heads == 0 || m_groups == 0 || !m_heads.is_multiple_of(m_groups) {
             return err(format!("{label}: {m_heads} Mamba-2 heads to {m_groups} groups"));
         }
-        let (heads, kv_heads) = (u("num_attention_heads")?, u("num_key_value_heads")?);
+        let (heads, kv_heads) = (need(s.num_attention_heads, "num_attention_heads")?, need(s.num_key_value_heads, "num_key_value_heads")?);
         if heads == 0 || kv_heads == 0 || !heads.is_multiple_of(kv_heads) {
             return err(format!("{label}: {heads} query heads to {kv_heads} KV heads"));
         }
-        let head_dim = v.get("head_dim").and_then(Value::as_u64).map(|x| x as usize).unwrap_or(u("hidden_size")? / heads);
+        let hidden = need(s.hidden_size, "hidden_size");
+        let head_dim = match s.head_dim {
+            Some(d) => d,
+            None => hidden.clone()? / heads,
+        };
         let moe = MoeDims {
-            experts: u("n_routed_experts")?,
-            top_k: u("num_experts_per_tok")?,
-            inter: u("moe_intermediate_size")?,
-            shared_inter: u("moe_shared_expert_intermediate_size")?,
-            latent: match v.get("moe_latent_size") {
-                Some(l) if *l != Value::Null => l.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: moe_latent_size: not an integer")))?,
-                _ => 0,
+            experts: need(s.n_routed_experts, "n_routed_experts")?,
+            top_k: need(s.num_experts_per_tok, "num_experts_per_tok")?,
+            inter: need(s.moe_intermediate_size, "moe_intermediate_size")?,
+            shared_inter: need(s.moe_shared_expert_intermediate_size, "moe_shared_expert_intermediate_size")?,
+            latent: s.moe_latent_size.unwrap_or(0),
+            scale: match k.routed_scaling_factor {
+                Given::Missing => 1.0,
+                Given::Null => return err(format!("{label}: routed_scaling_factor: not a number")),
+                Given::Some(x) => x as f32,
             },
-            scale: v.get("routed_scaling_factor").map_or(Ok(1.0), |s| num(s, "routed_scaling_factor"))? as f32,
-            norm_topk: v.get("norm_topk_prob").and_then(Value::as_bool).unwrap_or(true),
+            norm_topk: k.norm_topk_prob.unwrap_or(true),
         };
         if kinds.contains(&NhKind::Moe) {
             if moe.top_k == 0 || moe.top_k > moe.experts {
                 return err(format!("{label}: {} experts a token of {}", moe.top_k, moe.experts));
             }
-            if v.get("n_group").and_then(Value::as_u64).is_some_and(|g| g != 1) || v.get("topk_group").and_then(Value::as_u64).is_some_and(|g| g != 1) {
+            if k.n_group.is_some_and(|g| g != 1) || k.topk_group.is_some_and(|g| g != 1) {
                 return refuse("group-limited routing");
             }
-            if v.get("n_shared_experts").and_then(Value::as_u64).is_some_and(|g| g != 1) {
+            if s.n_shared_experts.is_some_and(|g| g != 1) {
                 return refuse("other than one shared expert");
             }
         }
-        let eos = eos_ids(&v, generation);
-        let mut eps = 1e-5;
-        if let Some(e) = v.get("layer_norm_epsilon").or_else(|| v.get("norm_eps")) {
-            eps = num(e, "layer_norm_epsilon")? as f32;
-        }
+        let eos = eos_ids(&c.text, generation);
+        let eps = match (&k.layer_norm_epsilon, &k.norm_eps) {
+            (Given::Some(e), _) | (Given::Missing, Given::Some(e)) => *e as f32,
+            (Given::Null, _) | (Given::Missing, Given::Null) => return err(format!("{label}: layer_norm_epsilon: not a number")),
+            (Given::Missing, Given::Missing) => 1e-5,
+        };
         Ok(ConfigNemotronH {
-            hidden: u("hidden_size")?,
+            hidden: hidden?,
             layers,
-            vocab: u("vocab_size")?,
+            vocab: need(s.vocab_size, "vocab_size")?,
             eps,
-            max_pos: u("max_position_embeddings")?,
-            tie: v.get("tie_word_embeddings").and_then(Value::as_bool).unwrap_or(false),
+            max_pos: need(s.max_position_embeddings, "max_position_embeddings")?,
+            tie: s.tie_word_embeddings.unwrap_or(false),
             eos,
             kinds,
             m_heads,
             m_head_dim,
-            m_state: u("ssm_state_size")?,
+            m_state: need(s.ssm_state_size, "ssm_state_size")?,
             m_groups,
-            conv_kernel: u("conv_kernel")?,
-            chunk: v.get("chunk_size").and_then(Value::as_u64).map_or(128, |c| c as usize),
+            conv_kernel: need(k.conv_kernel, "conv_kernel")?,
+            chunk: k.chunk_size.unwrap_or(128),
             heads,
             kv_heads,
             head_dim,
             moe,
-            mtp_layers: v.get("num_nextn_predict_layers").and_then(Value::as_u64).unwrap_or(0) as usize,
+            mtp_layers: s.num_nextn_predict_layers.unwrap_or(0),
             prefix: "backbone.",
         })
     }
@@ -265,17 +319,6 @@ impl ConfigNemotronH {
     /// what softplus and exp amplify, so a level may want them kept bf16 (a row range of the tensor read apart, or a saver that splits it) once a level's quality asks.
     pub fn in_rows(&self) -> usize {
         self.inner() + self.conv_dim() + self.m_heads
-    }
-
-    /// What one sequence holds besides its KV: every Mamba-2 layer's fp32 state and bf16 convolution state.
-    pub fn state_bytes(&self) -> u64 {
-        let per = self.m_heads * self.m_head_dim * self.m_state * 4 + self.conv_dim() * (self.conv_kernel - 1) * 2;
-        (self.layers_of(NhKind::Mamba) * per) as u64
-    }
-
-    /// A token's keys and values in bf16, over the attention layers.
-    pub fn kv_bytes_per_token(&self) -> u64 {
-        (self.layers_of(NhKind::Attention) * 2 * self.kv_heads * self.head_dim * 2) as u64
     }
 
     fn layer_name(&self, l: usize) -> String {
@@ -331,6 +374,37 @@ impl ConfigNemotronH {
                 ]
             })
             .collect()
+    }
+
+    /// Layer `l`'s routed experts in a glyd-v7 directory at the Hummingbird level, as src/hbpack.rs saves them (src/moe_hb.rs `HbNames`): each expert's up and down
+    /// packs, their neuron rows over the latent, the signs of the layer's rotation beside them. What the format's tools read a directory by (`diskcheck`).
+    pub fn hb_names(&self, l: usize) -> crate::moe_hb::HbNames {
+        let p = format!("{}.mixer", self.layer_name(l));
+        crate::moe_hb::HbNames {
+            experts: (0..self.moe.experts).map(|e| [format!("{p}.experts.{e}.up_proj"), format!("{p}.experts.{e}.down_proj")]).collect(),
+            rows: self.moe.inter,
+            cols: self.moe.latent,
+            signs: format!("{p}.glyd_rot_signs"),
+        }
+    }
+
+    /// The GPU memory one expert takes at `level` (and so a place of the expert cache): the codes and the scales of its two matrices; at the Hummingbird level the
+    /// mean of the recipe hb40's (the directory's own bytes are what `lossy_plan` sizes the weights by). The second matrix in its row layout takes the same bytes as
+    /// in the block layout (`moe_rows::row_strides` and `moe::expert_strides` give the same for the transpose: a test holds them equal), so a cache is the same size
+    /// whichever layout the experts are held in.
+    pub fn expert_bytes(&self, level: Layout) -> Result<u64> {
+        let (m, w) = (&self.moe, self.moe.width(self.hidden));
+        if level == Layout::Hummingbird {
+            return crate::moe_hb::expert_bytes_mean(m.experts, m.inter, m.latent);
+        }
+        let tag = match level {
+            Layout::Int6 => glyd_gpu::pack::INT6_TAG,
+            Layout::Int5 => glyd_gpu::pack::INT5_TAG,
+            Layout::Int4 => glyd_gpu::pack::INT4_TAG,
+            other => return err(format!("the experts are held in the block layouts: {} is asked", other.name())),
+        };
+        let ((ud, us), (dd, ds)) = (crate::moe::expert_strides(tag, m.inter, w)?, crate::moe::expert_strides(tag, w, m.inter)?);
+        Ok(ud + us + dd + ds)
     }
 
     /// The packed matrices in load order (the packable ones of the layers' matrices and experts, then the embedding and the LM head where the model has its own): packed at a level.
@@ -465,8 +539,9 @@ impl ConfigNemotronH {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use glyd_gpu::json::{self, Value};
 
-    fn text() -> &'static str {
+    pub(crate) fn text() -> &'static str {
         include_str!("../tests/fixtures/nemotron_h_config.json")
     }
 
@@ -763,7 +838,7 @@ pub(crate) mod tests {
         }
         assert_eq!((packs["i4"], packs["i6"]), (40_960, 80 + 16 + 160 + 2));
         assert_eq!((weights["i4"], weights["i6"]), (112_742_891_520, 7_839_154_176));
-        // (bits a weight as fit.rs has them: the experts 4.53, the rest 6.53, and the small tensors as they are)
+        // (bits a weight as the planner has them (plan.rs `sizing::bits`): the experts 4.53, the rest 6.53, and the small tensors as they are)
         let gb = (weights["i4"] as f64 * 4.53 + weights["i6"] as f64 * 6.53) / 8.0 / 1e9;
         assert!((70.0..70.5).contains(&(gb + 86_662_144.0 * 2.0 / 1e9)), "{gb} GB of packs");
     }
@@ -866,5 +941,155 @@ pub(crate) mod tests {
         have.retain(|t| !held.contains(Pack35::saved(&t.0)));
         assert!(c.check_layers(&have, &[0, 7], &none).unwrap_err().msg.contains("no backbone.layers.7.mixer.q_proj.weight"));
         c.check_layers(&have, &[0, 7], &held).unwrap();
+    }
+    /// The Moe kind's block of the released config's description is the core's layer moe.rs holds for Nemotron 3 Super (22 of 512, scale 5, a latent of 1,024,
+    /// relu squared without a gate, the router over the model's width), and a config that does not renormalize says so.
+    #[test]
+    fn the_moe_kind_of_the_super_config() {
+        use crate::moe::{Act, MoeCfg, Router};
+        let of = |t: &str| {
+            let kinds = crate::runtime::describe::describe(&serde_json::from_str(t).unwrap()).unwrap();
+            let (ix, m, _) = crate::dynamic::experts::of_layers(&kinds, (0, 88), 1).next().unwrap();
+            assert_eq!((ix.layer, ix.moe), (1, 0), "the first mixture-of-experts layer is the second block, a block a layer");
+            crate::dynamic::experts::cfg(m, 4096, 2688).unwrap()
+        };
+        let cfg = of(text());
+        assert_eq!(cfg, MoeCfg { experts: 512, router_hidden: 4096, hidden: 1024, inter: 2688, router: Router::sigmoid(22, 5.0), act: Act::Relu2 });
+        cfg.check().unwrap();
+        assert!(!of(&edited(|t| set(t, "norm_topk_prob", "false"))).router.renorm);
+        // (every mixture-of-experts layer of the pattern, numbered among them in order)
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(text()).unwrap()).unwrap();
+        let c = parse();
+        let of: Vec<(usize, usize)> = crate::dynamic::experts::of_layers(&kinds, (0, c.layers), 1).map(|(ix, _, _)| (ix.layer, ix.moe)).collect();
+        let want: Vec<(usize, usize)> = (0..c.layers).filter(|&l| c.kinds[l] == NhKind::Moe).enumerate().map(|(k, l)| (l, k)).collect();
+        assert_eq!((of.len(), of), (c.layers_of(NhKind::Moe), want));
+    }
+
+    /// An expert is 3,784,704 bytes at swift, 4,472,832 at kestrel and 3,096,576 at wren (the codes and scales of its two matrices), and a budget buys places a layer
+    /// of 512 by them: at swift 14.95, 22.99 and 34 GiB are 106, 163 and 241; fewer than the choices of a step (22) are none.
+    #[test]
+    fn an_expert_is_a_few_megabytes_and_a_budget_buys_places() {
+        let cache_plan =
+            |_: &ConfigNemotronH, l: Layout, b: u64, least: usize| crate::plan::sizing::budget_cache(&crate::runtime::config::mc(text()), l, b, least);
+        let c = parse();
+        assert_eq!(
+            (c.expert_bytes(Layout::Int5).unwrap(), c.expert_bytes(Layout::Int6).unwrap(), c.expert_bytes(Layout::Int4).unwrap()),
+            (3_784_704, 4_472_832, 3_096_576)
+        );
+        assert!(c.expert_bytes(Layout::Twelve).is_err() && c.expert_bytes(Layout::Int3).is_err());
+        let gib = |g: f64| (g * (1u64 << 30) as f64) as u64;
+        for (cap, places) in [(14.95, 106), (22.99, 163), (34.0, 241)] {
+            let plan = cache_plan(&c, Layout::Int5, gib(cap), 22).unwrap().unwrap();
+            assert_eq!((plan.slots, plan.layers, plan.experts), (places, 40, 512), "{cap} GiB");
+        }
+        assert!(cache_plan(&c, Layout::Int5, gib(3.0), 22).unwrap().is_none(), "21 experts a layer are fewer than a step's choices");
+    }
+
+    /// An expert's second matrix in a row layout takes the bytes it takes in the block layout, at the real shape and at the three levels: 2,688 neurons of 512, 640
+    /// or 768 bytes of codes and 64 of scales, against the block layout's 1,024 rows of 2,688: the expert cache's places and its plan are the same size for either.
+    #[test]
+    fn a_second_matrix_in_a_row_layout_takes_the_bytes_of_the_block_layout() {
+        use crate::moe::expert_strides;
+        use crate::moe_rows::row_strides;
+        use glyd_gpu::pack::{INT4_ROW_TAG, INT4_TAG, INT5_ROW_TAG, INT5_TAG, INT6_ROW_TAG, INT6_TAG};
+        let c = parse();
+        for (block, row, per_neuron) in [(INT6_TAG, INT6_ROW_TAG, 768u64), (INT5_TAG, INT5_ROW_TAG, 640), (INT4_TAG, INT4_ROW_TAG, 512)] {
+            let (rows, blocks) = (row_strides(row, c.moe.inter, c.moe.latent).unwrap(), expert_strides(block, c.moe.latent, c.moe.inter).unwrap());
+            assert_eq!(rows, blocks, "tag {block}");
+            assert_eq!(rows, (c.moe.inter as u64 * per_neuron, c.moe.inter as u64 * 64), "tag {block}");
+        }
+    }
+
+    /// A layer's matrices come in the order the packer saves them, and the experts' in the order it saves them.
+    #[test]
+    fn the_layers_matrices_in_the_order_they_are_saved() {
+        let c = parse();
+        let keys: Vec<(String, usize, usize)> =
+            c.layer_packs(1).into_iter().map(|p| (p.key.rsplit("mixer.").next().unwrap().to_string(), p.rows(), p.cols)).collect();
+        assert_eq!(
+            keys,
+            [
+                ("fc1_latent_proj".to_string(), 1024, 4096),
+                ("fc2_latent_proj".to_string(), 4096, 1024),
+                ("shared_experts.up_proj".to_string(), 5376, 4096),
+                ("shared_experts.down_proj".to_string(), 4096, 5376)
+            ]
+        );
+        let experts = c.expert_packs(1);
+        assert_eq!(experts.len(), 1024);
+        assert!(
+            experts[0].key.ends_with("experts.0.up_proj")
+                && experts[1].key.ends_with("experts.0.down_proj")
+                && experts[1023].key.ends_with("experts.511.down_proj")
+        );
+        assert_eq!((experts[0].rows(), experts[0].cols, experts[1].rows(), experts[1].cols), (2688, 1024, 1024, 2688));
+        // (a hummingbird directory's names of the same experts, and the signs beside them)
+        let x = c.hb_names(1);
+        assert_eq!((x.experts.len(), x.rows, x.cols), (512, 2688, 1024));
+        assert_eq!((x.experts[0][0].as_str(), x.experts[511][1].as_str()), (experts[0].key.as_str(), experts[1023].key.as_str()));
+        assert_eq!(x.signs, "backbone.layers.1.mixer.glyd_rot_signs");
+    }
+
+    /// The tiny model `tools/nemotron_ref.py moetoy` builds (its config is the fixture the script's selftest holds it to) is a model this engine runs: the numbers of
+    /// its kernels, the Moe kind's block of its description, and every matrix of its mixture-of-experts layers in whole blocks of both block layouts.
+    #[test]
+    fn the_random_tiny_model_is_one_the_engine_takes() {
+        use crate::kern::{MAMBA2_HEAD, MAMBA2_STATE};
+        use crate::moe::expert_strides;
+        use glyd_gpu::pack::{INT5_TAG, INT6_TAG};
+        let text = include_str!("../tests/fixtures/nemotron_h_moetoy_config.json");
+        let c = ConfigNemotronH::parse(text, "moetoy", None).unwrap();
+        assert_eq!(c.kinds, [NhKind::Mamba, NhKind::Moe, NhKind::Attention, NhKind::Moe, NhKind::Mamba, NhKind::Moe]);
+        assert!(
+            c.m_head_dim == MAMBA2_HEAD
+                && c.m_state == MAMBA2_STATE
+                && c.conv_kernel == 4
+                && c.head_dim == 128
+                && c.inner() / c.m_groups <= 1024
+                && c.heads / c.kv_heads <= 16
+                && c.hidden <= 8192
+        );
+        assert_eq!(
+            (c.moe.experts, c.moe.top_k, c.moe.latent, c.moe.inter, c.moe.shared_inter, c.moe.scale, c.moe.norm_topk),
+            (16, 4, 128, 128, 256, 5.0, true)
+        );
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
+        let blocks: Vec<_> = crate::dynamic::experts::of_layers(&kinds, (0, c.layers), 1).collect();
+        assert_eq!(blocks.iter().map(|b| (b.0.layer, b.0.moe)).collect::<Vec<_>>(), [(1, 0), (3, 1), (5, 2)]);
+        for (_, m, _) in &blocks {
+            crate::dynamic::experts::cfg(m, c.hidden, c.moe.inter).unwrap().check().unwrap();
+        }
+        for l in 0..c.layers {
+            assert!(c.layer_packs(l).iter().all(Pack35::packable), "layer {l}'s matrices are packed");
+        }
+        for p in c.layer_packs(1).into_iter().chain(c.expert_packs(1)) {
+            for tag in [INT6_TAG, INT5_TAG] {
+                assert!(expert_strides(tag, p.rows(), p.cols).is_ok(), "{} is {} x {}", p.key, p.rows(), p.cols);
+            }
+        }
+        assert_eq!((c.vocab, c.hidden), (2048, 256));
+    }
+}
+
+#[cfg(test)]
+mod reader_tests {
+    use super::*;
+
+    /// Nemotron-H's reader takes its keys from the one parse of config.json, typed: the release's config reads; a key of another type than its field's is refused
+    /// with its name; a needed key that is null is named as missing; a null norm epsilon is refused, a missing one is 1e-5.
+    #[test]
+    fn the_keys_are_read_typed_from_the_one_parse() {
+        let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/nemotron_h_config.json")).unwrap();
+        let c = ConfigNemotronH::parse(&text, "Nemotron", None).unwrap();
+        assert_eq!(c.kinds.len(), c.layers);
+        let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        v["chunk_size"] = serde_json::json!("big");
+        assert!(ConfigNemotronH::parse(&v.to_string(), "c", None).unwrap_err().msg.contains("chunk_size"));
+        let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        v["conv_kernel"] = serde_json::Value::Null;
+        assert_eq!(ConfigNemotronH::parse(&v.to_string(), "c", None).unwrap_err().msg, "c: no conv_kernel");
+        let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        v["layer_norm_epsilon"] = serde_json::Value::Null;
+        assert!(ConfigNemotronH::parse(&v.to_string(), "c", None).unwrap_err().msg.contains("layer_norm_epsilon"));
     }
 }

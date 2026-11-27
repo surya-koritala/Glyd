@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Put the API reference and the service reference into the guide, from the files in docs/.
 
-    python3 scripts/gen_reference.py
+    python3 scripts/gen_reference.py [OUT_DIR]        (default: docs/guide/src)
 
 docs/serve-api.md becomes docs/guide/src/api.md and docs/service.md becomes docs/guide/src/service.md, so the site's reference
 is the repository's file and cannot drift. Links are rewritten: one to the other of the two goes to its page on the site, any
@@ -37,7 +37,8 @@ def rewrite(text, src):
 
 
 def main():
-    out = ROOT / "docs" / "guide" / "src"
+    out = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "docs" / "guide" / "src"
+    out.mkdir(parents=True, exist_ok=True)
     for src, name in PAGES.items():
         text = (ROOT / src).read_text()
         note = f"<!-- Generated from {src} by scripts/gen_reference.py: edit that file. -->\n\n"

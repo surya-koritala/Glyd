@@ -59,14 +59,14 @@ slots are lent to it, and they're given back for writing the answer. Reading tim
 
 ## Lossy vs lossless
 
-Everything above is the Hummingbird level, the most compact one, and it is lossy. Glyd also has a lossless level (Penguin) for other
-models, but not for this one.
+Everything above is the Hummingbird level, the most compact one, and it is lossy. Glyd also has a lossless level (Penguin), the release's weights exactly: `glyd run` takes this model at it
+where the GPUs hold every expert (about 327 GiB), so not on one card of 16 GB.
 
 ## Known limits
 
-- Text only. The base model's vision part isn't supported yet.
+- Images: PNG and JPEG only, no video (the README says how an image is sent).
 - Linux + NVIDIA only, 16 GB minimum.
-- One request at a time, and others queue.
+- Four requests at once by default (`GLYD_USERS`, 1 to 64, as many as the card's memory holds); others queue. With two cards (`GLYD_GPUS=0,1`) one at a time.
 - Fast mode is noticeably weaker on long code.
 - If you don't have enough free RAM, it gets very slow and the disk gets busy. Close the browser tabs eating your RAM.
 - The expert skipping above is a small approximation on top of the compression.

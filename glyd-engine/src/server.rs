@@ -1,7 +1,7 @@
-//! An OpenAI-compatible server for one user at a time (HTTP/1.1 on a socket of its own: no framework): `GET /` the chat page, `GET /v1/models`, `POST /v1/chat/completions` and
-//! `POST /v1/completions` (streamed as server-sent events or whole), `GET /health`. Connections are read on threads of their own (a browser's idle connection waits for no one), the
-//! page, the health check and the model's name answered there, and the completions handed to the engine's thread, which runs one reply at a time in the order they come (the
-//! terminal's chat sends its replies the same way).
+//! The server (HTTP/1.1 on sockets of its own: no framework; `server/frontend.rs` has the connections): `GET /` the chat page, `GET /v1/models`, `POST /v1/chat/completions` and
+//! `POST /v1/completions` (streamed as server-sent events or whole), `GET /health`, and the other APIs of docs/serve-api.md. A request is read and answered on a thread of its own (the
+//! page, the health check and the model's name answered there), and what it asks of the model goes to the engine's thread, which runs the scheduler's rounds (`work_with`): the
+//! sequences of several requests at once, up to `--users` (the terminal's chat sends its replies the same way).
 
 use crate::chat::{Chat, Message};
 use crate::choice::{Cfg, Choice, Delta, Done, ToolsCfg};
@@ -9,9 +9,9 @@ use crate::conn::Conn;
 use crate::constrain::Spec;
 use crate::conv::{Gen, Outcome, Request, Talk};
 use crate::ffi::{err, Error, Result};
-use crate::model::{Engine, Finish, Reply, MAX_ROWS};
 use crate::sampler::{fresh_seed, Lp, Params};
 use crate::sched::{Ev, ModelStep, Sched, Submit};
+use crate::sched::{Finish, Reply};
 use crate::tok::Tok;
 use crate::tools::{self, Format, ToolChoice, ToolEv, Tools};
 use crate::wire;
@@ -767,9 +767,6 @@ const NOT_DONE: &[(&str, &str)] = &[
 /// The fields of constrained decoding that are not done (the grammars' own, `constraint_spec`'s, are): where the server runs alone the grammar's whitespace is llguidance's, and its backend the only one.
 const CONSTRAINED: &[&str] = &["guided_whitespace_pattern"];
 
-/// What an engine that runs one sequence at a time (`work_gen`'s: a level's) does not do besides NOT_DONE, as NOT_DONE lists it: it gives no log-probabilities, and no least length (`min_tokens`).
-pub const ONE_AT_A_TIME: &[(&str, &str)] = &[("logprobs", "false"), ("min_tokens", "0")];
-
 /// Whether the request sets `name` to something other than null and `default`, the value that means it was not asked for.
 fn asked(v: &Value, name: &str, default: &str) -> bool {
     v.get(name).is_some_and(|x| *x != Value::Null && json::parse(default).map_or(true, |d| *x != d))
@@ -1060,10 +1057,10 @@ fn api_of(v: &Value, chat: bool, vocab: usize) -> std::result::Result<Api, Strin
     if n < 1 {
         return Err(format!("n must be at least 1, got {n}."));
     }
-    if n > MAX_ROWS as i64 {
-        return Err(format!(
-            "n must be at most {MAX_ROWS}, got {n}. (This engine runs up to {MAX_ROWS} sequences at once; GLYD_ENGINE=0 runs vLLM, which takes more.)"
-        ));
+    // (a request's choices are sequences of its own, each a user's turn: past the users the server runs at once they wait theirs. What bounds them is the
+    // request's own limit, `MAX_CHOICES` sequences in all, the one /v1/glyd/info names)
+    if n > MAX_CHOICES as i64 {
+        return Err(format!("n must be at most {MAX_CHOICES}, got {n}. (This engine takes up to {MAX_CHOICES} sequences in a request.)"));
     }
     check_values(v, vocab)?;
     if chat && v.get("echo").and_then(Value::as_bool) == Some(true) {
@@ -2205,6 +2202,11 @@ pub(crate) fn dispatch(mut s: Box<dyn Conn>, mut req: Req, ctx: &Ctx, id: u64) {
             respond_with(&mut *s, 200, crate::ops::CONTENT_TYPE, &cors, text.as_bytes())
         }
         ("GET", "/stats") => respond_with(&mut *s, 200, "application/json", &cors, crate::sched::stats_json_of(&ctx.rt).as_bytes()),
+        // (a development build's GLYD_PROF=1: the executor's GPU time by operation and its steps' host time (src/dynamic/prof.rs); ?reset=1 starts the figures again)
+        ("GET", "/v1/glyd/prof") if crate::dynamic::prof::on() => {
+            let reset = req.path.split_once('?').is_some_and(|(_, q)| q.split('&').any(|kv| kv == "reset=1"));
+            respond_with(&mut *s, 200, "application/json", &cors, crate::dynamic::prof::snapshot(reset).to_string().as_bytes())
+        }
         // the cache's blocks stored and removed by name (src/kv_events.rs), after batch `after`, waiting up to `wait` seconds (at most 10) for one: off unless the
         // server's operator turns them on, since they carry every caller's prompt tokens
         ("GET", "/v1/glyd/kv/events") => match &ctx.rt.kv_events {
@@ -2278,7 +2280,7 @@ pub struct Shared {
     pub vocab: usize,
     /// Thinking where a request does not say (None: the template's own default).
     pub thinking: Option<bool>,
-    /// The fields the engine does not do besides NOT_DONE's (ONE_AT_A_TIME, or none): refused, in words, where a request sets one.
+    /// The fields the engine does not do besides NOT_DONE's (none: every engine is a scheduler's step, which does them): refused, in words, where a request sets one.
     pub refused: &'static [(&'static str, &'static str)],
     /// The model's runtime context (src/runtime/context.rs): its figures, its engine's first failure, what /v1/glyd/info says of it. The process's own where one model is served.
     pub rt: Arc<crate::runtime::context::Context>,
@@ -2453,6 +2455,10 @@ impl Gen for Remote {
         self.window
     }
 
+    fn own_speed(&self) -> bool {
+        false
+    }
+
     fn reply(&mut self, prompt: &[u32], o: &Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, Finish)> {
         let h = self.start(prompt, o)?;
         let mut tokens = Vec::new();
@@ -2472,12 +2478,6 @@ impl Gen for Remote {
             }
         }
     }
-}
-
-/// The engine's thread: the scheduler's rounds (a step for every sequence that runs, a chunk of a prompt), and between them the jobs that come, until `Job::Stop`. A completions request and the terminal's chat
-/// each run on a thread of their own (their text, their connection) and ask the scheduler for a sequence through `tx`; the engine's thread never waits on a connection.
-pub fn work(e: &mut Engine, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>, users: usize) {
-    work_with(&mut Sched::new(e, users), shared, rx, tx);
 }
 
 /// A request's thread or the terminal's reply, started for `job` (the engine's thread never waits on a connection); any other job is not one.
@@ -2530,42 +2530,8 @@ pub fn detach(job: Job, shared: &Arc<Shared>, tx: &Sender<Job>) {
     }
 }
 
-/// `work` for an engine that has no scheduler (a lossy level's): the sequences are run one at a time, in the order they come; one that is asked to end before its turn (a cancel, its client gone) is not run.
-pub fn work_gen(e: &mut dyn Gen, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>) {
-    while let Ok(job) = rx.recv() {
-        match job {
-            Job::Stop => return,
-            Job::Seq(sub) if sub.abort.load(Ordering::Relaxed) => {
-                let _ = sub.out.send(Ev::End(Ok(Finish::Stopped)));
-            }
-            Job::Seq(sub) => {
-                let mut timer = crate::ops::Timer::start(sub.prompt.len());
-                let r = e.reply(&sub.prompt, &sub.reply, &mut |t| {
-                    timer.token();
-                    sub.out.send(Ev::Token(t)).is_ok() && !sub.abort.load(Ordering::Relaxed)
-                });
-                timer.end(match &r {
-                    Ok((_, Finish::Stop)) => "stop",
-                    Ok((_, Finish::Length)) => "length",
-                    Ok((_, Finish::Stopped)) => "stopped",
-                    Err(_) => "error",
-                });
-                if let Err(err) = &r {
-                    shared.rt.fail(&err.to_string());
-                }
-                let lost = r.as_ref().err().filter(|e| e.sticky()).cloned();
-                let _ = sub.out.send(Ev::End(r.map(|x| x.1)));
-                if let Some(err) = lost {
-                    device_lost(&err);
-                    return;
-                }
-            }
-            _ => detach(job, &shared, tx),
-        }
-    }
-}
-
-/// `work` on any scheduler (the tests run it on a scheduler of a made-up model).
+/// The engine's thread: the scheduler's rounds (a step for every sequence that runs, a chunk of a prompt), and between them the jobs that come, until `Job::Stop`. A completions request and the terminal's chat
+/// each run on a thread of their own (their text, their connection) and ask the scheduler for a sequence through `tx`; the engine's thread never waits on a connection.
 pub fn work_with<B: ModelStep>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>) {
     // (the scheduler's figures and its sequences' counts go where the server's own do: the model's runtime context)
     let rt = shared.rt.clone();
@@ -3299,11 +3265,12 @@ pub(crate) mod tests {
             .map(|c| at(c, &["message", "content"]).as_str().unwrap().to_string())
             .collect();
         assert_eq!(built, whole, "streamed and whole choices are the same texts");
-        // the limits: 8 at the most (and 8 are served by 4 users, 4 waiting), none or fewer than one is wrong, and greedy draws are all one text
-        let (st, body) = call(addr, "/v1/completions", &q(",\"n\":8"));
-        assert_eq!((st, texts(&body).len()), (200, 8), "{body}");
+        // the limits: the request's own, 64 sequences (12 are served by 4 users, 8 waiting: no 8-row bound), none or fewer than one is wrong, and greedy
+        // draws are all one text
+        let (st, body) = call(addr, "/v1/completions", &q(",\"n\":12"));
+        assert_eq!((st, texts(&body).len()), (200, 12), "{body}");
         for (extra, want) in [
-            (",\"n\":9", "n must be at most 8, got 9"),
+            (",\"n\":65", "n must be at most 64, got 65"),
             (",\"n\":0", "n must be at least 1, got 0"),
             (",\"n\":2.5", "`n` must be an integer"),
             (",\"n\":2,\"temperature\":0", "n must be 1 when using greedy sampling, got 2"),
@@ -3774,29 +3741,63 @@ pub(crate) mod tests {
         assert!(st == 200 && out.contains("{\"status\":\"ok\"}"), "{out}");
     }
 
-    /// There is no cap on connections: a thousand that send nothing are held (a task each, and no thread), the server answers a request from another meanwhile, and each of them is answered 408 and
-    /// let go by its time.
+    /// `n` connections to `addr` that send nothing, made in waves the system's listen queue holds (macOS keeps 128), each wave followed by a request that is answered: the server takes
+    /// connections in the order they arrived, so every one of the wave has been taken before the next comes. A burst longer than the queue is reset by the system where the thread
+    /// that accepts is not running, which a loaded machine does, and is no concern of the server's. A connection is made again where the system had no room for it.
+    fn idle_connections(addr: std::net::SocketAddr, n: usize) -> Vec<TcpStream> {
+        let connect = || {
+            for _ in 0..3000 {
+                if let Ok(c) = TcpStream::connect(addr) {
+                    return c;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            TcpStream::connect(addr).unwrap()
+        };
+        let mut idle = Vec::with_capacity(n);
+        while idle.len() < n {
+            idle.extend((0..(n - idle.len()).min(64)).map(|_| connect()));
+            let mut c = connect();
+            c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+            assert_eq!(raw_status(&mut c).0, 200, "answered beside {} idle connections", idle.len());
+        }
+        idle
+    }
+
+    /// There is no cap on connections: a thousand that send nothing are held (a task each, and no thread), the server answers a request from another meanwhile, and a connection that sends
+    /// nothing is let go by its time. The two are two servers, and neither stands on how fast the machine runs the test: the first gives its connections a time far above the test's steps
+    /// (it ends them by dropping them), the second a short one, and the test ends only when each of its hundred has been let go.
     #[test]
     fn idle_connections_are_held_without_a_cap_and_closed_by_their_time() {
         raise_fd_limit(8192);
         let (tx, _rx) = std::sync::mpsc::channel();
-        let addr = listen_timed(Times { head: Duration::from_secs(2), body: Duration::from_secs(2), idle: Duration::from_secs(2) }, tx);
-        let idle: Vec<TcpStream> = (0..1000).map(|_| TcpStream::connect(addr).unwrap()).collect();
+        let long = Duration::from_secs(600);
+        let addr = listen_timed(Times { head: long, body: long, idle: long }, tx.clone());
+        let idle = idle_connections(addr, 1000);
         let mut c = TcpStream::connect(addr).unwrap();
-        c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
         assert_eq!(raw_status(&mut c).0, 200, "answered beside a thousand idle connections");
-        // none of them was refused: the time ends them (a connection that sent nothing is let go without an answer)
+        // (every one is open, not refused and not answered)
+        for i in &idle {
+            i.set_nonblocking(true).unwrap();
+            let got = (&*i).read(&mut [0u8; 1]);
+            assert!(got.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::WouldBlock), "a connection that sent nothing is held open: {got:?}");
+        }
+        drop(idle);
+        // a connection that sent nothing is let go by its time, answered 408 or with no word
+        let addr = listen_timed(Times { head: Duration::from_secs(1), body: Duration::from_secs(1), idle: Duration::from_secs(1) }, tx);
         let mut closed = 0;
-        for mut i in idle {
-            i.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        for mut i in idle_connections(addr, 100) {
+            i.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
             let mut out = Vec::new();
-            let _ = i.read_to_end(&mut out);
-            // (answered 408 and let go, as a connection that sent a part of a request is; one that was kept after an answer and sent nothing is let go with no word)
-            if out.is_empty() || out.starts_with(b"HTTP/1.1 408") {
-                closed += 1;
+            // (a read that timed out is a connection still open)
+            match i.read_to_end(&mut out) {
+                Ok(_) if out.is_empty() || out.starts_with(b"HTTP/1.1 408") => closed += 1,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => closed += 1,
+                other => eprintln!("a connection not let go by its time: {other:?} {:?}", String::from_utf8_lossy(&out)),
             }
         }
-        assert_eq!(closed, 1000);
+        assert_eq!(closed, 100);
     }
 
     /// R11's load test: a thousand streaming connections at once, on a scheduler over a CPU fake model, and every one of them is answered 200 with its events and its `[DONE]`, none refused, none
@@ -5874,7 +5875,10 @@ pub(crate) mod tests {
         assert_eq!((st, state(b).1.as_deref()), (200, Some("ended")));
     }
 
-    /// What a level's engine does not do (ONE_AT_A_TIME: log-probabilities, a least length) is refused in words where it is asked for, and not where its value means it is not; a length the context has no room
+    /// Fields an engine might not do (an engine that ran one sequence at a time gave no log-probabilities and no least length), for the checks of a refusal.
+    const ONE_AT_A_TIME: &[(&str, &str)] = &[("logprobs", "false"), ("min_tokens", "0")];
+
+    /// What an engine does not do (ONE_AT_A_TIME here: log-probabilities, a least length) is refused in words where it is asked for, and not where its value means it is not; a length the context has no room
     /// for after the prompt is refused, not cut short (one that fits to the last token is served); and /v1/glyd/tokenize counts a prompt as its reply's usage does, a chat's or a plain completion's, and runs nothing.
     #[test]
     fn what_the_engine_does_not_do_is_refused_and_a_prompt_is_counted() {
@@ -5919,59 +5923,6 @@ pub(crate) mod tests {
         }
         let (st, body) = chat(&format!(",\"max_tokens\":{}", window - used));
         assert_eq!(st, 200, "{body}");
-    }
-
-    /// A level's engine (`work_gen`: one sequence at a time) does not run a sequence asked to end before its turn (a cancel, its client gone): it ends at once, stopped; the next runs.
-    #[test]
-    fn a_sequence_asked_to_end_before_its_turn_is_not_run() {
-        struct Count(usize);
-        impl Gen for Count {
-            fn capacity(&self) -> usize {
-                64
-            }
-            fn reply(&mut self, _: &[u32], _: &Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, Finish)> {
-                self.0 += 1;
-                each(7);
-                Ok((vec![7], Finish::Length))
-            }
-        }
-        let shared = Arc::new(Shared {
-            tok: crate::tok::tests::toy(&["x"]),
-            chat: None,
-            name: "m".into(),
-            defaults: Params::default(),
-            window: 64,
-            vocab: 2048,
-            thinking: None,
-            refused: ONE_AT_A_TIME,
-            rt: crate::runtime::context::Context::process().clone(),
-        });
-        let (tx, rx) = std::sync::mpsc::channel();
-        let seq = |abort: bool| {
-            let (out, events) = std::sync::mpsc::channel();
-            let reply = Reply { params: Params::default(), max_new: 4, ignore_eos: false, logprobs: None, stop_ids: Vec::new() };
-            tx.send(Job::Seq(Submit {
-                prompt: vec![1, 2],
-                reply,
-                out,
-                abort: Arc::new(AtomicBool::new(abort)),
-                resumed: Default::default(),
-                cached: Default::default(),
-                created: Default::default(),
-                salt: 0,
-                pin: 0,
-                images: Vec::new(),
-            }))
-            .unwrap();
-            events
-        };
-        let (gone, kept) = (seq(true), seq(false));
-        tx.send(Job::Stop).unwrap();
-        let mut c = Count(0);
-        work_gen(&mut c, shared, &rx, &tx);
-        assert!(matches!(gone.recv().unwrap(), Ev::End(Ok(Finish::Stopped))));
-        assert!(matches!(kept.recv().unwrap(), Ev::Token(7)) && matches!(kept.recv().unwrap(), Ev::End(Ok(Finish::Length))));
-        assert_eq!(c.0, 1, "the sequence asked to end was not run");
     }
 }
 

@@ -6,8 +6,8 @@
 
 use crate::ffi::{err, Error, Result};
 use crate::glm::{GlmKind, KdaDims};
-use crate::weights::{eos_ids, num};
-use glyd_gpu::json::{self, Value};
+use crate::runtime::config::ModelConfig;
+use crate::weights::eos_ids;
 use std::path::Path;
 
 /// The latent attention: `heads` heads, queries from a latent of `q_rank`, keys and values from one of `kv_rank`; a head's key is its `nope` channels and the
@@ -20,6 +20,17 @@ pub struct KimiMla {
     pub nope: usize,
     pub rope: usize,
     pub v: usize,
+}
+
+/// The newer config's sparse attention (`dsa_config`): on the latent attention layers it names (`layers`, from 0) an indexer of a key a token, `heads` query
+/// heads of `dim` channels, the best `top_k` tokens kept; its keys RMS-normed, or LayerNorm-ed with a bias (`layer_norm`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct KimiDsa {
+    pub layers: Vec<usize>,
+    pub heads: usize,
+    pub dim: usize,
+    pub top_k: usize,
+    pub layer_norm: bool,
 }
 
 /// The mixture of experts: the router picks `top_k` of `experts` by sigmoid scores plus a bias (the chosen scores divided by their sum where `renorm`, times
@@ -52,6 +63,8 @@ pub struct ConfigKimi {
     pub inter: usize,
     pub kda: KdaDims,
     pub mla: KimiMla,
+    /// The sparse attention of the latent attention layers it names, where the config has one.
+    pub dsa: Option<KimiDsa>,
     pub experts: KimiMoe,
     /// The situ activation's two caps: gate a, up b, 4 tanh(a / beta) sigmoid(a) x 25 tanh(b / linear) for beta 4 and linear 25.
     pub situ: (f32, f32),
@@ -65,118 +78,194 @@ pub struct ConfigKimi {
 
 /// Whether a config.json is a Kimi-K3's.
 pub fn is_kimi(text: &str) -> bool {
-    json::parse(text).ok().and_then(|v| v.get("model_type").and_then(Value::as_str).map(|t| t == "kimi_k3")).unwrap_or(false)
+    crate::runtime::config::family_of(text) == Some(crate::support::Family::Kimi)
+}
+
+/// Kimi-K3's own keys of its text model (the shared ones are `runtime::config::Shared`'s), typed from the one parse of its config.json.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct Keys {
+    hidden_act: Option<String>,
+    rope_scaling: Option<serde_json::Value>,
+    mla_use_nope: Option<bool>,
+    mla_use_output_gate: Option<bool>,
+    latent_moe_use_norm: Option<bool>,
+    num_expert_group: Option<u64>,
+    moe_router_activation_func: Option<String>,
+    linear_attn_config: Option<LinearAttn>,
+    moe_layer_freq: Option<usize>,
+    num_shared_experts: Option<usize>,
+    routed_scaling_factor: Option<f64>,
+    moe_renormalize: Option<bool>,
+    activation_situ_beta: Option<f64>,
+    activation_situ_linear_beta: Option<f64>,
+    rms_norm_eps: Option<f64>,
+    attn_res_block_size: Option<usize>,
+    bos_token_id: Option<serde_json::Value>,
+    dsa_config: Option<Dsa>,
+}
+
+/// The sparse attention's keys (`dsa_config`).
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct Dsa {
+    dsa_layers: Option<Vec<u64>>,
+    layers: Option<Vec<u64>>,
+    index_num_heads: Option<usize>,
+    index_head_dim: Option<usize>,
+    index_topk: Option<usize>,
+    index_k_norm_type: Option<String>,
+}
+
+/// The delta attention's keys (`linear_attn_config`).
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct LinearAttn {
+    kda_layers: Option<Vec<u64>>,
+    full_attn_layers: Option<Vec<u64>>,
+    use_full_rank_gate: Option<bool>,
+    gate_lower_bound: Option<f64>,
+    num_heads: Option<usize>,
+    head_dim: Option<usize>,
+    short_conv_kernel_size: Option<usize>,
 }
 
 impl ConfigKimi {
     pub fn load(dir: &Path) -> Result<ConfigKimi> {
-        let p = dir.join("config.json");
-        let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-        ConfigKimi::parse(&text, &p.display().to_string(), generation.as_deref())
+        ModelConfig::read(dir, ConfigKimi::of)
     }
 
     /// A config.json's text (and a generation_config.json's, where there is one): `label` names the file in an error. What this engine does not run is refused
     /// by name: another activation, a rotary, grouped routing, experts outside the latent, a model with its residual stream.
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<ConfigKimi> {
-        let v = json::parse(text).map_err(|e| Error(format!("{label}: {e}")))?;
-        if v.get("model_type").and_then(Value::as_str) != Some("kimi_k3") {
-            return err(format!("{label}: not a Kimi-K3 model (model_type kimi_k3)"));
+        ConfigKimi::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
+    }
+
+    /// `parse` of a config.json parsed once (`ModelConfig`).
+    pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<ConfigKimi> {
+        if !c.nested {
+            return err(format!("{label}: no text_config"));
         }
-        let t = v.get("text_config").ok_or_else(|| Error(format!("{label}: no text_config")))?;
-        if t.get("model_type").and_then(Value::as_str) != Some("kimi_linear") {
+        if c.text_type != "kimi_linear" {
             return err(format!("{label}: the text model is not kimi_linear"));
         }
-        let get = |k: &str| t.get(k).filter(|x| **x != Value::Null).ok_or_else(|| Error(format!("{label}: no {k}")));
-        let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
-        let f = |k: &str| -> Result<f64> { num(get(k)?, k) };
-        let flag = |k: &str| t.get(k).and_then(Value::as_bool);
+        let (s, k): (&crate::runtime::config::Shared, Keys) = (&c.shared, c.own(label)?);
+        let need = |v: Option<usize>, key: &str| ModelConfig::need(v, label, key);
+        let needf = |v: Option<f64>, key: &str| v.ok_or_else(|| Error(format!("{label}: no {key}")));
         let refuse = |what: &str| err(format!("{label}: {what}, which the engine does not run"));
-        if t.get("hidden_act").and_then(Value::as_str) != Some("situ") {
+        if k.hidden_act.as_deref() != Some("situ") {
             return refuse("an activation other than situ");
         }
-        if t.get("rope_scaling").is_some_and(|x| *x != Value::Null) || flag("mla_use_nope") == Some(false) {
+        if k.rope_scaling.is_some() || k.mla_use_nope == Some(false) {
             return refuse("a rotary in the latent attention");
         }
-        if flag("mla_use_output_gate") != Some(true) || flag("latent_moe_use_norm") != Some(true) {
+        if k.mla_use_output_gate != Some(true) || k.latent_moe_use_norm != Some(true) {
             return refuse("a latent attention without its output gate, or experts without the latent's norm");
         }
-        if t.get("num_expert_group").and_then(Value::as_u64).unwrap_or(1) != 1 {
+        if k.num_expert_group.unwrap_or(1) != 1 {
             return refuse("grouped routing");
         }
-        if t.get("moe_router_activation_func").and_then(Value::as_str) != Some("sigmoid") {
+        if k.moe_router_activation_func.as_deref() != Some("sigmoid") {
             return refuse("a router other than sigmoid's");
         }
-        let layers = u("num_hidden_layers")?;
+        let layers = need(s.num_hidden_layers, "num_hidden_layers")?;
         if layers > crate::plan::MAX_LAYERS {
             return err(format!("{label}: num_hidden_layers {layers}, where no model has more than {}", crate::plan::MAX_LAYERS));
         }
-        let heads = u("num_attention_heads")?;
-        if u("num_key_value_heads")? != heads {
+        let heads = need(s.num_attention_heads, "num_attention_heads")?;
+        if need(s.num_key_value_heads, "num_key_value_heads")? != heads {
             return refuse("fewer key and value heads than query heads");
         }
         // the mixers: linear_attn_config's lists are of 1-based layer numbers (the reference tests layer_idx + 1); a layer not in kda_layers is latent attention
-        let attn = t.get("linear_attn_config").ok_or_else(|| Error(format!("{label}: no linear_attn_config")))?;
-        let list = |k: &str| attn.get(k).and_then(Value::as_u64s).ok_or_else(|| Error(format!("{label}: no linear_attn_config.{k}")));
-        let (kda_l, full_l) = (list("kda_layers")?, list("full_attn_layers")?);
+        let attn = k.linear_attn_config.ok_or_else(|| Error(format!("{label}: no linear_attn_config")))?;
+        let list = |v: Option<Vec<u64>>, key: &str| v.ok_or_else(|| Error(format!("{label}: no linear_attn_config.{key}")));
+        let (kda_l, full_l) = (list(attn.kda_layers, "kda_layers")?, list(attn.full_attn_layers, "full_attn_layers")?);
         let kinds: Vec<GlmKind> = (1..=layers as u64).map(|n| if kda_l.contains(&n) { GlmKind::Kda } else { GlmKind::Mla }).collect();
         let mla_n: Vec<u64> = (1..=layers as u64).filter(|n| !kda_l.contains(n)).collect();
         if full_l != mla_n || kda_l.iter().any(|&n| n == 0 || n > layers as u64) {
             return err(format!("{label}: linear_attn_config's kda_layers and full_attn_layers are not the {layers} layers (1-based) split in two"));
         }
-        let ka = |k: &str| -> Result<usize> {
-            attn.get(k).and_then(Value::as_u64).map(|x| x as usize).ok_or_else(|| Error(format!("{label}: linear_attn_config.{k}")))
-        };
-        if attn.get("use_full_rank_gate").and_then(Value::as_bool) != Some(true) {
+        let ka = |v: Option<usize>, key: &str| v.ok_or_else(|| Error(format!("{label}: linear_attn_config.{key}")));
+        if attn.use_full_rank_gate != Some(true) {
             return refuse("a low-rank output gate in the delta attention");
         }
-        let bound = num(attn.get("gate_lower_bound").ok_or_else(|| Error(format!("{label}: no linear_attn_config.gate_lower_bound")))?, "gate_lower_bound")?;
-        let kda = KdaDims { heads: ka("num_heads")?, dim: ka("head_dim")?, conv_kernel: ka("short_conv_kernel_size")?, bound: bound as f32 };
-        let dense = u("first_k_dense_replace")?;
-        if u("moe_layer_freq")? != 1 {
+        let bound = attn.gate_lower_bound.ok_or_else(|| Error(format!("{label}: no linear_attn_config.gate_lower_bound")))?;
+        let kda = KdaDims {
+            heads: ka(attn.num_heads, "num_heads")?,
+            dim: ka(attn.head_dim, "head_dim")?,
+            conv_kernel: ka(attn.short_conv_kernel_size, "short_conv_kernel_size")?,
+            bound: bound as f32,
+        };
+        let dense = need(s.first_k_dense_replace, "first_k_dense_replace")?;
+        if need(k.moe_layer_freq, "moe_layer_freq")? != 1 {
             return refuse("experts every other layer");
         }
         let moe: Vec<bool> = (0..layers).map(|l| l >= dense).collect();
         let mla = KimiMla {
             heads,
-            q_rank: u("q_lora_rank")?,
-            kv_rank: u("kv_lora_rank")?,
-            nope: u("qk_nope_head_dim")?,
-            rope: u("qk_rope_head_dim")?,
-            v: u("v_head_dim")?,
+            q_rank: need(s.q_lora_rank, "q_lora_rank")?,
+            kv_rank: need(s.kv_lora_rank, "kv_lora_rank")?,
+            nope: need(s.qk_nope_head_dim, "qk_nope_head_dim")?,
+            rope: need(s.qk_rope_head_dim, "qk_rope_head_dim")?,
+            v: need(s.v_head_dim, "v_head_dim")?,
         };
-        let inter_e = u("moe_intermediate_size")?;
+        // (the newer config's sparse attention: the latent attention layers it names, from 1; what of it this engine does not run the description builder refuses)
+        let dsa = match &k.dsa_config {
+            None => None,
+            Some(d) => {
+                let named = d.dsa_layers.as_ref().or(d.layers.as_ref()).ok_or_else(|| Error(format!("{label}: dsa_config names no layers")))?;
+                let layer_norm = match d.index_k_norm_type.as_deref().unwrap_or("rmsnorm") {
+                    "rmsnorm" => false,
+                    "layernorm" => true,
+                    other => return err(format!("{label}: dsa_config.index_k_norm_type {other}: rmsnorm or layernorm")),
+                };
+                Some(KimiDsa {
+                    layers: named.iter().filter(|&&l| l >= 1).map(|&l| l as usize - 1).collect(),
+                    heads: need(d.index_num_heads, "dsa_config.index_num_heads")?,
+                    dim: need(d.index_head_dim, "dsa_config.index_head_dim")?,
+                    top_k: need(d.index_topk, "dsa_config.index_topk")?,
+                    layer_norm,
+                })
+            }
+        };
+        let inter_e = need(s.moe_intermediate_size, "moe_intermediate_size")?;
         let experts = KimiMoe {
-            experts: u("num_experts")?,
-            top_k: u("num_experts_per_token")?,
+            experts: need(s.num_experts, "num_experts")?,
+            top_k: need(s.num_experts_per_token, "num_experts_per_token")?,
             inter: inter_e,
-            latent: u("routed_expert_hidden_size")?,
-            shared: u("num_shared_experts")?,
-            scale: f("routed_scaling_factor")? as f32,
-            renorm: flag("moe_renormalize").unwrap_or(true),
+            latent: need(s.routed_expert_hidden_size, "routed_expert_hidden_size")?,
+            shared: need(k.num_shared_experts, "num_shared_experts")?,
+            scale: needf(k.routed_scaling_factor, "routed_scaling_factor")? as f32,
+            renorm: k.moe_renormalize.unwrap_or(true),
         };
         if experts.top_k == 0 || experts.top_k > experts.experts || experts.latent == 0 {
             return err(format!("{label}: {} of {} experts on a latent of {}", experts.top_k, experts.experts, experts.latent));
         }
-        let situ = (f("activation_situ_beta")? as f32, f("activation_situ_linear_beta")? as f32);
-        let eos = eos_ids(t, generation);
+        let situ = (needf(k.activation_situ_beta, "activation_situ_beta")? as f32, needf(k.activation_situ_linear_beta, "activation_situ_linear_beta")? as f32);
+        let eos = eos_ids(&c.text, generation);
+        let inter = match &s.intermediate_size {
+            Some(crate::runtime::config::Width::One(n)) => *n,
+            Some(crate::runtime::config::Width::PerLayer(_)) => return err(format!("{label}: intermediate_size: not an integer")),
+            None => return err(format!("{label}: no intermediate_size")),
+        };
         Ok(ConfigKimi {
-            hidden: u("hidden_size")?,
+            hidden: need(s.hidden_size, "hidden_size")?,
             layers,
-            vocab: u("vocab_size")?,
-            eps: f("rms_norm_eps")? as f32,
-            max_pos: u("max_position_embeddings")?,
+            vocab: need(s.vocab_size, "vocab_size")?,
+            eps: needf(k.rms_norm_eps, "rms_norm_eps")? as f32,
+            max_pos: need(s.max_position_embeddings, "max_position_embeddings")?,
             eos,
-            bos: t.get("bos_token_id").and_then(Value::as_u64).map(|b| b as u32),
+            bos: k.bos_token_id.as_ref().and_then(serde_json::Value::as_u64).map(|b| b as u32),
             kinds,
             moe,
-            inter: u("intermediate_size")?,
+            inter,
             kda,
             mla,
+            dsa,
             experts,
             situ,
-            res_block: u("attn_res_block_size")?,
-            vision: v.get("vision_config").is_some(),
+            res_block: need(k.attn_res_block_size, "attn_res_block_size")?,
+            vision: c.has_vision(),
             prefix: "language_model.model.",
         })
     }
@@ -227,5 +316,49 @@ mod tests {
         refused((r#""mla_use_nope": true"#, r#""mla_use_nope": false"#), "a rotary");
         refused((r#""full_attn_layers": [4, "#, r#""full_attn_layers": [3, 4, "#), "split in two");
         assert!(!is_kimi(r#"{"model_type": "kimi_linear"}"#));
+    }
+}
+
+#[cfg(test)]
+mod reader_tests {
+    use super::*;
+
+    /// Kimi-K3's reader takes its keys from the one parse of config.json, typed: the release's config reads; a key of another type than its field's is refused with
+    /// its name, and a needed key that is null is named as missing.
+    #[test]
+    fn the_keys_are_read_typed_from_the_one_parse() {
+        let h: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers/Kimi-K3.json")).unwrap(),
+        )
+        .unwrap();
+        let text = h["config"].as_str().unwrap();
+        let c = ConfigKimi::parse(text, "Kimi-K3", None).unwrap();
+        assert_eq!(c.kinds.len(), c.layers);
+        let mut v: serde_json::Value = serde_json::from_str(text).unwrap();
+        v["text_config"]["linear_attn_config"]["gate_lower_bound"] = serde_json::json!("low");
+        assert!(ConfigKimi::parse(&v.to_string(), "c", None).unwrap_err().msg.contains("gate_lower_bound"));
+        let mut v: serde_json::Value = serde_json::from_str(text).unwrap();
+        v["text_config"]["kv_lora_rank"] = serde_json::Value::Null;
+        assert_eq!(ConfigKimi::parse(&v.to_string(), "c", None).unwrap_err().msg, "c: no kv_lora_rank");
+    }
+
+    /// Kimi-K3.1-Pro's released config (tests/fixtures/headers: a wrapper `kimi_k31` over the same `kimi_linear` text model) is read as Kimi-K3's is, by the text
+    /// model's type: the family is Kimi, the layers, delta and latent attention and experts are Kimi-K3's, and the sparse attention is on the latent attention
+    /// layers at the release's numbers (32 heads of 128, LayerNorm-ed keys, 2,048 picks).
+    #[test]
+    fn kimi_k31_is_read_by_its_text_models_type() {
+        let config = |f: &str| -> String {
+            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers").join(f);
+            let h: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+            h["config"].as_str().unwrap().to_string()
+        };
+        let (k31, k3) = (config("Kimi-K3.1-Pro.json"), config("Kimi-K3.json"));
+        assert!(is_kimi(&k31) && is_kimi(&k3));
+        let (c31, c3) = (ConfigKimi::parse(&k31, "Kimi-K3.1-Pro", None).unwrap(), ConfigKimi::parse(&k3, "Kimi-K3", None).unwrap());
+        assert_eq!(c3.dsa, None);
+        let latent: Vec<usize> = (0..c3.layers).filter(|&l| c3.kinds[l] == GlmKind::Mla).collect();
+        assert_eq!(c31.dsa, Some(KimiDsa { layers: latent, heads: 32, dim: 128, top_k: 2048, layer_norm: true }));
+        assert!(c31.kinds == c3.kinds && c31.moe == c3.moe && c31.kda == c3.kda && c31.mla == c3.mla && c31.experts == c3.experts);
+        assert_eq!((c31.hidden, c31.layers, c31.res_block, c31.situ), (c3.hidden, c3.layers, c3.res_block, c3.situ));
     }
 }

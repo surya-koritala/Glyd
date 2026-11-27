@@ -17,11 +17,11 @@ LEGACY=https://github.com/surya-koritala/condor/releases/download/v0.2.4   # Con
 VER=${1:-latest}
 command -v nvidia-smi > /dev/null || { echo "no nvidia-smi: an NVIDIA driver is needed" >&2; exit 1; }
 case $(uname -m) in x86_64|amd64) ARCH=x86_64;; aarch64|arm64) ARCH=aarch64;; *) echo "unsupported CPU: $(uname -m)" >&2; exit 1;; esac
-LIB=libglyd_gpu_cuda13.so
+LIB=  # (the GPU library of a release before the engine took its kernels in; a later engine loads none)
 
 write_env() {
   cat > "$H/env.sh" <<ENV
-export GLYD_QWEN=$H GLYD_REPO=$HERE GLYD_ENGINE=$H/bin/glyd-engine GLYD_GPU_LIB=$H/lib/$LIB
+export GLYD_QWEN=$H GLYD_REPO=$HERE GLYD_ENGINE=$H/bin/glyd-engine${LIB:+ GLYD_GPU_LIB=$H/lib/$LIB}
 ENV
   "$H/bin/glyd-engine" --version
   echo "installed. Next: tools/download.sh, then tools/serve.sh"
@@ -36,24 +36,19 @@ from_source() {
   [ "$caps" = "${caps/90 /}" ] || caps="${caps/90 /90a }"
   echo "building glyd-engine for sm: $caps(from $ROOT)"
   GLYD_ENGINE_ARCHS="$caps" cargo build --release --locked --manifest-path "$ROOT/Cargo.toml" -p glyd-engine
-  local out; out=$(mktemp -d)
-  bash "$ROOT/gpu/build_lib.sh" "$out"
-  LIB=$(cd "$out" && ls libglyd_gpu_cuda*.so | head -1)
   install -m 755 "$ROOT/target/release/glyd-engine" "$H/bin/glyd-engine"
-  install -m 644 "$out/$LIB" "$H/lib/$LIB"
-  rm -rf "$out"
   echo source > "$H/ENGINE_RELEASE"
   write_env
 }
 
-from_tarball() {   # glyd-engine-vX.Y.Z-linux-ARCH.tar.gz: glyd-engine, libglyd_gpu_cuda13.so, LICENSE
+from_tarball() {   # glyd-engine-vX.Y.Z-linux-ARCH.tar.gz: glyd-engine, LICENSE (before 0.35, libglyd_gpu_cuda13.so too)
   local tgz=$1 tmp; tmp=$(mktemp -d)
   tar -xzf "$tgz" -C "$tmp"
   local d; d=$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -1)
   install -m 755 "$d/glyd-engine" "$H/bin/glyd-engine"
-  install -m 644 "$d/$LIB" "$H/lib/$LIB"
-  # a bundle from 0.33.2 on also holds the CUDA 12 library (not compressed), which a driver older than R580 (CUDA 13) takes
-  if [ -f "$d/libglyd_gpu_cuda12.so" ]; then
+  [ -f "$d/libglyd_gpu_cuda13.so" ] && LIB=libglyd_gpu_cuda13.so && install -m 644 "$d/$LIB" "$H/lib/$LIB"
+  # a bundle from 0.33.2 to 0.34 also holds the CUDA 12 library (not compressed), which a driver older than R580 (CUDA 13) takes
+  if [ -n "$LIB" ] && [ -f "$d/libglyd_gpu_cuda12.so" ]; then
     install -m 644 "$d/libglyd_gpu_cuda12.so" "$H/lib/libglyd_gpu_cuda12.so"
     drv=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2> /dev/null | head -n 1 | cut -d. -f1 || true)
     case $drv in '' | *[!0-9]*) ;; *) [ "$drv" -ge 580 ] || LIB=libglyd_gpu_cuda12.so ;; esac
@@ -84,6 +79,7 @@ from_release() {
   [ "$ARCH" = x86_64 ] || { echo "Glyd $tag has no engine for linux-$ARCH: run tools/install.sh --source" >&2; exit 1; }
   # (Glyd releases before the open-source merge carry no engine bundle: Condor's own last build of the same source)
   echo "Glyd $tag has no engine bundle yet; installing Condor's last engine build (v0.2.4). tools/install.sh --source builds it here instead."
+  LIB=libglyd_gpu_cuda13.so  # (that build loads its GPU library)
   for f in glyd-engine $LIB SHA256SUMS; do curl -fsSL --retry 3 -o "$f.new" "$LEGACY/$f" && mv "$f.new" "$f"; done
   grep -q ' glyd-engine$' SHA256SUMS && grep -q " ${LIB//./\\.}\$" SHA256SUMS && sha256sum -c --quiet --ignore-missing SHA256SUMS ||
     { echo "glyd-engine or $LIB does not match SHA256SUMS" >&2; exit 1; }

@@ -1,7 +1,7 @@
 # Cost profiles: glyd-costs/1
 
 What a model at a level holds on each layer, what a decoded token reads, and a prediction of decode speed from the machine's
-memory tiers (Linear GLY-236). For `glyd run`'s planner, the fit page and Glyd-Compute's scheduler. The numbers come from the
+memory tiers. For `glyd run`'s planner, the fit page and Glyd-Compute's scheduler. The numbers come from the
 packed directory's own files, not from a formula: config.json, glyd.json and the safetensors headers, pack by pack, which are the
 bytes the loader uploads. A formula is used only where the files are not there (a model not packed yet), and the document says so.
 
@@ -22,7 +22,7 @@ The record: [benchmarks/gpu/rtx4080s-cost-profile-2026-10-20](../benchmarks/gpu/
 ## The profile
 
 Bytes are bytes (not GiB); a value that is not known is `null`, never 0. Three kinds of number are kept apart by `basis`: sizes
-(`file`: read from the safetensors headers; `estimated`: the shape times the layout's bits a weight, src/fit.rs; `mixed`), the
+(`file`: read from the safetensors headers; `estimated`: the shape times the layout's bits a weight, src/plan.rs; `mixed`), the
 working memory (`measured`, from the loaded engine's counters, else `unavailable`), and timing (`estimated` from the predictor,
 or null).
 
@@ -42,7 +42,7 @@ or null).
 | `precision.activations`, `sums`, `kv`, `state` | bf16, fp32, bf16, and the family's states (Qwen3.5: fp32 delta rule, bf16 convolution; Nemotron-H: fp32 scan, bf16 convolution) | |
 | `device` | the GPU the engine would use: `ordinal`, `name`, `compute_capability`, `cuda` (the driver's), `driver` (nvidia-smi's version), `total_bytes`, `free_bytes` (now, every process's use in it); null without a GPU | bytes |
 | `host` | `cpu` (the model name), `threads`, `ram_total_bytes`, `ram_available_bytes` (MemAvailable now) | bytes |
-| `workload` | `context_tokens` (`--ctx`, 4096), `prompt_tokens` (1024), `output_tokens` (256), `prefill_chunk_tokens` (2048: a level's engine's chunk), `sessions` (1: a level's engine runs one request at a time) | tokens |
+| `workload` | `context_tokens` (`--ctx`, 4096), `prompt_tokens` (1024), `output_tokens` (256), `prefill_chunk_tokens` (`--chunk`, 2048), `sessions` (1: the profile is of one sequence) | tokens |
 | `observed_at`, `samples` | Unix seconds; the sample count of the timing fields (0: none measured) | s |
 | `layers[i].index`, `layers[i].kind` | the layer; `full_attention`, `linear_attention` (Gated DeltaNet), `mamba` (Mamba-2) or `moe` | |
 | `layers[i].resident_bytes.projections` | the mixer's matrices: attention's q/k/v and o, linear attention's and Mamba-2's in and out projections, a mixture layer's latent projections (Nemotron's fc1/fc2), the small dense parts (Qwen's b and a) | bytes |
@@ -61,7 +61,7 @@ or null).
 | `totals.resident_bytes`, `resident_layer_bytes`, `resident_expert_bytes` | the weights on the GPU when the whole model is there; the layers' share; the routed experts' share | bytes |
 | `totals.active_bytes_per_token`, `active_expert_bytes_per_token`, `active_dense_bytes_per_token` | what a token reads of the weights; the experts' share of it; the rest | bytes |
 | `totals.kv_bytes_per_token`, `kv_bytes_at_context` | all layers; times `workload.context_tokens` (the engine allocates the whole context at load) | bytes |
-| `totals.state_bytes_per_session` | all layers (one session on a level's engine) | bytes |
+| `totals.state_bytes_per_session` | all layers (one session) | bytes |
 | `totals.working_bytes` | the activations, the products' workspaces, the logits, the rotary tables: measured (`allocated`) or null | bytes |
 | `totals.overhead_bytes` | the CUDA context, the kernels' code, the driver's rounding: null (not counted by the engine; 338 MiB in the serve record on the 4080 SUPER) | bytes |
 | `totals.engine_bytes_at_context` | resident + KV at the context + state (+ the working memory where measured) | bytes |

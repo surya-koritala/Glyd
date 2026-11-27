@@ -1,4 +1,4 @@
-//! Gemma 4 (2026) text models' config (`ConfigG4`), packed weights and kernel table (`KernG4`, kernels/gemma4.cu), which the description executor runs (src/dynamic/gemma4.rs),
+//! Gemma 4 (2026) text models' config (`ConfigG4`) and packed weights (its kernel table is src/kern/gemma4.rs's `KernG4`), which the description executor runs (src/dynamic/gemma4.rs),
 //! and the development commands that drive it (`g4check`, `g4score`, `g4prefill`, `g4spec`, ...). The hand-written engine was removed in R3b (#137), after `paritycheck`
 //! found the executor's rows the same bits. The mixture-of-experts 26B-A4B and the E models (per-layer embeddings, shared key-value layers) are refused.
 //!
@@ -6,22 +6,19 @@
 //! Sliding layers (5 of 6): head 256, keys and values of the last `window` positions (a ring), the full rotary at theta 1e4. Global layers: head 512, the keys' projection
 //! as the values too where the config says K = V, the proportional rotary (64 of 256 pairs) at theta 1e6. Attention scale 1. The logits soft-capped (30 tanh(l / 30)).
 
-use crate::dev::{Buf, Dev};
+use crate::dev::Buf;
 use crate::ffi::{err, Error, Result};
+#[cfg(feature = "dev")]
+use crate::gpu_ops::GpuOps;
+use crate::runtime::config::ModelConfig;
 use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
 #[cfg(feature = "dev")]
-use crate::{ffi::Lib, launch, model::Sample};
+use crate::{ffi::Lib, sched::Sample};
+#[cfg(feature = "dev")]
 use glyd_gpu::json::{self, Value};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
-/// Keys a tile of the attention kernels (G4_KB in kernels/gemma4.cu).
-pub(crate) const KB: usize = 32;
-/// The parts a decode step's attention splits a row's keys into.
-pub const SPLITS: usize = 16;
-/// The warps of a decode step's attention block (g4_attn*_parts): the G that score its row and more that only load the key and value tiles, so a short context is not
-/// one warp pair's loads in a row (GLY-312: 0.75 ms of a 12B step at 30 tokens with 2 warps).
-pub(crate) const PART_WARPS: i32 = 16;
 /// 64-row groups of the embedding decoded at once for a prompt chunk.
 pub(crate) const EMBED_GROUPS: usize = 32;
 
@@ -58,6 +55,63 @@ pub struct ConfigG4 {
     pub prefix: String,
 }
 
+/// Gemma 4's bytes by its typed config, which the tests hold the planner's reading of its description to (src/plan.rs `sizing::level_of`).
+#[cfg(test)]
+impl ConfigG4 {
+    /// The bytes on the GPU of the weights at `layout` and of the bf16 model: the matrices and the small tensors (each layer's four norms, its q and k norms of
+    /// its kind's heads and its scalar; the final norm).
+    pub fn weight_bytes(&self, layout: Layout) -> (u64, u64) {
+        let (mut w, mut bf16) = (0u64, 0u64);
+        for it in self.items() {
+            let b = (it.rows * it.cols * 2) as u64;
+            bf16 += b;
+            w += (b as f64 * crate::plan::sizing::bits(layout) / 16.0) as u64;
+        }
+        let small = 2 * (self.kinds.iter().map(|&k| 4 * self.hidden + 2 * self.attn_of(k).0 + 1).sum::<usize>() + self.hidden) as u64;
+        (w + small, bf16 + small)
+    }
+
+    /// The keys and values: (the sliding layers' rings, fixed: the window and a chunk each, or the context where it is shorter; a position's bytes in the global
+    /// layers). `twelve`: in the executor's 12-bit lossless pages where they take a layer's ring, else bf16.
+    pub fn kv_bytes(&self, chunk: usize, ctx: usize, twelve: bool) -> (u64, u64) {
+        let cap_s = (crate::dynamic::seq_blocks(Some(self.window + chunk), ctx, 16) * 16) as u64;
+        let (mut fixed, mut per) = (0u64, 0u64);
+        for &k in &self.kinds {
+            let (d, nk, _) = self.attn_of(k);
+            let b = match self.ring12(k).filter(|_| twelve) {
+                Some(s) => crate::plan::sizing::kv12_token_bytes(s.heads, s.channels, s.one),
+                None => (nk * d * 2 * 2) as u64,
+            };
+            match k {
+                KindG4::Sliding => fixed += cap_s * b,
+                KindG4::Global => per += b,
+            }
+        }
+        (fixed, per)
+    }
+
+    /// A layer kind's ring as the executor's 12-bit pages take it, None where they do not.
+    fn ring12(&self, k: KindG4) -> Option<crate::dynamic::kv12::KvShape> {
+        let (d, nk, _) = self.attn_of(k);
+        let window = if k == KindG4::Sliding { self.window } else { 0 };
+        crate::dynamic::kv12::ring_shape(nk, d, self.heads, window, false)
+    }
+
+    /// Its layers' rings in the executor's 12-bit pages.
+    pub fn rings12(&self) -> Vec<crate::dynamic::kv12::KvShape> {
+        self.kinds.iter().filter_map(|&k| self.ring12(k)).collect()
+    }
+
+    /// A token's keys and values in bf16 in each of its pools' groups, the sliding layers' and the global ones'.
+    pub fn group_token_bytes(&self) -> [u64; 2] {
+        let of = |kind: KindG4| -> u64 {
+            let (d, nk, _) = self.attn_of(kind);
+            self.kinds.iter().filter(|&&k| k == kind).count() as u64 * (nk * d * 2 * 2) as u64
+        };
+        [of(KindG4::Sliding), of(KindG4::Global)]
+    }
+}
+
 impl ConfigG4 {
     pub fn load(dir: &Path) -> Result<ConfigG4> {
         ConfigG4::load_for(dir, false)
@@ -65,14 +119,24 @@ impl ConfigG4 {
 
     /// `draft`: a Gemma 4 "-assistant" draft model (its layers all read the big model's keys and values: no key or value projections; its tensors under "model.").
     pub fn load_for(dir: &Path, draft: bool) -> Result<ConfigG4> {
-        let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.join("config.json").display())))?;
-        ConfigG4::parse(&text, std::fs::read_to_string(dir.join("generation_config.json")).ok().as_deref(), draft)
+        ConfigG4::load_for_of(dir, &ModelConfig::load(dir)?, draft)
+    }
+
+    /// `load_for` of a config.json parsed once (`m`: `dir`'s).
+    pub fn load_for_of(dir: &Path, m: &ModelConfig, draft: bool) -> Result<ConfigG4> {
+        m.read_with(dir, |c, _, generation| ConfigG4::of(c, generation, draft))
     }
 
     /// `load_for` from the texts of config.json and generation_config.json.
     pub fn parse(text: &str, gen: Option<&str>, draft: bool) -> Result<ConfigG4> {
-        let top = json::parse(text).map_err(|e| Error(format!("config.json: {e}")))?;
-        let c = top.get("text_config").unwrap_or(&top);
+        ConfigG4::of(&ModelConfig::parse(text).map_err(|e| e.context("config.json"))?, gen, draft)
+    }
+
+    /// `parse` of a config.json parsed once (`ModelConfig`).
+    pub fn of(m: &ModelConfig, gen: Option<&str>, draft: bool) -> Result<ConfigG4> {
+        use serde_json::Value;
+        let top = &m.top;
+        let c = &m.text;
         let num = |k: &str| c.get(k).and_then(Value::as_u64).map(|x| x as usize);
         let need = |k: &str| num(k).ok_or_else(|| Error(format!("config.json: no {k}")));
         let mt = c.get("model_type").and_then(Value::as_str).unwrap_or("");
@@ -82,8 +146,9 @@ impl ConfigG4 {
         if c.get("enable_moe_block").and_then(Value::as_bool) == Some(true) {
             return err("Gemma 4's mixture of experts (26B-A4B) is not in this engine yet");
         }
-        if num("hidden_size_per_layer_input").unwrap_or(0) > 0 || (!draft && num("num_kv_shared_layers").unwrap_or(0) > 0) {
-            return err("Gemma 4's E models (per-layer embeddings, shared key-value layers) are not in this engine yet");
+        // (shared key-value layers and the double-wide MLP are the layer kinds' (`Attn::kv_from`): the executor runs them from the description's lowering)
+        if num("hidden_size_per_layer_input").unwrap_or(0) > 0 {
+            return err("Gemma 4's per-layer embeddings (E2B, E4B) are not in this engine yet");
         }
         let kinds: Vec<KindG4> = c
             .get("layer_types")
@@ -97,10 +162,7 @@ impl ConfigG4 {
             })
             .collect::<Result<_>>()?;
         let rope = c.get("rope_parameters").ok_or_else(|| Error("config.json: no rope_parameters".into()))?;
-        let f = |v: Option<&Value>| match v {
-            Some(Value::Number(n)) => n.parse::<f64>().ok(),
-            _ => None,
-        };
+        let f = |v: Option<&Value>| v.and_then(Value::as_f64);
         let sliding_theta = f(rope.get("sliding_attention").and_then(|r| r.get("rope_theta"))).unwrap_or(10_000.0);
         let g = rope.get("full_attention");
         let global_theta = f(g.and_then(|r| r.get("rope_theta"))).unwrap_or(1_000_000.0);
@@ -125,12 +187,12 @@ impl ConfigG4 {
         let mut eos = eos;
         // (generation_config adds <|tool_response> (50): the model hands a tool call back to its caller)
         if let Some(gtext) = gen {
-            if let Ok(gc) = json::parse(gtext) {
-                if let Some(Value::Array(a)) = gc.get("eos_token_id") {
-                    for x in a.iter().filter_map(Value::as_u64) {
-                        if !eos.contains(&(x as i64)) {
-                            eos.push(x as i64);
-                        }
+            // (a file that is there and does not parse is an error: read as none, its end tokens would be dropped and a reply would not stop at them)
+            let gc = serde_json::from_str::<Value>(gtext).map_err(|e| Error(format!("generation_config.json: {e}")))?;
+            if let Some(Value::Array(a)) = gc.get("eos_token_id") {
+                for x in a.iter().filter_map(Value::as_u64) {
+                    if !eos.contains(&(x as i64)) {
+                        eos.push(x as i64);
                     }
                 }
             }
@@ -214,11 +276,6 @@ pub struct WeightsG4 {
     pub bytes: usize,
 }
 
-fn bf16_bits(x: f32) -> u16 {
-    let b = x.to_bits();
-    (b.wrapping_add(0x7fff + ((b >> 16) & 1)) >> 16) as u16
-}
-
 /// cos and sin (bf16 [max_pos, pairs]) of pairs i < `pairs` of a head of `dim`: inv_freq_i = theta^(-2i / dim), as transformers' default and proportional rotaries (the
 /// latter's other pairs are cos 1, sin 0: not stored, the kernel leaves them).
 pub(crate) fn rotary(theta: f64, dim: usize, pairs: usize, max_pos: usize) -> (Vec<u16>, Vec<u16>) {
@@ -227,18 +284,11 @@ pub(crate) fn rotary(theta: f64, dim: usize, pairs: usize, max_pos: usize) -> (V
     for p in 0..max_pos {
         for &f in &inv {
             let a = p as f32 * f;
-            c.push(bf16_bits(a.cos()));
-            s.push(bf16_bits(a.sin()));
+            c.push(crate::weights::bf16_bits(a.cos()));
+            s.push(crate::weights::bf16_bits(a.sin()));
         }
     }
     (c, s)
-}
-
-/// Whether config.json's text is a Gemma 4 model's (its model_type, or its text config's).
-pub fn is_gemma4(text: &str) -> bool {
-    let Ok(v) = json::parse(text) else { return false };
-    let gemma = |c: &Value| c.get("model_type").and_then(Value::as_str).is_some_and(|m| m.starts_with("gemma4"));
-    gemma(&v) || v.get("text_config").is_some_and(gemma)
 }
 
 impl ConfigG4 {
@@ -262,35 +312,6 @@ impl ConfigG4 {
         items.push(Item { members: vec![format!("{p}embed_tokens.weight")], rows: self.vocab, cols: h });
         items
     }
-
-    /// The bytes on the GPU of the weights at `layout` (`saved`: a glyd-v7 directory's, read as saved) and of the bf16 model: the matrices and the small tensors (norms, scalars).
-    pub fn weight_bytes(&self, layout: Layout, saved: Option<&Checkpoint>) -> (u64, u64) {
-        let (mut w, mut bf16) = (0u64, 0u64);
-        for it in self.items() {
-            let b = (it.rows * it.cols * 2) as u64;
-            bf16 += b;
-            let key = it.members[0].trim_end_matches(".weight");
-            w += saved.and_then(|ck| crate::weights::packed_bytes(ck, key)).unwrap_or((b as f64 * crate::fit::bits(layout) / 16.0) as u64);
-        }
-        let small = (self.layers * (4 * self.hidden + 2 * self.global_head_dim + 1) + self.hidden) as u64 * 2;
-        (w + small, bf16 + small)
-    }
-
-    /// The keys and values: (the sliding layers' rings, fixed: the window and a chunk each, or the context where it is shorter; a position's bytes in the global layers).
-    /// `twelve`: in the executor's 12-bit lossless pages (a sixteenth of a page a token), else bf16.
-    pub fn kv_bytes(&self, chunk: usize, ctx: usize, twelve: bool) -> (u64, u64) {
-        let cap_s = (self.window + chunk).min(ctx) as u64;
-        let (mut fixed, mut per) = (0u64, 0u64);
-        for &k in &self.kinds {
-            let (d, nk, _) = self.attn_of(k);
-            let b = if twelve { crate::dynamic::kv12::page_bytes(nk, d).div_ceil(16) } else { (nk * d * 2 * 2) as u64 };
-            match k {
-                KindG4::Sliding => fixed += cap_s * b,
-                KindG4::Global => per += b,
-            }
-        }
-        (fixed, per)
-    }
 }
 
 impl WeightsG4 {
@@ -300,7 +321,7 @@ impl WeightsG4 {
         let p = cfg.prefix.clone();
         let items = cfg.items();
         let matrix_bytes: u64 = items.iter().map(|it| (it.rows * it.cols * 2) as u64).sum();
-        // a glyd-v7 directory (`glyd-engine pack MODEL OUT --layout i4x|i6|...`, src/pack.rs gemma4_plan): its packs read as saved (each fused under its first member's name), in its layout
+        // a glyd-v7 directory (`glyd-engine pack MODEL OUT --layout i4x|i6|...`, src/pack.rs `plan`, from its description): its packs read as saved (each fused under its first member's name), in its layout
         let v7 = crate::weights::v7_manifest(dir)?;
         let layout = match &v7 {
             Some((l, _)) => *l,
@@ -444,95 +465,6 @@ impl DraftG4 {
     }
 }
 
-/// kernels/gemma4.cu's kernels, each by its type (`crate::kt`): a launch with arguments of other types than the kernel's does not compile.
-pub struct KernG4 {
-    pub(crate) norm: crate::kt::g4_rmsnorm,
-    pub(crate) embed_norm: crate::kt::g4_embed_norm,
-    pub(crate) add_norm: crate::kt::g4_add_norm,
-    pub(crate) prep256: crate::kt::g4_prep256,
-    pub(crate) prep512: crate::kt::g4_prep512,
-    pub(crate) attn256: crate::kt::g4_attn256,
-    pub(crate) attn512: crate::kt::g4_attn512,
-    pub(crate) parts256: crate::kt::g4_attn256_parts,
-    pub(crate) parts512: crate::kt::g4_attn512_parts,
-    pub(crate) merge: crate::kt::g4_attn_merge,
-    pub(crate) gelu: crate::kt::g4_gelu_mul,
-    pub(crate) softcap: crate::kt::g4_softcap,
-    pub(crate) draft_in: crate::kt::g4_draft_in,
-    pub(crate) fa256: crate::kt::g4_fa256,
-    pub(crate) fa512: crate::kt::g4_fa512,
-    pub(crate) fa512b: crate::kt::g4_fa512b,
-    /// Whether prompt chunks take the tensor-core attention (g4_fa256, g4_fa512b; GLYD_G4_FA=0: g4_attn_t).
-    pub(crate) fa: bool,
-}
-
-/// Dynamic shared memory of g4_fa512b: K and V [32][520] bf16 and the score shares [2][4][16][33] floats.
-pub(crate) const FA512B_SMEM: u32 = (2 * 32 * 520 * 2 + 2 * 4 * 16 * 33 * 4) as u32;
-
-/// Dynamic shared memory of a tensor-core attention block (g4_fa_t): Q [BM][D + 8], K [32][D + 8], V [32][DV + 8] bf16.
-pub(crate) fn fa_smem(d: usize, dv: usize, bm: usize) -> u32 {
-    ((bm * (d + 8) + 32 * (d + 8) + 32 * (dv + 8)) * 2) as u32
-}
-
-/// Dynamic shared memory of an attention block of head d and r g warps.
-pub(crate) fn attn_smem(d: usize, rg: usize) -> u32 {
-    ((KB * (d / 2 + 1) + KB * d / 2 + rg * d / 2) * 4) as u32
-}
-
-impl KernG4 {
-    pub fn load(dev: &Dev) -> Result<KernG4> {
-        let k = KernG4 {
-            norm: dev.typed()?,
-            embed_norm: dev.typed()?,
-            add_norm: dev.typed()?,
-            prep256: dev.typed()?,
-            prep512: dev.typed()?,
-            attn256: dev.typed()?,
-            attn512: dev.typed()?,
-            parts256: dev.typed()?,
-            parts512: dev.typed()?,
-            merge: dev.typed()?,
-            gelu: dev.typed()?,
-            softcap: dev.typed()?,
-            draft_in: dev.typed()?,
-            fa256: dev.typed()?,
-            fa512: dev.typed()?,
-            fa512b: dev.typed()?,
-            // (on: against transformers bf16 on 31B QAT, wikitext 32 x 512, KLD 0.0192 where g4_attn_t's is 0.0225, and a 28K prompt 2x faster;
-            // GLYD_G4_FA=0 for g4_attn_t)
-            fa: {
-                // (the switch back, a development build's alone: a release build reads no GLYD_ variable it does not list)
-                #[cfg(feature = "dev")]
-                let on = std::env::var("GLYD_G4_FA").map_or(true, |v| v != "0");
-                #[cfg(not(feature = "dev"))]
-                let on = true;
-                on
-            },
-        };
-        k.fa256.allow_smem(fa_smem(256, 256, 64))?;
-        k.fa512.allow_smem(fa_smem(512, 256, 32))?;
-        k.fa512b.allow_smem(FA512B_SMEM)?;
-        for (kern, d) in [(&*k.attn256, 256), (&*k.parts256, 256), (&*k.attn512, 512), (&*k.parts512, 512)] {
-            kern.allow_smem(attn_smem(d, 16))?;
-        }
-        Ok(k)
-    }
-}
-
-/// kernels/gemma4.cu's G4Pf: a small kernel's spare blocks prefetch into L2 the start of the first-wave blocks of the skinny product that comes next (GLY-312).
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub(crate) struct G4Pf {
-    pub(crate) data: u64,
-    pub(crate) scales: u64,
-    pub(crate) dstride: i64,
-    pub(crate) sstride: i64,
-    pub(crate) dhead: i32,
-    pub(crate) shead: i32,
-    pub(crate) regions: i32,
-    pub(crate) shift: i32,
-}
-
 /// What the development commands need of a Gemma 4 run: the description executor, or the same split over GPUs (`g4check --split`).
 #[cfg(feature = "dev")]
 trait Pass {
@@ -627,10 +559,18 @@ fn split_of(a: &crate::args::Args, dir: &Path, desc: crate::dynamic::ModelDesc, 
 fn load_dyn(dir: &Path, ctx: usize, chunk: usize, graph: bool, layout: Option<Layout>, draft: Option<(&Path, usize)>) -> Result<crate::dynamic::Dyn> {
     let c = ConfigG4::load(dir)?;
     let spec = match draft {
-        Some((d, k)) => Some(crate::dynamic::DraftSpec { dir: d, desc: crate::dynamic::gemma4::describe_draft(&ConfigG4::load_for(d, true)?, &c), k }),
+        Some((d, k)) => {
+            Some(crate::dynamic::DraftSpec { dir: d, desc: crate::dynamic::gemma4::describe_draft(&ConfigG4::load_for(d, true)?, &c), k, experts: None })
+        }
         None => None,
     };
-    crate::dynamic::Dyn::new(dir, crate::dynamic::gemma4::lowered(dir, &c)?, spec, &crate::dynamic::Opts { ctx, chunk, graph, device: 0, layout })
+    crate::dynamic::Dyn::new(
+        dir,
+        &ModelConfig::load(dir)?,
+        crate::dynamic::gemma4::lowered(dir, &c)?,
+        spec,
+        &crate::dynamic::Opts { ctx, chunk, graph, device: 0, layout },
+    )
 }
 
 /// `g4check MODEL REF.json [--layout L] [--ctx N] [--chunk N] [--no-graph] [--split ...]`: the description executor against transformers' reference
@@ -831,79 +771,6 @@ pub fn prefill_prof(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// `g4fatest [--rows N] [--keys K] [--window W]`: the tensor-core attention (g4_fa256, g4_fa512) against g4_attn_t on random queries, keys and values (Gemma 4 31B's heads:
-/// 32 query heads, 16 key-value heads at 256 and 4 at 512): the largest difference of the outputs and the rows where they differ by more than 0.05.
-#[cfg(feature = "dev")]
-pub fn fa_test(a: &crate::args::Args) -> Result<()> {
-    let dev = Dev::new(0)?;
-    let kg = KernG4::load(&dev)?;
-    let (n, keys, window) = (a.num("rows", 257usize)?, a.num("keys", 0usize)?, a.num("window", 0i32)?);
-    let scale = a.num("scale", 0.5f32)?;
-    let s = dev.stream;
-    let mut seed = 0x9e3779b97f4a7c15u64;
-    let mut rnd = |m: usize| -> Vec<u16> {
-        (0..m)
-            .map(|_| {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                bf16_bits(((seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * scale)
-            })
-            .collect()
-    };
-    for (d, nk) in [(256usize, 16usize), (512, 4)] {
-        let nq = 32;
-        let cap = (keys + n).max(n) + 16;
-        let q = upload_bytes(crate::weights::as_bytes(&rnd(n * nq * d)))?;
-        let kc = upload_bytes(crate::weights::as_bytes(&rnd(cap * nk * d)))?;
-        let vc = upload_bytes(crate::weights::as_bytes(&rnd(cap * nk * d)))?;
-        let pos: Vec<i32> = (0..n).map(|i| (keys + i) as i32).collect();
-        let pb = Buf::new(4 * n)?;
-        pb.write(0, &pos)?;
-        let (o1, o2) = (Buf::zeroed(n * nq * d * 2)?, Buf::zeroed(n * nq * d * 2)?);
-        let g = nq / nk;
-        let r = (16 / g).max(1);
-        let (attn, fa, bm) = if d == 256 { (kg.attn256.sig(), kg.fa256.sig(), 64usize) } else { (kg.attn512.sig(), kg.fa512.sig(), 32usize) };
-        let (nqi, nki) = (nq as i32, nk as i32);
-        // SAFETY: buffers sized for n rows and cap positions.
-        unsafe {
-            launch!(attn, [((n + r - 1) / r) as u32, nk as u32, 1], [(32 * r * g) as u32, 1, 1], smem attn_smem(d, r * g), s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o1.ptr, n as i32, nqi, nki, r as i32, window, cap as i32, 0u64)?;
-            if d == 512 && a.has("b") {
-                launch!(kg.fa512b, [(n.div_ceil(32)) as u32, nq as u32, 1], [256, 1, 1], smem FA512B_SMEM, s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o2.ptr, n as i32, nqi, nki, window, cap as i32, 0u64)?;
-            } else {
-                launch!(fa, [(n.div_ceil(bm)) as u32, nq as u32, (d / 256) as u32], [(bm / 16 * 32) as u32, 1, 1], smem fa_smem(d, 256, bm), s; q.ptr, kc.ptr, vc.ptr, pb.ptr, o2.ptr, n as i32, nqi, nki, window, cap as i32, 0u64)?;
-            }
-        }
-        dev.sync()?;
-        let (mut x, mut y) = (vec![0u16; n * nq * d], vec![0u16; n * nq * d]);
-        o1.read(0, &mut x)?;
-        o2.read(0, &mut y)?;
-        let f = |w: u16| f32::from_bits((w as u32) << 16);
-        let mut worst = (0f32, 0usize);
-        let mut bad_rows = std::collections::BTreeSet::new();
-        for i in 0..x.len() {
-            let dd = (f(x[i]) - f(y[i])).abs();
-            if dd > worst.0 {
-                worst = (dd, i);
-            }
-            if dd > 0.05 {
-                bad_rows.insert(i / (nq * d));
-            }
-        }
-        let wi = worst.1;
-        println!(
-            "head {d}: largest difference {:.4} (row {}, head {}, dim {}); rows differing by > 0.05: {} of {n} {:?}",
-            worst.0,
-            wi / (nq * d),
-            (wi / d) % nq,
-            wi % d,
-            bad_rows.len(),
-            bad_rows.iter().take(12).collect::<Vec<_>>()
-        );
-    }
-    Ok(())
-}
-
 /// `g4tok MODEL REF.json`: the chat template and tokenizer (src/chat.rs, src/tok.rs) against transformers' on the reference prompts (research/gemma4-engine/ref_gemma4.py renders
 /// each as a user turn, add_generation_prompt, enable_thinking false, then tokenizes without special tokens): the ids the same, and each continuation decoded as transformers decoded it. No GPU.
 #[cfg(feature = "dev")]
@@ -1039,7 +906,7 @@ pub fn i4x_check(a: &crate::args::Args) -> Result<()> {
     let dir = Path::new(a.need(1, "MODEL")?);
     let cfg = ConfigG4::load(dir)?;
     let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
-    let dev = Dev::new(0)?;
+    let dev = crate::dev::Dev::new(0)?;
     let lib = Lib::find()?;
     let p = &cfg.prefix;
     let mut names: Vec<(String, usize)> = Vec::new();
@@ -1100,12 +967,18 @@ pub fn i4x_check(a: &crate::args::Args) -> Result<()> {
     Ok(())
 }
 
-/// GLYD_G4_PF: "a,n,g" KiB (unset: 128,32,8, the best measured on an RTX 4080 SUPER; 0,0,0 none).
-pub(crate) fn pf_kib(v: Option<&str>) -> Result<[usize; 3]> {
-    let Some(v) = v.filter(|v| !v.is_empty()) else { return Ok([128, 32, 8]) };
-    let k: Vec<Option<usize>> = v.split(',').map(|x| x.trim().parse().ok()).collect();
-    match k[..] {
-        [Some(a), Some(n), Some(g)] => Ok([a, n, g]),
-        _ => err(format!("the prefetch setting {v}: three numbers of KiB, a,n,g")),
+#[cfg(all(test, feature = "dev"))]
+mod tests {
+    use super::ConfigG4;
+
+    /// generation_config.json's end tokens join config.json's; a file that is there and does not parse is refused by name, not passed over.
+    #[test]
+    fn a_generation_config_is_read_or_refused() {
+        let text = crate::logits::GEMMA4_RANDOM_CONFIG;
+        let c = ConfigG4::parse(text, Some(r#"{"eos_token_id": [1, 106, 50]}"#), false).unwrap();
+        assert_eq!(c.eos, [1, 106, 50]);
+        assert_eq!(ConfigG4::parse(text, None, false).unwrap().eos, [1, 106]);
+        let e = ConfigG4::parse(text, Some(r#"{"eos_token_id": [1, 106, 50"#), false).unwrap_err().msg;
+        assert!(e.contains("generation_config.json"), "{e}");
     }
 }

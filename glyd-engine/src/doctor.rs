@@ -180,7 +180,7 @@ impl Facts {
         let hub_state = if hub::offline() {
             HubState::Offline
         } else {
-            match h.list("Qwen/Qwen3-0.6B", "main") {
+            match h.list("Qwen/Qwen3.5-0.8B", "main") {
                 Ok(_) => HubState::Reachable(h.endpoint().to_string()),
                 Err(e) => HubState::Unreachable(h.endpoint().to_string(), e.to_string()),
             }
@@ -211,20 +211,7 @@ impl Facts {
         let devices = self
             .gpus
             .as_ref()
-            .map(|all| {
-                all.iter()
-                    .map(|g| plan::Device {
-                        name: g.name.clone(),
-                        vendor,
-                        cc: g.cc,
-                        total: g.total,
-                        free: g.free,
-                        bandwidth: plan::bandwidth_of(&g.name).unwrap_or(300.0),
-                        driver: g.driver,
-                        unified: plan::is_unified(&g.name, vendor),
-                    })
-                    .collect()
-            })
+            .map(|all| all.iter().map(|g| plan::Device::listed(g.name.clone(), vendor, g.cc, g.total, g.free, g.driver)).collect())
             .unwrap_or_default();
         Machine {
             name: "this computer".into(),
@@ -240,9 +227,11 @@ impl Facts {
 /// The plan `run` would load for the sample model on this machine (the level the ladder takes), or why none fits.
 pub fn sample_plan(m: &Machine) -> Result<LoadPlan, String> {
     let a = Args::from(["fit".to_string(), SAMPLE_MODEL.to_string()]);
-    let row = crate::support::row(crate::support::family(SAMPLE_CONFIG, SAMPLE_MODEL).map_err(|r| r.what)?);
-    let sh = plan::Shape::from_config(SAMPLE_CONFIG)?;
-    match plan::exact_options(&a, SAMPLE_MODEL, SAMPLE_CONFIG, None, row, &sh, m, 1, true) {
+    // (the sample's config.json parsed once)
+    let c = crate::support::parsed(SAMPLE_CONFIG, SAMPLE_MODEL).map_err(|r| r.what)?;
+    let row = crate::support::row(crate::support::family_in(&c, SAMPLE_MODEL).map_err(|r| r.what)?);
+    let sh = plan::Shape::from_model(&c)?;
+    match plan::exact_options(&a, SAMPLE_MODEL, &c, None, row, &sh, m, 1, true, plan::POSITIONS) {
         Some((options, refusals)) => match plan::choose(&options, plan::TARGET_CTX) {
             Some(c) => c.load.ok_or_else(|| "no plan".to_string()),
             None => Err(refusals.into_iter().next().map_or_else(|| "nothing fits".to_string(), |r| format!("{} ({})", r.what, r.fix))),
@@ -259,6 +248,13 @@ pub struct Failure {
     pub fix: &'static str,
 }
 
+/// The fix of a GPU library that does not load: a CUDA build loads one only where GLYD_GPU_LIB names it (its kernels are its own); an AMD build's
+/// operations are the library's still.
+#[cfg(not(glyd_hip))]
+const LIBRARY_FIX: &str = "Unset GLYD_GPU_LIB, which names a GPU library that does not load: the engine runs its own kernels without one";
+#[cfg(glyd_hip)]
+const LIBRARY_FIX: &str = "bash gpu/build_lib_hip.sh target/release, or GLYD_GPU_LIB=/path/to/libglyd_gpu_hip.so";
+
 pub const MATRIX: &[Failure] = &[
     Failure {
         class: "no NVIDIA driver, or no GPU visible to the process",
@@ -267,11 +263,7 @@ pub const MATRIX: &[Failure] = &[
     },
     Failure { class: "GPU older than Ampere", check: "gpu-age", fix: "Nothing on this card: RTX 30 series and later, A10, A100, L4, L40S and H100 run" },
     Failure { class: "driver older than the engine's kernels", check: "driver", fix: "Update the NVIDIA driver to the version `glyd doctor` names (sudo ubuntu-drivers install, then reboot)" },
-    Failure {
-        class: "GPU library not found",
-        check: "gpu-library",
-        fix: "bash gpu/build_lib.sh target/release, or GLYD_GPU_LIB=/path/to/libglyd_gpu_cuda13.so",
-    },
+    Failure { class: "GPU library not found", check: "gpu-library", fix: LIBRARY_FIX },
     Failure {
         class: "AMD or Apple GPU, or an Arm computer",
         check: "machine",
@@ -376,7 +368,7 @@ pub fn checks(f: &Facts) -> Vec<Check> {
             "cuBLAS",
             Status::Note,
             "not found: long prompts use the engine's own products (a little slower)",
-            Some("Optional: install the CUDA 13 cuBLAS, or set GLYD_CUBLAS to it"),
+            Some("Optional: install the CUDA 13 cuBLAS where the loader finds it (a development build also takes GLYD_CUBLAS, a path; a release build ignores it)"),
         )),
     }
     // the backends: each one detected or not, its version, and accepted or rejected with the reason (the refusal `run` gives)
@@ -823,7 +815,7 @@ mod tests {
             os: "linux".into(),
             arch: "x86_64".into(),
             gpus: Ok(vec![gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 16, 15, 13000)]),
-            library: Ok("/usr/lib/libglyd_gpu_cuda13.so".into()),
+            library: Ok("none: the engine runs its own kernels".into()),
             cublas: Some("/usr/lib/libcublas.so.13".into()),
             ram: Some((64 << 30, 56 << 30)),
             cache: Dir { path: "/home/u/.cache/glyd".into(), free: Some(500 << 30) },
@@ -909,7 +901,7 @@ mod tests {
         );
         assert!(get(&checks(&healthy()), "wddm").is_empty());
         let mut f = healthy();
-        f.library = Err("libglyd_gpu_cuda13.so is not beside the program".into());
+        f.library = Err("/tmp/x.so: cannot open shared object file (GLYD_GPU_LIB names it)".into());
         case("no library", f, "gpu-library", Status::Fail);
         // (aarch64 is planned as x86_64: a healthy computer passes on it; an architecture the engine is not built for fails)
         let mut f = healthy();

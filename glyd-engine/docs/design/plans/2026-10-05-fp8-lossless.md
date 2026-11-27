@@ -6,9 +6,9 @@
 
 **Architecture:** a fixed-rate lossless code for e4m3 (Task 1). Our own pack, unpack and decode kernels, with a fused decode-and-FP8-matmul for decode steps (Tasks 2 and 5). A wrapper around vLLM 0.30's FP8 Linear and MoE methods that packs at load and decodes per layer for prompts (Tasks 3 and 4).
 
-**Spec:** `docs/superpowers/specs/2026-10-05-fp8-lossless-design.md`.
+**Spec:** `glyd-engine/docs/design/specs/2026-10-05-fp8-lossless-design.md`.
 
-`$S` = `/private/tmp/claude-501/-Users-suryakoritala-alatirok/a9feedc0-e067-4d76-bca6-e4b6b9538345/scratchpad`.
+`$S` is the scratch directory of the run (not kept).
 
 ## Global constraints
 

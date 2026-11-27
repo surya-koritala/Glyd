@@ -64,67 +64,93 @@ pub fn rot_in(x: &[f32], signs: &[i8], b: usize) -> Vec<f32> {
 
 /// The first product of one expert: gu [U] (bf16 bits) = each row of `m` (gate_up [U, W]) times xr [W] (fp32, the rotated input), in the kernels' order, rounded to bf16.
 pub fn up(m: &CbView, xr: &[f32], gu: &mut [u16]) -> Result<()> {
+    up_many(m, &[xr], &mut [gu])
+}
+
+/// `up` for several inputs of one expert (its pairs in a call): each row's codes and codebook decoded once for all of them, each input's sums in `up`'s order (its bits).
+pub fn up_many(m: &CbView, xrs: &[&[f32]], gus: &mut [&mut [u16]]) -> Result<()> {
     check_matrix(m, "the first matrix")?;
-    if xr.len() != m.cols || gu.len() != m.rows {
-        return err(format!("a first product of {} rows of {} values given an input of {} and room for {}", m.rows, m.cols, xr.len(), gu.len()));
+    if xrs.len() != gus.len() || xrs.iter().zip(gus.iter()).any(|(x, g)| x.len() != m.cols || g.len() != m.rows) {
+        return err(format!("a first product of {} rows of {} values given {} inputs and {} outputs of other sizes", m.rows, m.cols, xrs.len(), gus.len()));
     }
     let runs = m.cols / RUN;
-    for (n, out) in gu.iter_mut().enumerate() {
+    let mut lanes = vec![[0f32; 32]; xrs.len()];
+    for n in 0..m.rows {
         let book = book_of(m, n);
-        let mut lane = [0f32; 32];
+        lanes.iter_mut().for_each(|l| *l = [0f32; 32]);
         for r in 0..runs {
-            let codes = run_codes(m, n, r);
-            let mut t = 0f32;
-            for (c, x) in codes.iter().zip(&xr[r * RUN..(r + 1) * RUN]) {
-                t = book[*c as usize].mul_add(*x, t);
+            let (codes, scale) = (run_codes(m, n, r), f32_of(m.scale(n, r)));
+            for (lane, xr) in lanes.iter_mut().zip(xrs) {
+                let mut t = 0f32;
+                for (c, x) in codes.iter().zip(&xr[r * RUN..(r + 1) * RUN]) {
+                    t = book[*c as usize].mul_add(*x, t);
+                }
+                lane[r % 32] = scale.mul_add(t, lane[r % 32]);
             }
-            lane[r % 32] = f32_of(m.scale(n, r)).mul_add(t, lane[r % 32]);
         }
-        let mut off = 1;
-        while off < 32 {
-            let prev = lane;
-            for (l, v) in lane.iter_mut().enumerate() {
-                *v = prev[l] + prev[l ^ off];
+        for (lane, gu) in lanes.iter_mut().zip(gus.iter_mut()) {
+            let mut off = 1;
+            while off < 32 {
+                let prev = *lane;
+                for (l, v) in lane.iter_mut().enumerate() {
+                    *v = prev[l] + prev[l ^ off];
+                }
+                off <<= 1;
             }
-            off <<= 1;
+            gu[n] = bf16(lane[0]);
         }
-        *out = bf16(lane[0]);
     }
     Ok(())
 }
 
 /// The second product of one expert: part [W] (fp32, the rotated basis) = the sum over the neurons n of h[n] (bf16 bits) times row n of `m` (down_t [I, W]), dense, in the kernels' order.
 pub fn down(m: &CbView, h: &[u16], part: &mut [f32]) -> Result<()> {
+    down_many(m, &[h], &mut [part])
+}
+
+/// `down` for several activations of one expert: each run's codes decoded once for all of them, each one's sums in `down`'s order (its bits).
+pub fn down_many(m: &CbView, hs: &[&[u16]], parts: &mut [&mut [f32]]) -> Result<()> {
     check_matrix(m, "the second matrix")?;
-    if h.len() != m.rows || part.len() != m.cols {
-        return err(format!("a second product of {} neurons and {} outputs given {} activations and room for {}", m.rows, m.cols, h.len(), part.len()));
+    if hs.len() != parts.len() || hs.iter().zip(parts.iter()).any(|(h, p)| h.len() != m.rows || p.len() != m.cols) {
+        return err(format!(
+            "a second product of {} neurons and {} outputs given {} activations and {} outputs of other sizes",
+            m.rows,
+            m.cols,
+            hs.len(),
+            parts.len()
+        ));
     }
     let runs = m.cols / RUN;
-    let mut acc = vec![0f32; CHAINS * OUT];
+    let mut acc = vec![0f32; hs.len() * CHAINS * OUT];
     for chunk in 0..runs.div_ceil(OUT / RUN) {
         acc.iter_mut().for_each(|v| *v = 0.0);
-        for (n, &hv) in h.iter().enumerate() {
-            let (a, book, chain) = (f32_of(hv), book_of(m, n), n % CHAINS);
+        for n in 0..m.rows {
+            let (book, chain) = (book_of(m, n), n % CHAINS);
             for r in 0..OUT / RUN {
                 let run = chunk * (OUT / RUN) + r;
                 if run >= runs {
                     break;
                 }
-                let c = a * f32_of(m.scale(n, run));
-                let dst = &mut acc[chain * OUT + r * RUN..][..RUN];
-                for (d, code) in dst.iter_mut().zip(run_codes(m, n, run)) {
-                    *d = book[code as usize].mul_add(c, *d);
+                let (codes, scale) = (run_codes(m, n, run), f32_of(m.scale(n, run)));
+                for (v, h) in hs.iter().enumerate() {
+                    let c = f32_of(h[n]) * scale;
+                    let dst = &mut acc[(v * CHAINS + chain) * OUT + r * RUN..][..RUN];
+                    for (d, code) in dst.iter_mut().zip(codes) {
+                        *d = book[code as usize].mul_add(c, *d);
+                    }
                 }
             }
         }
-        for o in 0..OUT.min(m.cols - chunk * OUT) {
-            let mut total = 0f32;
-            for w in 0..CHAINS / 8 {
-                let x = |g: usize| acc[(w * 8 + g) * OUT + o];
-                let s = ((x(0) + x(1)) + (x(2) + x(3))) + ((x(4) + x(5)) + (x(6) + x(7)));
-                total = if w == 0 { s } else { total + s };
+        for (v, part) in parts.iter_mut().enumerate() {
+            for o in 0..OUT.min(m.cols - chunk * OUT) {
+                let mut total = 0f32;
+                for w in 0..CHAINS / 8 {
+                    let x = |g: usize| acc[(v * CHAINS + w * 8 + g) * OUT + o];
+                    let s = ((x(0) + x(1)) + (x(2) + x(3))) + ((x(4) + x(5)) + (x(6) + x(7)));
+                    total = if w == 0 { s } else { total + s };
+                }
+                part[chunk * OUT + o] = total;
             }
-            part[chunk * OUT + o] = total;
         }
     }
     Ok(())
@@ -147,7 +173,8 @@ pub fn activate(a: &Act, gu: &[u16], out: &mut [u16]) {
             for (i, o) in out.iter_mut().enumerate() {
                 let (g, u) = (f32_of(gu[i]), f32_of(gu[inter + i]));
                 *o = bf16(match *a {
-                    Act::Situ { beta, linear } => beta * (g / beta).tanh() / (1.0 + (-g).exp()) * linear * (u / linear).tanh(),
+                    // (situ as the GPU's moe_act computes it, to the bit: src/cpu_fp4.rs)
+                    Act::Situ { beta, linear } => crate::cpu_fp4::situ_f32(g, u, beta, linear),
                     _ => {
                         let (g, u) = (g.min(lim), u.max(-lim).min(lim));
                         let act =
@@ -168,11 +195,16 @@ pub fn act_of(a: Act) -> impl Fn(&[u16], &mut [u16]) {
 /// One pair's two products over an expert: xr [W] (fp32, the rotated input) -> the first product (rounded to bf16) -> `act` -> the second product into part [W] (fp32, the rotated basis). `act` maps the first product's rows to the
 /// activation's (a family's own: `act_of` is moe_act's).
 pub fn pair(e: &HbgExpert, xr: &[f32], act: &dyn Fn(&[u16], &mut [u16]), part: &mut [f32]) -> Result<()> {
-    let mut gu = vec![0u16; e.up.rows];
-    up(&e.up, xr, &mut gu)?;
-    let mut h = vec![0u16; e.down.rows];
-    act(&gu, &mut h);
-    down(&e.down, &h, part)
+    pairs(e, &[xr], act, &mut [part])
+}
+
+/// `pair` for several inputs of one expert (its pairs in a call): its bytes read once for all of them (`up_many`, `down_many`), each part `pair`'s bits.
+pub fn pairs(e: &HbgExpert, xrs: &[&[f32]], act: &dyn Fn(&[u16], &mut [u16]), parts: &mut [&mut [f32]]) -> Result<()> {
+    let mut gu = vec![vec![0u16; e.up.rows]; xrs.len()];
+    up_many(&e.up, xrs, &mut gu.iter_mut().map(|g| &mut g[..]).collect::<Vec<_>>())?;
+    let mut h = vec![vec![0u16; e.down.rows]; xrs.len()];
+    h.iter_mut().zip(&gu).for_each(|(h, g)| act(g, h));
+    down_many(&e.down, &h.iter().map(|h| &h[..]).collect::<Vec<_>>(), parts)
 }
 
 /// A token's experts' sum: the weighted sum of its pairs' parts (fp32, fmaf in the order given), `extra` (fp32 [W] in the rotated basis, the host's sums of other pairs) added, then R^T and one rounding to bf16 (bits).
@@ -207,7 +239,7 @@ pub enum Finish {
 }
 
 /// The pairs the expert cache's host computes: pair p is `experts[p]` on the row `tokens[p]` of `xr` ([tokens, W] fp32, the rotated inputs) with the weight `wts[p]`, its two products (`pair`, the activation `act`) finished as `finish`
-/// says into row p of `out` [pairs, W] (fp32). On `threads` threads, a pair a thread at a time: the values do not depend on them.
+/// says into row p of `out` [pairs, W] (fp32). On `threads` threads, an expert's pairs a thread at a time (its bytes read once for them all, `pairs`): the values do not depend on them.
 #[allow(clippy::too_many_arguments)]
 pub fn store_pairs(experts: &[HbgExpert], xr: &[f32], tokens: &[usize], wts: &[f32], act: Act, finish: &Finish, out: &mut [f32], threads: usize) -> Result<()> {
     let n = experts.len();
@@ -232,31 +264,44 @@ pub fn store_pairs(experts: &[HbgExpert], xr: &[f32], tokens: &[usize], wts: &[f
         }
     }
     let a = act_of(act);
-    let one = |p: usize, row: &mut [f32]| -> Result<()> {
-        pair(&experts[p], &xr[tokens[p] * w..(tokens[p] + 1) * w], &a, row)?;
-        match finish {
-            Finish::Rotated => row.iter_mut().for_each(|v| *v *= wts[p]),
-            Finish::Normed { signs, rot, w: scale, eps } => {
-                let y = unrot(row, signs, *rot);
-                let v: Vec<f32> = y.iter().zip(scale).map(|(&b, &s)| f32_of(bf16(f32_of(b) * s))).collect();
-                let r = 1.0 / (v.iter().map(|x| x * x).sum::<f32>() / w as f32 + eps).sqrt();
-                row.iter_mut().zip(&v).for_each(|(o, &x)| *o = wts[p] * (x * r));
-            }
+    // (the pairs by expert, an expert its first matrix's codes: a thread takes an expert and reads its bytes once for all its pairs, `pairs`)
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut at: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for (p, e) in experts.iter().enumerate() {
+        let g = *at.entry(e.up.codes.as_ptr() as usize).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[g].push(p);
+    }
+    let finish_row = |p: usize, row: &mut [f32]| match finish {
+        Finish::Rotated => row.iter_mut().for_each(|v| *v *= wts[p]),
+        Finish::Normed { signs, rot, w: scale, eps } => {
+            let y = unrot(row, signs, *rot);
+            let v: Vec<f32> = y.iter().zip(scale).map(|(&b, &s)| f32_of(bf16(f32_of(b) * s))).collect();
+            let r = 1.0 / (v.iter().map(|x| x * x).sum::<f32>() / w as f32 + eps).sqrt();
+            row.iter_mut().zip(&v).for_each(|(o, &x)| *o = wts[p] * (x * r));
         }
+    };
+    let rows: Vec<std::sync::Mutex<&mut [f32]>> = out.chunks_mut(w.max(1)).map(std::sync::Mutex::new).collect();
+    let group = |g: &[usize]| -> Result<()> {
+        let xrs: Vec<&[f32]> = g.iter().map(|&p| &xr[tokens[p] * w..(tokens[p] + 1) * w]).collect();
+        let mut held: Vec<std::sync::MutexGuard<&mut [f32]>> = g.iter().map(|&p| rows[p].lock().expect("a pair's row")).collect();
+        let mut parts: Vec<&mut [f32]> = held.iter_mut().map(|r| &mut r[..]).collect();
+        pairs(&experts[g[0]], &xrs, &a, &mut parts)?;
+        g.iter().zip(parts).for_each(|(&p, row)| finish_row(p, row));
         Ok(())
     };
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let rows: Vec<std::sync::Mutex<&mut [f32]>> = out.chunks_mut(w.max(1)).map(std::sync::Mutex::new).collect();
     let failed = std::sync::Mutex::new(None);
     std::thread::scope(|sc| {
-        for _ in 0..threads.clamp(1, n.max(1)) {
+        for _ in 0..threads.clamp(1, groups.len().max(1)) {
             sc.spawn(|| loop {
-                let p = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if p >= n {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if i >= groups.len() {
                     return;
                 }
-                let mut row = rows[p].lock().expect("a pair's row");
-                if let Err(e) = one(p, &mut row) {
+                if let Err(e) = group(&groups[i]) {
                     *failed.lock().expect("the error") = Some(e);
                     return;
                 }
@@ -458,6 +503,12 @@ mod tests {
         let mut one = vec![0f32; out.len()];
         store_pairs(&experts, &xr, &toks, &wts, act, &Finish::Rotated, &mut one, 1).unwrap();
         assert_eq!(one, out);
+        // (experts 0 and 3 have two pairs each, computed together: each pair's row is the one it has alone, to the bit)
+        for (j, row) in out.chunks(w).enumerate() {
+            let mut part = vec![0f32; w];
+            pair(&experts[j], &xr[toks[j] * w..][..w], &act_of(act), &mut part).unwrap();
+            assert_eq!(row, &part.iter().map(|v| v * wts[j]).collect::<Vec<_>>()[..], "pair {j}");
+        }
         // Muse's norm of a pair
         let scale: Vec<f32> = (0..w).map(|i| 1.0 + (i % 7) as f32 * 0.05).collect();
         let fin = Finish::Normed { signs: host.signs.clone(), rot: host.shape.rot, w: scale.clone(), eps: 1e-6 };
@@ -545,7 +596,7 @@ mod tests {
         let gelu = |g: f32| 0.5 * g * (1.0 + (0.797_884_6 * (g + 0.044_715 * g * g * g)).tanh());
         assert_eq!(f(out[1]), f(b(gelu(-2.0) * 0.5)));
         activate(&Act::Situ { beta: 4.0, linear: 25.0 }, &gu, &mut out);
-        let situ = |g: f32, u: f32| 4.0 * (g / 4.0).tanh() / (1.0 + (-g).exp()) * 25.0 * (u / 25.0).tanh();
+        let situ = |g: f32, u: f32| 4.0 * crate::cpu_fp4::tanh_one(g / 4.0) / (1.0 + crate::cpu_fp4::exp_one(-g)) * 25.0 * crate::cpu_fp4::tanh_one(u / 25.0);
         assert_eq!(f(out[0]), f(b(situ(1.0, 3.0))));
         assert_eq!(f(out[2]), f(b(situ(20.0, -30.0))));
     }

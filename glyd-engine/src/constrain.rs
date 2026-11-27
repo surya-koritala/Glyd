@@ -373,6 +373,11 @@ impl Gram {
         &self.ends
     }
 
+    /// The tokens a mask has (its length: the tokenizer's, or the row's where that is wider).
+    pub fn width(&self) -> usize {
+        self.vocab
+    }
+
     /// Masks made.
     pub fn masks(&self) -> u64 {
         self.masks
@@ -658,8 +663,8 @@ mod tests {
                 // (a grammar is no greedy step: the GPU's largest logit is not the choice, nor are its largest logits the draw's whole)
                 assert!(!p.greedy());
                 let mut s = Sampler::new(p, &[]);
-                // (the GPU's largest logits serve a draw that looks at no more of the row than they hold)
-                assert_eq!(s.top_need().is_some(), temperature <= 0.0 || (1..=64).contains(&top_k));
+                // (a GPU's candidates of a draw under a grammar are of the row with the grammar's mask on it, never the model's own)
+                assert!(s.changes(), "the model's own candidates do not serve a draw under a grammar");
                 let mut out = Vec::new();
                 for step in 0..20 {
                     let logits: Vec<f32> =
@@ -676,7 +681,7 @@ mod tests {
             }
         }
         // a request with no grammar is as it was
-        assert!(Params::default().greedy() && Sampler::new(Params::default(), &[]).top_need().is_none());
+        assert!(Params::default().greedy() && Sampler::new(Params::default(), &[]).proc().is_none());
     }
 
     /// The draw under a grammar is the draw from the row with the grammar's tokens taken out, as the sampler makes it with no grammar: a top-k, a top-p, whole or not.
@@ -856,18 +861,26 @@ mod tests {
         let after = bits(&g.handle().unwrap().words().unwrap());
         assert_eq!(after, g.allowed());
         assert!(after[end() as usize] && after.iter().filter(|&&x| x).count() == 1);
-        // the sampler: a handle where the draw looks at the GPU's candidates (greedy, or a top-k within them), none where it needs the row
-        for (temperature, top_k, handle) in [(0.0, 0, true), (0.8, 40, true), (0.8, 0, false), (0.8, 65, false)] {
-            let s = Sampler::new(Params { temperature, top_k, constraint: Some(c.clone()), ..Params::default() }, &[]);
-            assert_eq!(s.mask_handle().is_some(), handle, "temperature {temperature} top_k {top_k}");
+        // the sampler: whatever the draw, what the GPU puts on the row holds the grammar's mask (the row's width wider than the grammar's: the rest taken out); none with no grammar
+        let width = vocab().len() + 5;
+        for (temperature, top_k) in [(0.0, 0), (0.8, 40), (0.8, 0), (0.8, 65)] {
+            let mut s = Sampler::new(Params { temperature, top_k, constraint: Some(c.clone()), ..Params::default() }, &[]);
+            let r = s.proc().expect("a grammar's mask").resolve(width);
+            assert_eq!(
+                (0..width).map(|t| r.allows(t)).collect::<Vec<_>>(),
+                (0..width).map(|t| t < first.len() && first[t]).collect::<Vec<_>>(),
+                "temperature {temperature} top_k {top_k}"
+            );
         }
-        assert!(Sampler::new(Params { temperature: 0.8, top_k: 40, ..Params::default() }, &[]).mask_handle().is_none());
+        assert!(Sampler::new(Params { temperature: 0.8, top_k: 40, ..Params::default() }, &[]).proc().is_none());
     }
 
-    /// The GPU's largest logits with the grammar's mask put on them before the cut give the token the whole row gives, wherever they give one: at every place of a grammar, at temperature 0 and with a top-k.
+    /// A GPU's view of the row with the grammar's mask put on it (and the penalties, a bias, the tokens held back: `Proc`) gives the token the whole row gives, at every place of a
+    /// grammar and whatever the draw: temperature 0, a top-k, a top-p, a min-p, a draw over the whole row, never reading the row; the row the GPU makes is the host's bit for bit at
+    /// every step (`emu::draw`).
     #[test]
     fn a_draw_from_the_candidates_is_the_draw_from_the_row() {
-        use crate::sampler::{Params, Sampler};
+        use crate::sampler::{emu, Params, Sampler};
         let c = grammars()
             .compile(&Spec::JsonSchema(
                 r#"{"type":"object","properties":{"ab":{"type":"integer"},"yes":{"type":"boolean"}},"required":["ab"],"additionalProperties":false}"#.into(),
@@ -875,41 +888,54 @@ mod tests {
             .unwrap();
         let width = vocab().len() + 5;
         let (mut some, mut none) = (0, 0);
-        for (temperature, top_k) in [(0.0, 0), (0.9, 1), (0.9, 5), (1.2, 40), (0.9, 64)] {
-            for seed in 0..12u64 {
-                let p = Params { temperature, top_k, seed, constraint: Some(c.clone()), ..Params::default() };
-                let (mut by_top, mut by_row) = (Sampler::new(p.clone(), &[]), Sampler::new(p, &[]));
+        for (temperature, top_k, top_p, min_p) in [
+            (0.0, 0, 1.0, 0.0),
+            (0.9, 1, 1.0, 0.0),
+            (0.9, 5, 1.0, 0.0),
+            (1.2, 40, 0.9, 0.0),
+            (0.9, 64, 1.0, 0.1),
+            (1.0, 0, 0.9, 0.0),
+            (1.0, 0, 1.0, 0.05),
+            (0.8, 0, 1.0, 0.0),
+            (1.0, 100, 1.0, 0.0),
+        ] {
+            for (seed, (rep, pres, bias)) in [(1.0, 0.0, vec![]), (1.3, 0.0, vec![]), (1.0, 0.7, vec![(id("ab"), 2.0f32)]), (0.9, -0.4, vec![(end(), -5.0)])]
+                .into_iter()
+                .cycle()
+                .take(12)
+                .enumerate()
+            {
+                let p = Params {
+                    temperature,
+                    top_k,
+                    top_p,
+                    min_p,
+                    seed: seed as u64,
+                    repetition_penalty: rep,
+                    presence_penalty: pres,
+                    logit_bias: bias,
+                    constraint: Some(c.clone()),
+                    ..Params::default()
+                };
+                let (mut by_top, mut by_row) = (Sampler::new(p.clone(), &[id("ab"), 3]), Sampler::new(p, &[id("ab"), 3]));
                 // (the grammar is walked as far as it goes, the same tokens in both)
                 for step in 0..40 {
-                    let row: Vec<f32> = (0..width).map(|t| (((t * 7919 + step * 31 + seed as usize * 13) % 211) as f32 / 8.0).floor() / 4.0 - 3.0).collect();
-                    let mut by: Vec<u32> = (0..width as u32).collect();
-                    by.sort_by(|&a, &b| row[b as usize].partial_cmp(&row[a as usize]).unwrap().then(a.cmp(&b)));
-                    let cands: Vec<(u32, f32)> = by[..64].iter().map(|&i| (i, row[i as usize])).collect();
+                    let row: Vec<f32> = (0..width).map(|t| (((t * 7919 + step * 31 + seed * 13) % 211) as f32 / 8.0).floor() / 4.0 - 3.0).collect();
+                    let (got, read) = emu::draw(&mut by_top, &row);
                     let want = by_row.sample(&row);
-                    let got = match by_top.top_need() {
-                        Some(_) => by_top.sample_top(&cands, None),
-                        None => None,
-                    };
-                    let tok = match got {
-                        Some(t) => {
-                            some += 1;
-                            assert_eq!(t, want, "temperature {temperature} top_k {top_k} seed {seed} step {step}");
-                            t
-                        }
-                        None => {
-                            none += 1;
-                            // (the whole row is read: the draw is the same one, the generator where it was)
-                            assert_eq!(by_top.sample(&row), want, "temperature {temperature} top_k {top_k} seed {seed} step {step}");
-                            want
-                        }
-                    };
-                    if tok == end() {
+                    assert_eq!(got, want, "temperature {temperature} top_k {top_k} top_p {top_p} min_p {min_p} seed {seed} step {step}");
+                    if read {
+                        none += 1;
+                    } else {
+                        some += 1;
+                    }
+                    if got == end() {
                         break;
                     }
                 }
             }
         }
-        assert!(some > 50 && none > 0, "{some} draws from the candidates, {none} from the row");
+        assert!(some > 500 && none == 0, "{some} draws from the GPU's view, {none} from the row");
     }
 
     /// A least length does not hold a reply that the grammar has ended past its end: the end token is chosen where nothing else may be.
@@ -926,6 +952,18 @@ mod tests {
         let text: Vec<u8> = said[..at].iter().flat_map(|&t| vocab()[t as usize].clone()).collect();
         assert_eq!(text, b"ab");
         assert!(said[at..].iter().all(|&t| t == end()));
+        // (the same where the GPU puts the grammar and the held-back end on the row: the end put back at 0, the penalties after, as the host does)
+        let c = grammars().compile(&Spec::Choice(vec!["ab".into()])).unwrap();
+        for (temperature, rep) in [(0.0, 1.0), (0.0, 1.5), (0.7, 1.2)] {
+            let p = Params { temperature, repetition_penalty: rep, min_tokens: 10, constraint: Some(c.clone()), seed: 4, ..Params::default() };
+            let (mut a, mut b) = (Sampler::new(p.clone(), &[end()]), Sampler::new(p, &[end()]));
+            a.set_suppress(vec![end()]);
+            b.set_suppress(vec![end()]);
+            for step in 0..4 {
+                let (got, read) = crate::sampler::emu::draw(&mut a, &logits);
+                assert_eq!((got, read), (b.sample(&logits), false), "temperature {temperature} repetition {rep} step {step}");
+            }
+        }
     }
 
     /// A draft token the grammar does not allow is never kept; one it does is.

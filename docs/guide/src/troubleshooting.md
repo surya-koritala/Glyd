@@ -23,9 +23,9 @@ addresses and your home folder are taken out of it (`~`); `--no-logs` leaves the
 | :--- | :--- | :--- |
 | `GPU  none usable: no CUDA driver ...` | No NVIDIA driver loaded, or no GPU visible to the process. | Check `nvidia-smi`. Install the driver (580 or newer). In a container, give it the GPU (`--gpus all`). An empty `CUDA_VISIBLE_DEVICES` hides every GPU. |
 | `older than the engine runs on (Ampere or newer)` | Compute capability below 8.0: Turing, Pascal and before. | Nothing on this card. RTX 30 series and later, A10, A100, L4, L40S and H100 run. |
-| `driver  too old: the driver here runs CUDA 12.x ...` | The engine's kernels need CUDA 13 (driver 580 or newer). | Update the driver. On Ubuntu: `sudo apt install nvidia-driver-580` (or `sudo ubuntu-drivers install`) and reboot; elsewhere the installer at nvidia.com/drivers. A CUDA 12 build is ROADMAP P6. |
-| `GPU library  not found` | `libglyd_gpu_cuda13.so` is not beside `glyd-engine` or on the loader's path. | Build it: `bash gpu/build_lib.sh target/release`, or set `GLYD_GPU_LIB=/path/to/libglyd_gpu_cuda13.so`. |
-| `cuBLAS  not found` | Not an error. Long prompts use the engine's own products, a little slower. | Optional: install the CUDA 13 cuBLAS, or set `GLYD_CUBLAS` to it. |
+| `driver  too old: the driver here runs CUDA 12.x ...` | The engine's kernels need the CUDA version the message names: a release carries CUDA 12's kernels beside CUDA 13's and runs on CUDA 12.2 (driver 535 or newer; 12.8, driver 570, for Blackwell), a build with CUDA 13's kernels alone needs CUDA 13.0 (driver 580 or newer). | Update the driver. On Ubuntu: `sudo apt install nvidia-driver-580` (or `sudo ubuntu-drivers install`) and reboot; elsewhere the installer at nvidia.com/drivers. |
+| `GPU library  not found` | `GLYD_GPU_LIB` names a GPU library that does not load (the engine loads one only where the variable names it; an AMD build looks for `libglyd_gpu_hip` beside the program). | Unset `GLYD_GPU_LIB`: the engine runs its own kernels. On AMD: `bash gpu/build_lib_hip.sh target/release`. |
+| `cuBLAS  not found` | Not an error. Long prompts use the engine's own products, a little slower. | Optional: install the CUDA 13 cuBLAS where the loader finds it (a development build also takes `GLYD_CUBLAS`, a path; a release build ignores it). |
 | `cache`, `models`: a low "free" figure | The packed copy and the downloads need disk: the download is the model's size on the Hub, and the packed copy is extra. | Free space, or move them: `GLYD_CACHE=/big/drive` for packed models, `HF_HOME=/big/drive` for downloads. |
 | `Hub token  none` | Fine for public models. | For a gated model, accept its licence on the model's page, then `glyd login` (a token from huggingface.co/settings/tokens), or set `HF_TOKEN`. |
 | `backend ...` | Each backend (CUDA, ROCm, Metal, CPU) is said detected or not, with its version, and accepted or rejected with the refusal `run` would give. | Only a rejected backend that is the one you need is a problem: its line has the fix. |
@@ -40,8 +40,8 @@ These are exit 3 unless noted. The message says what to do; the usual ones:
 
 | Message starts | What it means | What to do |
 | :--- | :--- | :--- |
-| `X is a ...ForCausalLM model, and this engine runs Qwen3 models so far` | The model's kind is not one of the [Models](models.md) families. | Pick a listed family, or run it with another engine. |
-| `GLM-5.3-Flash (GLM-5.3-Flash) runs at the penguin level in this engine, not swift` | The family does not run that level. | Use the level the message offers, or see [Models](models.md). |
+| `X is a ...ForCausalLM model, which this engine has no description of yet` | The model's kind is not one of the [Models](models.md) families. | Pick a listed family, or run it with another engine. |
+| `GLM-5.3-Flash (GLM-5.3-Flash) runs at the penguin and hummingbird levels in this engine, not swift` | The family does not run that level. | Use the level the message offers, or see [Models](models.md). |
 | `it needs ... GiB of GPU memory` | The model does not fit at the level and context asked. | A lower level, a smaller `--context`, another GPU, or for a mixture of experts more of the computer's memory (`--host-memory`). `glyd fit MODEL` shows each level's size first. |
 | `no GPU was found: the engine's CPU backend is not built yet` | No usable GPU. | See [Install](install.md). |
 | `AMD GPUs run in development builds only (GLYD_HIP=1)` | AMD is a development build. | `GLYD_HIP=1 cargo build --release -p glyd-engine`. |

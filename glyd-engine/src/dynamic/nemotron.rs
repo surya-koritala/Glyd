@@ -1,15 +1,37 @@
 //! Nemotron-H (`NemotronHForCausalLM`: Nemotron 3 Super, Nemotron 3.5 Lightning) as a description: Mamba-2 layers, attention layers without a positional encoding,
-//! mixture-of-experts layers (with a latent, Super's; or at the model's width, Lightning's); every layer x + mixer(norm(x)) (the arithmetic is the kernels', as
-//! kern_nh.rs runs them). Its weights load by kern_nh.rs's loader, the experts by moe_nh.rs's blocks, handed over as they are: a block with all its experts on the GPU
-//! is run by the executor, one with an expert cache (or at the hummingbird level) runs its own launches over the executor's buffers (`NhHost`).
+//! mixture-of-experts layers (with a latent, Super's; or at the model's width, Lightning's); every layer x + mixer(norm(x)) (the arithmetic is the layer kinds'
+//! kernels'). Loaded by the executor's loader (`Dyn::new_placed`): the lowered description (`lower::nemotron`) names every matrix and small tensor, the matrices
+//! packed in the layout the level gives every matrix but the routed experts' (`nemotron::dense_layout`: six-bit codes at wren and hummingbird), and each
+//! mixture-of-experts layer's experts the Moe kind's block (`experts::block`, a block a layer: the latent's own projections around the experts, their second
+//! matrices in the level's row layout, a glyd-v7 directory's packs as saved, the expert cache's places where the stage has one, the directory's codebook rows at
+//! hummingbird), which `Op::Moe` runs.
 
-use super::{Dyn, ModelDesc, Op, Opts, Ring, Slot, Stage};
-use crate::dev::Dev;
-use crate::ffi::{err, Error, Result};
-use crate::kern_nh::{MoeFactory, SsdWs, WeightsNh, NH_N, NH_P};
+use super::attn::{AttnOp, QkNorm};
+use super::{Dyn, ModelDesc, MoeOp, NormW, Op, Opts, Placing, Ring, Slot, Stage};
+use crate::dynamic::experts::MoeBlock;
+use crate::ffi::{err, Result};
+use crate::kern::{MAMBA2_HEAD, MAMBA2_STATE};
 use crate::nemotron::NhKind;
+use crate::offload::ExpertStore;
+use crate::runtime::config::ModelConfig;
+use crate::runtime::describe::Described;
 use crate::weights::Layout;
+use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
+use std::rc::Rc;
+
+/// The dynamic route's stage (src/dynamic/split.rs `StageLoad`): `load_stage` with its experts at `o.layout`'s level (penguin's lossless where none is given),
+/// all on the GPU. A caching is refused: Nemotron-H's expert cache is the lossy route's (src/cli.rs gives `load_cached` its places and store), not the dynamic
+/// route's caching.
+pub fn stage(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
+    if caching.is_some() {
+        return err(format!(
+            "{}: Nemotron-H's experts are cached as the lossy route plans them (src/cli.rs), not as the dynamic route's caching says",
+            dir.display()
+        ));
+    }
+    load_cached_of(dir, m, o, o.layout.unwrap_or(Layout::Tiered), None, st)
+}
 
 /// The model in `dir` with its matrices at `layout` and its experts at `level` (the experts all on the GPU).
 pub fn load(dir: &Path, o: &Opts, level: Layout) -> Result<Dyn> {
@@ -17,72 +39,60 @@ pub fn load(dir: &Path, o: &Opts, level: Layout) -> Result<Dyn> {
     load_stage(dir, o, level, Stage::whole(layers))
 }
 
+/// The whole model with its experts at `level`, all on the GPU or in the expert cache `cache` (`load_cached_of`): what the one-GPU route's plan loads (src/cli.rs
+/// `open_lossy`). `m`: `dir`'s config.json, parsed once.
+pub fn load_whole_of(dir: &Path, m: &ModelConfig, o: &Opts, level: Layout, cache: Option<(usize, &Rc<ExpertStore>)>) -> Result<Dyn> {
+    let layers = m.read_with(dir, crate::nemotron::ConfigNemotronH::of)?.layers;
+    load_cached_of(dir, m, o, level, cache, Stage::whole(layers))
+}
+
 /// Stage `st` of it (a model split across GPUs: its layers, the embedding where it is the first, the head where the last; a layer of another
 /// stage is an empty one here).
 pub fn load_stage(dir: &Path, o: &Opts, level: Layout, st: Stage) -> Result<Dyn> {
-    load_with(dir, o, &crate::moe_nh::factory(level), st)
+    load_cached(dir, o, level, None, st)
 }
 
-/// Stage `st` with the blocks of experts `make` makes (moe_nh.rs's factories: the experts all on the GPU, or an expert cache's places for them, src/offload.rs).
-pub fn load_with(dir: &Path, o: &Opts, make: MoeFactory<'_>, st: Stage) -> Result<Dyn> {
-    let dev = Dev::new(o.device)?;
-    let threads = std::thread::available_parallelism().map_or(8, |n| n.get().min(16));
-    let only: Vec<usize> = (st.layers.0..st.layers.1).collect();
-    let whole = st.first && st.last;
-    let w = WeightsNh::load_ends(dir, threads, o.layout, dev.cc_pair(), dev.total_mem as u64, (!whole).then_some(&only[..]), (st.first, st.last), Some(make))?;
-    let WeightsNh { cfg: c, layout, layers: lys, embed, head, norm_f, .. } = w;
-    let d = lowered(dir, &c, &st)?;
-    // (the loader's matrices, small tensors and blocks of experts in the order `describe` indexes them: a layer's, then the final norm, the embedding and the head)
-    let (mut mats, mut small, mut moe) = (Vec::new(), Vec::new(), Vec::new());
-    for (l, ly) in lys.into_iter().enumerate() {
-        let Some(ly) = ly else { continue };
-        let (m, n) = per_layer(ly.kind);
-        if ly.mats.len() != m || ly.small.len() + 1 != n || ly.moe.is_some() != (ly.kind == NhKind::Moe) {
-            return err(format!(
-                "layer {l}: {} matrices, {} small tensors and a block of experts {} loaded, where its kind has {m} and {n}",
-                ly.mats.len(),
-                ly.small.len() + 1,
-                ly.moe.is_some()
-            ));
-        }
-        mats.extend(ly.mats);
-        small.push(ly.norm);
-        small.extend(ly.small);
-        if let Some(b) = ly.moe {
-            moe.push(b);
-        }
-    }
-    // (a stage without the head or the embedding keeps their places, empty, so that their indices hold)
-    small.push(match norm_f {
-        Some(b) => b,
-        None if !st.last => crate::dev::Buf::new(4)?,
-        None => return err("the final norm is not loaded"),
-    });
-    mats.push(match embed {
-        Some(p) => crate::kern35::Mat::Packed(p),
-        None if !st.first && !(st.last && c.tie) => crate::kern35::Mat::Dense(crate::dev::Buf::new(2)?, 0, 0),
-        None => return err("the embedding is not loaded"),
-    });
-    if let Some(h) = head {
-        mats.push(crate::kern35::Mat::Packed(h));
-    }
-    if (mats.len(), small.len()) != (d.lm + 1, d.final_norm.map_or(0, |f| f.0 + 1)) {
-        return err(format!(
-            "{} matrices and {} small tensors loaded, where the description indexes {} and {}",
-            mats.len(),
-            small.len(),
-            d.lm + 1,
-            d.final_norm.map_or(0, |f| f.0 + 1)
-        ));
-    }
-    let ch = o.chunk.max(1);
-    let mut dy = Dyn::from_loaded(dev, d, mats, small, moe, Vec::new(), layout, st, o)?;
-    dy.ssd = Some(SsdWs::new(&c, ch)?);
-    Ok(dy)
+/// Stage `st` with its experts at `level`, all on the GPU or in the expert cache (`cache`: places a layer for them on the GPU and the store every expert is in,
+/// src/offload.rs; a layer of no more experts than places all on the GPU), by the executor's loader: the lowered description names every matrix and small tensor of
+/// the stage, each matrix packed in the layout `o.layout`'s level gives every matrix but the routed experts' (`nemotron::dense_layout`; a glyd-v7 directory's packs
+/// as saved, each in the layout its entry names), the stage's layers on its GPU (none in the computer's memory: the planner's row keeps none there), the Mamba-2
+/// scan's buffers sized from its operations; each mixture-of-experts layer's experts the Moe kind's block (`experts::block`: its matrices besides the experts at
+/// `dense_layout` of the level; its layer in the cache its number among the model's mixture-of-experts layers, so that a predictor's next is the next of them).
+pub fn load_cached(dir: &Path, o: &Opts, level: Layout, cache: Option<(usize, &Rc<ExpertStore>)>, st: Stage) -> Result<Dyn> {
+    load_cached_of(dir, &ModelConfig::load(dir)?, o, level, cache, st)
 }
 
-/// A layer's matrices and small tensors as the loader holds them: a Mamba-2 layer's in and out products, its norm, conv1d's weight and bias, A_log, D, dt_bias
-/// and the gated norm's weight; an attention layer's qkv and o products and its norm; a mixture-of-experts layer's norm (its experts are its block's).
+/// `load_cached` of a config.json parsed once (`m`: `dir`'s).
+pub fn load_cached_of(dir: &Path, m: &ModelConfig, o: &Opts, level: Layout, cache: Option<(usize, &Rc<ExpertStore>)>, st: Stage) -> Result<Dyn> {
+    let c = m.read_with(dir, crate::nemotron::ConfigNemotronH::of)?;
+    let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
+    let d = lowered_of(&kinds, &label, &c, &st)?;
+    let caching = cache.map(|(places, store)| crate::hbg_store::HbCaching { places, ram: store.host_memory(), offload: store.offload(), dense: 0 });
+    let codebooks = Rc::new(crate::moe_hb::HbShared::default());
+    let held = super::experts::Held {
+        hb: None,
+        cache: caching.as_ref().zip(cache.map(|x| x.1)),
+        ordinal: o.device,
+        f8: None,
+        dense: Some(crate::nemotron::dense_layout(level)),
+        codebooks: Some(&codebooks),
+        codes: None,
+    };
+    let hidden = kinds.desc.hidden;
+    let experts = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
+        super::experts::of_layers(&kinds, st.layers, 1)
+            .map(|(ix, m, roles)| {
+                crate::status::STATUS.beat(); // (a mixture-of-experts layer's block takes seconds to read)
+                super::experts::block(m, roles, hidden, ck, level, (ix, &held))
+            })
+            .collect()
+    };
+    let o = Opts { layout: o.layout.map(crate::nemotron::dense_layout), ..o.clone() };
+    Dyn::new_placed(dir, m, d, None, st, &o, &experts, &Placing::default())
+}
+
+/// A layer's matrices and small tensors as its operations index them: a Mamba-2 layer's in and out products, its norm, conv1d's weight and bias, A_log, D,
+/// dt_bias and the gated norm's weight; an attention layer's qkv and o products and its norm; a mixture-of-experts layer's norm (its experts are its block's).
 pub(crate) fn per_layer(k: NhKind) -> (usize, usize) {
     match k {
         NhKind::Mamba => (2, 7),
@@ -91,21 +101,54 @@ pub(crate) fn per_layer(k: NhKind) -> (usize, usize) {
     }
 }
 
-/// Nemotron-H's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::nemotron`); `c` the same config as the
-/// family's reader takes it, for its end tokens and its context. What the loader runs; `describe` below is the description it is held to.
+/// Nemotron-H's executor description for stage `st` from the config.json in `dir` (R3a): its layer kinds lowered (`lower::nemotron`, every tensor named), held
+/// to `describe` below with the names left out (the family's own description names none); `c` the same config as the family's reader takes it, for its end
+/// tokens and its context. What the loader runs.
 pub fn lowered(dir: &Path, c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<ModelDesc> {
-    let p = dir.join("config.json");
-    let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let lowered = super::lower::nemotron(&crate::runtime::describe::describe(&cfg)?, c.eos.clone(), c.max_pos, st)?;
-    super::lower::agree(lowered, &describe(c, st)?, &p.display().to_string())
+    let (kinds, label) = crate::runtime::describe::describe_dir(dir)?;
+    lowered_of(&kinds, &label, c, st)
 }
 
-/// The executor's description of Nemotron-H for stage `st` (kern_nh.rs's loader fills its matrices, small tensors and blocks of experts; they are indexed here in
-/// its order).
+/// `lowered` of the description `kinds` (named `label` in an error).
+fn lowered_of(kinds: &Described, label: &str, c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<ModelDesc> {
+    let lowered = super::lower::nemotron(kinds, c.eos.clone(), c.max_pos, st)?;
+    super::lower::agree(super::lower::nameless(&lowered), &describe(c, st)?, label)?;
+    Ok(lowered)
+}
+
+/// Nemotron-H's attention of heads of 128 (nq query heads over nk key-value heads, ring `ring`): no norms and no positional encoding, the keys and values as the
+/// product gives them, scale 128^-0.5, the scores fp32.
+pub(crate) fn attention(nq: usize, nk: usize, ring: usize) -> AttnOp {
+    AttnOp {
+        src: Slot::Mix,
+        stride: (nq + 2 * nk) * 128,
+        q_step: 128,
+        k_off: nq * 128,
+        v_off: Some((nq + nk) * 128),
+        d: 128,
+        nq,
+        nk,
+        writes: true,
+        ring,
+        window: 0,
+        norm: QkNorm::None,
+        v_norm: false,
+        rope: None,
+        q_scale: 1.0,
+        scale: 128f32.powf(-0.5),
+        softcap: 0.0,
+        gate: None,
+        round: false,
+        sbf16: false,
+        picked: false,
+    }
+}
+
+/// The executor's description of Nemotron-H for stage `st`, its matrices, small tensors and blocks of experts indexed in the order `lower::nemotron` names them
+/// (this description names none: the lowering is held to it with its names left out).
 pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<ModelDesc> {
-    if c.m_head_dim != NH_P || c.m_state != NH_N || c.conv_kernel != 4 || c.head_dim != 128 {
-        return err(format!("Mamba-2 heads of {} channels with a state of {}, a convolution of {}, attention heads of {}: this engine runs heads of {NH_P}, a state of {NH_N}, a convolution of 4 and attention heads of 128", c.m_head_dim, c.m_state, c.conv_kernel, c.head_dim));
+    if c.m_head_dim != MAMBA2_HEAD || c.m_state != MAMBA2_STATE || c.conv_kernel != 4 || c.head_dim != 128 {
+        return err(format!("Mamba-2 heads of {} channels with a state of {}, a convolution of {}, attention heads of {}: this engine runs heads of {MAMBA2_HEAD}, a state of {MAMBA2_STATE}, a convolution of 4 and attention heads of 128", c.m_head_dim, c.m_state, c.conv_kernel, c.head_dim));
     }
     let (hid, di, cd, row) = (c.hidden, c.inner(), c.conv_dim(), c.in_rows());
     let qkv_w = (c.heads + 2 * c.kv_heads) * c.head_dim;
@@ -121,7 +164,7 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
         (n_mats, n_small) = (n_mats + m, n_small + n);
         let mut ops = Vec::new();
         if l == 0 {
-            first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, plus1: false });
+            first = Some(Op::RmsNorm { x: Slot::X, w: s0, y: Slot::H, weight: NormW::Plain, eps: c.eps });
         } else {
             ops.push(Op::NormAdd { y: Slot::O, w: s0, plus1: false });
         }
@@ -129,7 +172,7 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
             NhKind::Mamba => {
                 let (conv, ssm) = (states.len(), states.len() + 1);
                 states.push(3 * cd * 2);
-                states.push(c.m_heads * NH_P * NH_N * 4);
+                states.push(c.m_heads * MAMBA2_HEAD * MAMBA2_STATE * 4);
                 ops.extend([
                     Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "Mamba-2: in product" },
                     Op::MambaConv { w: s0 + 1, bias: s0 + 2, state: conv, cd, row, x_off: di },
@@ -140,17 +183,15 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
             }
             NhKind::Attention => {
                 let ring = rings.len();
-                // ponytail: the ring's vc is made and not read (k and v share kc's rows of 256); a ring of k and v in one buffer if the memory matters
-                rings.push(Ring { d: 256, nk: c.kv_heads, window: 0 });
+                rings.push(Ring::kv(128, c.kv_heads, 0));
                 ops.extend([
                     Op::Linear { w: b, x: Slot::H, y: Slot::Mix, name: "attention: qkv product" },
-                    Op::KvWrite { ring, stride: qkv_w, nq: c.heads, nk: c.kv_heads },
-                    Op::AttnNh { ring, stride: qkv_w, nq: c.heads, nk: c.kv_heads },
+                    Op::Attn(attention(c.heads, c.kv_heads, ring)),
                     Op::Linear { w: b + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
                 ]);
             }
             NhKind::Moe => {
-                ops.push(Op::Moe { block: n_moe });
+                ops.push(Op::Moe(MoeOp::of(n_moe)));
                 n_moe += 1;
             }
         }
@@ -166,6 +207,7 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
         (Slot::Mix, row.max(qkv_w)),
         (Slot::Xc, cd),
         (Slot::Core, di),
+        (Slot::Qo, c.heads * c.head_dim),
         (Slot::Att, c.heads * c.head_dim),
         (Slot::Hlast, hid),
     ] {
@@ -178,13 +220,14 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
         eps: c.eps,
         max_pos: c.max_pos,
         widths,
-        // (the loader's own lists: kern_nh.rs names and packs the tensors)
+        // (named by the lowering, `lower::nemotron`)
         mats: Vec::new(),
         small: Vec::new(),
+        forms: Vec::new(),
         ropes: Vec::new(),
         rings,
         // (a later stage never runs the first operation)
-        first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, plus1: false }),
+        first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, weight: NormW::Plain, eps: c.eps }),
         layers,
         states,
         final_norm: Some((n_small, Slot::O, false)),
@@ -198,5 +241,7 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
         v4: None,
         hc: (0.0, 0),
         logit_mult: 0.0,
+        host: Vec::new(),
+        context: Vec::new(),
     })
 }

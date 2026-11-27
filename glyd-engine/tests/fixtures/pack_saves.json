@@ -1,0 +1,443 @@
+{
+  "saves": {
+    "dense mma": {
+      "files": {
+        "config.json": "2d1adb217dc563f057e94b71cbc80dc15d119841b9ef4caabd7ddfc6b435dba3",
+        "glyd.json": "f59c71da6bc11c26cad2465234b8f66183cf55188372b15aacf9864cd710f43f",
+        "model.safetensors": "a22487c05b3002e980f729b8d762b6023795a80c66bf0d7b1f8e59049f043c38",
+        "tokenizer.json": "805b7b1cf166a484f0908f3c342fca1248cb8787d91c0833f3988ff2d6536ed4"
+      },
+      "plan": "07d710af001b94085565173d55af287c7bf2883e2d1df1a334fc4b5d5e61e97a"
+    },
+    "dense mma12": {
+      "files": {
+        "config.json": "2d1adb217dc563f057e94b71cbc80dc15d119841b9ef4caabd7ddfc6b435dba3",
+        "glyd.json": "6329e1b9b638bb9366a857a9e938dff41e10a30892465009e3df14f590a65f69",
+        "model.safetensors": "82180e902e498735ede5fb85c197f573f09902c350eb26d09068bbcc67a56fe4",
+        "tokenizer.json": "805b7b1cf166a484f0908f3c342fca1248cb8787d91c0833f3988ff2d6536ed4"
+      }
+    },
+    "dense a": {
+      "files": {
+        "config.json": "2d1adb217dc563f057e94b71cbc80dc15d119841b9ef4caabd7ddfc6b435dba3",
+        "glyd.json": "067b910dc35dda430f493827d1ea4533a95be0b167f2eed7b464766c923fc8dc",
+        "model.safetensors": "e923403a199390ce651a4d13e73600528b57af6d31e074f5789648938b1a4639",
+        "tokenizer.json": "805b7b1cf166a484f0908f3c342fca1248cb8787d91c0833f3988ff2d6536ed4"
+      }
+    },
+    "dense i6": {
+      "files": {
+        "config.json": "2d1adb217dc563f057e94b71cbc80dc15d119841b9ef4caabd7ddfc6b435dba3",
+        "glyd.json": "dfa7e73078ae2c7d1543b19e15e6c9b8bc43591e7d6e54d35ebf3d2e55406ba6",
+        "model.safetensors": "2b07c07da518c9b61e46f176d51ea0231960678bd046e3f4a7cafe3d835bca1d",
+        "tokenizer.json": "805b7b1cf166a484f0908f3c342fca1248cb8787d91c0833f3988ff2d6536ed4"
+      },
+      "plan": "07d710af001b94085565173d55af287c7bf2883e2d1df1a334fc4b5d5e61e97a"
+    },
+    "dense i5": {
+      "files": {
+        "config.json": "2d1adb217dc563f057e94b71cbc80dc15d119841b9ef4caabd7ddfc6b435dba3",
+        "glyd.json": "48d6cd87ddbdc62166297fb10e310b198c12086d9e3294629b98bdeccf5d0a0c",
+        "model.safetensors": "fd3757261e2e79a10b4b7f4cbfcfcdde592508f12d01a7066603f0bb16a33110",
+        "tokenizer.json": "805b7b1cf166a484f0908f3c342fca1248cb8787d91c0833f3988ff2d6536ed4"
+      },
+      "plan": "07d710af001b94085565173d55af287c7bf2883e2d1df1a334fc4b5d5e61e97a"
+    },
+    "dense i4": {
+      "files": {
+        "config.json": "2d1adb217dc563f057e94b71cbc80dc15d119841b9ef4caabd7ddfc6b435dba3",
+        "glyd.json": "8e0fc7bb2f535667d33ae0d25096c9adf91b7b8d63327ae888182a9b91a41055",
+        "model.safetensors": "5d3245612ea190e8a7bcd7e9fbc72a386f3594da1fc5b19a4251105ecd4255c8",
+        "tokenizer.json": "805b7b1cf166a484f0908f3c342fca1248cb8787d91c0833f3988ff2d6536ed4"
+      },
+      "plan": "07d710af001b94085565173d55af287c7bf2883e2d1df1a334fc4b5d5e61e97a"
+    },
+    "dense i4x": {
+      "refused": "model.layers.0.self_attn.q_proj + model.layers.0.self_attn.k_proj + model.layers.0.self_attn.v_proj: not a checkpoint trained to four bits (no codes times a scale give its weights bit for bit)"
+    },
+    "dense i3": {
+      "files": {
+        "config.json": "2d1adb217dc563f057e94b71cbc80dc15d119841b9ef4caabd7ddfc6b435dba3",
+        "glyd.json": "63464fcaf8fbc8d2b66222cf8a4a0cb39896add4c09b4df62914b2ef3d989cef",
+        "model.safetensors": "10aa01237adbcbdf3111b4fa0c1d54ba37926dbb0820b961b76fd08f283986f3",
+        "tokenizer.json": "805b7b1cf166a484f0908f3c342fca1248cb8787d91c0833f3988ff2d6536ed4"
+      },
+      "plan": "07d710af001b94085565173d55af287c7bf2883e2d1df1a334fc4b5d5e61e97a"
+    },
+    "qwen35 mma": {
+      "refused": "Qwen3_5ForCausalLM: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+    },
+    "qwen35 i6": {
+      "files": {
+        "config.json": "ac1696dc11ba966ef99b776afd53f4f95ad86a8dc9a1e7e0efff92a7220b63b0",
+        "glyd.json": "274950f4376b39eca1d47441159c687fbc3877f0fe3e6f1220c428d0648c2872",
+        "model.safetensors": "a08062f60b5b1135ab21a677747a802421b108990c6a3a68590ea5761df03e9a"
+      },
+      "plan": "bd902dc8c0c133ce647c68ae15d87668ee233333f7b3454a472fe1c95a8c45ab"
+    },
+    "qwen35 i5": {
+      "files": {
+        "config.json": "ac1696dc11ba966ef99b776afd53f4f95ad86a8dc9a1e7e0efff92a7220b63b0",
+        "glyd.json": "17ad9d6f9172dc76bc038f80e56ad9426ebdb4939e229fbe774e78cdcac785f1",
+        "model.safetensors": "c00efdb199caa23ef0cf9777ef3906166fe3ac6eb0cbac6e366f3674b38eacd6"
+      },
+      "plan": "bd902dc8c0c133ce647c68ae15d87668ee233333f7b3454a472fe1c95a8c45ab"
+    },
+    "qwen35 i4": {
+      "files": {
+        "config.json": "ac1696dc11ba966ef99b776afd53f4f95ad86a8dc9a1e7e0efff92a7220b63b0",
+        "glyd.json": "aa922dcc4e6a35189f7656164c8cb6ad2ae6616fdfe9fc26fbf6a2d4fbdf35b5",
+        "model.safetensors": "54931bb937a4d2acd82538f2af126111196c4ff6c0f518a25d8add4e07bef1ea"
+      },
+      "plan": "bd902dc8c0c133ce647c68ae15d87668ee233333f7b3454a472fe1c95a8c45ab"
+    },
+    "qwen35 i4x": {
+      "refused": "model.layers.0.linear_attn.in_proj_qkv + model.layers.0.linear_attn.in_proj_z: not a checkpoint trained to four bits (no codes times a scale give its weights bit for bit)"
+    },
+    "qwen35 i3": {
+      "files": {
+        "config.json": "ac1696dc11ba966ef99b776afd53f4f95ad86a8dc9a1e7e0efff92a7220b63b0",
+        "glyd.json": "f6154b66a720545ef44145800ba266eb8de635dd68f7406db7f3bddc8e65b76e",
+        "model.safetensors": "8b52d092d441f77fff4e83bb031fea3567d43f5870b5fec40ee0daf5c0cee960"
+      },
+      "plan": "bd902dc8c0c133ce647c68ae15d87668ee233333f7b3454a472fe1c95a8c45ab"
+    },
+    "qwen35-wide mma": {
+      "refused": "Qwen3_5ForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+    },
+    "qwen35-wide i6": {
+      "files": {
+        "config.json": "164952cbd37b190250fafcdfd05c26a51aa95e7e8aafd0fe61bba086c409ed6e",
+        "glyd.json": "b7e106eae4949ce7a04ea14c250170087036af465172cd2463bf3fe3764b67f1",
+        "model.safetensors": "658f05d50bba906c32a23b54aae7e2eade178bce21598912c0e6dae1153f175f"
+      },
+      "plan": "d0bb46efcff430d096cc4c315213c7142c20064c9b30574295739b332c588fb4"
+    },
+    "qwen35-wide i5": {
+      "files": {
+        "config.json": "164952cbd37b190250fafcdfd05c26a51aa95e7e8aafd0fe61bba086c409ed6e",
+        "glyd.json": "c930d47f24274192340b4bec5324c5a36f1ae70677eb1087cd609c5479c450f9",
+        "model.safetensors": "84c63104ada189ff2ceaf0d3fb10ae8af623e61b55ffba01acd5d4bd5d07c867"
+      },
+      "plan": "d0bb46efcff430d096cc4c315213c7142c20064c9b30574295739b332c588fb4"
+    },
+    "qwen35-wide i4": {
+      "files": {
+        "config.json": "164952cbd37b190250fafcdfd05c26a51aa95e7e8aafd0fe61bba086c409ed6e",
+        "glyd.json": "d30f15fef2bfea4765e62e777db148b8d3409f885f4fafa194f7f8ed5e0ef476",
+        "model.safetensors": "5dfe62021bc01dc0985d0a53b831ede5d93e624f49ed37b4cc4c4ed6563015b1"
+      },
+      "plan": "d0bb46efcff430d096cc4c315213c7142c20064c9b30574295739b332c588fb4"
+    },
+    "qwen35-wide i4x": {
+      "refused": "model.language_model.layers.0.linear_attn.in_proj_qkv + model.language_model.layers.0.linear_attn.in_proj_z: not a checkpoint trained to four bits (no codes times a scale give its weights bit for bit)"
+    },
+    "qwen35-wide i3": {
+      "files": {
+        "config.json": "164952cbd37b190250fafcdfd05c26a51aa95e7e8aafd0fe61bba086c409ed6e",
+        "glyd.json": "0690739a75c51d4b384cadb7134ecdea8b9bf01604aa9c8dc2a26c3347850630",
+        "model.safetensors": "77a7d0796ddbb1c7c9fa32f6c72d6f314790a7b926655317b4d7148fa88f518d"
+      },
+      "plan": "d0bb46efcff430d096cc4c315213c7142c20064c9b30574295739b332c588fb4"
+    },
+    "qwen35moe mma": {
+      "refused": "Qwen3_5MoeForCausalLM: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+    },
+    "qwen35moe i6": {
+      "files": {
+        "config.json": "19cd9cabc645664db80b6c561ac0757f8e6bce2cf8df614e2f749cb1e06e01b1",
+        "glyd.json": "4e367acbfea9a11ade29ecbf4b245adcbf2cdc455c39b840c46d7db357cf04ee",
+        "model.safetensors": "8209dd3510984b15bb036ba2330e4e53fe7af4b525bcd256b8e7cafce01b75bd"
+      },
+      "plan": "a8eb2d7c77ae3d66a94d68850bf89f3f1a1b54a0897de7cf004d5e9b2a886873"
+    },
+    "qwen35moe i5": {
+      "files": {
+        "config.json": "19cd9cabc645664db80b6c561ac0757f8e6bce2cf8df614e2f749cb1e06e01b1",
+        "glyd.json": "9e94469b323df0a4f077c82d94322b6c3ab0263684dd12ee6c3604261d9b8bc5",
+        "model.safetensors": "5441ea9c9cbaae2b410f1694c9fcb6442a62766a5033e07eadfbaed4ceec85a1"
+      },
+      "plan": "a8eb2d7c77ae3d66a94d68850bf89f3f1a1b54a0897de7cf004d5e9b2a886873"
+    },
+    "qwen35moe i4": {
+      "files": {
+        "config.json": "19cd9cabc645664db80b6c561ac0757f8e6bce2cf8df614e2f749cb1e06e01b1",
+        "glyd.json": "c45564001aa28689c9292d76e01840d5abc111ef44cfdc0ea07de7e061cf23f5",
+        "model.safetensors": "5ab0e93b8ed35e73b5a8a49cbdb7e43df1b453b1cbf6383c83146280f260c0b7"
+      },
+      "plan": "a8eb2d7c77ae3d66a94d68850bf89f3f1a1b54a0897de7cf004d5e9b2a886873"
+    },
+    "qwen35moe i4x": {
+      "refused": "model.layers.0.linear_attn.in_proj_qkv + model.layers.0.linear_attn.in_proj_z: not a checkpoint trained to four bits (no codes times a scale give its weights bit for bit)"
+    },
+    "qwen35moe i3": {
+      "files": {
+        "config.json": "19cd9cabc645664db80b6c561ac0757f8e6bce2cf8df614e2f749cb1e06e01b1",
+        "glyd.json": "d9ce5f971eb5ab15db595531dd4df8b5fd86e8c4569a1fc1bd8bbf0b2bb8f838",
+        "model.safetensors": "db50a07f98a82f2078203a47684565a3967d5c688b8e3b0f317b087f41bcd344"
+      },
+      "plan": "a8eb2d7c77ae3d66a94d68850bf89f3f1a1b54a0897de7cf004d5e9b2a886873"
+    },
+    "qwen35moe-st mma": {
+      "refused": "Qwen3_5MoeForCausalLM: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+    },
+    "qwen35moe-st i6": {
+      "files": {
+        "config.json": "19cd9cabc645664db80b6c561ac0757f8e6bce2cf8df614e2f749cb1e06e01b1",
+        "glyd.json": "4e367acbfea9a11ade29ecbf4b245adcbf2cdc455c39b840c46d7db357cf04ee",
+        "model.safetensors": "8209dd3510984b15bb036ba2330e4e53fe7af4b525bcd256b8e7cafce01b75bd"
+      },
+      "plan": "40383c255613886dc21f732ad1cc9edca9b9bd46b19e268081a3a9e71196eb7c"
+    },
+    "qwen35moe-st i5": {
+      "files": {
+        "config.json": "19cd9cabc645664db80b6c561ac0757f8e6bce2cf8df614e2f749cb1e06e01b1",
+        "glyd.json": "9e94469b323df0a4f077c82d94322b6c3ab0263684dd12ee6c3604261d9b8bc5",
+        "model.safetensors": "5441ea9c9cbaae2b410f1694c9fcb6442a62766a5033e07eadfbaed4ceec85a1"
+      },
+      "plan": "40383c255613886dc21f732ad1cc9edca9b9bd46b19e268081a3a9e71196eb7c"
+    },
+    "qwen35moe-st i4": {
+      "files": {
+        "config.json": "19cd9cabc645664db80b6c561ac0757f8e6bce2cf8df614e2f749cb1e06e01b1",
+        "glyd.json": "c45564001aa28689c9292d76e01840d5abc111ef44cfdc0ea07de7e061cf23f5",
+        "model.safetensors": "5ab0e93b8ed35e73b5a8a49cbdb7e43df1b453b1cbf6383c83146280f260c0b7"
+      },
+      "plan": "40383c255613886dc21f732ad1cc9edca9b9bd46b19e268081a3a9e71196eb7c"
+    },
+    "qwen35moe-st i4x": {
+      "refused": "model.layers.0.linear_attn.in_proj_qkv + model.layers.0.linear_attn.in_proj_z: not a checkpoint trained to four bits (no codes times a scale give its weights bit for bit)"
+    },
+    "qwen35moe-st i3": {
+      "files": {
+        "config.json": "19cd9cabc645664db80b6c561ac0757f8e6bce2cf8df614e2f749cb1e06e01b1",
+        "glyd.json": "d9ce5f971eb5ab15db595531dd4df8b5fd86e8c4569a1fc1bd8bbf0b2bb8f838",
+        "model.safetensors": "db50a07f98a82f2078203a47684565a3967d5c688b8e3b0f317b087f41bcd344"
+      },
+      "plan": "40383c255613886dc21f732ad1cc9edca9b9bd46b19e268081a3a9e71196eb7c"
+    },
+    "gemma4 mma": {
+      "files": {
+        "config.json": "fd8213c42c022bcea5d60219f9e978b91a9ab7e948a2ee7a683c02bd98576a4f",
+        "glyd.json": "68d4628772d75d784698018e83ae7586ab6aafd6acdfadc784aded054f1378d9",
+        "model.safetensors": "d6fe555a3899e5dcc2a6d90bb5468c700f2c176984d975dcf65b564379135e93"
+      },
+      "plan": "353b27eb9beeadcd3ba6c523a55cc3dae7dd17010031a8e1c96299d33e9b83a8"
+    },
+    "gemma4 i6": {
+      "files": {
+        "config.json": "fd8213c42c022bcea5d60219f9e978b91a9ab7e948a2ee7a683c02bd98576a4f",
+        "glyd.json": "577532c39c0ef4990b16c888cdc7fef328baf930c68a13a95dd13706e08938bb",
+        "model.safetensors": "999b0e439dbf0e2fd28facce77288482f847cac4e6fed66cbcbdde555b112f42"
+      },
+      "plan": "353b27eb9beeadcd3ba6c523a55cc3dae7dd17010031a8e1c96299d33e9b83a8"
+    },
+    "gemma4 i5": {
+      "files": {
+        "config.json": "fd8213c42c022bcea5d60219f9e978b91a9ab7e948a2ee7a683c02bd98576a4f",
+        "glyd.json": "5ecbe8e0b9f29910687a8cc1052c099bbaf2b423e3aa8fbf4e0d963096d4ddcb",
+        "model.safetensors": "f4e204ef312b3a51bbb82a2ebe3a4aa7a0658518587a61be1c858f88cc7d8a9b"
+      },
+      "plan": "353b27eb9beeadcd3ba6c523a55cc3dae7dd17010031a8e1c96299d33e9b83a8"
+    },
+    "gemma4 i4": {
+      "files": {
+        "config.json": "fd8213c42c022bcea5d60219f9e978b91a9ab7e948a2ee7a683c02bd98576a4f",
+        "glyd.json": "b18001c66d0855fc8c549f031fae768c671ea164ce7024697c51de95201a6f40",
+        "model.safetensors": "ae01217e7abd7ad56c19dab39b17bcf75a8d3e3fa810fbc993cd0cb6ff3bfd78"
+      },
+      "plan": "353b27eb9beeadcd3ba6c523a55cc3dae7dd17010031a8e1c96299d33e9b83a8"
+    },
+    "gemma4 i4x": {
+      "refused": "model.language_model.layers.0.self_attn.q_proj + model.language_model.layers.0.self_attn.k_proj + model.language_model.layers.0.self_attn.v_proj: not a checkpoint trained to four bits (no codes times a scale give its weights bit for bit)"
+    },
+    "gemma4 i3": {
+      "files": {
+        "config.json": "fd8213c42c022bcea5d60219f9e978b91a9ab7e948a2ee7a683c02bd98576a4f",
+        "glyd.json": "8a4abe1663b53e610c33dada36b89ad446770092e90be2b867aec618896f6241",
+        "model.safetensors": "cde6629303e09f1c994f7042673e4adb9b98654f78af298587da3839db4242a7"
+      },
+      "plan": "353b27eb9beeadcd3ba6c523a55cc3dae7dd17010031a8e1c96299d33e9b83a8"
+    },
+    "gemma4-kv mma": {
+      "files": {
+        "config.json": "7f426722941afebecd3e26bb44a7393817f1111e7caff80fd153d4a3fcc9e27b",
+        "glyd.json": "dfcfaf140657f430aca92795e83410bfcf82aa7fc9e695cf296b737aed6e16b2",
+        "model.safetensors": "2f1bc39b23e725ea594816c22c92362fec82736f8d5cc2156a24f619619d79c2"
+      },
+      "plan": "e3b5892e8a07ffe870a3a18a786141493afeb3edcf53474a3a9df95b60ab2915"
+    },
+    "gemma4-kv i6": {
+      "files": {
+        "config.json": "7f426722941afebecd3e26bb44a7393817f1111e7caff80fd153d4a3fcc9e27b",
+        "glyd.json": "87b6723ef5fe73e64ca8aae61758ff12b7452d08454a6a4086b3521714c9cc13",
+        "model.safetensors": "9c57b5d0013b6b677a05f4031cb402397ff17d19b8ba7479d0afa903a3b9ef2a"
+      },
+      "plan": "e3b5892e8a07ffe870a3a18a786141493afeb3edcf53474a3a9df95b60ab2915"
+    },
+    "gemma4-kv i5": {
+      "files": {
+        "config.json": "7f426722941afebecd3e26bb44a7393817f1111e7caff80fd153d4a3fcc9e27b",
+        "glyd.json": "bc62fa14e6695fe14001d96eef713c7471667d7fb112964f9fd845270f882957",
+        "model.safetensors": "e21ae56285f6342811497dbb5b05c31e7ec347970c350d3e8b20b28897f1c7c6"
+      },
+      "plan": "e3b5892e8a07ffe870a3a18a786141493afeb3edcf53474a3a9df95b60ab2915"
+    },
+    "gemma4-kv i4": {
+      "files": {
+        "config.json": "7f426722941afebecd3e26bb44a7393817f1111e7caff80fd153d4a3fcc9e27b",
+        "glyd.json": "ec1fc7ae5ea42e65a59b239f1f8e5885d9f5575538be9aef13589d0138e10ada",
+        "model.safetensors": "d17cff8db7f37e40e3ba521c82ddc3b719afbd3e776c3994d8df5d6ca0641139"
+      },
+      "plan": "e3b5892e8a07ffe870a3a18a786141493afeb3edcf53474a3a9df95b60ab2915"
+    },
+    "gemma4-kv i4x": {
+      "refused": "model.language_model.layers.0.self_attn.q_proj + model.language_model.layers.0.self_attn.k_proj + model.language_model.layers.0.self_attn.v_proj: not a checkpoint trained to four bits (no codes times a scale give its weights bit for bit)"
+    },
+    "gemma4-kv i3": {
+      "files": {
+        "config.json": "7f426722941afebecd3e26bb44a7393817f1111e7caff80fd153d4a3fcc9e27b",
+        "glyd.json": "244e4d443dcaaca21766f8b023540c521d8f93878ea11f6b2c497490de6f1ab6",
+        "model.safetensors": "94ad6e21779118a3e19b2c7009f81fc97c93ff31d9ac997e2b49d5ea0c7d35c3"
+      },
+      "plan": "e3b5892e8a07ffe870a3a18a786141493afeb3edcf53474a3a9df95b60ab2915"
+    },
+    "nemotron mma": {
+      "refused": "NemotronHForCausalLM: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+    },
+    "nemotron i6": {
+      "files": {
+        "config.json": "28dd9cb47d254b48997c1d793fbd0b4c5eb4a9d707471fb6d21f4457b3199056",
+        "glyd.json": "b28de2600ed9f38d0ee4cead2aae12b3d7dfa23654676fe2d6ac98fbd125c32e",
+        "model.safetensors": "70474b8559d94ca91c4395874e02347c3f433922e5e3b96026fd82adf411ba6c"
+      },
+      "plan": "2fef5618d1edaab0a5f1cedb6c71bf374fe8203ef14b4a4143a1cff03a3ba8e9"
+    },
+    "nemotron i5": {
+      "files": {
+        "config.json": "28dd9cb47d254b48997c1d793fbd0b4c5eb4a9d707471fb6d21f4457b3199056",
+        "glyd.json": "bdcef0d77bfa94e72b129b7363a7081bd1482727e17b98f13692b601b5aeca76",
+        "model.safetensors": "5b87100a5a1c8f3b76538187764370fe938e5cf5e960e2a29fd69bfceab938d6"
+      },
+      "plan": "dd5f2c56fcfcfe60bb934bb382fb44febce65511322d49d1b47855a819836caf"
+    },
+    "nemotron i4": {
+      "files": {
+        "config.json": "28dd9cb47d254b48997c1d793fbd0b4c5eb4a9d707471fb6d21f4457b3199056",
+        "glyd.json": "6a9a43498b8baff34590887ee9809e91ccc44d2d049b6f03ed7912970ccd33c0",
+        "model.safetensors": "6d206aed695963c0e6be8054d55a574b4b2b4e03978a2b17cf3995be22da5ffa"
+      },
+      "plan": "97af70d9c7eefd10d8389af95982fe72473c726bb1d589b231411907bbc11813"
+    },
+    "nemotron i4x": {
+      "refused": "backbone.layers.0.mixer.in_proj: not a checkpoint trained to four bits (no codes times a scale give its weights bit for bit)"
+    },
+    "nemotron i3": {
+      "files": {
+        "config.json": "28dd9cb47d254b48997c1d793fbd0b4c5eb4a9d707471fb6d21f4457b3199056",
+        "glyd.json": "5418f4e988eb8bd7b502aacdf40f7aa70ac7e6e539f67e7a71ecb6000f97bdb0",
+        "model.safetensors": "fe09636de4e0fe280df0a7f0b7dde4d6a63b6a7aaef97a1b2f7fe73581d5bf83"
+      },
+      "plan": "e4c1ef49fa8a8b6820119af67189b9e1ef3ce50b6753360a547bb2161c61317c"
+    },
+    "nemotron-latent mma": {
+      "refused": "NemotronHForCausalLM: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+    },
+    "nemotron-latent i6": {
+      "files": {
+        "config.json": "bc73404fd1b6c259fd9e8d0ba529267fb78d96656095a54e6166a1b4699fc9a3",
+        "glyd.json": "f0c4fea5604b8cddf34b7158f0dd6f92106df2ec4499c7e9a0f58fd1e8bf3bdf",
+        "model.safetensors": "52b2c05f4161be0d63fcbc120dafc2eae22776d7d3bcf02ebc055d1c71d34db5"
+      },
+      "plan": "c78f6f8b84bc0272b032aeda480dc8bc8b5af71ce5d4b9514b390ac1eca18897"
+    },
+    "nemotron-latent i5": {
+      "files": {
+        "config.json": "bc73404fd1b6c259fd9e8d0ba529267fb78d96656095a54e6166a1b4699fc9a3",
+        "glyd.json": "6c71177abda226587ca31c46ba62febf569f5e5d99669999ad9a0c5a95063f90",
+        "model.safetensors": "01d9de7727b3f4f40414a162710832e9a984d4b9a61ca6d9b1c533742504e686"
+      },
+      "plan": "228f3ddf0c9ec22331680ebc9aaec8c2f1e9e422bc6dc68e042b0f60bedb3166"
+    },
+    "nemotron-latent i4": {
+      "files": {
+        "config.json": "bc73404fd1b6c259fd9e8d0ba529267fb78d96656095a54e6166a1b4699fc9a3",
+        "glyd.json": "8819e45f6734fde176ef4667d0c65dc6fedfc1544b0632463bfc47adaf819d06",
+        "model.safetensors": "1d1beb660031d35da9aee0045c2ef6bee8230cd38d5d88aff2350d81cd4cff8b"
+      },
+      "plan": "12b1a582a951c325f870fe33c275265aaad548a961b9a46e824eef197c4462c3"
+    },
+    "nemotron-latent i4x": {
+      "refused": "backbone.layers.0.mixer.in_proj: not a checkpoint trained to four bits (no codes times a scale give its weights bit for bit)"
+    },
+    "nemotron-latent i3": {
+      "files": {
+        "config.json": "bc73404fd1b6c259fd9e8d0ba529267fb78d96656095a54e6166a1b4699fc9a3",
+        "glyd.json": "102db3d65c23a7491ae6cf62730e90b1a84d729b45010bd2b0042f9e3c027e5f",
+        "model.safetensors": "d7d5dc3869d279729e8277aebc306fc25d117660a187c3d56b519ffff16fbb17"
+      },
+      "plan": "cfca25f51449ed8f5b25dedb72323e153545d9b0961cce138b3c4e89c37b3100"
+    },
+    "nemotron-latent hb": {
+      "files": {
+        "config.json": "bc73404fd1b6c259fd9e8d0ba529267fb78d96656095a54e6166a1b4699fc9a3",
+        "glyd.json": "16504fe2a4271d2651b069fef3bb2ac359879fe979b8979d7dd8d7c3e723179a",
+        "model.safetensors": "8621e3538d0c6d749043e37fa03892bdeb2772ed91ea77673c724265b97d65fd"
+      },
+      "plan": "2f52cc0b8e4a0be49221e636c3e56dcf77ba7b2baadd91753d779905c547d3a5"
+    },
+    "glm mma": {
+      "refused": "Glm5NextForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+    },
+    "glm-fp8 mma": {
+      "refused": "Glm5NextForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+    },
+    "glm-dsa mma": {
+      "refused": "GlmMoeDsaForCausalLM: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+    },
+    "glm-dsa i6": {
+      "refused": "glm-dsa (GLM-5.3) runs at the penguin level in this engine, not kestrel: Run it lossless: glyd run MODEL"
+    },
+    "kimi mma": {
+      "refused": "KimiK3ForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+    },
+    "kimi i6": {
+      "refused": "kimi (Kimi-K3) runs at the penguin and hummingbird levels in this engine, not kestrel: Run it lossless: glyd run MODEL"
+    },
+    "muse mma": {
+      "refused": "MuseSparkForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+    },
+    "muse i6": {
+      "refused": "muse (Muse Spark) runs at the penguin and hummingbird levels in this engine, not kestrel: Run it lossless: glyd run MODEL"
+    },
+    "deepseek-v4 mma": {
+      "refused": "DeepseekV4ForCausalLM: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+    },
+    "deepseek-v4 i6": {
+      "refused": "deepseek-v4 (DeepSeek-V4) runs at the penguin and hummingbird levels in this engine, not kestrel: Run it lossless: glyd run MODEL"
+    },
+    "qwen4x mma": {
+      "refused": "Qwen4ExpForConditionalGeneration: not a family this packer knows (Qwen3ForCausalLM, Qwen2ForCausalLM, LlamaForCausalLM, MistralForCausalLM, GraniteForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any"
+    },
+    "qwen4x i6": {
+      "refused": "qwen4x (Qwen3.8-Flash-Next) runs at the penguin and hummingbird levels in this engine, not kestrel: Run it lossless: glyd run MODEL"
+    }
+  },
+  "plans": {
+    "Qwen/Qwen3.5-0.8B": "ee1dc49861e49a84c7971bba2127a17e634903631ee8799ec985a1c125679be4",
+    "Qwen/Qwen3.5-2B": "ce93aa10876c9e43fd69eaed0767b38ce7e096c75b070ff297e9581476e30498",
+    "Qwen/Qwen3.5-4B": "52eddd6d004227c0c8a9a044d0e60765f92e03b753a128a1828f1fb39c9d7973",
+    "Qwen/Qwen3.5-9B": "a5e95f9b8c60b4ac8b08be344632ee688f96295883a95bc87db99736cbb88455",
+    "Qwen/Qwen3.5-27B": "7ba18f2e0673f8177ce80513e8d824928e481d3c5cbfd82b442a172b14c94c8a",
+    "Qwen/Qwen3.6-27B": "7ba18f2e0673f8177ce80513e8d824928e481d3c5cbfd82b442a172b14c94c8a",
+    "Qwen/Qwen3.5-35B-A3B": "84f4f2acd595b5139ce119c12a7a4705215043295ade7e8c4f3c1a0844ab7b0d",
+    "Qwen/Qwen3.8-27B": "7ba18f2e0673f8177ce80513e8d824928e481d3c5cbfd82b442a172b14c94c8a",
+    "Qwen/Qwen3.8-2.4T-A95B": "003ef22d416a21aab5b1c3d94c38c552426839abd1c681fe258353f9a9564646",
+    "nemotron_h_config.json i6": "1a5c6a07b3e6ac53a709157f4251a5d92908ef42b69765c99b6397efb0e03128",
+    "nemotron_h_config.json i5": "eb455821ed8e9d8862ddaa68297a103dca181c91485494882ebb297fae90ec43",
+    "nemotron_h_config.json i4": "fb0def8bfb1971e8296e48bd1507c8994fb913f38be77f886e194cfe689984b2",
+    "nemotron_h_config.json i3": "2b32bfac2941279569084eeffdf2354c0205c59acae39ebdf4ab9c23bf74a218",
+    "glm5_next_config.json": "3de72132aef56ca8d3812a486a732ec654ba5c2cd30b58880b03a5447485093d",
+    "gemma4_12b_config.json": "6ee8943aa04d68451a9b2395e0ee2348fd205c1a337e6902591ce99484239f04"
+  }
+}

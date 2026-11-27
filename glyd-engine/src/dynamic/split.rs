@@ -1,29 +1,71 @@
 //! A model split across several GPUs in one machine (GLY-300 part 1): each GPU runs a stage of the layers (`Stage`) on a thread of its own, which
 //! holds that stage's engine (`Dyn::new_stage`: its layers' matrices, caches and states, the embedding on the first, the head on the last). A pass
 //! goes stage by stage; the rows' slots (the residual and what the next layer reads) are handed over through host memory, not copied between the
-//! GPUs (some machines' direct copies are not to be trusted).
+//! GPUs (some machines' direct copies are not to be trusted). A draft head of the model drafts on the last stage (src/dynamic/head.rs): a round's
+//! drafts there, its verify pass through every stage (`Dyn::verify_rows`), every stage gone back to the drafts kept (`Dyn::rewind`), the head again
+//! on the kept rows there; the tokens are the steps' one at a time, as on one GPU.
 
-use super::{Dyn, ModelDesc, Opts, Stage};
+use super::{Dyn, HeadOut, ModelDesc, Opts, Stage};
 use crate::ffi::{err, Error, Result};
-use crate::model::Sample;
+use crate::runtime::config::ModelConfig;
+use crate::sched::Sample;
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 enum Cmd {
     Reset,
-    Rows { tokens: Vec<u32>, at: usize, io: Vec<u16>, head: bool },
+    /// Rows through the stage; `chunk`: a prompt's chunk (the stage that drafts runs its head on its rows too).
+    Rows {
+        tokens: Vec<u32>,
+        at: usize,
+        io: Vec<u16>,
+        head: bool,
+        chunk: bool,
+    },
+    /// A round's verify pass through the stage (the head on every row on the last).
+    Verify {
+        tokens: Vec<u32>,
+        at: usize,
+        io: Vec<u16>,
+    },
+    /// The drafting stage's drafts after a token (or the ones given, after its head's own first pass).
+    Drafts {
+        last: u32,
+        given: Option<Vec<u32>>,
+    },
+    /// The last pass's head on its last rows (each row's greedy token and logit; its logits where asked).
+    HeadOut {
+        rows: usize,
+        words: bool,
+    },
+    Rewind(usize),
+    /// The drafting stage's head again on a round's kept rows.
+    HeadAgain {
+        at: usize,
+        kept: usize,
+        next: Vec<u32>,
+    },
+    Drafting,
     Sample,
     Logits,
     Logprob(f32),
+    /// A question of the last pass's head rows, answered on the last stage's GPU as one GPU's step answers it (`RowAsk`).
+    Row(RowAsk),
     Describe,
+    /// The sequence's prompt and its images (`Dyn::set_images`): the first stage runs the tower over them, each stage turns its rows by their positions.
+    Images(Vec<u32>, Vec<std::sync::Arc<crate::vision::Image>>),
 }
 
 enum Out {
     Done(Result<()>),
     Rows(Result<Vec<u16>>),
+    Tokens(Result<Vec<u32>>),
+    Head(Result<HeadOut>),
+    Flag(bool),
     Sample(Result<Sample>),
     Logits(Result<Vec<f32>>),
     Logprob(Result<f32>),
+    Row(RowGot),
     Text(String),
 }
 
@@ -43,6 +85,10 @@ pub struct Split {
     ctx: usize,
     chunk: usize,
     eos: Vec<i64>,
+    /// The last stage drafts with a head of the model (`spec_round`).
+    drafting: bool,
+    /// The images of the next reply's prompt (`Gen::see`).
+    next: Vec<std::sync::Arc<crate::vision::Image>>,
 }
 
 fn gone() -> Error {
@@ -53,12 +99,11 @@ impl Split {
     /// The model of `dir` described by `d`, its layers cut before each of `cuts` (ascending, inside 1..layers), stage k on GPU `devices[k]`
     /// (one more device than cuts; a device may repeat: two stages on one GPU check the hand-over on a machine with one).
     pub fn new(dir: &Path, d: ModelDesc, cuts: &[usize], devices: &[i32], o: &Opts) -> Result<Split> {
-        let (nl, eos, dir) = (d.layers.len(), d.eos.clone(), dir.to_path_buf());
-        Split::with(nl, eos, cuts, devices, o, std::sync::Arc::new(move |st: Stage, o: &Opts| Dyn::new_stage(&dir, d.clone(), None, st, o)))
+        let (nl, eos, dir, m) = (d.layers.len(), d.eos.clone(), dir.to_path_buf(), std::sync::Arc::new(ModelConfig::load(dir)?));
+        Split::with(nl, eos, cuts, devices, o, std::sync::Arc::new(move |st: Stage, o: &Opts| Dyn::new_stage(&dir, &m, d.clone(), None, st, o)))
     }
 
-    /// A model of `nl` layers whose stage `make` builds on the GPU of the options it is given (a family's own loader: `qwen35::load_stage`,
-    /// `nemotron::load_stage`).
+    /// A model of `nl` layers whose stage `make` builds on the GPU of the options it is given (a loader of the dynamic route's: `StageLoad`).
     pub fn with(nl: usize, eos: Vec<i64>, cuts: &[usize], devices: &[i32], o: &Opts, make: MakeStage) -> Result<Split> {
         if devices.len() != cuts.len() + 1 || cuts.windows(2).any(|w| w[0] >= w[1]) || cuts.iter().any(|&c| c == 0 || c >= nl) {
             return err(format!("cuts {cuts:?} over {nl} layers on GPUs {devices:?}: ascending cuts inside the layers, one GPU more than cuts"));
@@ -86,11 +131,22 @@ impl Split {
                     while let Ok(c) = crx.recv() {
                         let out = match c {
                             Cmd::Reset => Out::Done(e.reset()),
-                            Cmd::Rows { tokens, at, mut io, head } => Out::Rows(e.stage_rows(&tokens, at, &mut io, head as usize).map(|_| io)),
+                            Cmd::Rows { tokens, at, mut io, head, chunk } => Out::Rows(
+                                if chunk { e.stage_chunk(&tokens, at, &mut io, head as usize) } else { e.stage_rows(&tokens, at, &mut io, head as usize) }
+                                    .map(|_| io),
+                            ),
+                            Cmd::Verify { tokens, at, mut io } => Out::Rows(e.verify_rows(&tokens, at, &mut io, tokens.len()).map(|_| io)),
+                            Cmd::Drafts { last, given } => Out::Tokens(e.stage_drafts(last, given.as_deref())),
+                            Cmd::HeadOut { rows, words } => Out::Head(e.head_out(rows, words)),
+                            Cmd::Rewind(keep) => Out::Done(e.rewind(keep)),
+                            Cmd::HeadAgain { at, kept, next } => Out::Done(e.stage_head_again(at, kept, &next)),
+                            Cmd::Drafting => Out::Flag(e.drafts_with_head()),
                             Cmd::Sample => Out::Sample(e.sample()),
                             Cmd::Logits => Out::Logits(e.logits()),
                             Cmd::Logprob(l) => Out::Logprob(e.logprob(l)),
+                            Cmd::Row(a) => Out::Row(row_ask(&mut e, a)),
                             Cmd::Describe => Out::Text(e.describe()),
+                            Cmd::Images(prompt, images) => Out::Done(e.set_images(&prompt, &images)),
                         };
                         if otx.send(out).is_err() {
                             break;
@@ -107,7 +163,10 @@ impl Split {
                 _ => return Err(gone()),
             }
         }
-        Ok(Split { w, n: 0, ctx: o.ctx.div_ceil(16) * 16, chunk: o.chunk.max(1), eos })
+        let mut s = Split { w, n: 0, ctx: o.ctx.div_ceil(16) * 16, chunk: o.chunk.max(1), eos, drafting: false, next: Vec::new() };
+        let last = s.w.len() - 1;
+        s.drafting = matches!(s.ask(last, Cmd::Drafting)?, Out::Flag(true));
+        Ok(s)
     }
 
     fn ask(&self, k: usize, c: Cmd) -> Result<Out> {
@@ -115,11 +174,22 @@ impl Split {
         self.w[k].rx.recv().map_err(|_| gone())
     }
 
-    /// The rows through every stage in turn, the first at `at`; the head on the last row where `head`.
-    fn rows(&mut self, tokens: &[u32], at: usize, head: bool) -> Result<()> {
+    /// A command every stage runs in turn that returns nothing.
+    fn each(&self, c: &dyn Fn() -> Cmd) -> Result<()> {
+        for k in 0..self.w.len() {
+            match self.ask(k, c())? {
+                Out::Done(r) => r?,
+                _ => return Err(gone()),
+            }
+        }
+        Ok(())
+    }
+
+    /// The rows through every stage in turn, the first at `at`; the head on the last row where `head`; `chunk`: a prompt's chunk.
+    fn rows(&mut self, tokens: &[u32], at: usize, head: bool, chunk: bool) -> Result<()> {
         let mut io = Vec::new();
         for k in 0..self.w.len() {
-            match self.ask(k, Cmd::Rows { tokens: tokens.to_vec(), at, io, head })? {
+            match self.ask(k, Cmd::Rows { tokens: tokens.to_vec(), at, io, head, chunk })? {
                 Out::Rows(r) => io = r?,
                 _ => return Err(gone()),
             }
@@ -128,14 +198,65 @@ impl Split {
     }
 
     pub fn reset(&mut self) -> Result<()> {
+        self.each(&|| Cmd::Reset)?;
+        self.n = 0;
+        Ok(())
+    }
+
+    /// The sequence begins with `prompt`, whose images are `images` in order (none: a text): every stage told before its first chunk, the first running the
+    /// tower as the chunks reach their rows (src/dynamic/images.rs). A model with no vision tower refuses images in words.
+    pub fn set_images(&self, prompt: &[u32], images: &[std::sync::Arc<crate::vision::Image>]) -> Result<()> {
+        self.each(&|| Cmd::Images(prompt.to_vec(), images.to_vec()))
+    }
+
+    /// Whether the last stage drafts with a head of the model (`spec_round`).
+    pub fn drafting(&self) -> bool {
+        self.drafting
+    }
+
+    /// One drafting round, as `Dyn::spec_round` runs it on one GPU: from `last` (the token after the cache's, not in it yet) the last stage's head drafts
+    /// (or `given` stand for its drafts), every stage runs `last` and them as one verify pass (each row a step's), the drafts are kept up to the model's first
+    /// disagreement and its own token there (greedy) or each by `sampler`, every stage goes back to the rows kept and the head runs again on them. The tokens
+    /// returned (1 to k + 1) are what steps would give one by one; the cache then holds `last` and the kept drafts.
+    pub fn spec_round_with(&mut self, last: u32, given: Option<&[u32]>, sampler: Option<&mut crate::sampler::Sampler>) -> Result<Vec<u32>> {
+        let (n0, end) = (self.n, self.w.len() - 1);
+        let drafts = match self.ask(end, Cmd::Drafts { last, given: given.map(<[u32]>::to_vec) })? {
+            Out::Tokens(r) => r?,
+            _ => return Err(gone()),
+        };
+        let seq: Vec<u32> = std::iter::once(last).chain(drafts).collect();
+        let mut io = Vec::new();
         for k in 0..self.w.len() {
-            match self.ask(k, Cmd::Reset)? {
-                Out::Done(r) => r?,
+            match self.ask(k, Cmd::Verify { tokens: seq.clone(), at: n0, io })? {
+                Out::Rows(r) => io = r?,
                 _ => return Err(gone()),
             }
         }
-        self.n = 0;
-        Ok(())
+        let (rows, _) = self.head_out(seq.len(), false)?;
+        let big: Vec<u32> = rows.iter().map(|r| r.0).collect();
+        // (each draft's check made of its row on the last stage's GPU, as one GPU's)
+        let (out, kept) = super::accept(&seq, &big, &mut Last(&*self), sampler)?;
+        self.each(&|| Cmd::Rewind(kept + 1))?;
+        let next: Vec<u32> = seq[1..=kept].iter().copied().chain(out.last().copied()).collect();
+        match self.ask(end, Cmd::HeadAgain { at: n0, kept, next })? {
+            Out::Done(r) => r?,
+            _ => return Err(gone()),
+        }
+        self.n = n0 + kept + 1;
+        Ok(out)
+    }
+
+    /// `spec_round_with` of the head's own drafts.
+    pub fn spec_round(&mut self, last: u32, sampler: Option<&mut crate::sampler::Sampler>) -> Result<Vec<u32>> {
+        self.spec_round_with(last, None, sampler)
+    }
+
+    /// The last pass's head on its last `rows` rows (the last stage's `Dyn::head_out`): each row's greedy token and logit, and where `words` the rows' logits.
+    pub fn head_out(&self, rows: usize, words: bool) -> Result<HeadOut> {
+        match self.ask(self.w.len() - 1, Cmd::HeadOut { rows, words })? {
+            Out::Head(r) => r,
+            _ => Err(gone()),
+        }
     }
 
     /// The prompt after the tokens already in the cache, in chunks; the token that follows it.
@@ -149,7 +270,7 @@ impl Split {
         let mut at = 0;
         while at < tokens.len() {
             let n = self.chunk.min(tokens.len() - at);
-            self.rows(&tokens[at..at + n], self.n, at + n == tokens.len())?;
+            self.rows(&tokens[at..at + n], self.n, at + n == tokens.len(), true)?;
             self.n += n;
             at += n;
         }
@@ -161,7 +282,7 @@ impl Split {
         if self.n + 1 > self.ctx {
             return err("the cache is full");
         }
-        self.rows(&[token], self.n, true)?;
+        self.rows(&[token], self.n, true, false)?;
         self.n += 1;
         self.sample()
     }
@@ -178,6 +299,14 @@ impl Split {
         match self.ask(self.w.len() - 1, Cmd::Logits)? {
             Out::Logits(r) => r,
             _ => Err(gone()),
+        }
+    }
+
+    /// A question of the last pass's head rows, put to the last stage (`row_ask`); None where its thread is gone.
+    fn ask_row(&self, a: RowAsk) -> Option<RowGot> {
+        match self.ask(self.w.len() - 1, Cmd::Row(a)) {
+            Ok(Out::Row(g)) => Some(g),
+            _ => None,
         }
     }
 
@@ -275,6 +404,15 @@ impl Run {
             Run::Tp(e) => e.reset(),
         }
     }
+    /// The next prompt's images, after `reset` (`Dyn::set_images`; a split's every stage, `Split::set_images`); every layer across GPUs reads none yet.
+    pub fn set_images(&mut self, prompt: &[u32], images: &[std::sync::Arc<crate::vision::Image>]) -> Result<()> {
+        match self {
+            Run::One(e) => e.set_images(prompt, images),
+            Run::Split(e) => e.set_images(prompt, images),
+            Run::Tp(_) if images.is_empty() => Ok(()),
+            Run::Tp(_) => err("a model with every layer across GPUs reads no images yet"),
+        }
+    }
 }
 
 /// `--tp GPU,..` of a command line: every layer across those GPUs (a GPU may repeat: places on one GPU check the gathers), or none.
@@ -299,19 +437,45 @@ pub fn split_args(a: &crate::args::Args) -> Result<(Vec<usize>, Vec<i32>)> {
 }
 
 impl Split {
-    /// A reply as `Dyn::reply` gives one, without drafting; a sampled token from the last stage's logits row on the host.
-    fn reply(&mut self, prompt: &[u32], o: &crate::model::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::model::Finish)> {
-        use crate::model::Finish;
+    /// A reply as `Dyn::reply` gives one (drafted a round at a time where the last stage drafts); a sampled token from the last stage's logits row on the host.
+    pub(super) fn reply(&mut self, prompt: &[u32], o: &crate::sched::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::sched::Finish)> {
+        use crate::sched::Finish;
         if prompt.is_empty() || prompt.len() + 1 > self.ctx {
             return err(format!("{} prompt tokens, where the context holds {}", prompt.len(), self.ctx));
         }
         self.reset()?;
+        // (the prompt's images, where `see` gave them for this reply: none for a reply it did not)
+        let images = std::mem::take(&mut self.next);
+        self.set_images(prompt, &images)?;
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
+        // (a drawn token: from what the last stage's GPU makes of the pass's head row, the request's changes put on it first, as one GPU's: `sched::draw_row`)
+        let draw = |e: &Split, sampler: &mut crate::sampler::Sampler| crate::sched::draw_row(&mut Last(e), 0, sampler).map(|x| x.0);
+        self.ask_row(RowAsk::Procs(vec![sampler.proc()]));
         let mut s = self.prefill(prompt)?;
         let mut out = Vec::new();
+        if self.drafting {
+            // drafted: the model's tokens a round at a time (the last of a round is not in the cache yet: the next round starts from it)
+            let first = if greedy { s.token } else { draw(self, &mut sampler)? };
+            let mut pending = std::collections::VecDeque::from([first]);
+            while let Some(tok) = pending.pop_front() {
+                if !o.ignore_eos && (self.eos.contains(&(tok as i64)) || o.stop_ids.contains(&tok)) {
+                    return Ok((out, Finish::Stop));
+                }
+                out.push(tok);
+                if !each(tok) {
+                    return Ok((out, Finish::Stopped));
+                }
+                if out.len() >= o.max_new || self.n + 1 > self.ctx {
+                    return Ok((out, Finish::Length));
+                }
+                if pending.is_empty() {
+                    pending.extend(self.spec_round(tok, if greedy { None } else { Some(&mut sampler) })?);
+                }
+            }
+        }
         loop {
-            let tok = if greedy { s.token } else { sampler.sample_with(None, || self.logits())? };
+            let tok = if greedy { s.token } else { draw(self, &mut sampler)? };
             if !o.ignore_eos && (self.eos.contains(&(tok as i64)) || o.stop_ids.contains(&tok)) {
                 return Ok((out, Finish::Stop));
             }
@@ -322,7 +486,143 @@ impl Split {
             if out.len() >= o.max_new || self.n + 1 > self.ctx {
                 return Ok((out, Finish::Length));
             }
+            self.ask_row(RowAsk::Procs(vec![sampler.proc()]));
             s = self.step(tok)?;
+        }
+    }
+}
+
+/// A question of a pass's head rows that a stage's engine answers on its GPU (a split's last stage, a group's first GPU: `row_ask`), each as one GPU's scheduler step asks it
+/// (`ModelStep`'s methods of these names): its candidates (the row the draw sees, the model's), the model's sum of exponentials, whether the candidates are of the row the draw
+/// sees, the request's changes for the next pass's rows (`Procs`) or made again on a row (`Remake`), a draw's total, bins and tokens of a query, a token's logit, the row, the
+/// logits of some tokens.
+pub(super) enum RowAsk {
+    Top(usize),
+    TopRaw(usize),
+    Mass(usize, f32),
+    Processed(usize),
+    Procs(Vec<Option<crate::sampler::Proc>>),
+    Remake(usize, Option<crate::sampler::Proc>),
+    Total(usize, f32, f32),
+    Bins(usize, crate::sampler::Query),
+    Tokens(usize, crate::sampler::Query, usize),
+    Logit(usize, u32),
+    Logits(usize),
+    Gather(usize, Vec<u32>),
+}
+
+pub(super) enum RowGot {
+    Cands(Option<Vec<(u32, f32)>>),
+    Sum(Option<f64>),
+    Flag(bool),
+    Total(Option<u64>),
+    Bins(Option<crate::sampler::Bins>),
+    Logit(Option<f32>),
+    Row(Result<Vec<f32>>),
+    Gathered(Result<Vec<(u32, f32)>>),
+}
+
+/// `a` answered by a stage's engine (its thread's), as its scheduler's step answers it.
+pub(super) fn row_ask(e: &mut Dyn, a: RowAsk) -> RowGot {
+    use crate::sched::ModelStep as M;
+    match a {
+        RowAsk::Top(r) => RowGot::Cands(M::top(e, r)),
+        RowAsk::TopRaw(r) => RowGot::Cands(M::top_raw(e, r)),
+        RowAsk::Mass(r, t) => RowGot::Sum(M::mass(e, r, t)),
+        RowAsk::Processed(r) => RowGot::Flag(M::processed(e, r)),
+        RowAsk::Procs(p) => {
+            M::procs(e, p);
+            RowGot::Flag(true)
+        }
+        RowAsk::Remake(r, p) => RowGot::Flag(M::remake(e, r, p)),
+        RowAsk::Total(r, m, t) => RowGot::Total(M::total(e, r, m, t)),
+        RowAsk::Bins(r, q) => RowGot::Bins(M::bins(e, r, &q)),
+        RowAsk::Tokens(r, q, cap) => RowGot::Cands(M::tokens(e, r, &q, cap)),
+        RowAsk::Logit(r, t) => RowGot::Logit(M::logit(e, r, t)),
+        RowAsk::Logits(r) => RowGot::Row(M::logits(e, r)),
+        RowAsk::Gather(r, t) => RowGot::Gathered(M::gather(e, r, &t)),
+    }
+}
+
+/// What answers a question of a pass's head rows on another thread's engine (a split's last stage, a group's first GPU).
+pub(super) trait AsksRows {
+    fn ask_rows(&self, a: RowAsk) -> Option<RowGot>;
+}
+
+impl AsksRows for Split {
+    fn ask_rows(&self, a: RowAsk) -> Option<RowGot> {
+        self.ask_row(a)
+    }
+}
+
+/// The head rows of a split's last stage or a group's first GPU as the rows a draw reads (`sched::Rows`), each question answered on that engine's GPU.
+pub(super) struct Last<'a, T: AsksRows>(pub(super) &'a T);
+
+impl<T: AsksRows> Last<'_, T> {
+    fn cands(&self, a: RowAsk) -> Option<Vec<(u32, f32)>> {
+        match self.0.ask_rows(a) {
+            Some(RowGot::Cands(c)) => c,
+            _ => None,
+        }
+    }
+    fn flag(&self, a: RowAsk) -> bool {
+        matches!(self.0.ask_rows(a), Some(RowGot::Flag(true)))
+    }
+    pub(super) fn top_raw(&self, row: usize) -> Option<Vec<(u32, f32)>> {
+        self.cands(RowAsk::TopRaw(row))
+    }
+    pub(super) fn mass(&self, row: usize, temperature: f32) -> Option<f64> {
+        match self.0.ask_rows(RowAsk::Mass(row, temperature)) {
+            Some(RowGot::Sum(m)) => m,
+            _ => None,
+        }
+    }
+    pub(super) fn procs(&self, procs: Vec<Option<crate::sampler::Proc>>) {
+        self.0.ask_rows(RowAsk::Procs(procs));
+    }
+    pub(super) fn gather(&self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
+        match self.0.ask_rows(RowAsk::Gather(row, tokens.to_vec())) {
+            Some(RowGot::Gathered(r)) => r,
+            _ => Err(gone()),
+        }
+    }
+}
+
+impl<T: AsksRows> crate::sched::Rows for Last<'_, T> {
+    fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+        self.cands(RowAsk::Top(row))
+    }
+    fn processed(&mut self, row: usize) -> bool {
+        self.flag(RowAsk::Processed(row))
+    }
+    fn remake(&mut self, row: usize, proc: Option<crate::sampler::Proc>) -> bool {
+        self.flag(RowAsk::Remake(row, proc))
+    }
+    fn total(&mut self, row: usize, max: f32, temperature: f32) -> Option<u64> {
+        match self.0.ask_rows(RowAsk::Total(row, max, temperature)) {
+            Some(RowGot::Total(t)) => t,
+            _ => None,
+        }
+    }
+    fn bins(&mut self, row: usize, q: &crate::sampler::Query) -> Option<crate::sampler::Bins> {
+        match self.0.ask_rows(RowAsk::Bins(row, *q)) {
+            Some(RowGot::Bins(b)) => b,
+            _ => None,
+        }
+    }
+    fn tokens(&mut self, row: usize, q: &crate::sampler::Query, cap: usize) -> Option<Vec<(u32, f32)>> {
+        self.cands(RowAsk::Tokens(row, *q, cap))
+    }
+    fn logit(&mut self, row: usize, t: u32) -> Option<f32> {
+        match self.0.ask_rows(RowAsk::Logit(row, t)) {
+            Some(RowGot::Logit(x)) => x,
+            _ => None,
+        }
+    }
+    fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
+        match self.0.ask_rows(RowAsk::Logits(row)) {
+            Some(RowGot::Row(r)) => r,
+            _ => Err(gone()),
         }
     }
 }
@@ -335,7 +635,7 @@ impl crate::conv::Gen for Run {
             Run::Tp(e) => e.capacity(),
         }
     }
-    fn reply(&mut self, prompt: &[u32], o: &crate::model::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::model::Finish)> {
+    fn reply(&mut self, prompt: &[u32], o: &crate::sched::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::sched::Finish)> {
         match self {
             Run::One(e) => crate::conv::Gen::reply(e, prompt, o, each),
             Run::Split(e) => e.reply(prompt, o, each),
@@ -348,441 +648,516 @@ impl crate::conv::Gen for Run {
             Run::Split(_) | Run::Tp(_) => None,
         }
     }
-    /// One GPU: the engine's own step (src/dynamic/rows.rs); stages and layers across GPUs run one sequence at a time.
+    /// One GPU: the engine's pools are the plan's (`Dyn::take_plan`); stages and layers across GPUs hold one sequence, its rings made at the load.
+    fn take_plan(&mut self, users: usize, kv: u64) {
+        if let Run::One(e) = self {
+            e.take_plan(users, kv);
+        }
+    }
+    /// The engine's own images (src/dynamic/images.rs), on one GPU or cut into stages (the next reply's: `Split::reply` tells every stage); every layer across
+    /// GPUs reads none yet.
+    fn see(&mut self, images: Vec<std::sync::Arc<crate::vision::Image>>) -> Result<()> {
+        match self {
+            Run::One(e) => crate::conv::Gen::see(e, images),
+            Run::Split(e) => {
+                e.next = images;
+                Ok(())
+            }
+            Run::Tp(_) if images.is_empty() => Ok(()),
+            Run::Tp(_) => err("a model with every layer across GPUs reads no images yet"),
+        }
+    }
+    /// One GPU: the engine's own step (src/dynamic/rows.rs); stages and layers across GPUs: a step of one sequence at a time (`ModelStep for Run`), its slot empty (what a
+    /// reply before this left in the cache is not a scheduler's sequence, which begins at its first token: `serve_rows` empties the executor's the same way).
     fn as_step(&mut self, users: usize) -> Result<Option<(usize, &mut dyn crate::sched::ModelStep)>> {
         match self {
             Run::One(e) => crate::conv::Gen::as_step(e, users),
-            Run::Split(_) | Run::Tp(_) => Ok(None),
+            Run::Split(_) | Run::Tp(_) => {
+                self.reset()?;
+                Ok(Some((1, self as &mut dyn crate::sched::ModelStep)))
+            }
         }
     }
 }
 
-/// The families the dynamic engine runs from their release's directory through `open`, by the config's text (None: another path's model).
-pub fn family(text: &str) -> Option<&'static str> {
-    if crate::muse::is_muse(text) {
-        Some("Muse Spark")
-    } else if crate::kimi::is_kimi(text) {
-        Some("Kimi-K3")
-    } else if crate::glm::is_glm(text) {
-        Some("GLM-5.3-Flash")
-    } else if crate::nemotron::is_nemotron_h(text) {
-        Some("Nemotron-H")
-    } else if glyd_gpu::json::parse(text).ok().and_then(|v| v.get("model_type").and_then(|t| t.as_str()).map(|t| t == "deepseek_v4")).unwrap_or(false) {
-        Some("DeepSeek-V4")
-    } else {
-        None
+impl Run {
+    /// `f` of the rows a draw reads (a split's last stage, a group's first GPU); None on one GPU (its own step is the scheduler's).
+    fn rows_of<R>(&mut self, f: impl FnOnce(&mut dyn crate::sched::Rows) -> R) -> Option<R> {
+        match self {
+            Run::Split(e) => Some(f(&mut Last(&*e))),
+            Run::Tp(e) => Some(f(&mut Last(&*e))),
+            Run::One(_) => None,
+        }
+    }
+
+    /// Tokens in the cache.
+    fn held(&self) -> usize {
+        match self {
+            Run::One(e) => e.n,
+            Run::Split(e) => e.n,
+            Run::Tp(e) => e.held(),
+        }
     }
 }
 
-/// The model of `dir` on the dynamic engine, by its config's family: on one GPU where `cuts` is empty, else in stages (`devices`: one more than `cuts`).
-/// GLM's and Nemotron-H's experts at `o.layout`'s level (penguin's lossless where none is given); DeepSeek-V4's and Muse's as the release has them, exact.
+/// Stages or layers across GPUs as a scheduler's step of one sequence at a time (R4a #138: every model is served by `Sched`, none by a loop of its own): one slot, emptied
+/// at the sequence's end; a prompt in one call (the stages run it a chunk at a time), a token a decode step, a draw read from the last stage's logits row. Across
+/// GPUs a step holds one sequence: `stage_rows` and the gathers take one.
+impl crate::sched::ModelStep for Run {
+    fn window(&self) -> usize {
+        crate::conv::Gen::capacity(self)
+    }
+    fn chunk(&self) -> usize {
+        crate::conv::Gen::capacity(self)
+    }
+    fn pages(&self) -> usize {
+        0
+    }
+    fn slots(&self) -> Option<usize> {
+        Some(1)
+    }
+    /// One GPU: its engine's context (it runs on this thread); stages and every layer across GPUs run on threads of their own, each its GPU's.
+    fn make_current(&mut self) -> Result<()> {
+        match self {
+            Run::One(e) => e.dev.make_current(),
+            _ => Ok(()),
+        }
+    }
+    fn eos(&self) -> Vec<i64> {
+        match self {
+            Run::One(e) => e.desc().eos.clone(),
+            Run::Split(e) => e.eos().to_vec(),
+            Run::Tp(e) => e.eos().to_vec(),
+        }
+    }
+    /// The sequence's images: every stage of a split told (`Split::set_images`); every layer across GPUs refuses them.
+    fn images(&mut self, slot: i32, prompt: &[u32], images: &[std::sync::Arc<crate::vision::Image>]) -> Result<()> {
+        match self {
+            Run::One(e) => crate::sched::ModelStep::images(e, slot, prompt, images),
+            Run::Split(e) => e.set_images(prompt, images),
+            Run::Tp(_) if images.is_empty() => Ok(()),
+            Run::Tp(_) => err("a model with every layer across GPUs reads no images yet"),
+        }
+    }
+    fn prefill(&mut self, _pages: &[i32], start: usize, tokens: &[u32], last: bool) -> Result<Option<Sample>> {
+        if start != self.held() {
+            return err(format!("a chunk at {start} of a sequence that holds {}", self.held()));
+        }
+        let s = Run::prefill(self, tokens)?;
+        Ok(last.then_some(s))
+    }
+    fn decode(&mut self, rows: &[crate::sched::Row]) -> Result<Vec<Sample>> {
+        match rows {
+            [r] if r.pos == self.held() => Ok(vec![Run::step(self, r.token)?]),
+            [r] => err(format!("a token at {} of a sequence that holds {}", r.pos, self.held())),
+            _ => err(format!("a step of {} rows on a model that runs one sequence at a time", rows.len())),
+        }
+    }
+    fn logits(&mut self, row: usize) -> Result<Vec<f32>> {
+        match self.rows_of(|r| crate::sched::Rows::logits(r, row)) {
+            Some(r) => r,
+            None => Run::logits(self),
+        }
+    }
+    /// Stages, and every layer across GPUs: the last stage's (the group's first GPU's) candidates, sums, totals, bins and tokens of its head row, made on its GPU by the
+    /// kernels and launches of one GPU's step, so a draw and the log-probabilities are one GPU's bits (the row read here would be drawn and summed on the host).
+    fn top(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+        self.rows_of(|r| crate::sched::Rows::top(r, row)).flatten()
+    }
+    fn top_raw(&mut self, row: usize) -> Option<Vec<(u32, f32)>> {
+        match self {
+            Run::Split(e) => Last(&*e).top_raw(row),
+            Run::Tp(e) => Last(&*e).top_raw(row),
+            Run::One(_) => None,
+        }
+    }
+    fn mass(&mut self, row: usize, temperature: f32) -> Option<f64> {
+        match self {
+            Run::Split(e) => Last(&*e).mass(row, temperature),
+            Run::Tp(e) => Last(&*e).mass(row, temperature),
+            Run::One(_) => None,
+        }
+    }
+    fn procs(&mut self, procs: Vec<Option<crate::sampler::Proc>>) {
+        match self {
+            Run::Split(e) => Last(&*e).procs(procs),
+            Run::Tp(e) => Last(&*e).procs(procs),
+            Run::One(_) => {}
+        }
+    }
+    fn processed(&mut self, row: usize) -> bool {
+        self.rows_of(|r| crate::sched::Rows::processed(r, row)).unwrap_or(false)
+    }
+    fn remake(&mut self, row: usize, proc: Option<crate::sampler::Proc>) -> bool {
+        self.rows_of(|r| crate::sched::Rows::remake(r, row, proc)).unwrap_or(false)
+    }
+    fn total(&mut self, row: usize, max: f32, temperature: f32) -> Option<u64> {
+        self.rows_of(|r| crate::sched::Rows::total(r, row, max, temperature)).flatten()
+    }
+    fn bins(&mut self, row: usize, q: &crate::sampler::Query) -> Option<crate::sampler::Bins> {
+        self.rows_of(|r| crate::sched::Rows::bins(r, row, q)).flatten()
+    }
+    fn tokens(&mut self, row: usize, q: &crate::sampler::Query, cap: usize) -> Option<Vec<(u32, f32)>> {
+        self.rows_of(|r| crate::sched::Rows::tokens(r, row, q, cap)).flatten()
+    }
+    fn logit(&mut self, row: usize, t: u32) -> Option<f32> {
+        self.rows_of(|r| crate::sched::Rows::logit(r, row, t)).flatten()
+    }
+    fn gather(&mut self, row: usize, tokens: &[u32]) -> Result<Vec<(u32, f32)>> {
+        match self {
+            Run::Split(e) => Last(&*e).gather(row, tokens),
+            Run::Tp(e) => Last(&*e).gather(row, tokens),
+            Run::One(_) => err("a gather of a model on one GPU through stages' steps"),
+        }
+    }
+    fn release(&mut self, _pages: &[i32]) -> Result<()> {
+        self.reset()
+    }
+    /// Stages whose last drafts with a head of the model: the sequence's decode a drafting round (`Split::spec_round`), as a reply alone runs it.
+    fn draft(&mut self, row: &crate::sched::Row, sampler: Option<&mut crate::sampler::Sampler>) -> Result<Option<Vec<u32>>> {
+        match self {
+            Run::Split(e) if e.drafting() => {
+                if row.pos != e.n {
+                    return err(format!("a token at {} of a sequence that holds {}", row.pos, e.n));
+                }
+                e.spec_round(row.token, sampler).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+/// A greedy reply of `tokens` tokens to `prompt` from the model alone (`Gen::reply`), and the same through the scheduler with the model as its step (`as_step`: across GPUs, a
+/// step of one slot): both, for a check that they are the same (`tpcheck`).
+#[cfg(feature = "dev")]
+pub fn sched_reply(e: &mut Run, prompt: &[u32], tokens: usize) -> Result<(Vec<u32>, Vec<u32>)> {
+    use crate::conv::Gen;
+    let reply = crate::sched::Reply {
+        params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
+        max_new: tokens,
+        ignore_eos: true,
+        logprobs: None,
+        stop_ids: Vec::new(),
+    };
+    let (alone, _) = e.reply(prompt, &reply, &mut |_| true)?;
+    Ok((alone, served(e, prompt, tokens, None)?.0))
+}
+
+/// A greedy reply of `tokens` tokens to `prompt` through the scheduler with the model as its step (`as_step`: across GPUs, a step of one slot), and where `k` is
+/// given each token's log-probability and its `k` likeliest tokens' as a server sends them (`splitcheck`: a split's are one GPU's bits).
+#[cfg(feature = "dev")]
+pub fn served(e: &mut Run, prompt: &[u32], tokens: usize, k: Option<usize>) -> Result<(Vec<u32>, Vec<crate::sampler::Lp>)> {
+    use crate::conv::Gen;
+    use crate::sched::{Ev, Reply, Sched, Submit};
+    let reply = Reply {
+        params: crate::sampler::Params { temperature: 0.0, ..Default::default() },
+        max_new: tokens,
+        ignore_eos: true,
+        logprobs: k,
+        stop_ids: Vec::new(),
+    };
+    let Some((n, step)) = e.as_step(1)? else { return err("no scheduler's step") };
+    let mut s = Sched::new(step, n);
+    let (tx, rx) = channel();
+    s.submit(Submit {
+        prompt: prompt.to_vec(),
+        reply,
+        out: tx,
+        abort: Default::default(),
+        resumed: Default::default(),
+        cached: Default::default(),
+        created: Default::default(),
+        salt: 0,
+        pin: 0,
+        images: Vec::new(),
+    });
+    while !s.idle() {
+        s.tick()?;
+    }
+    let (mut via, mut lps) = (Vec::new(), Vec::new());
+    loop {
+        match rx.recv().map_err(|_| Error("the scheduler dropped the sequence".into()))? {
+            Ev::Token(t) => via.push(t),
+            Ev::Lp(l) => lps.push(l),
+            Ev::End(r) => {
+                r?;
+                return Ok((via, lps));
+            }
+        }
+    }
+}
+
+/// The name of the support row of the model whose config.json is `text`, where the row's layers split over GPUs on the dynamic route (`Support::split_levels`)
+/// or the row is sized as the dynamic route's on one GPU (`Sizing::Dynamic`): the families this module opens from their release's directory; None for another
+/// path's model.
+pub fn family(text: &str) -> Option<&'static str> {
+    dynamic_row(crate::runtime::config::family_of(text)?)
+}
+
+/// `family` of a config.json parsed once.
+pub fn family_in(c: &crate::runtime::config::ModelConfig) -> Option<&'static str> {
+    dynamic_row(c.family()?)
+}
+
+fn dynamic_row(f: crate::support::Family) -> Option<&'static str> {
+    let row = crate::support::row(f);
+    (!row.split_levels.is_empty() || row.route.sizing == crate::support::Sizing::Dynamic).then_some(row.name)
+}
+
+/// The model of `dir` as `plan` says it loads (src/plan.rs `size_dynamic`, a lossy level's stages `sizing::lossy_stages`): its layers cut over the plan's GPUs
+/// (`Spread::cuts`, `devices`) or across them (`across`), its context, prompt chunk and layout (the plan's: penguin's 12-bit one where `twelve`, a lossy level's
+/// block layout), and where its experts are in the computer's memory each stage's places of them, the memory the plan gives them and the last layers' dense
+/// matrices there (`dense`), with the expert cache's copy-or-compute policy `offload`; on one GPU its sequences' keys, values and states in the plan's bytes
+/// (`Dyn::take_plan`). Nothing is sized here. `m`: the directory's config.json, parsed once (the plan's): every stage's loader reads the model from it.
+pub fn open_plan(dir: &Path, m: &ModelConfig, plan: &crate::plan::LoadPlan, offload: crate::offload::Offload) -> Result<Run> {
+    let sp = plan.spread.as_ref().ok_or_else(|| Error("a plan of the dynamic route spreads the model (Spread)".into()))?;
+    let o = plan_opts(plan)?;
+    let ram = plan.experts.filter(|c| c.ram < c.host_bytes()).map(|c| crate::offload::HostMemory { bytes: c.ram, total: c.host_bytes() });
+    let (cuts, devices) = (&sp.cuts, &sp.devices);
+    let mut run = if sp.host_bytes == 0 {
+        if sp.across {
+            open_tp_of(dir, m, &o, devices)?
+        } else {
+            open_of(dir, m, &o, cuts, devices)?
+        }
+    } else {
+        // (each stage's experts in the expert cache: a hummingbird directory's, or the release's in places of their own; the release's experts of the latent block
+        // across the GPUs where the plan says so, their cache's host tier and plans shared: src/dynamic/tp_cache.rs)
+        let cachings: Vec<crate::hbg_store::HbCaching> =
+            sp.places.iter().map(|&places| crate::hbg_store::HbCaching { places, ram, offload, dense: sp.dense }).collect();
+        if sp.across && plan.level != "hummingbird" && latent_experts(dir, m)? {
+            let c = cachings.into_iter().next().ok_or_else(|| Error("a plan across GPUs with no places for its experts".into()))?;
+            open_tp_cached_of(dir, m, &o, devices, c)?
+        } else {
+            open_cached_of(dir, m, &o, cuts, devices, cachings)?
+        }
+    };
+    // (its sequences' keys, values and states the plan's: on one GPU their pools take its bytes, no more)
+    crate::conv::Gen::take_plan(&mut run, plan.users, plan.kv);
+    Ok(run)
+}
+
+/// The options a plan that spreads the model (`Spread`) loads it with: its context, prompt chunk and layout, on the GPU of its first stage (the plan's GPU where
+/// it is whole; each stage on its own, `Run::new`). The GPU is the plan's whichever it is: nothing here or after takes GPU 0 for it.
+pub fn plan_opts(plan: &crate::plan::LoadPlan) -> Result<Opts> {
+    let device =
+        plan.spread.as_ref().and_then(|sp| sp.devices.first().copied()).ok_or_else(|| Error("a plan of the dynamic route names its GPUs (Spread)".into()))?;
+    Ok(Opts { ctx: plan.context, chunk: plan.chunk, graph: true, device, layout: Some(plan.layout) })
+}
+
+/// Whether the model of `dir` has experts of the Moe kind's latent block (`experts::latent_block`: a latent of their own projections whose sum is normed),
+/// whose expert cache runs across a group of GPUs (src/dynamic/tp_cache.rs), by its description (`m`: its config.json, parsed once).
+fn latent_experts(dir: &Path, m: &ModelConfig) -> Result<bool> {
+    Ok(latent_experts_of(&crate::runtime::describe::describe_dir_of(dir, m)?.0))
+}
+
+/// `latent_experts` of a description.
+fn latent_experts_of(d: &crate::runtime::describe::Described) -> bool {
+    use crate::runtime::kinds::{Body, Ffn};
+    d.desc
+        .blocks
+        .iter()
+        .any(|b| matches!(&b.body, Body::Ffn(Ffn::Moe(m)) if m.latent.as_ref().is_some_and(|l| l.norm_out.is_some() && l.expert_norm.is_none())))
+}
+
+/// The model of `dir` on the dynamic engine, by its description's loader (`loader`): on one GPU where `cuts` is empty, else in stages (`devices`: one more than
+/// `cuts`). The experts at `o.layout`'s level where the loader takes a level (penguin's lossless where none is given), else as the release has them, exact.
 pub fn open(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32]) -> Result<Run> {
-    let (nl, eos, make) = maker(dir, o)?;
+    open_of(dir, &ModelConfig::load(dir)?, o, cuts, devices)
+}
+
+/// `open` of a config.json parsed once (`m`: `dir`'s).
+pub fn open_of(dir: &Path, m: &ModelConfig, o: &Opts, cuts: &[usize], devices: &[i32]) -> Result<Run> {
+    let (nl, eos, make) = maker(dir, m)?;
     Run::new(nl, eos, cuts, devices, o, make)
 }
 
 /// The model of `dir` with every layer across `devices` (src/dynamic/tp.rs).
 pub fn open_tp(dir: &Path, o: &Opts, devices: &[i32]) -> Result<Run> {
-    let (nl, eos, make) = maker(dir, o)?;
+    open_tp_of(dir, &ModelConfig::load(dir)?, o, devices)
+}
+
+/// `open_tp` of a config.json parsed once.
+pub fn open_tp_of(dir: &Path, m: &ModelConfig, o: &Opts, devices: &[i32]) -> Result<Run> {
+    let (nl, eos, make) = maker(dir, m)?;
     Ok(Run::Tp(super::tp::Tp::with(nl, eos, devices, o, make)?))
 }
 
-/// The family's layers, end tokens and loader of a stage, by the config of `dir`.
-fn maker(dir: &Path, o: &Opts) -> Result<(usize, Vec<i64>, MakeStage)> {
-    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
-    let owned = dir.to_path_buf();
-    let level = o.layout.unwrap_or(crate::weights::Layout::Tiered);
-    Ok(match family(&text) {
-        Some("Muse Spark") => {
-            let c = crate::muse::ConfigMuse::load(dir)?;
-            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts| super::muse::load_stage(&owned, o, st)))
-        }
-        Some("Kimi-K3") => {
-            let c = crate::kimi::ConfigKimi::load(dir)?;
-            // (a development build's GLYD_KIMI_PLACES: the experts of a layer on the GPU, the rest in the expert cache's host tier)
-            let places = crate::tune!("GLYD_KIMI_PLACES").and_then(|v| v.parse::<usize>().ok());
-            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts| super::kimi::load_with_places(&owned, o, st, places)))
-        }
-        Some("GLM-5.3-Flash") => {
-            let c = crate::glm::ConfigGlm::load(dir)?;
-            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts| super::glm::load_stage(&owned, o, level, st)))
-        }
-        Some("Nemotron-H") => {
-            let (nl, eos) = (config_num(&text, "num_hidden_layers").unwrap_or(0), config_eos(&text));
-            (nl, eos, std::sync::Arc::new(move |st, o: &Opts| super::nemotron::load_stage(&owned, o, level, st)))
-        }
-        _ => {
-            let c = crate::deepseek_v4::ConfigV4::load(dir)?;
-            (c.layers, c.eos.clone(), std::sync::Arc::new(move |st, o: &Opts| super::deepseek_v4::load_stage(&owned, o, st)))
-        }
+/// The layers, end tokens and loader of a stage of the model of `dir` (its description's loader's, every expert as the stage's level holds it).
+fn maker(dir: &Path, m: &ModelConfig) -> Result<(usize, Vec<i64>, MakeStage)> {
+    let (nl, eos, load) = cached_stage(dir, m)?;
+    Ok((nl, eos, std::sync::Arc::new(move |st, o: &Opts| load(st, o, None))))
+}
+
+/// What loads a stage of a model on the dynamic route, the same for every description: the stage's layers on the options' GPU, the experts at the options'
+/// level where the loader takes one (penguin's lossless where none is given), in the expert cache as the caching says where one is given. A loader whose
+/// experts the expert cache does not take refuses a caching, in words.
+pub type StageLoad = fn(&Path, &ModelConfig, &Opts, Stage, Option<&crate::hbg_store::HbCaching>) -> Result<Dyn>;
+
+/// A loader of the dynamic route: the model's layers and end tokens, from its directory and its config.json parsed once (`ends`), and a stage of it (`stage`).
+#[derive(Clone, Copy)]
+pub struct Loader {
+    pub ends: fn(&Path, &ModelConfig) -> Result<(usize, Vec<i64>)>,
+    pub stage: StageLoad,
+}
+
+/// The layer kinds a loader of the dynamic route lowers, as a description tells them apart (`lowering`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lowering {
+    /// A compressed attention (src/dynamic/lower_comp.rs; DeepSeek-V4's).
+    Compressed,
+    /// Mamba-2, attention without a positional encoding and experts, a block a layer, plain residuals (`lower::nemotron`; Nemotron-H's).
+    Mamba2,
+    /// The Kimi delta attention and the latent attention with residual streams (`lower::glm`; GLM-5.3-Flash's).
+    DeltaStreams,
+    /// The Kimi delta attention and the latent attention with the blocks' depth mix (`lower::kimi`; Kimi-K3's).
+    DeltaDepth,
+    /// Gated residuals (`lower::muse`; Muse Spark's).
+    GatedResidual,
+    /// The gated residuals' streams (`lower::qwen4x`; Qwen3.8-Flash-Next's).
+    GatedStreams,
+    /// The gated delta rule with plain residuals, the feed-forwards dense or experts (`lower::qwen35`; the Qwen3.5 layout's).
+    GatedDelta,
+    /// The latent attention with plain residuals, the feed-forwards dense or experts (`lower::latent_moe`; GLM-5.3's).
+    LatentPlain,
+}
+
+/// The lowering of the description `d`, by the layer kinds it holds, in this order: a compressed attention; Mamba-2 with plain residuals; the Kimi delta attention
+/// with residual streams, or with the blocks' depth mix; gated residuals; the gated residuals' streams; the gated delta rule with plain residuals; the latent
+/// attention with plain residuals. A description of other kinds is refused in words: no loader of the dynamic route lowers them.
+fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
+    use crate::runtime::kinds::{Body, LinearKind, Mixer, Residual};
+    let blocks = &d.desc.blocks;
+    let mixer = |f: &dyn Fn(&Mixer) -> bool| blocks.iter().any(|b| matches!(&b.body, Body::Mixer(m) if f(m)));
+    let residual = |f: &dyn Fn(&Residual) -> bool| blocks.iter().any(|b| f(&b.residual));
+    let linear = |k: LinearKind| mixer(&|m| matches!(m, Mixer::Linear(l) if l.kind == k));
+    let plain = blocks.iter().all(|b| matches!(b.residual, Residual::Add));
+    Ok(if mixer(&|m| matches!(m, Mixer::Compressed(_))) {
+        Lowering::Compressed
+    } else if mixer(&|m| matches!(m, Mixer::Mamba2(_))) && plain {
+        Lowering::Mamba2
+    } else if linear(LinearKind::KimiDelta) && residual(&|r| matches!(r, Residual::Streams(_))) {
+        Lowering::DeltaStreams
+    } else if linear(LinearKind::KimiDelta) && residual(&|r| matches!(r, Residual::DepthMix(_))) {
+        Lowering::DeltaDepth
+    } else if residual(&|r| matches!(r, Residual::Gated(_))) {
+        Lowering::GatedResidual
+    } else if residual(&|r| matches!(r, Residual::GatedStreams(_))) {
+        Lowering::GatedStreams
+    } else if linear(LinearKind::GatedDeltaNet) && plain {
+        Lowering::GatedDelta
+    } else if mixer(&|m| matches!(m, Mixer::Mla(_))) && plain {
+        Lowering::LatentPlain
+    } else {
+        return err(
+            "no loader of the dynamic route lowers its layer kinds (a compressed attention; Mamba-2 with plain residuals; the Kimi delta attention with residual \
+             streams or the blocks' depth mix; gated residuals; the gated residuals' streams; the gated delta rule with plain residuals; the latent attention \
+             with plain residuals)",
+        );
     })
+}
+
+/// The loader of the model whose description is `d`: the one that lowers the layer kinds it holds (`lowering`), its config's layers and end tokens as that
+/// lowering's reader takes them.
+pub fn loader(d: &crate::runtime::describe::Described) -> Result<Loader> {
+    Ok(match lowering(d)? {
+        // (its layers and end tokens by the description: DeepSeek-V4's flat config and V4.1's nested one alike)
+        Lowering::Compressed => Loader { ends: |dir, m| super::deepseek_v4::ends_of(dir, m).map(|(l, e, _)| (l, e)), stage: super::deepseek_v4::load_stage_hb },
+        Lowering::Mamba2 => {
+            Loader { ends: |dir, m| m.read_with(dir, crate::nemotron::ConfigNemotronH::of).map(|c| (c.layers, c.eos)), stage: super::nemotron::stage }
+        }
+        Lowering::DeltaStreams => Loader { ends: |dir, m| m.read_with(dir, crate::glm::ConfigGlm::of).map(|c| (c.layers, c.eos)), stage: super::glm::stage },
+        Lowering::DeltaDepth => Loader { ends: |dir, m| m.read_with(dir, crate::kimi::ConfigKimi::of).map(|c| (c.layers, c.eos)), stage: super::kimi::stage },
+        Lowering::GatedResidual => {
+            Loader { ends: |dir, m| m.read_with(dir, crate::muse::ConfigMuse::of).map(|c| (c.layers, c.eos)), stage: super::muse::load_stage_hb }
+        }
+        Lowering::GatedStreams => {
+            Loader { ends: |dir, m| m.read_with(dir, crate::qwen4x::ConfigQx::of).map(|c| (c.layers, c.eos)), stage: super::qwen4x::stage }
+        }
+        Lowering::GatedDelta => Loader { ends: super::qwen35::ends, stage: super::qwen35::stage },
+        Lowering::LatentPlain => Loader { ends: super::glm::plain_ends, stage: super::glm::stage_plain },
+    })
+}
+
+/// The description of the model whose config is `c` lowered as its loader lowers it (`loader`), the whole model for sequences of up to `max_pos` positions, from the
+/// config alone: the rings and states its sequences take on the executor, which a plan counts before a file is here (src/plan.rs `sizing::size_dynamic_row`).
+/// The end tokens and the checkpoint's dtypes are not read (none of them changes a ring or a state).
+pub fn lowered_of(c: &crate::runtime::config::ModelConfig, max_pos: usize) -> Result<ModelDesc> {
+    lowered_described(&crate::runtime::describe::describe_config(c)?, c.num("num_hidden_layers").unwrap_or(0), max_pos)
+}
+
+/// `lowered_of` of the description `d` of a model of `nl` layers, and of the kinds whose loader is the one-GPU route's alone: attention whose layers each end in a
+/// scalar after their residual's add (`Residual::AddThenScale`: `lower::gemma4`, src/cli.rs `open_lossy`). What a lossy level's plan counts (src/plan.rs
+/// `sizing::level_of`).
+pub fn lowered_described(d: &crate::runtime::describe::Described, nl: usize, max_pos: usize) -> Result<ModelDesc> {
+    use super::lower;
+    if d.desc.blocks.iter().any(|b| matches!(b.residual, crate::runtime::kinds::Residual::AddThenScale)) {
+        return lower::gemma4(d, &|n: &str| d.shapes.get(n).cloned(), Vec::new(), max_pos);
+    }
+    let st = Stage::whole(nl);
+    match lowering(d)? {
+        Lowering::Compressed => lower::deepseek_v4(d, Vec::new(), max_pos, &st, &super::deepseek_v4::V4Opts::of(crate::weights::Layout::Tiered, max_pos)),
+        Lowering::Mamba2 => lower::nemotron(d, Vec::new(), max_pos, &st),
+        Lowering::DeltaStreams => lower::glm(d, Vec::new(), max_pos, &st),
+        Lowering::DeltaDepth => lower::kimi(d, Vec::new(), max_pos, &st, &vec![(true, true); nl], false),
+        Lowering::GatedResidual => lower::muse(d, Vec::new(), max_pos, &st),
+        Lowering::GatedStreams => lower::qwen4x(d, Vec::new(), max_pos),
+        Lowering::GatedDelta => lower::qwen35(d, Vec::new(), max_pos, &st),
+        Lowering::LatentPlain => lower::latent_moe(d, Vec::new(), max_pos, &st),
+    }
 }
 
 /// A number of the config (its `text_config`'s for a model that nests one).
 pub fn config_num(text: &str, key: &str) -> Option<usize> {
-    let v = glyd_gpu::json::parse(text).ok()?;
-    let n = v.get(key).or_else(|| v.get("text_config").and_then(|t| t.get(key)))?;
-    n.as_u64().map(|x| x as usize)
+    crate::runtime::config::ModelConfig::parse(text).ok()?.num(key)
 }
 
-fn config_eos(text: &str) -> Vec<i64> {
-    let Some(v) = glyd_gpu::json::parse(text).ok() else { return Vec::new() };
-    match v.get("eos_token_id") {
-        Some(glyd_gpu::json::Value::Array(a)) => a.iter().filter_map(|x| x.as_i64()).collect(),
-        Some(x) => x.as_i64().map(|x| vec![x]).unwrap_or_default(),
-        None => Vec::new(),
-    }
-}
-
-/// An FP8 matrix's bytes on the GPU, in hundredths of the release's: layout H's plain packs (an HBM GPU's default) 9 bits a value (a patch's row blocks 0-2
-/// in its 7-bit core, the 4th in var: 112.5%); coded packs about 7.1 bits (layout H; layout c 6.75), 90 a bound. ponytail: fixed shares; the matrices' own
-/// sizes (`f8_size`) where a release codes worse.
-pub const PLAIN_PCT: u64 = 113;
-pub const CODED_PCT: u64 = 90;
-/// A bf16 matrix's bytes on the GPU at the penguin level, in hundredths of the release's: the smallest lossless layout (tiered, about 10.8 bits a value)
-/// 72, the 12-bit one (about 12.0 and its exceptions) 78. The 12-bit layout's one-token product reads at about 80% of an H100's rate where the tiered
-/// one's reads at 30-45% (research/fp4-one-h100-2026-10-22), so an HBM GPU holds bf16 matrices in it where they fit.
-pub const TIERED_PCT: u64 = 72;
-pub const TWELVE_PCT: u64 = 78;
-
-/// The bytes each of the `nl` layers holds on a GPU, and the rest's (embedding, head, final norm): the release's tensors as they are, an FP8 matrix at
-/// `f8_pct` hundredths of its bytes, a bf16 matrix at penguin's 72% (about 11.5 bits a weight, an upper bound). Not counted: the tensors no description
-/// loads (a multi-token-prediction layer, a vision or audio tower).
-pub fn layer_bytes(dir: &Path, nl: usize, f8_pct: u64) -> Result<(Vec<u64>, u64)> {
-    layer_bytes_where(dir, nl, f8_pct, TIERED_PCT, &|_| true)
-}
-
-/// As `layer_bytes`, of the tensors whose names `keep` keeps.
-pub fn layer_bytes_where(dir: &Path, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool) -> Result<(Vec<u64>, u64)> {
-    layer_bytes_with(dir, nl, f8_pct, bf16_pct, keep, true)
-}
-
-/// `layer_bytes_where`, a hummingbird directory's experts (their files of their own) counted in each layer's bytes only where `experts`.
-pub fn layer_bytes_with(dir: &Path, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool, experts: bool) -> Result<(Vec<u64>, u64)> {
-    let table = crate::sizes::Table::from_dir(dir).map_err(Error)?;
-    let (mut per, base) = layer_bytes_table(&table, nl, f8_pct, bf16_pct, keep);
-    if experts {
-        per.iter_mut().zip(hb_layer_bytes(dir, nl)?).for_each(|(p, b)| *p += b);
-    }
-    Ok((per, base))
-}
-
-/// The bytes of routed experts each of the `nl` layers of a hummingbird directory holds in files of its own (src/hb_pack.rs: by the description's block, decoder layer l's are block
-/// 2 l + 1); zeros for any other directory.
-pub fn hb_layer_bytes(dir: &Path, nl: usize) -> Result<Vec<u64>> {
-    let mut per = vec![0u64; nl];
-    if let Some(hb) = crate::hb_pack::HbDir::open(dir)? {
-        for (l, bytes) in hb.layer_bytes() {
-            if l < nl {
-                per[l] += bytes;
-            }
-        }
-    }
-    Ok(per)
-}
-
-/// `layer_bytes_where` of a table of tensors (src/sizes.rs: a directory's, or the Hub's by ranges before the files are here).
-pub fn layer_bytes_table(table: &crate::sizes::Table, nl: usize, f8_pct: u64, bf16_pct: u64, keep: &dyn Fn(&str) -> bool) -> (Vec<u64>, u64) {
-    table.per_layer(nl, &|r| keep(&r.name), &|r| {
-        let matrix = r.shape.len() == 2 && r.shape.iter().all(|&d| d >= 256);
-        match r.dtype.as_str() {
-            "BF16" if matrix => r.bytes * bf16_pct / 100,
-            "F8_E4M3" if matrix => r.bytes * f8_pct / 100,
-            _ => r.bytes,
-        }
-    })
-}
-
-/// The bytes `layer_bytes` gives and the cut `plan_cuts` makes over `room`: on HBM GPUs (`hbm`) the FP8 matrices in layout H's plain packs and, for a loader
-/// that takes it (`twelve`: Kimi-K3's, whose `Opts::layout` is its bf16 matrices' alone), the bf16 ones in the 12-bit layout where they fit (their faster
-/// products), else the bf16 ones tiered, then the FP8 ones coded too (coded: true third, `Lib::f8h_plain(Some(false))` before the load; 12-bit: true fourth,
-/// `Layout::Twelve` the load's); elsewhere coded and tiered, their only layouts. No cut where nothing fits.
-#[allow(clippy::type_complexity)]
-pub fn fit(dir: &Path, nl: usize, room: &[(i32, u64)], hbm: bool, twelve: bool) -> Result<((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool)> {
-    Ok(fit_table_with(&crate::sizes::Table::from_dir(dir).map_err(Error)?, nl, room, hbm, twelve, &hb_layer_bytes(dir, nl)?))
-}
-
-/// `fit` of a table of tensors (src/sizes.rs).
-#[allow(clippy::type_complexity)]
-pub fn fit_table(
-    table: &crate::sizes::Table,
-    nl: usize,
-    room: &[(i32, u64)],
-    hbm: bool,
-    twelve: bool,
-) -> ((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool) {
-    fit_table_with(table, nl, room, hbm, twelve, &[])
-}
-
-/// `fit_table`, each layer's bytes more by `extra`'s (a hummingbird directory's experts, which no table lists: `hb_layer_bytes`).
-#[allow(clippy::type_complexity)]
-pub fn fit_table_with(
-    table: &crate::sizes::Table,
-    nl: usize,
-    room: &[(i32, u64)],
-    hbm: bool,
-    twelve: bool,
-    extra: &[u64],
-) -> ((Vec<u64>, u64), Option<(Vec<usize>, Vec<i32>)>, bool, bool) {
-    let bytes = |f8: u64, bf16: u64| {
-        let (mut per, base) = layer_bytes_table(table, nl, f8, bf16, &|_| true);
-        per.iter_mut().zip(extra).for_each(|(p, e)| *p += e);
-        (per, base)
-    };
-    if hbm {
-        for (f8, twelve) in [(PLAIN_PCT, twelve), (PLAIN_PCT, false), (CODED_PCT, twelve)] {
-            let b = bytes(f8, if twelve { TWELVE_PCT } else { TIERED_PCT });
-            if let Some(c) = plan_cuts(&b.0, b.1, room) {
-                return (b, Some(c), f8 == CODED_PCT, twelve);
-            }
-        }
-    }
-    let coded = bytes(CODED_PCT, TIERED_PCT);
-    let cut = plan_cuts(&coded.0, coded.1, room);
-    let switched = hbm && cut.is_some();
-    (coded, cut, switched, false)
-}
-
-/// A model whose experts the GPUs do not all hold (Kimi-K3's 1.4 TB on 8x 80 GB): its layers over the GPUs of `room` in order, each layer taking its bytes
-/// besides its routed experts (`dense`) and, where it has experts (`moe`), places for the same number of them, `expert` bytes each, the most that lets every
-/// layer fit (`base`, the rest, half on the first GPU and half on the last); then each GPU's room left over as more places for its own layers, as many as a
-/// layer has at most. The cuts, their GPUs and each stage's places a layer; None where fewer than `least` a layer fit.
-pub fn places_plan(
-    dense: &[u64],
-    base: u64,
-    moe: &[bool],
-    room: &[(i32, u64)],
-    expert: u64,
-    experts: usize,
-    least: usize,
-) -> Option<(Vec<usize>, Vec<i32>, Vec<usize>)> {
-    let n = dense.len();
-    let foot = |l: usize, p: u64| dense[l] + if moe[l] { p * expert } else { 0 };
-    // (the layers in order, each GPU filled to its room, with p places a layer: where each stage starts; None where the GPUs do not hold them)
-    let assign = |p: u64| -> Option<Vec<usize>> {
-        let (mut starts, mut g, mut used) = (vec![0usize], 0usize, base / 2);
-        for l in 0..n {
-            if used + foot(l, p) > room.get(g)?.1 {
-                g += 1;
-                starts.push(l);
-                used = 0;
-            }
-            used += foot(l, p);
-            if used > room.get(g)?.1 {
-                return None;
-            }
-        }
-        (used + base - base / 2 <= room[g].1).then_some(starts)
-    };
-    let (mut lo, mut hi) = (least as u64, experts as u64);
-    assign(lo)?;
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        if assign(mid).is_some() {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    let starts = assign(lo)?;
-    let bounds: Vec<usize> = starts.iter().copied().chain(std::iter::once(n)).collect();
-    let stages = starts.len();
-    let mut places = Vec::new();
-    for (k, w) in bounds.windows(2).enumerate() {
-        let held = dense[w[0]..w[1]].iter().sum::<u64>() + if k == 0 { base / 2 } else { 0 } + if k + 1 == stages { base - base / 2 } else { 0 };
-        let layers = moe[w[0]..w[1]].iter().filter(|&&m| m).count().max(1) as u64;
-        places.push(((room[k].1.saturating_sub(held) / (layers * expert.max(1))) as usize).clamp(lo as usize, experts));
-    }
-    Some((starts[1..].to_vec(), room[..stages].iter().map(|r| r.0).collect(), places))
-}
-
-/// Kimi-K3 in stages (`open`'s) with `places[k]` of a layer's experts on stage k's GPU, the rest in the expert cache's host tier.
-pub fn open_kimi(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], places: Vec<usize>, dense: usize) -> Result<Run> {
-    let c = crate::kimi::ConfigKimi::load(dir)?;
-    let owned = dir.to_path_buf();
-    let firsts: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).collect();
-    Run::new(
-        c.layers,
-        c.eos.clone(),
-        cuts,
-        devices,
-        o,
-        std::sync::Arc::new(move |st, o: &Opts| {
-            let k = firsts.iter().position(|&f| f == st.layers.0).unwrap_or(0);
-            // (the stage's last `dense` layers' matrices in the computer's memory, src/dense_ram.rs: one stage alone)
-            let caching =
-                (dense > 0).then(|| crate::hbg_store::HbCaching { places: places.get(k).copied().unwrap_or(1), ram: None, offload: Default::default(), dense });
-            super::kimi::load_with_caching(&owned, o, st, places.get(k).copied(), caching.as_ref())
-        }),
-    )
-}
-
-/// Each of the model's `nl` layers' bytes that its family's loader can keep in the computer's memory (src/dense_ram.rs: its packed linears there), at the packing `layer_bytes_where` counts: Muse Spark's attention and
-/// latent projections, Kimi-K3's delta attention's three; zeros for the others (their attention is in blocks of their own, or FP8).
-pub fn ram_bytes(dir: &Path, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> Result<Vec<u64>> {
-    if !matches!(family, "Kimi-K3" | "Muse Spark") {
-        return Ok(vec![0; nl]);
-    }
-    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
-    ram_bytes_table(&crate::sizes::Table::from_dir(dir).map_err(Error)?, &text, nl, family, f8_pct, bf16_pct)
-}
-
-/// `ram_bytes` of a table of tensors and the model's config.json (src/sizes.rs: before the files are here too).
-pub fn ram_bytes_table(table: &crate::sizes::Table, text: &str, nl: usize, family: &str, f8_pct: u64, bf16_pct: u64) -> Result<Vec<u64>> {
-    let kda: Vec<bool> = match family {
-        "Kimi-K3" => crate::kimi::ConfigKimi::parse(text, "config.json", None)?.kinds.iter().map(|k| matches!(k, crate::glm::GlmKind::Kda)).collect(),
-        "Muse Spark" => Vec::new(),
-        _ => return Ok(vec![0; nl]),
-    };
-    Ok(layer_bytes_table(table, nl, f8_pct, bf16_pct, &|n| in_ram(family, &kda, n)).0)
-}
-
-/// Whether the tensor `name` is one of the matrices `family`'s loader keeps in the computer's memory for a layer there (src/dense_ram.rs; `kda`: Kimi-K3's layers of delta attention).
-fn in_ram(family: &str, kda: &[bool], name: &str) -> bool {
-    let layer = name.split("layers.").nth(1).and_then(|r| r.split('.').next()).and_then(|x| x.parse::<usize>().ok());
-    match family {
-        "Muse Spark" => {
-            (name.contains(".self_attn.") && name.ends_with("_proj.weight")) || name.contains(".pre_expert_proj.") || name.contains(".post_expert_proj.")
-        }
-        "Kimi-K3" => {
-            layer.is_some_and(|l| kda.get(l) == Some(&true))
-                && name.contains(".self_attn.")
-                && ["q_proj", "k_proj", "v_proj", "g_proj", "f_a_proj", "b_proj", "o_proj", "f_b_proj"].iter().any(|x| name.ends_with(&format!(".{x}.weight")))
-        }
-        _ => false,
-    }
-}
-
-/// `places_plan`, and where it finds no room on one GPU, the last layers' dense matrices in the computer's memory (src/dense_ram.rs; `ram`: each layer's bytes that can be there), as few layers as fit: their bytes off the GPU,
-/// one slot of the largest of them on it. The cuts, their GPUs, each stage's places, how many layers are in the computer's memory, and the bytes that leaves off the GPU (theirs less the slot).
-#[allow(clippy::type_complexity)]
-pub fn places_plan_dense(
-    dense: &[u64],
-    base: u64,
-    moe: &[bool],
-    room: &[(i32, u64)],
-    expert: u64,
-    experts: usize,
-    least: usize,
-    ram: &[u64],
-) -> Option<(Vec<usize>, Vec<i32>, Vec<usize>, usize, u64)> {
-    if let Some((c, d, p)) = places_plan(dense, base, moe, room, expert, experts, least) {
-        return Some((c, d, p, 0, 0));
-    }
-    if room.len() != 1 || ram.len() != dense.len() {
-        return None;
-    }
-    let n = dense.len();
-    (1..=n).find_map(|k| {
-        let from = n - k;
-        let moved: Vec<u64> = (from..n).map(|l| ram[l].min(dense[l])).collect();
-        let slot = moved.iter().copied().max().unwrap_or(0);
-        if slot == 0 {
-            return None;
-        }
-        let mut d = dense.to_vec();
-        d[from..].iter_mut().zip(&moved).for_each(|(x, m)| *x -= m);
-        places_plan(&d, base + slot, moe, room, expert, experts, least).map(|(c, dv, p)| (c, dv, p, k, moved.iter().sum::<u64>() - slot))
-    })
-}
+/// Where the dynamic route's layers go and how many of their experts each GPU holds: the planner's (src/plan.rs `sizing`).
+pub use crate::plan::sizing::{
+    fit, fit_table, fit_table_with, hb_layer_bytes, layer_bytes, layer_bytes_table, layer_bytes_where, layer_bytes_with, places_plan, places_plan_at,
+    places_plan_dense, plan_cuts, ram_bytes, ram_bytes_table, CODED_PCT, PLAIN_PCT, TIERED_PCT, TWELVE_PCT,
+};
 
 /// A model of the dynamic route in stages (`open`'s), stage k's layers with their experts in the expert cache as `cachings[k]` says: a hummingbird directory's (src/hbg_store.rs: places on its GPU, the computer's memory, the disk),
-/// or the release's where its experts are each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4).
+/// or the release's where its experts are each the same bytes (src/tiering.rs, R12: DeepSeek-V4's FP4). A loader whose experts the cache does not take refuses it.
 pub fn open_cached(dir: &Path, o: &Opts, cuts: &[usize], devices: &[i32], cachings: Vec<crate::hbg_store::HbCaching>) -> Result<Run> {
-    let text = std::fs::read_to_string(dir.join("config.json")).map_err(|e| Error(format!("{}: {e}", dir.display())))?;
-    let (nl, eos) = match family(&text) {
-        Some("Muse Spark") => {
-            let c = crate::muse::ConfigMuse::load(dir)?;
-            (c.layers, c.eos.clone())
-        }
-        Some("Kimi-K3") => {
-            let c = crate::kimi::ConfigKimi::load(dir)?;
-            (c.layers, c.eos.clone())
-        }
-        Some("GLM-5.3-Flash") => {
-            let c = crate::glm::ConfigGlm::load(dir)?;
-            (c.layers, c.eos.clone())
-        }
-        Some("Nemotron-H") | None => {
-            return err(format!("{}: not a family whose experts the expert cache takes (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark)", dir.display()))
-        }
-        Some(_) => {
-            let c = crate::deepseek_v4::ConfigV4::load(dir)?;
-            (c.layers, c.eos.clone())
-        }
-    };
-    let fam = family(&text).unwrap_or("");
-    let level = o.layout.unwrap_or(crate::weights::Layout::Tiered);
-    let owned = dir.to_path_buf();
+    open_cached_of(dir, &ModelConfig::load(dir)?, o, cuts, devices, cachings)
+}
+
+/// `open_cached` of a config.json parsed once.
+pub fn open_cached_of(dir: &Path, m: &ModelConfig, o: &Opts, cuts: &[usize], devices: &[i32], cachings: Vec<crate::hbg_store::HbCaching>) -> Result<Run> {
+    let (nl, eos, load) = cached_stage(dir, m)?;
     let firsts: Vec<usize> = std::iter::once(0).chain(cuts.iter().copied()).collect();
     let make: MakeStage = std::sync::Arc::new(move |st, o: &Opts| {
         let k = firsts.iter().position(|&f| f == st.layers.0).unwrap_or(0);
-        let c = cachings.get(k).or(cachings.last());
-        match fam {
-            "Muse Spark" => super::muse::load_stage_hb(&owned, o, st, c),
-            "Kimi-K3" => super::kimi::load_with_caching(&owned, o, st, None, c),
-            "GLM-5.3-Flash" => super::glm::load_stage_hb(&owned, o, level, st, c),
-            _ => super::deepseek_v4::load_stage_hb(&owned, o, st, c),
-        }
+        load(st, o, cachings.get(k).or(cachings.last()))
     });
     Run::new(nl, eos, cuts, devices, o, make)
 }
 
-/// Kimi-K3 with every layer across `devices` (src/dynamic/tp.rs), `places` of a layer's experts in each GPU's slices of its places, the rest in the expert
-/// cache's host tier (src/dynamic/tp_cache.rs).
-pub fn open_kimi_tp(dir: &Path, o: &Opts, devices: &[i32], places: usize) -> Result<Run> {
-    let c = crate::kimi::ConfigKimi::load(dir)?;
-    let owned = dir.to_path_buf();
-    Ok(Run::Tp(super::tp::Tp::with(
-        c.layers,
-        c.eos.clone(),
-        devices,
-        o,
-        std::sync::Arc::new(move |st, o: &Opts| super::kimi::load_with_places(&owned, o, st, Some(places))),
-    )?))
+/// The model of `dir` with every layer across `devices` (src/dynamic/tp.rs), its experts in the expert cache as `caching` says: `places` of a layer's in each
+/// GPU's slices of its places, the rest in the cache's host tier, shared by the group (src/dynamic/tp_cache.rs).
+pub fn open_tp_cached(dir: &Path, o: &Opts, devices: &[i32], caching: crate::hbg_store::HbCaching) -> Result<Run> {
+    open_tp_cached_of(dir, &ModelConfig::load(dir)?, o, devices, caching)
 }
 
-/// Where to cut layers of `per` bytes (the rest, `base`, half with the first stage and half with the last) over GPUs with `room` bytes each (ordinal, room):
-/// the one with the most room where it holds the whole model, else consecutive layers over the GPUs in order, each GPU's share of the bytes as its
-/// share of the room. None: they do not hold it.
-pub fn plan_cuts(per: &[u64], base: u64, room: &[(i32, u64)]) -> Option<(Vec<usize>, Vec<i32>)> {
-    let total = per.iter().sum::<u64>() + base;
-    let best = room.iter().max_by_key(|r| r.1)?;
-    if total <= best.1 {
-        return Some((Vec::new(), vec![best.0]));
-    }
-    cut_by_share(per, base, room)
+/// `open_tp_cached` of a config.json parsed once.
+pub fn open_tp_cached_of(dir: &Path, m: &ModelConfig, o: &Opts, devices: &[i32], caching: crate::hbg_store::HbCaching) -> Result<Run> {
+    let (nl, eos, load) = cached_stage(dir, m)?;
+    Ok(Run::Tp(super::tp::Tp::with(nl, eos, devices, o, std::sync::Arc::new(move |st, o: &Opts| load(st, o, Some(&caching))))?))
 }
 
-/// The layers over every GPU of `room`, in order, each GPU's share of the bytes as its share of the room (`plan_cuts` where one GPU does not hold them).
-fn cut_by_share(per: &[u64], base: u64, room: &[(i32, u64)]) -> Option<(Vec<usize>, Vec<i32>)> {
-    let total = per.iter().sum::<u64>() + base;
-    let all = room.iter().map(|r| r.1).sum::<u64>().max(1);
-    let (head, tail) = (base / 2, base - base / 2);
-    let (mut cuts, mut devices, mut l) = (Vec::new(), Vec::new(), 0usize);
-    for (k, &(dev, cap)) in room.iter().enumerate() {
-        if l == per.len() {
-            break;
-        }
-        let (start, last) = (l, k + 1 == room.len());
-        let target = (total as u128 * cap as u128 / all as u128) as u64;
-        let mut held = if devices.is_empty() { head } else { 0 };
-        while l < per.len() {
-            let add = per[l] + if l + 1 == per.len() { tail } else { 0 };
-            if held + add > cap || (!last && held >= target) {
-                break;
-            }
-            held += add;
-            l += 1;
-        }
-        if l > start {
-            if !devices.is_empty() {
-                cuts.push(start);
-            }
-            devices.push(dev);
-        }
-    }
-    (l == per.len()).then_some((cuts, devices))
+/// A stage of a model with its experts as a caching says (none: as the stage's level holds them).
+type CachedStage = std::sync::Arc<dyn Fn(Stage, &Opts, Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> + Send + Sync>;
+
+/// The layers, end tokens and stage loader (`CachedStage`) of the model of `dir` (`m`: its config.json, parsed once, which each stage's loader reads from), by its
+/// description's loader (`loader`).
+fn cached_stage(dir: &Path, m: &ModelConfig) -> Result<(usize, Vec<i64>, CachedStage)> {
+    let (d, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
+    let l = loader(&d).map_err(|e| e.context(&label))?;
+    let (nl, eos) = (l.ends)(dir, m)?;
+    let (owned, m) = (dir.to_path_buf(), std::sync::Arc::new(m.clone()));
+    Ok((nl, eos, std::sync::Arc::new(move |st, o: &Opts, c| (l.stage)(&owned, &m, o, st, c))))
 }
 
 #[cfg(test)]
@@ -801,23 +1176,84 @@ mod tests {
         assert_eq!(layer_of("lm_head.weight"), None);
     }
 
-    /// The matrices a layer in the computer's memory keeps there (src/dense_ram.rs) are the ones its family's loader puts there: Muse Spark's attention and latent projections, Kimi-K3's delta attention's (not its latent
-    /// attention's, whose blocks keep their own), none of DeepSeek-V4's.
+    /// The matrices a layer in the computer's memory keeps there (src/dense_ram.rs) are the ones the executor's loader puts there: every matrix of the layer's
+    /// own products, Muse Spark's attention and latent projections, Kimi-K3's delta and latent attention's and its dense MLP's (not a latent attention's kv_b
+    /// or indexer, small tensors, nor a block of experts' own matrices); none of DeepSeek-V4's, nor of the Qwen3.5 layout's, dense or with experts (its row keeps
+    /// no layer there: every expert is on its GPU).
     #[test]
     fn the_matrices_a_layer_keeps_in_memory_are_its_loaders() {
-        let m = |n: &str| super::in_ram("Muse Spark", &[], n);
+        let m = |n: &str| crate::plan::sizing::in_ram("Muse Spark", n);
         assert!(m("model.language_model.layers.3.self_attn.q_proj.weight") && m("model.language_model.layers.3.self_attn.o_proj.weight"));
         assert!(m("model.language_model.layers.0.mlp.pre_expert_proj.weight") && m("model.language_model.layers.0.mlp.post_expert_proj.weight"));
         assert!(!m("model.language_model.layers.0.self_attn.q_norm.weight") && !m("model.language_model.layers.0.mlp.experts.gate_up_proj"));
         assert!(!m("model.language_model.layers.0.mlp.gate.weight") && !m("model.language_model.embed_tokens.weight"));
-        let kda = [true, true, true, false];
-        let k = |n: &str| super::in_ram("Kimi-K3", &kda, n);
-        assert!(k("language_model.model.layers.2.self_attn.f_a_proj.weight") && k("language_model.model.layers.0.self_attn.o_proj.weight"));
-        assert!(!k("language_model.model.layers.3.self_attn.o_proj.weight"), "a latent attention layer's block keeps its own");
+        let k = |n: &str| crate::plan::sizing::in_ram("Kimi-K3", n);
+        let l = |x: &str| format!("language_model.model.layers.{x}");
+        assert!(k(&l("2.self_attn.f_a_proj.weight")) && k(&l("0.self_attn.o_proj.weight")) && k(&l("0.mlp.gate_proj.weight")));
+        assert!(k(&l("3.self_attn.q_a_proj.weight")) && k(&l("3.self_attn.kv_a_proj_with_mqa.weight")) && k(&l("3.self_attn.o_proj.weight")));
+        assert!(!k(&l("3.self_attn.kv_b_proj.weight")) && !k(&l("3.self_attn.indexer.wq_b.weight")) && !k(&l("3.self_attn.indexer.weights_proj.weight")));
+        assert!(!k(&l("1.self_attn.q_conv1d.weight")) && !k(&l("1.block_sparse_moe.shared_experts.up_proj.weight")));
+        assert!(!k(&l("1.block_sparse_moe.routed_expert_down_proj.weight")) && !k(&l("1.block_sparse_moe.experts.0.w1.weight_packed")));
+        assert!(!crate::plan::sizing::in_ram("DeepSeek-V4", "model.layers.0.self_attn.wo.weight"));
+        let q = |n: &str| crate::plan::sizing::in_ram("Qwen3.5", n);
         assert!(
-            !k("language_model.model.layers.1.self_attn.q_conv1d.weight") && !k("language_model.model.layers.1.block_sparse_moe.shared_experts.up_proj.weight")
+            !q("model.layers.3.self_attn.q_proj.weight")
+                && !q("model.layers.0.linear_attn.in_proj_qkv.weight")
+                && !q("model.layers.0.mlp.experts.gate_up_proj")
         );
-        assert!(!super::in_ram("DeepSeek-V4", &[], "model.layers.0.self_attn.wo.weight"));
+        assert!(!q("model.layers.0.mlp.shared_expert.up_proj.weight") && !q("model.layers.0.mlp.gate.weight"));
+    }
+
+    /// A plan of experts in the computer's memory across GPUs opens the latent block's cache across them (src/dynamic/tp_cache.rs) by the description's
+    /// kind, not the family's name: Kimi-K3's released config has such experts; GLM-5.3-Flash's (experts on the layer's input) and DeepSeek-V4's do not.
+    #[test]
+    fn the_cache_across_gpus_is_the_latent_blocks() {
+        let describe = |text: &str| crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
+        let fixture = |f: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap();
+        let config = |f: &str| {
+            let h: serde_json::Value = serde_json::from_str(&fixture(f)).unwrap();
+            h["config"].as_str().unwrap().to_string()
+        };
+        assert!(super::latent_experts_of(&describe(&config("headers/Kimi-K3.json"))));
+        assert!(!super::latent_experts_of(&describe(&fixture("glm5_next_config.json"))));
+        assert!(!super::latent_experts_of(&describe(&config("headers/DeepSeek-V4-Flash-0731.json"))));
+    }
+
+    /// The dynamic route's loader is chosen by the layer kinds a description holds, not by a family's name: each released config (the random models' where none
+    /// is here) is lowered by the loader of its kinds, and a description of kinds no loader of the route lowers (Gemma 4's, the plain dense kind's) is refused
+    /// in words. The family a support row names is its row's (its layers split on the route).
+    #[test]
+    fn the_loader_is_chosen_by_the_descriptions_kinds() {
+        use super::Lowering::*;
+        let fixture = |f: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(f)).unwrap();
+        let header = |f: &str| {
+            let h: serde_json::Value = serde_json::from_str(&fixture(f)).unwrap();
+            h["config"].as_str().unwrap().to_string()
+        };
+        let lowering = |text: &str| super::lowering(&crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap());
+        let q35: serde_json::Value = serde_json::from_str(&fixture("qwen35_configs.json")).unwrap();
+        let q38 = q35["Qwen/Qwen3.8-27B"].to_string();
+        for (text, want) in [
+            (header("headers/DeepSeek-V4-Flash-0731.json"), Compressed),
+            (fixture("nemotron_h_config.json"), Mamba2),
+            (fixture("nemotron_h_moetoy_config.json"), Mamba2),
+            (fixture("glm5_next_config.json"), DeltaStreams),
+            (fixture("glm5_next_tiny_config.json"), DeltaStreams),
+            (header("headers/Kimi-K3.json"), DeltaDepth),
+            (q38.clone(), GatedDelta),
+            (fixture("qwen35moe_tiny_config.json"), GatedDelta),
+            (fixture("qwen4x_config.json"), GatedStreams),
+        ] {
+            assert_eq!(lowering(&text).unwrap(), want, "{}", &text[..text.len().min(120)]);
+        }
+        #[cfg(feature = "dev")]
+        assert_eq!(lowering(crate::muse_ref::RANDOM_CONFIG).unwrap(), GatedResidual);
+        let (gemma, dense) = (header("headers/gemma-4-12B-it.json"), header("dense_tiny_manifest.json"));
+        for text in [&gemma, &dense] {
+            assert!(lowering(text).unwrap_err().msg.contains("no loader of the dynamic route lowers its layer kinds"));
+        }
+        assert_eq!((super::family(&q38), super::family(&fixture("nemotron_h_config.json"))), (Some("Qwen3.5"), Some("Nemotron-H")));
+        assert_eq!((super::family(&gemma), super::family(&dense)), (None, None));
     }
 
     /// The expert cache's plan: the dense bytes cut over every GPU (even where one would hold them), each stage's room after them as places for its experts.
@@ -836,14 +1272,14 @@ mod tests {
         // (one GPU too small for a token's experts besides the layers' weights: the last layers' dense matrices in the computer's memory, as few as fit, and one slot of the largest on the GPU)
         let ram = vec![3u64; dense.len()];
         assert_eq!(
-            places_plan_dense(&dense, 4, &moe, &[(0, 100)], 2, 64, 4, &ram).map(|p| p.3),
+            places_plan_dense(&dense, 4, &moe, &[(0, 100)], 2, 64, 4, &ram, &[]).map(|p| p.3),
             places_plan(&dense, 4, &moe, &[(0, 100)], 2, 64, 4).map(|_| 0)
         );
         let tight = dense.iter().sum::<u64>() + 4 + moe.iter().filter(|&&m| m).count() as u64 * 4 * 2 - 7;
-        let got = places_plan_dense(&dense, 4, &moe, &[(0, tight)], 2, 64, 4, &ram).expect("fits with dense layers in the computer's memory");
+        let got = places_plan_dense(&dense, 4, &moe, &[(0, tight)], 2, 64, 4, &ram, &[]).expect("fits with dense layers in the computer's memory");
         assert!(places_plan(&dense, 4, &moe, &[(0, tight)], 2, 64, 4).is_none());
         assert!(got.3 >= 1 && got.4 == 3 * got.3 as u64 - 3, "{got:?}");
-        assert_eq!(places_plan_dense(&dense, 4, &moe, &[(0, 10)], 2, 64, 4, &ram), None);
+        assert_eq!(places_plan_dense(&dense, 4, &moe, &[(0, 10)], 2, 64, 4, &ram, &[]), None);
     }
 
     /// An FP8 release on HBM GPUs: plain where that fits, coded where only that does, no cut where neither; coded alone on other GPUs.

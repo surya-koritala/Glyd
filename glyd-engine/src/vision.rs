@@ -1,16 +1,21 @@
-//! Qwen3.8-Flash-Next's images: the processor's preprocessing (transformers' Qwen2VLImageProcessor as the checkpoint's preprocessor_config.json sets it) and the vision tower
-//! (Qwen4ExpVisionModel) on the GPU, our own implementation of their math. An image (PNG or JPEG, from a data: URL or http(s)) is decoded to RGB (src/pixels.rs: PIL's pixels),
-//! resized so that each side is a multiple of 32 and its pixels within the bounds (bicubic, antialiased, a pass a side in 8-bit steps, as torchvision resizes uint8 images), normalized
-//! ((x - 127.5) / 127.5) and cut into 16x16 patches, 2x2 of them a block in order (each patch twice over: the checkpoint's patches are two frames deep). The tower: the patches' product
-//! (the 3D convolution) and bias, the learned 48x48 position table resampled (bilinear, corners aligned) to the image's grid; 27 blocks of LayerNorm, attention (16 heads of 72, a 2D
-//! rotary of the patch's row and column, over every patch of the image) and a GELU MLP; the merger (LayerNorm, a block's 4 patches as one row, two products with a GELU between) into one
-//! row of 2560 a block: the image's tokens in the text (kernels/vision.cu beside the engine's dense products). In the text the image's tokens take M-RoPE positions (`positions`).
+//! Images for a model whose description has a vision tower (`runtime::kinds::VisionDesc`, the Qwen-VL vision transformer: Qwen3.8-Flash-Next's): the processor's
+//! preprocessing (transformers' Qwen2VLImageProcessor as the checkpoint's preprocessor_config.json sets it) and the tower on the GPU, our own implementation of
+//! their math. An image (PNG or JPEG, from a data: URL or http(s)) is decoded to RGB (src/pixels.rs: PIL's pixels), resized so that each side is a multiple of a
+//! block of patches and its pixels within the bounds (bicubic, antialiased, a pass a side in 8-bit steps, as torchvision resizes uint8 images), normalized
+//! ((x - 127.5) / 127.5) and cut into patches, a block of merge x merge of them in order (each patch as many frames deep as the tower's patches are: the same
+//! pixels again). The tower (`Tower`, by the description): the patches' product (the 3D convolution) and bias, the learned position table resampled (bilinear,
+//! corners aligned) to the image's grid; its blocks of LayerNorm, attention (a 2D rotary of the patch's row and column, over every patch of the image) and an
+//! MLP; the merger (LayerNorm, a block's patches as one row, two products with a GELU between) into one row of the text's width a block: the image's tokens in
+//! the text (kernels/vision.cu beside the engine's dense products). In the text the image's tokens take M-RoPE positions (`positions`). The CPU reference of the
+//! tower is src/runtime/reference/vision.rs.
 
 use crate::dev::{copy_h2d_async, memset_async, Buf, Dev};
 use crate::ffi::{err, Error, Result};
 use crate::kern::Kern;
 use crate::launch;
 use crate::mapped::Mapping;
+use crate::runtime::describe::VisionRoles;
+use crate::runtime::kinds::{Act, VisionDesc};
 use glyd_gpu::json::{self, Value};
 use glyd_gpu::safetensors::Checkpoint;
 use std::collections::HashMap;
@@ -18,23 +23,12 @@ use std::net::{IpAddr, ToSocketAddrs};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
-/// The shapes this tower is written for (Qwen3.8-Flash-Next's vision_config): kernels/vision.cu has them as constants.
-const HIDDEN: usize = 1152;
-const HEADS: usize = 16;
-const HEAD_DIM: usize = 72;
-const INTER: usize = 4304;
-/// The MLP's neurons padded with zero rows (and the second product's columns) to the products' step of 128.
-const INTER_PAD: usize = 4352;
-const PATCH: usize = 16;
-const MERGE: usize = 2;
-const FRAMES: usize = 2;
-const PATCH_DIM: usize = 3 * FRAMES * PATCH * PATCH;
-/// A side of an image, a multiple of this: a block of 2x2 patches.
-const FACTOR: usize = PATCH * MERGE;
+/// The widest head the tower's attention kernel takes (kernels/vision.cu VHD: a head's channels padded to it).
+const MAX_HEAD: usize = 80;
 /// Bytes an image's file may be (its pixels: `pixels::MAX_PIXELS`).
 const MAX_BYTES: usize = 64 << 20;
 
-/// How images are read (preprocessor_config.json's bounds, `--image-pixels` lowering the top) and the text's image token; set by a server whose checkpoint has a vision tower.
+/// How images are read (preprocessor_config.json's bounds, `--image-pixels` lowering the top) and the text's image token; set by a server whose model has a vision tower.
 pub static PREP: OnceLock<Prep> = OnceLock::new();
 
 #[derive(Clone, Debug)]
@@ -43,33 +37,38 @@ pub struct Prep {
     pub max_pixels: usize,
     /// The token an image's places in the text are (`<|image_pad|>`), one a row of the tower's output.
     pub image_token: u32,
+    /// A patch's side in pixels, the patches a block's side, the frames a patch is deep (the tower's: `VisionDesc`).
+    pub patch: usize,
+    pub merge: usize,
+    pub frames: usize,
 }
 
-/// An image as the tower reads it: its grid of patches (rows, columns: even), the patches (bf16 [rows cols, 3 x 2 x 16 x 16], in 2x2 blocks), and a key of the bytes it came from.
+/// An image as the tower reads it: its grid of patches (rows, columns: whole blocks), the patches (bf16 [rows cols, 3 x frames x patch x patch], in its blocks), the
+/// blocks' side in patches, and a key of the bytes it came from.
 pub struct Image {
     pub gh: usize,
     pub gw: usize,
     pub patches: Vec<u16>,
+    pub merge: usize,
     pub key: u64,
 }
 
 impl Image {
-    /// Its tokens in the text: a 2x2 block of patches each.
+    /// Its tokens in the text: a block of patches each.
     pub fn tokens(&self) -> usize {
-        self.gh * self.gw / (MERGE * MERGE)
+        self.gh * self.gw / (self.merge * self.merge)
     }
 
     /// Its tokens' grid (rows, columns).
     pub fn grid(&self) -> (usize, usize) {
-        (self.gh / MERGE, self.gw / MERGE)
+        (self.gh / self.merge, self.gw / self.merge)
     }
 }
 
 impl Prep {
-    /// The checkpoint's image bounds and token where it has a vision tower this engine runs (config.json's vision_config, the tower's tensors, preprocessor_config.json); None where it has
-    /// none. `max_pixels` lowers the top bound (the processor's 16.8 M pixels are 16,384 tokens an image).
-    pub fn load(dir: &Path, max_pixels: Option<usize>) -> Result<Option<Prep>> {
-        let Some(v) = vision_config(dir)? else { return Ok(None) };
+    /// The image bounds of the model in `dir` whose tower is `v` (preprocessor_config.json: its patches the tower's, its mean and deviation 0.5); `max_pixels`
+    /// lowers the top bound (the processor's 16.8 M pixels are 16,384 tokens an image).
+    pub fn load(dir: &Path, v: &VisionDesc, max_pixels: Option<usize>) -> Result<Prep> {
         let p = dir.join("preprocessor_config.json");
         let pc = match std::fs::read_to_string(&p) {
             Ok(t) => json::parse(&t).map_err(|e| Error(format!("{}: {e}", p.display())))?,
@@ -77,8 +76,20 @@ impl Prep {
         };
         let num = |k: &str| pc.get(k).and_then(Value::as_u64).map(|x| x as usize);
         let size = |k: &str| pc.get("size").and_then(|s| s.get(k)).and_then(Value::as_u64).map(|x| x as usize);
-        if num("patch_size") != Some(PATCH) || num("merge_size") != Some(MERGE) || num("temporal_patch_size").is_some_and(|t| t != FRAMES) {
-            return err(format!("{}: patches other than 16 x 16 in blocks of 2 x 2: not supported", p.display()));
+        if num("patch_size") != Some(v.patch)
+            || num("merge_size") != Some(v.merge)
+            || num("temporal_patch_size").is_some_and(|t| t != v.frames)
+            || v.channels != 3
+        {
+            return err(format!(
+                "{}: patches other than the tower's ({} x {} in blocks of {} x {}, {} frames, RGB): not supported",
+                p.display(),
+                v.patch,
+                v.patch,
+                v.merge,
+                v.merge,
+                v.frames
+            ));
         }
         let halves = |k: &str| {
             pc.get(k)
@@ -90,26 +101,27 @@ impl Prep {
         }
         let (lo, hi) = (size("shortest_edge").unwrap_or(65536), size("longest_edge").unwrap_or(16_777_216));
         let hi = max_pixels.map_or(hi, |m| m.min(hi)).max(lo);
-        Ok(Some(Prep { min_pixels: lo, max_pixels: hi, image_token: v.image_token }))
+        Ok(Prep { min_pixels: lo, max_pixels: hi, image_token: v.image_token, patch: v.patch, merge: v.merge, frames: v.frames })
     }
 
     /// An image's bytes as the tower reads them: decoded, resized, normalized, cut into patches.
     pub fn image(&self, bytes: &[u8]) -> Result<Image> {
         let (w, h, rgb) = crate::pixels::rgb(bytes).map_err(Error)?;
-        let (nh, nw) = smart_resize(h, w, self.min_pixels, self.max_pixels)?;
+        let (p, m) = (self.patch, self.merge);
+        let (nh, nw) = smart_resize(h, w, self.min_pixels, self.max_pixels, p * m)?;
         let rgb = resize(&rgb, w, h, nw, nh);
-        let (gh, gw) = (nh / PATCH, nw / PATCH);
-        let mut patches = Vec::with_capacity(gh * gw * PATCH_DIM);
+        let (gh, gw) = (nh / p, nw / p);
+        let mut patches = Vec::with_capacity(gh * gw * 3 * self.frames * p * p);
         let px = |c: usize, y: usize, x: usize| bf16((rgb[(y * nw + x) * 3 + c] as f32 - 127.5) / 127.5);
-        for br in 0..gh / MERGE {
-            for bc in 0..gw / MERGE {
-                for ir in 0..MERGE {
-                    for ic in 0..MERGE {
-                        let (r, c) = ((br * MERGE + ir) * PATCH, (bc * MERGE + ic) * PATCH);
+        for br in 0..gh / m {
+            for bc in 0..gw / m {
+                for ir in 0..m {
+                    for ic in 0..m {
+                        let (r, c) = ((br * m + ir) * p, (bc * m + ic) * p);
                         for ch in 0..3 {
-                            for _ in 0..FRAMES {
-                                for y in 0..PATCH {
-                                    patches.extend((0..PATCH).map(|x| px(ch, r + y, c + x)));
+                            for _ in 0..self.frames {
+                                for y in 0..p {
+                                    patches.extend((0..p).map(|x| px(ch, r + y, c + x)));
                                 }
                             }
                         }
@@ -120,46 +132,8 @@ impl Prep {
         use std::hash::{Hash, Hasher};
         let mut k = std::collections::hash_map::DefaultHasher::new();
         (bytes, self.min_pixels, self.max_pixels).hash(&mut k);
-        Ok(Image { gh, gw, patches, key: k.finish() })
+        Ok(Image { gh, gw, patches, merge: m, key: k.finish() })
     }
-}
-
-/// What the engine reads of config.json's vision part: the image token, the tower's depth (its other shapes checked against the constants above). None: the checkpoint has no tower.
-struct VisionCfg {
-    image_token: u32,
-    depth: usize,
-}
-
-fn vision_config(dir: &Path) -> Result<Option<VisionCfg>> {
-    let p = dir.join("config.json");
-    let t = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let c = json::parse(&t).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-    let Some(v) = c.get("vision_config").filter(|v| matches!(v, Value::Object(_))) else { return Ok(None) };
-    if c.get("language_model_only").and_then(Value::as_bool) == Some(true) {
-        return Ok(None);
-    }
-    let u = |k: &str| v.get(k).and_then(Value::as_u64).map(|x| x as usize);
-    let want = [
-        ("hidden_size", HIDDEN),
-        ("num_heads", HEADS),
-        ("intermediate_size", INTER),
-        ("out_hidden_size", 2560),
-        ("patch_size", PATCH),
-        ("spatial_merge_size", MERGE),
-        ("num_position_embeddings", 2304),
-    ];
-    for (k, x) in want {
-        if u(k) != Some(x) {
-            return err(format!("{}: vision_config.{k} {:?}, where this engine's tower has {x}", p.display(), u(k)));
-        }
-    }
-    if v.get("hidden_act").and_then(Value::as_str) != Some("gelu_pytorch_tanh")
-        || v.get("deepstack_visual_indexes").and_then(Value::as_array).is_some_and(|a| !a.is_empty())
-    {
-        return err(format!("{}: a vision tower with another activation or deepstack layers: not supported", p.display()));
-    }
-    let image_token = c.get("image_token_id").and_then(Value::as_u64).ok_or_else(|| Error(format!("{}: no image_token_id", p.display())))? as u32;
-    Ok(Some(VisionCfg { image_token, depth: u("depth").unwrap_or(27) }))
 }
 
 /// f32 to bf16, round to nearest even.
@@ -321,12 +295,13 @@ fn base64(s: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// The processor's smart_resize: each side rounded (half to even) to a multiple of 32, then scaled down or up, keeping the aspect, where the pixels are past the bounds.
-fn smart_resize(h: usize, w: usize, min_pixels: usize, max_pixels: usize) -> Result<(usize, usize)> {
+/// The processor's smart_resize: each side rounded (half to even) to a multiple of `factor` (a block of patches: 32), then scaled down or up, keeping the aspect,
+/// where the pixels are past the bounds.
+fn smart_resize(h: usize, w: usize, min_pixels: usize, max_pixels: usize, factor: usize) -> Result<(usize, usize)> {
     if h.max(w) as f64 / h.min(w) as f64 > 200.0 {
         return err(format!("an image of {w} x {h}: its sides may differ 200 times at most"));
     }
-    let f = FACTOR as f64;
+    let f = factor as f64;
     let (hf, wf) = (h as f64, w as f64);
     let (mut hb, mut wb) = ((hf / f).round_ties_even() * f, (wf / f).round_ties_even() * f);
     if hb * wb > max_pixels as f64 {
@@ -503,69 +478,106 @@ struct KernVis {
 /// vis_attn's dynamic shared memory: 320 rows of 88 bf16.
 const ATTN_SMEM: u32 = 320 * 88 * 2;
 
-/// The tower: its tensors read from the checkpoint's mapped files for each image (no GPU memory between images), its kernels.
+/// The products' step: every width the tower's products take is a multiple of it (the MLP's neurons padded to it with zero rows, and the second product's
+/// columns).
+const STEP: usize = 128;
+
+/// The vision tower of a description (`VisionDesc`) on the GPU: its tensors read from the checkpoint's mapped files for each image (no GPU memory between
+/// images), its kernels.
 pub struct Tower {
+    pub v: VisionDesc,
+    /// Each role's tensor (the tower's own by its role, a block's as `l.role`): its file mapped, its offset and bytes.
     src: HashMap<String, (Arc<Mapping>, usize, usize)>,
-    depth: usize,
     k: KernVis,
 }
 
-/// Bytes of the weights' buffer: the largest of a block's matrices (the second MLP product's columns padded, its rows as read beside), the merger's, and the patch product's with the
-/// position table.
-fn weight_elems() -> (usize, usize, usize) {
-    let block = 4 * HIDDEN + 3 * HIDDEN * HIDDEN + 3 * HIDDEN + HIDDEN * HIDDEN + HIDDEN + 2 * INTER_PAD * HIDDEN + INTER_PAD + HIDDEN + HIDDEN * INTER;
-    let merger = 2 * HIDDEN + 16 * HIDDEN * HIDDEN + 4 * HIDDEN + 4 * HIDDEN * 2560 + 2560;
-    let embed = HIDDEN * PATCH_DIM + HIDDEN + 2304 * HIDDEN;
+/// The widths a tower's buffers hold: the MLP's neurons padded to the products' step, a merged block's row, the widest product's output a patch.
+fn widths(v: &VisionDesc) -> (usize, usize, usize) {
+    let pad = v.inter.next_multiple_of(STEP);
+    let m = v.hidden * v.merge * v.merge;
+    (pad, m, pad.max(v.patch_dim()).max(3 * v.hidden))
+}
+
+/// Elements of the weights' buffer for each set copied in at once: a block's matrices (the second MLP product's columns padded, its rows as read beside), the
+/// merger's, and the patch product's with the position table.
+fn weight_elems(v: &VisionDesc) -> (usize, usize, usize) {
+    let (h, i) = (v.hidden, v.inter);
+    let (pad, m, _) = widths(v);
+    let block = 4 * h + 3 * h * h + 3 * h + h * h + h + 2 * pad * h + pad + h + h * i;
+    let merger = 2 * h + m * m + m + v.out * m + v.out;
+    let embed = h * v.patch_dim() + h + v.table * v.table * h;
     (block, merger, embed)
 }
 
 /// The weights' buffer: the largest set, and room for each tensor's start at a multiple of 256 bytes.
-fn weight_bytes() -> usize {
-    let (b, m, e) = weight_elems();
+fn weight_bytes(v: &VisionDesc) -> usize {
+    let (b, m, e) = weight_elems(v);
     2 * b.max(m).max(e) + (64 << 10)
 }
 
 impl Tower {
-    /// The tower of the checkpoint at `dir` (None where it has none), its tensors' files mapped, checked for every tensor and shape it reads.
-    pub fn open(dir: &Path, dev: &Dev) -> Result<Option<Tower>> {
-        let Some(cfg) = vision_config(dir)? else { return Ok(None) };
+    /// Whether this engine's tower runs `v`: heads of up to 80 channels (a multiple of 8), every product's widths multiples of 128, an MLP of GELU (tanh or erf),
+    /// RGB patches; else why not, in words.
+    pub fn takes(v: &VisionDesc) -> Result<()> {
+        let (hd, (pad, m, _)) = (v.head_dim(), widths(v));
+        let products = [v.hidden, 3 * v.hidden, pad, v.patch_dim(), m, v.out];
+        if hd > MAX_HEAD || hd % 8 != 0 || v.heads * hd != v.hidden {
+            return err(format!("a vision tower of {} heads of {hd}: the kernels take heads of up to {MAX_HEAD} channels, a multiple of 8", v.heads));
+        }
+        if products.iter().any(|&x| x % STEP != 0) {
+            return err(format!("a vision tower whose products are {products:?} wide: the engine's products take multiples of {STEP}"));
+        }
+        if !matches!(v.act, Act::GeluTanh | Act::Gelu) || v.channels != 3 || v.table < 2 {
+            return err(format!("a vision tower of {:?} over {} channels with a position table of {} a side: not this engine's", v.act, v.channels, v.table));
+        }
+        Ok(())
+    }
+
+    /// The tower `v` of the checkpoint at `dir`, its tensors (`roles`) mapped, each checked for its type and shape.
+    pub fn open(dir: &Path, v: &VisionDesc, roles: &VisionRoles, dev: &Dev) -> Result<Tower> {
+        Tower::takes(v)?;
         let ck = Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
         let mut maps: HashMap<std::path::PathBuf, Arc<Mapping>> = HashMap::new();
         let mut src = HashMap::new();
-        let mut want: Vec<(String, Vec<u64>)> = vec![
-            ("patch_embed.proj.weight".into(), vec![HIDDEN as u64, 3, FRAMES as u64, PATCH as u64, PATCH as u64]),
-            ("patch_embed.proj.bias".into(), vec![HIDDEN as u64]),
-            ("pos_embed.weight".into(), vec![2304, HIDDEN as u64]),
-            ("merger.norm.weight".into(), vec![HIDDEN as u64]),
-            ("merger.norm.bias".into(), vec![HIDDEN as u64]),
-            ("merger.linear_fc1.weight".into(), vec![4608, 4608]),
-            ("merger.linear_fc1.bias".into(), vec![4608]),
-            ("merger.linear_fc2.weight".into(), vec![2560, 4608]),
-            ("merger.linear_fc2.bias".into(), vec![2560]),
-        ];
-        let (h, i) = (HIDDEN as u64, INTER as u64);
-        for l in 0..cfg.depth {
-            for (n, s) in [
-                ("norm1.weight", vec![h]),
-                ("norm1.bias", vec![h]),
-                ("norm2.weight", vec![h]),
-                ("norm2.bias", vec![h]),
-                ("attn.qkv.weight", vec![3 * h, h]),
-                ("attn.qkv.bias", vec![3 * h]),
-                ("attn.proj.weight", vec![h, h]),
-                ("attn.proj.bias", vec![h]),
-                ("mlp.linear_fc1.weight", vec![i, h]),
-                ("mlp.linear_fc1.bias", vec![i]),
-                ("mlp.linear_fc2.weight", vec![h, i]),
-                ("mlp.linear_fc2.bias", vec![h]),
+        let (h, i, m) = (v.hidden as u64, v.inter as u64, (v.hidden * v.merge * v.merge) as u64);
+        let p = v.patch as u64;
+        let mut want: Vec<(String, String, Vec<u64>)> = [
+            ("patch", vec![h, v.channels as u64, v.frames as u64, p, p]),
+            ("patch_bias", vec![h]),
+            ("pos", vec![(v.table * v.table) as u64, h]),
+            ("merge_norm", vec![h]),
+            ("merge_norm_bias", vec![h]),
+            ("merge_up", vec![m, m]),
+            ("merge_up_bias", vec![m]),
+            ("merge_down", vec![v.out as u64, m]),
+            ("merge_down_bias", vec![v.out as u64]),
+        ]
+        .into_iter()
+        .map(|(r, s)| Ok((r.to_string(), roles.tensor(None, r)?.to_string(), s)))
+        .collect::<Result<_>>()?;
+        for l in 0..v.blocks {
+            for (r, s) in [
+                ("norm1", vec![h]),
+                ("norm1_bias", vec![h]),
+                ("norm2", vec![h]),
+                ("norm2_bias", vec![h]),
+                ("qkv", vec![3 * h, h]),
+                ("qkv_bias", vec![3 * h]),
+                ("o", vec![h, h]),
+                ("o_bias", vec![h]),
+                ("up", vec![i, h]),
+                ("up_bias", vec![i]),
+                ("down", vec![h, i]),
+                ("down_bias", vec![h]),
             ] {
-                want.push((format!("blocks.{l}.{n}"), s));
+                want.push((format!("{l}.{r}"), roles.tensor(Some(l), r)?.to_string(), s));
             }
         }
-        for (n, shape) in want {
-            let name = format!("model.visual.{n}");
+        for (key, name, shape) in want {
             let (f, t) = ck.get(&name).ok_or_else(|| Error(format!("{}: no tensor {name} (the vision tower's)", dir.display())))?;
-            if t.dtype != "BF16" || t.shape != shape {
+            // (the patch product's [hidden, channels, frames, patch, patch] may be saved as the matrix it is)
+            let flat = shape.len() == 5 && t.shape == [shape[0], shape[1..].iter().product::<u64>()];
+            if t.dtype != "BF16" || (t.shape != shape && !flat) {
                 return err(format!("{name}: {} {:?}, where BF16 {shape:?} is wanted", t.dtype, t.shape));
             }
             let map = match maps.get(&f.path) {
@@ -579,17 +591,19 @@ impl Tower {
             if (t.offset + t.bytes) as usize > map.len {
                 return err(format!("{name}: past the end of {}", f.path.display()));
             }
-            src.insert(n, (map, t.offset as usize, t.bytes as usize));
+            src.insert(key, (map, t.offset as usize, t.bytes as usize));
         }
         let attn = dev.typed::<crate::kt::vis_attn>()?;
         attn.allow_smem(ATTN_SMEM)?;
         let k = KernVis { ln: dev.typed()?, bias: dev.typed()?, embed: dev.typed()?, rope: dev.typed()?, attn, pad: dev.typed()? };
-        Ok(Some(Tower { src, depth: cfg.depth, k }))
+        Ok(Tower { v: v.clone(), src, k })
     }
 
-    /// GPU memory an image of `patches` patches takes while the tower runs: the weights' buffer and the activations.
-    pub fn bytes(patches: usize) -> usize {
-        weight_bytes() + patches * (2 * (2 * HIDDEN + INTER_PAD + 3 * HEADS * 80) + 40) + (1 << 20)
+    /// GPU memory an image of `patches` patches takes while the tower `v` runs: the weights' buffer and the activations.
+    pub fn bytes(v: &VisionDesc, patches: usize) -> usize {
+        let (pad, _, wide) = widths(v);
+        let _ = pad;
+        weight_bytes(v) + patches * (2 * (2 * v.hidden.max(v.out) + wide + 3 * v.heads * MAX_HEAD) + 40) + (1 << 20)
     }
 
     /// Tensor `n`'s bytes copied to `dst` on the stream (from the mapped file: the copy has read them when it returns).
@@ -598,20 +612,27 @@ impl Tower {
         copy_h2d_async(dst, (m.ptr as *const u8).add(*off) as *const _, *bytes, dev.stream)
     }
 
-    /// The image's rows for the text: bf16 [tokens, 2560], its 2x2 blocks in order.
+    /// The image's rows for the text: bf16 [tokens, out], its blocks in order.
     pub fn run(&self, dev: &Dev, kern: &Kern, img: &Image) -> Result<Vec<u16>> {
+        self.run_seen(dev, kern, img, None)
+    }
+
+    /// `run`, with `seen` (a check's) given the patches' rows (bf16 [patches, hidden]) after the embedding (stage 0) and after each block (stage l + 1).
+    pub fn run_seen(&self, dev: &Dev, kern: &Kern, img: &Image, mut seen: Option<&mut dyn FnMut(usize, Vec<u16>) -> Result<()>>) -> Result<Vec<u16>> {
+        let v = &self.v;
+        let (hid, heads, hd, side, mg) = (v.hidden, v.heads, v.head_dim(), v.table, v.merge);
+        let (pad, mw, wide) = widths(v);
         let n = img.gh * img.gw;
-        if img.patches.len() != n * PATCH_DIM || n == 0 || img.gh % MERGE != 0 || img.gw % MERGE != 0 {
-            return err("an image whose patches are not its grid's");
+        if img.merge != mg || img.patches.len() != n * v.patch_dim() || n == 0 || img.gh % mg != 0 || img.gw % mg != 0 {
+            return err("an image whose patches are not its grid's, or not this tower's");
         }
         let s = dev.stream;
-        let be = weight_elems().0;
-        let wb = Buf::new(weight_bytes())?;
-        let (x, h) = (Buf::new(n * HIDDEN * 2)?, Buf::new(n * HIDDEN * 2)?);
-        let big = Buf::new(n * INTER_PAD.max(PATCH_DIM) * 2)?;
-        let qkv: Vec<Buf> = (0..3).map(|_| Buf::new(HEADS * n * 80 * 2)).collect::<Result<_>>()?;
-        // the patches' grid: each patch's (row, column) for the rotary, its 4 taps into the 48 x 48 position table and their weights (the reference's, in fp32)
-        let side = 48usize;
+        let be = weight_elems(v).0;
+        let wb = Buf::new(weight_bytes(v))?;
+        let (x, h) = (Buf::new(n * hid.max(v.out) * 2)?, Buf::new(n * hid * 2)?);
+        let big = Buf::new(n * wide * 2)?;
+        let qkv: Vec<Buf> = (0..3).map(|_| Buf::new(heads * n * MAX_HEAD * 2)).collect::<Result<_>>()?;
+        // the patches' grid: each patch's (row, column) for the rotary, its 4 taps into the position table and their weights (the reference's, in fp32)
         let axis = |i: usize, size: usize| -> ([usize; 2], [f32; 2]) {
             let src = i as f32 * (side - 1) as f32 / (size - 1).max(1) as f32;
             let fl = src.floor();
@@ -620,11 +641,11 @@ impl Tower {
             ([t(0.0), t(1.0)], [w(0.0), w(1.0)])
         };
         let (mut pos, mut idx, mut wt) = (Vec::with_capacity(2 * n), Vec::with_capacity(4 * n), Vec::with_capacity(4 * n));
-        for br in 0..img.gh / MERGE {
-            for bc in 0..img.gw / MERGE {
-                for ir in 0..MERGE {
-                    for ic in 0..MERGE {
-                        let (r, c) = (br * MERGE + ir, bc * MERGE + ic);
+        for br in 0..img.gh / mg {
+            for bc in 0..img.gw / mg {
+                for ir in 0..mg {
+                    for ic in 0..mg {
+                        let (r, c) = (br * mg + ir, bc * mg + ic);
                         pos.extend([r as i32, c as i32]);
                         let ((hi, hw), (wi, ww)) = (axis(r, img.gh), axis(c, img.gw));
                         for a in 0..2 {
@@ -637,8 +658,9 @@ impl Tower {
                 }
             }
         }
-        // the rotary's cos and sin of each row or column position on each of its 18 frequencies (theta 10,000 over 36 dims), fp32 as the reference makes them
-        let inv: Vec<f32> = (0..18).map(|j| 1.0f32 / 10000f32.powf((2 * j) as f32 / 36.0)).collect();
+        // the rotary's cos and sin of each row or column position on each of its head / 4 frequencies (theta over head / 2 channels), fp32 as the reference makes them
+        let q4 = hd / 4;
+        let inv: Vec<f32> = (0..q4).map(|j| 1.0f32 / (v.theta as f32).powf((2 * j) as f32 / (hd / 2) as f32)).collect();
         let rot: Vec<f32> = (0..img.gh.max(img.gw))
             .flat_map(|p| {
                 inv.iter().flat_map(move |&f| {
@@ -648,9 +670,17 @@ impl Tower {
             })
             .collect();
         let (pos_b, idx_b, wt_b, rot_b) = (Buf::new(pos.len() * 4)?, Buf::new(idx.len() * 4)?, Buf::new(wt.len() * 4)?, Buf::new(rot.len() * 4)?);
-        let (ni, ci, hi, inter) = (n as i32, HIDDEN as i32, HIDDEN as i64, INTER_PAD as i64);
+        let (ni, ci, hi, inter) = (n as i32, hid as i32, hid as i64, pad as i64);
         let elems = |rows: usize, cols: usize| (rows * cols) as i64;
         let grid = |total: i64| [(total as u64).div_ceil(256).min(8192) as u32, 1, 1];
+        let act = if v.act == Act::GeluTanh { 1i32 } else { 2i32 };
+        let mut look = |stage: usize| -> Result<()> {
+            let Some(f) = seen.as_mut() else { return Ok(()) };
+            let mut rows = vec![0u16; n * hid];
+            dev.sync()?;
+            x.read(0, &mut rows)?;
+            f(stage, rows)
+        };
         // SAFETY: the buffers above, of the sizes the kernels and products read and write; the host's vectors are read by the copies before they return; synchronized before the read.
         unsafe {
             copy_h2d_async(pos_b.ptr, pos.as_ptr() as *const _, pos.len() * 4, s)?;
@@ -659,12 +689,13 @@ impl Tower {
             copy_h2d_async(rot_b.ptr, rot.as_ptr() as *const _, rot.len() * 4, s)?;
             copy_h2d_async(big.ptr, img.patches.as_ptr() as *const _, img.patches.len() * 2, s)?;
             // the patches' product, its bias and the positions
-            let (pw, pb, table) = (wb.ptr, wb.ptr + (HIDDEN * PATCH_DIM * 2) as u64, wb.ptr + ((HIDDEN * PATCH_DIM + HIDDEN) * 2) as u64);
-            self.put(dev, pw, "patch_embed.proj.weight")?;
-            self.put(dev, pb, "patch_embed.proj.bias")?;
-            self.put(dev, table, "pos_embed.weight")?;
-            kern.gemm_fill(s, big.ptr, pw, h.ptr, ni, ci, PATCH_DIM as i32)?;
+            let (pw, pb, table) = (wb.ptr, wb.ptr + (hid * v.patch_dim() * 2) as u64, wb.ptr + ((hid * v.patch_dim() + hid) * 2) as u64);
+            self.put(dev, pw, "patch")?;
+            self.put(dev, pb, "patch_bias")?;
+            self.put(dev, table, "pos")?;
+            kern.gemm_fill(s, big.ptr, pw, h.ptr, ni, ci, v.patch_dim() as i32)?;
             launch!(self.k.embed, [n as u32, 1, 1], [256, 1, 1], s; h.ptr, pb, table, idx_b.ptr, wt_b.ptr, x.ptr, ci)?;
+            look(0)?;
             // the blocks: a block's weights at fixed places in the buffer (the MLP's padding rows and columns zero), copied in turn
             memset_async(wb.ptr, 0, 2 * be, s)?;
             let mut at = 0u64;
@@ -673,96 +704,100 @@ impl Tower {
                 at += (elems * 2).next_multiple_of(256) as u64;
                 p
             };
-            let (n1w, n1b, n2w, n2b) = (take(HIDDEN), take(HIDDEN), take(HIDDEN), take(HIDDEN));
-            let (qw, qb, ow, ob) = (take(3 * HIDDEN * HIDDEN), take(3 * HIDDEN), take(HIDDEN * HIDDEN), take(HIDDEN));
-            let (f1w, f1b, f2w, f2b, f2raw) = (take(INTER_PAD * HIDDEN), take(INTER_PAD), take(HIDDEN * INTER_PAD), take(HIDDEN), take(HIDDEN * INTER));
+            let (n1w, n1b, n2w, n2b) = (take(hid), take(hid), take(hid), take(hid));
+            let (qw, qb, ow, ob) = (take(3 * hid * hid), take(3 * hid), take(hid * hid), take(hid));
+            let (f1w, f1b, f2w, f2b, f2raw) = (take(pad * hid), take(pad), take(hid * pad), take(hid), take(hid * v.inter));
             if at as usize > wb.bytes {
                 return err("the vision weights' buffer is too small");
             }
-            let sl2 = (1.0 / (HEAD_DIM as f32).sqrt()) * std::f32::consts::LOG2_E;
-            for l in 0..self.depth {
-                let p = |t: &str| format!("blocks.{l}.{t}");
+            let sl2 = (1.0 / (hd as f32).sqrt()) * std::f32::consts::LOG2_E;
+            for l in 0..v.blocks {
+                let p = |t: &str| format!("{l}.{t}");
                 for (dst, t) in [
-                    (n1w, "norm1.weight"),
-                    (n1b, "norm1.bias"),
-                    (n2w, "norm2.weight"),
-                    (n2b, "norm2.bias"),
-                    (qw, "attn.qkv.weight"),
-                    (qb, "attn.qkv.bias"),
-                    (ow, "attn.proj.weight"),
-                    (ob, "attn.proj.bias"),
-                    (f1w, "mlp.linear_fc1.weight"),
-                    (f1b, "mlp.linear_fc1.bias"),
-                    (f2raw, "mlp.linear_fc2.weight"),
-                    (f2b, "mlp.linear_fc2.bias"),
+                    (n1w, "norm1"),
+                    (n1b, "norm1_bias"),
+                    (n2w, "norm2"),
+                    (n2b, "norm2_bias"),
+                    (qw, "qkv"),
+                    (qb, "qkv_bias"),
+                    (ow, "o"),
+                    (ob, "o_bias"),
+                    (f1w, "up"),
+                    (f1b, "up_bias"),
+                    (f2raw, "down"),
+                    (f2b, "down_bias"),
                 ] {
                     self.put(dev, dst, &p(t))?;
                 }
-                launch!(self.k.pad, grid(elems(HIDDEN, INTER_PAD)), [256, 1, 1], s; f2raw, f2w, INTER as i32, INTER_PAD as i32, elems(HIDDEN, INTER_PAD))?;
+                launch!(self.k.pad, grid(elems(hid, pad)), [256, 1, 1], s; f2raw, f2w, v.inter as i32, pad as i32, elems(hid, pad))?;
                 // attention: x += proj(attn(rotary(qkv(ln1(x)))))
-                launch!(self.k.ln, [n as u32, 1, 1], [256, 1, 1], s; x.ptr, n1w, n1b, h.ptr, ci, 1e-6f32)?;
+                launch!(self.k.ln, [n as u32, 1, 1], [256, 1, 1], s; x.ptr, n1w, n1b, h.ptr, ci, v.eps)?;
                 kern.gemm_fill(s, h.ptr, qw, big.ptr, ni, 3 * ci, ci)?;
-                launch!(self.k.bias, grid(elems(n, 3 * HIDDEN)), [256, 1, 1], s; big.ptr, qb, 0u64, 3 * ci, 0i32, elems(n, 3 * HIDDEN))?;
-                launch!(self.k.rope, [n as u32, 1, 1], [256, 1, 1], s; big.ptr, pos_b.ptr, rot_b.ptr, qkv[0].ptr, qkv[1].ptr, qkv[2].ptr, ni)?;
-                launch!(self.k.attn, [(n as u32).div_ceil(64), HEADS as u32, 1], [128, 1, 1], smem ATTN_SMEM, s; qkv[0].ptr, qkv[1].ptr, qkv[2].ptr, h.ptr, ni, sl2)?;
+                launch!(self.k.bias, grid(elems(n, 3 * hid)), [256, 1, 1], s; big.ptr, qb, 0u64, 3 * ci, 0i32, elems(n, 3 * hid))?;
+                launch!(self.k.rope, [n as u32, 1, 1], [256, 1, 1], s; big.ptr, pos_b.ptr, rot_b.ptr, qkv[0].ptr, qkv[1].ptr, qkv[2].ptr, ni, heads as i32, hd as i32)?;
+                launch!(self.k.attn, [(n as u32).div_ceil(64), heads as u32, 1], [128, 1, 1], smem ATTN_SMEM, s; qkv[0].ptr, qkv[1].ptr, qkv[2].ptr, h.ptr, ni, sl2, hd as i32)?;
                 kern.gemm_fill(s, h.ptr, ow, big.ptr, ni, ci, ci)?;
-                launch!(self.k.bias, grid(elems(n, HIDDEN)), [256, 1, 1], s; big.ptr, ob, x.ptr, ci, 0i32, n as i64 * hi)?;
-                // the MLP: x += fc2(gelu(fc1(ln2(x))))
-                launch!(self.k.ln, [n as u32, 1, 1], [256, 1, 1], s; x.ptr, n2w, n2b, h.ptr, ci, 1e-6f32)?;
-                kern.gemm_fill(s, h.ptr, f1w, big.ptr, ni, INTER_PAD as i32, ci)?;
-                launch!(self.k.bias, grid(elems(n, INTER_PAD)), [256, 1, 1], s; big.ptr, f1b, 0u64, INTER_PAD as i32, 1i32, n as i64 * inter)?;
-                kern.gemm_fill(s, big.ptr, f2w, h.ptr, ni, ci, INTER_PAD as i32)?;
-                launch!(self.k.bias, grid(elems(n, HIDDEN)), [256, 1, 1], s; h.ptr, f2b, x.ptr, ci, 0i32, n as i64 * hi)?;
+                launch!(self.k.bias, grid(elems(n, hid)), [256, 1, 1], s; big.ptr, ob, x.ptr, ci, 0i32, n as i64 * hi)?;
+                // the MLP: x += fc2(act(fc1(ln2(x))))
+                launch!(self.k.ln, [n as u32, 1, 1], [256, 1, 1], s; x.ptr, n2w, n2b, h.ptr, ci, v.eps)?;
+                kern.gemm_fill(s, h.ptr, f1w, big.ptr, ni, pad as i32, ci)?;
+                launch!(self.k.bias, grid(elems(n, pad)), [256, 1, 1], s; big.ptr, f1b, 0u64, pad as i32, act, n as i64 * inter)?;
+                kern.gemm_fill(s, big.ptr, f2w, h.ptr, ni, ci, pad as i32)?;
+                launch!(self.k.bias, grid(elems(n, hid)), [256, 1, 1], s; h.ptr, f2b, x.ptr, ci, 0i32, n as i64 * hi)?;
+                look(l + 1)?;
             }
-            // the merger: ln, a block's 4 patches as one row of 4608, fc1, GELU (erf), fc2
-            let m = n / (MERGE * MERGE);
+            // the merger: ln, a block's patches as one row, fc1, GELU (erf), fc2
+            let m = n / (mg * mg);
             let mut at = 0u64;
             let mut take = |elems: usize| {
                 let p = wb.ptr + at;
                 at += (elems * 2).next_multiple_of(256) as u64;
                 p
             };
-            let (nw_, nb_, w1, b1, w2, b2) = (take(HIDDEN), take(HIDDEN), take(4608 * 4608), take(4608), take(2560 * 4608), take(2560));
+            let (nw_, nb_, w1, b1, w2, b2) = (take(hid), take(hid), take(mw * mw), take(mw), take(v.out * mw), take(v.out));
             if at as usize > wb.bytes {
                 return err("the vision weights' buffer is too small");
             }
-            for (dst, t) in [
-                (nw_, "merger.norm.weight"),
-                (nb_, "merger.norm.bias"),
-                (w1, "merger.linear_fc1.weight"),
-                (b1, "merger.linear_fc1.bias"),
-                (w2, "merger.linear_fc2.weight"),
-                (b2, "merger.linear_fc2.bias"),
-            ] {
+            for (dst, t) in
+                [(nw_, "merge_norm"), (nb_, "merge_norm_bias"), (w1, "merge_up"), (b1, "merge_up_bias"), (w2, "merge_down"), (b2, "merge_down_bias")]
+            {
                 self.put(dev, dst, t)?;
             }
-            launch!(self.k.ln, [n as u32, 1, 1], [256, 1, 1], s; x.ptr, nw_, nb_, h.ptr, ci, 1e-6f32)?;
-            kern.gemm_fill(s, h.ptr, w1, big.ptr, m as i32, 4608, 4608)?;
-            launch!(self.k.bias, grid(elems(m, 4608)), [256, 1, 1], s; big.ptr, b1, 0u64, 4608i32, 2i32, elems(m, 4608))?;
-            kern.gemm_fill(s, big.ptr, w2, x.ptr, m as i32, 2560, 4608)?;
-            launch!(self.k.bias, grid(elems(m, 2560)), [256, 1, 1], s; x.ptr, b2, 0u64, 2560i32, 0i32, elems(m, 2560))?;
+            let (mwi, oi) = (mw as i32, v.out as i32);
+            launch!(self.k.ln, [n as u32, 1, 1], [256, 1, 1], s; x.ptr, nw_, nb_, h.ptr, ci, v.eps)?;
+            kern.gemm_fill(s, h.ptr, w1, big.ptr, m as i32, mwi, mwi)?;
+            launch!(self.k.bias, grid(elems(m, mw)), [256, 1, 1], s; big.ptr, b1, 0u64, mwi, 2i32, elems(m, mw))?;
+            kern.gemm_fill(s, big.ptr, w2, x.ptr, m as i32, oi, mwi)?;
+            launch!(self.k.bias, grid(elems(m, v.out)), [256, 1, 1], s; x.ptr, b2, 0u64, oi, 0i32, elems(m, v.out))?;
         }
         dev.sync()?;
-        let mut out = vec![0u16; img.tokens() * 2560];
+        let mut out = vec![0u16; img.tokens() * v.out];
         x.read(0, &mut out)?;
         Ok(out)
     }
 }
 
+/// The vision tower of the model in `dir` from its description (`kinds::VisionDesc`): its kind, its roles; None where the description has none.
+pub fn described(dir: &Path) -> Result<Option<(VisionDesc, VisionRoles)>> {
+    let (d, _) = crate::runtime::describe::describe_dir(dir)?;
+    Ok(d.desc.vision.clone().zip(d.vision.clone()))
+}
+
 /// `qxvision MODEL IMAGE... [--pixels N] [--out DIR] [--rgb=1]` (a development check): each image through the preprocessing and the tower alone, its patches (DIR/NAME.patches.bf16, [patches,
-/// 1536]), its grid (DIR/NAME.json) and its rows (DIR/NAME.rows.bf16, [tokens, 2560]) written for research/qwen-data/qwen_ref.py's `vision` comparison; the tower's time. --rgb=1: the decoded
-/// pixels alone (DIR/NAME.WxH.rgb, no GPU), to set beside PIL's.
+/// patch]), its grid (DIR/NAME.json) and its rows (DIR/NAME.rows.bf16, [tokens, out]) written (the release's engine's command of the same name writes the same files, to set them side
+/// by side); the tower's time. --rgb=1: the decoded pixels alone (DIR/NAME.WxH.rgb, no GPU), to set beside PIL's.
 #[cfg(feature = "dev")]
 pub fn check(a: &crate::args::Args) -> Result<()> {
     let dir = Path::new(a.need(1, "MODEL")?);
     let pixels = a.flag("pixels").map(|v| v.parse::<usize>().map_err(|_| Error(format!("--pixels {v}: a number")))).transpose()?;
-    let prep = Prep::load(dir, pixels)?.ok_or_else(|| Error(format!("{}: no vision tower", dir.display())))?;
+    let (v, roles) = described(dir)?.ok_or_else(|| Error(format!("{}: no vision tower", dir.display())))?;
+    let prep = Prep::load(dir, &v, pixels)?;
     let gpu = if a.has("rgb") {
         None
     } else {
         let dev = Dev::new(0)?;
         let kern = Kern::load(&dev)?;
-        let tower = Tower::open(dir, &dev)?.ok_or_else(|| Error("no vision tower".into()))?;
+        let tower = Tower::open(dir, &v, &roles, &dev)?;
         Some((dev, kern, tower))
     };
     let out = Path::new(a.flag("out").unwrap_or("."));
@@ -787,7 +822,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         let prep_ms = t0.elapsed().as_secs_f64() * 1e3;
         let free0 = dev.mem_info()?.0;
         let t1 = std::time::Instant::now();
-        let rows = tower.run(&dev, &kern, &img)?;
+        let rows = tower.run(dev, kern, &img)?;
         let ms = t1.elapsed().as_secs_f64() * 1e3;
         let bytes_of = |v: &[u16]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
         std::fs::write(out.join(format!("{name}.patches.bf16")), bytes_of(&img.patches)).map_err(|e| Error(e.to_string()))?;
@@ -799,7 +834,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
             img.gh,
             img.gw,
             img.tokens(),
-            Tower::bytes(img.gh * img.gw) as f64 / 1e6,
+            Tower::bytes(&v, img.gh * img.gw) as f64 / 1e6,
             free0 as f64 / 1e6
         );
     }
@@ -836,13 +871,7 @@ mod tests {
         use ureq::unversioned::resolver::Resolver;
         let uri: ureq::http::Uri = "http://rebind.example/x.png".parse().unwrap();
         let cfg = ureq::config::Config::default();
-        let ask = |ips: Vec<&'static str>| {
-            PublicOnly(Fixed(ips)).resolve(
-                &uri,
-                &cfg,
-                ureq::unversioned::transport::NextTimeout { after: ureq::unversioned::transport::time::Duration::NotHappening, reason: ureq::Timeout::Global },
-            )
-        };
+        let ask = |ips: Vec<&'static str>| PublicOnly(Fixed(ips)).resolve(&uri, &cfg, ureq::unversioned::transport::NextTimeout::default());
         for ips in [vec!["127.0.0.1"], vec!["169.254.169.254"], vec!["10.0.0.5"], vec!["93.184.216.34", "192.168.1.1"], vec!["192.168.1.1", "93.184.216.34"]] {
             let e = ask(ips.clone()).map(|_| ()).unwrap_err().to_string();
             assert!(e.contains("only public addresses"), "{ips:?}: {e}");
@@ -905,12 +934,12 @@ mod tests {
     #[test]
     fn smart_resize_as_the_processor_has_it() {
         // (values from transformers' smart_resize at factor 32, 65536 to 16777216 pixels; and with the top at 1048576)
-        assert_eq!(smart_resize(480, 640, 65536, 16_777_216).unwrap(), (480, 640));
-        assert_eq!(smart_resize(100, 100, 65536, 16_777_216).unwrap(), (256, 256));
-        assert_eq!(smart_resize(48, 80, 65536, 16_777_216).unwrap(), (224, 352));
-        assert_eq!(smart_resize(3000, 4000, 65536, 1_048_576).unwrap(), (864, 1152));
-        assert_eq!(smart_resize(1080, 1920, 65536, 16_777_216).unwrap(), (1088, 1920));
-        assert!(smart_resize(1, 300, 65536, 16_777_216).is_err());
+        assert_eq!(smart_resize(480, 640, 65536, 16_777_216, 32).unwrap(), (480, 640));
+        assert_eq!(smart_resize(100, 100, 65536, 16_777_216, 32).unwrap(), (256, 256));
+        assert_eq!(smart_resize(48, 80, 65536, 16_777_216, 32).unwrap(), (224, 352));
+        assert_eq!(smart_resize(3000, 4000, 65536, 1_048_576, 32).unwrap(), (864, 1152));
+        assert_eq!(smart_resize(1080, 1920, 65536, 16_777_216, 32).unwrap(), (1088, 1920));
+        assert!(smart_resize(1, 300, 65536, 16_777_216, 32).is_err());
     }
 
     #[test]
@@ -936,7 +965,7 @@ mod tests {
         assert!(positions(&ids, 9, &[]).is_err());
         assert_eq!(positions(&[5, 6], 9, &[]).unwrap(), (vec![[0; 3], [1; 3]], 2));
         // the template's one place an image, made as long as its tokens
-        let img = |gh, gw| Arc::new(Image { gh, gw, patches: Vec::new(), key: 0 });
+        let img = |gh, gw| Arc::new(Image { gh, gw, patches: Vec::new(), merge: 2, key: 0 });
         assert_eq!(expand(&[1, 9, 2, 9, 3], 9, &[img(2, 4), img(4, 2)]).unwrap(), [1, 9, 9, 2, 9, 9, 3]);
         assert!(expand(&[1, 9, 9], 9, &[img(2, 2)]).is_err());
     }
@@ -947,5 +976,26 @@ mod tests {
         let rows: Vec<[u32; 3]> = (0..40).map(|p| [p; 3]).collect();
         let (c, s) = rope_rows(1e7, 32, &rows);
         assert_eq!((c, s), (c0, s0));
+    }
+
+    /// The executor's M-RoPE (each angle of a row from the plain table's row of the position its section takes: `Rope::mrope_axis`, kernels/attn.cu `at_rot`)
+    /// is the release's rows (`rope_rows`, which the release's engine wrote into its tables) bit for bit, for a prompt with two images at the release's rotary
+    /// (theta 1e7, 64 channels turned, sections 11, 11 and 10).
+    #[test]
+    fn the_executors_mrope_is_the_releases_rows() {
+        use crate::runtime::kinds::Rope;
+        let mut r = Rope::plain(1e7, 64);
+        r.mrope = Some([11, 11, 10]);
+        let ids: Vec<u32> = [1, 2].into_iter().chain(std::iter::repeat_n(9, 6)).chain([3]).chain(std::iter::repeat_n(9, 12)).chain([4, 5]).collect();
+        let (pos, next) = positions(&ids, 9, &[(2, 3), (4, 3)]).unwrap();
+        assert_eq!(next, 2 + 3 + 1 + 4 + 2);
+        let (cos, sin) = rope_rows(1e7, 32, &pos);
+        let (tc, ts) = crate::gemma4::rotary(1e7, 64, 32, 64);
+        for (row, p) in pos.iter().enumerate() {
+            for k in 0..32 {
+                let at = p[r.mrope_axis(k)] as usize * 32 + k;
+                assert_eq!((cos[row * 32 + k], sin[row * 32 + k]), (tc[at], ts[at]), "row {row} angle {k}");
+            }
+        }
     }
 }

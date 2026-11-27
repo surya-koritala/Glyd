@@ -1,5 +1,5 @@
-//! A development build's timeline of the steps of a session: markers recorded on the engine's stream (a CUDA event each: the stream's own clock) with the host's clock beside them, for the steps `glmserve` is asked to trace
-//! (`{"set": {"trace": 1}}`, or 2 for every stage marker of the engine). The decode step of the expert cache is host work and GPU work in turn (a layer's router choices are read on the host before its experts run); this is
+//! A development build's timeline of the steps of a session: markers recorded on the engine's stream (a CUDA event each: the stream's own clock) with the host's clock beside them, for the steps a check asks to trace
+//! (`start`; every stage marker of the engine with `all`). The decode step of the expert cache is host work and GPU work in turn (a layer's router choices are read on the host before its experts run); this is
 //! where the time of one step is split per layer into the parts: the GPU's always-on work, the readback of the router's choices and the wait for it, the host's plan and copies, the experts on the GPU, the experts on the host
 //! and the sums sent back, the sum and what follows.
 
@@ -157,3 +157,6 @@ pub fn layers(marks: &[Mark]) -> Vec<Layer> {
 pub fn stages(marks: &[Mark]) -> Vec<(&'static str, f64)> {
     marks.windows(2).map(|w| (w[1].label, w[1].ev.since(&w[0].ev).map_or(0.0, |ms| ms as f64 * 1e3))).collect()
 }
+
+/// A traced decode step: the parts of each layer, the stages, the step's milliseconds.
+pub type TracedStep = (Vec<Layer>, Vec<(&'static str, f64)>, f64);

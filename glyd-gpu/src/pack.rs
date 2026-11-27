@@ -317,72 +317,129 @@ fn tiered(w: &[u16], rows: usize, cols: usize, check: bool) -> Option<Tiered> {
 /// `tiered` on `threads` threads, each a run of the steps: the same bytes whatever the count.
 fn tiered_on(w: &[u16], rows: usize, cols: usize, check: bool, threads: usize) -> Option<Tiered> {
     check_shape(w, rows, cols);
-    let order = by_count(&histogram(w));
-    let tiers: [u32; 3] = [
-        order[0] as u32 | (order[1] as u32) << 8 | (order[2] as u32) << 16 | TIERED_TAG << 24,
-        order[3] as u32 | (order[4] as u32) << 8 | (order[5] as u32) << 16 | 0xFF << 24,
-        order[6] as u32 | (order[7] as u32) << 8 | (order[8] as u32) << 16 | (order[9] as u32) << 24,
-    ];
-    let mut rank = [10u8; 256];
-    for (r, &e) in order[..10].iter().enumerate() {
-        rank[e as usize] = r as u8;
+    let mut t = TieredJoin::new(&histogram(w), cols);
+    t.push(w, rows, check, threads)?;
+    Some(t.finish())
+}
+
+/// A pack in the tiered layout made a band of rows at a time (`push`), its tiers the ten commonest exponents of a histogram given first: a step's block
+/// is the same bytes wherever it lands, so the bands' blocks are joined as they come, and each step's general-decode flag, which reads where its block
+/// starts, is set then. The bands of a matrix pushed in order with its histogram make the bytes `tiered` makes of it whole.
+struct TieredJoin {
+    tiers: [u32; 3],
+    rank: [u8; 256],
+    sym: [u8; 10],
+    cols: usize,
+    rows: usize,
+    places: Vec<usize>,
+    data: Vec<u8>,
+    blocks: Vec<u8>,
+    block_base: Vec<i32>,
+}
+
+impl TieredJoin {
+    fn new(h: &[u64; 256], cols: usize) -> TieredJoin {
+        let order = by_count(h);
+        let tiers: [u32; 3] = [
+            order[0] as u32 | (order[1] as u32) << 8 | (order[2] as u32) << 16 | TIERED_TAG << 24,
+            order[3] as u32 | (order[4] as u32) << 8 | (order[5] as u32) << 16 | 0xFF << 24,
+            order[6] as u32 | (order[7] as u32) << 8 | (order[8] as u32) << 16 | (order[9] as u32) << 24,
+        ];
+        let mut rank = [10u8; 256];
+        for (r, &e) in order[..10].iter().enumerate() {
+            rank[e as usize] = r as u8;
+        }
+        let sym: [u8; 10] = std::array::from_fn(|r| order[r]);
+        TieredJoin { tiers, rank, sym, cols, rows: 0, places: places(cols), data: Vec::new(), blocks: vec![0u8; 128], block_base: Vec::new() }
     }
-    let sym: [u8; 10] = std::array::from_fn(|r| order[r]);
-    let n = rows * cols / STEP;
-    let places = places(cols);
-    let mut data = vec![0u8; n * 1280];
-    // the steps in runs, a thread each where the matrix is large (a mixture of experts' stacked experts, an embedding): a step's block is the same bytes
-    // wherever it lands, so the runs' blocks are joined after, and each step's general-decode flag, which reads where its block starts, is set then
-    let per = n.div_ceil(threads.max(1)).max(1);
-    // (a run's blocks, and each of its steps' start in them and counts)
-    type Run = (Vec<u8>, Vec<(usize, usize, usize, usize)>);
-    let run = |s0: usize, d: &mut [u8]| -> Option<Run> {
-        let (mut blocks, mut marks) = (Vec::new(), Vec::with_capacity(per));
-        let (mut u, mut back) = ([0u16; STEP], [0u16; STEP]);
-        let mut scratch = Scratch { d2: Vec::with_capacity(STEP), d3: Vec::with_capacity(STEP), lit: Vec::with_capacity(STEP) };
-        let mut at = Vec::with_capacity(STEP);
-        for (s, first) in steps(cols, s0, s0 + d.len() / 1280) {
-            gather(w, first, &places, &mut u);
-            let start = blocks.len();
-            let ds = &mut d[(s - s0) * 1280..(s - s0 + 1) * 1280];
-            let (t1, t2, nl) = tiered_step(&u, &rank, ds, &mut blocks, &mut scratch);
-            marks.push((start, t1, t2, nl));
-            if check {
-                tiered_unstep(ds, &blocks[start..], &sym, &mut back, &mut at)?;
-                if back != u {
-                    return None;
+
+    /// The band `w` [rows, cols] packed after the bands before it, on `threads` threads; None where a step does not decode to its weights (`check`).
+    fn push(&mut self, w: &[u16], rows: usize, check: bool, threads: usize) -> Option<()> {
+        let cols = self.cols;
+        check_shape(w, rows, cols);
+        let (rank, sym, places) = (&self.rank, &self.sym, &self.places);
+        let n = rows * cols / STEP;
+        let d0 = self.data.len();
+        self.data.resize(d0 + n * 1280, 0);
+        // the steps in runs, a thread each where the band is large (a mixture of experts' stacked experts, an embedding)
+        let per = n.div_ceil(threads.max(1)).max(1);
+        // (a run's blocks, and each of its steps' start in them and counts)
+        type Run = (Vec<u8>, Vec<(usize, usize, usize, usize)>);
+        let run = |s0: usize, d: &mut [u8]| -> Option<Run> {
+            let (mut blocks, mut marks) = (Vec::new(), Vec::with_capacity(per));
+            let (mut u, mut back) = ([0u16; STEP], [0u16; STEP]);
+            let mut scratch = Scratch { d2: Vec::with_capacity(STEP), d3: Vec::with_capacity(STEP), lit: Vec::with_capacity(STEP) };
+            let mut at = Vec::with_capacity(STEP);
+            for (s, first) in steps(cols, s0, s0 + d.len() / 1280) {
+                gather(w, first, places, &mut u);
+                let start = blocks.len();
+                let ds = &mut d[(s - s0) * 1280..(s - s0 + 1) * 1280];
+                let (t1, t2, nl) = tiered_step(&u, rank, ds, &mut blocks, &mut scratch);
+                marks.push((start, t1, t2, nl));
+                if check {
+                    tiered_unstep(ds, &blocks[start..], sym, &mut back, &mut at)?;
+                    if back != u {
+                        return None;
+                    }
                 }
             }
+            Some((blocks, marks))
+        };
+        let data = &mut self.data[d0..];
+        let runs: Vec<Option<Run>> = if per >= n {
+            vec![run(0, data)]
+        } else {
+            std::thread::scope(|sc| {
+                let hs: Vec<_> = data.chunks_mut(per * 1280).enumerate().map(|(k, d)| sc.spawn(move || run(k * per, d))).collect();
+                hs.into_iter().map(|h| h.join().expect("a packing thread")).collect()
+            })
+        };
+        for r in runs {
+            let (b, marks) = r?;
+            let base = self.blocks.len();
+            for (start, t1, t2, nl) in marks {
+                let at = base + start;
+                self.block_base.push(i32::try_from(at).expect("a matrix too large to pack") | if is_cold(at, t1, t2, nl) { i32::MIN } else { 0 });
+            }
+            self.blocks.extend_from_slice(&b);
         }
-        Some((blocks, marks))
-    };
-    let runs: Vec<Option<Run>> = if per >= n {
-        vec![run(0, &mut data)]
-    } else {
-        std::thread::scope(|sc| {
-            let hs: Vec<_> = data.chunks_mut(per * 1280).enumerate().map(|(k, d)| sc.spawn(move || run(k * per, d))).collect();
-            hs.into_iter().map(|h| h.join().expect("a packing thread")).collect()
-        })
-    };
-    let mut blocks = vec![0u8; 128];
-    let mut block_base = Vec::with_capacity(n + 1);
-    for r in runs {
-        let (b, marks) = r?;
-        let base = blocks.len();
-        for (start, t1, t2, nl) in marks {
-            let at = base + start;
-            block_base.push(i32::try_from(at).expect("a matrix too large to pack") | if is_cold(at, t1, t2, nl) { i32::MIN } else { 0 });
-        }
-        blocks.extend_from_slice(&b);
+        self.rows += rows;
+        Some(())
     }
-    block_base.push(i32::try_from(blocks.len()).expect("a matrix too large to pack"));
-    blocks.resize(blocks.len() + 256, 0);
-    assert!(blocks.len() < 1 << 31, "a matrix too large to pack");
-    Some(Tiered { rows, cols, data, blocks, block_base, tiers })
+
+    fn finish(mut self) -> Tiered {
+        self.block_base.push(i32::try_from(self.blocks.len()).expect("a matrix too large to pack"));
+        self.blocks.resize(self.blocks.len() + 256, 0);
+        assert!(self.blocks.len() < 1 << 31, "a matrix too large to pack");
+        Tiered { rows: self.rows, cols: self.cols, data: self.data, blocks: self.blocks, block_base: self.block_base, tiers: self.tiers }
+    }
 }
 
 /// Steps from which `tiered` packs a matrix on several threads (about 256 MB of bf16): below it the callers' own threads, a matrix each, are enough.
 const PAR_STEPS: usize = 1 << 17;
+
+/// `parts` matrices [rows, cols] stacked by rows ([parts rows, cols]: a mixture of experts' experts of a matrix) in the tiered layout, each read by `part`
+/// when its turn comes and dropped after, so that no more than one part's weights and the pack are held; the tiers the ten commonest exponents of `h`, the
+/// stack's histogram (the sum of each part's [`histogram`]), and each step decoded back as it is made ([`pack_tiered_checked`]). The same bytes as
+/// `pack_tiered_checked` of the stack whole. Ok(None) where a step is not its weights, bit for bit; an error of `part` is returned as it is.
+pub fn pack_tiered_parts_checked<E>(
+    parts: usize,
+    rows: usize,
+    cols: usize,
+    h: &[u64; 256],
+    part: &mut dyn FnMut(usize) -> Result<Vec<u16>, E>,
+) -> Result<Option<Tiered>, E> {
+    let mut t = TieredJoin::new(h, cols);
+    // (threads as `tiered` takes them for the stack whole: each part's steps split among them)
+    let threads = if parts * rows * cols / STEP >= PAR_STEPS { std::thread::available_parallelism().map_or(1, |t| t.get()).min(32) } else { 1 };
+    for p in 0..parts {
+        let w = part(p)?;
+        if t.push(&w, rows, true, threads).is_none() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(t.finish()))
+}
 
 /// W [rows, cols] in the tiered layout, as pack_mma makes it.
 pub fn pack_tiered(w: &[u16], rows: usize, cols: usize) -> Tiered {
@@ -2052,6 +2109,18 @@ mod compact_tests {
         assert!(cold_steps(&one.block_base) > 0, "some steps take the general decode");
         let mut back = vec![0u16; w.len()];
         assert!(unpack_tiered(&one, &mut back) && back == w);
+        // (the same matrix as three parts of 64 rows, each read when its turn comes, with the stack's histogram: the same bytes)
+        let mut asked = Vec::new();
+        let parts = pack_tiered_parts_checked::<()>(3, 64, cols, &histogram(&w), &mut |p| {
+            asked.push(p);
+            Ok(w[p * 64 * cols..(p + 1) * 64 * cols].to_vec())
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(asked, [0, 1, 2]);
+        assert!(one.data == parts.data && one.blocks == parts.blocks && one.block_base == parts.block_base && one.tiers == parts.tiers);
+        assert_eq!((parts.rows, parts.cols), (rows, cols));
+        assert_eq!(pack_tiered_parts_checked(3, 64, cols, &histogram(&w), &mut |p| if p == 1 { Err(p) } else { Ok(w[..64 * cols].to_vec()) }), Err(1));
     }
 
     /// round_a as round_candidate_a: ties to even, the largest past the top, non-finite words kept; then every rounded

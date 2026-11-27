@@ -1,5 +1,6 @@
-// Qwen3.8-Flash-Next's vision tower (src/vision.rs): the kernels beside the engine's dense products. The math: transformers' Qwen4ExpVisionModel (modeling_qwen4_exp.py); the rounding
-// where it rounds (each bf16 tensor it makes), the rest in fp32. Included from engine.cu after the prompt attention's helpers (cp16, ldsm4, ldsm4t, mma16816, ex2, pack_bf16).
+// The vision tower kind (src/runtime/kinds.rs `VisionDesc`, the Qwen-VL vision transformer; src/vision.rs): the kernels beside the engine's dense products. The math: transformers'
+// Qwen4ExpVisionModel (modeling_qwen4_exp.py); the rounding where it rounds (each bf16 tensor it makes), the rest in fp32. Heads of up to 80 channels (a multiple of 8), any number of them.
+// Included from engine.cu after the prompt attention's helpers (cp16, ldsm4, ldsm4t, mma16816, ex2, pack_bf16).
 
 // y [n, C] = LayerNorm(x [n, C]) w + b: the mean and the (biased) variance in fp32, eps inside the root. Block a row.
 extern "C" __global__ void vis_ln(const bf16* x, const bf16* w, const bf16* b, bf16* y, int C, float eps) {
@@ -44,39 +45,39 @@ extern "C" __global__ void vis_embed(const bf16* e, const bf16* b, const bf16* t
     }
 }
 
-#define VHD 80  // a head's 72 values padded with zeros to the mma's 5 steps of 16
+#define VHD 80  // a head's D values (72 for Qwen3.8-Flash-Next's tower) padded with zeros to the mma's 5 steps of 16
 #define VS 88   // a row of a tile in shared memory: 176 bytes, so that ldmatrix's eight rows fall on distinct banks
 
-// The heads of qkv [n, 3, 16, 72] (bias added) into q, k, v [16, n, 80] (zeros past 72): q and k turned by the 2D rotary of the patch's (row, column) (pos [n, 2]), the row on the first 18
-// frequencies of each half and the column on the last 18 (rot [positions, 18, 2]: the cos and sin of a position on a frequency, fp32), q cos + rotate_half(q) sin in fp32, rounded once.
+// The heads of qkv [n, 3, H, D] (bias added) into q, k, v [H, n, 80] (zeros past D): q and k turned by the 2D rotary of the patch's (row, column) (pos [n, 2]), the row on the first D / 4
+// frequencies of each half and the column on the last D / 4 (rot [positions, D / 4, 2]: the cos and sin of a position on a frequency, fp32), q cos + rotate_half(q) sin in fp32, rounded once.
 // Block a patch.
-extern "C" __global__ void vis_rope(const bf16* qkv, const int* pos, const float* rot, bf16* q, bf16* k, bf16* v, int n) {
-    const int t = blockIdx.x;
-    for (int i = threadIdx.x; i < 3 * 16 * VHD; i += blockDim.x) {
-        const int which = i / (16 * VHD), h = (i / VHD) % 16, d = i % VHD;
+extern "C" __global__ void vis_rope(const bf16* qkv, const int* pos, const float* rot, bf16* q, bf16* k, bf16* v, int n, int H, int D) {
+    const int t = blockIdx.x, half = D / 2, q4 = D / 4;
+    for (int i = threadIdx.x; i < 3 * H * VHD; i += blockDim.x) {
+        const int which = i / (H * VHD), h = (i / VHD) % H, d = i % VHD;
         bf16* out = (which == 0 ? q : which == 1 ? k : v) + ((size_t)h * n + t) * VHD + d;
-        if (d >= 72) {
+        if (d >= D) {
             *out = f2b(0.f);
             continue;
         }
-        const bf16* src = qkv + (size_t)t * 3456 + which * 1152 + h * 72;
+        const bf16* src = qkv + (size_t)t * 3 * H * D + which * H * D + h * D;
         if (which == 2) {
             *out = src[d];
             continue;
         }
-        const int j = d % 36;
-        const float* cs = rot + ((size_t)pos[2 * t + (j < 18 ? 0 : 1)] * 18 + j % 18) * 2;
-        const float x = b2f(src[d]), r = d < 36 ? -b2f(src[d + 36]) : b2f(src[d - 36]);
+        const int j = d % half;
+        const float* cs = rot + ((size_t)pos[2 * t + (j < q4 ? 0 : 1)] * q4 + j % q4) * 2;
+        const float x = b2f(src[d]), r = d < half ? -b2f(src[d + half]) : b2f(src[d - half]);
         *out = f2b(__fadd_rn(__fmul_rn(x, cs[0]), __fmul_rn(r, cs[1])));
     }
 }
 
-// The attention of each patch over every patch of its image (no mask): q, k, v [16, n, 80], out [n, 16 * 72]. fp32 softmax and sums, the probabilities rounded to bf16 for the values (as
-// FlashAttention does). A block takes 64 query rows of a head (4 warps of 16), the keys 64 at a time, K and V two tiles deep (cp.async), the scores and the output in registers
-// (mma.sync m16n8k16). sl2 = the softmax's scale * log2(e). Dynamic shared memory: 320 rows of VS.
-extern "C" __global__ void __launch_bounds__(128) vis_attn(const bf16* __restrict__ q, const bf16* __restrict__ k, const bf16* __restrict__ v, bf16* __restrict__ out, int n, float sl2) {
-    extern __shared__ __align__(128) unsigned char smem_raw[];
-    bf16* sQ = reinterpret_cast<bf16*>(smem_raw);  // [64][VS]
+// The attention of each patch over every patch of its image (no mask): q, k, v [H, n, 80], out [n, H D] (H the grid's y). fp32 softmax and sums, the probabilities rounded to bf16 for
+// the values (as FlashAttention does). A block takes 64 query rows of a head (4 warps of 16), the keys 64 at a time, K and V two tiles deep (cp.async), the scores and the output in
+// registers (mma.sync m16n8k16). sl2 = the softmax's scale * log2(e). Dynamic shared memory: 320 rows of VS.
+extern "C" __global__ void __launch_bounds__(128) vis_attn(const bf16* __restrict__ q, const bf16* __restrict__ k, const bf16* __restrict__ v, bf16* __restrict__ out, int n, float sl2, int D) {
+    extern __shared__ __align__(128) unsigned char vis_smem[];
+    bf16* sQ = reinterpret_cast<bf16*>(vis_smem);  // [64][VS]
     bf16* sK = sQ + 64 * VS;                       // [2][64][VS]
     bf16* sV = sK + 2 * 64 * VS;                   // [2][64][VS]
     const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31, h = blockIdx.y, q0 = blockIdx.x * 64;
@@ -194,11 +195,13 @@ extern "C" __global__ void __launch_bounds__(128) vis_attn(const bf16* __restric
         inv[i] = 1.f / t;
     }
     const int row0 = q0 + wrow + g, row1 = row0 + 8;
+    const size_t os = (size_t)gridDim.y * D;
 #pragma unroll
-    for (int nt = 0; nt < 9; nt++) {  // (the 72 values; the padding's 8 are not written)
-        const int col = h * 72 + nt * 8 + 2 * t4;
-        if (row0 < n) *reinterpret_cast<uint32_t*>(out + (size_t)row0 * 1152 + col) = pack_bf16(o[nt][0] * inv[0], o[nt][1] * inv[0]);
-        if (row1 < n) *reinterpret_cast<uint32_t*>(out + (size_t)row1 * 1152 + col) = pack_bf16(o[nt][2] * inv[1], o[nt][3] * inv[1]);
+    for (int nt = 0; nt < VHD / 8; nt++) {  // (the D values; the padding's are not written)
+        if (nt * 8 >= D) break;
+        const int col = h * D + nt * 8 + 2 * t4;
+        if (row0 < n) *reinterpret_cast<uint32_t*>(out + (size_t)row0 * os + col) = pack_bf16(o[nt][0] * inv[0], o[nt][1] * inv[0]);
+        if (row1 < n) *reinterpret_cast<uint32_t*>(out + (size_t)row1 * os + col) = pack_bf16(o[nt][2] * inv[1], o[nt][3] * inv[1]);
     }
 }
 

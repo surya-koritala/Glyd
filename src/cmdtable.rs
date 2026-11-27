@@ -118,7 +118,7 @@ pub const CMDS: &[Cmd] = &[
         detail: "Exit 0 it will, 3 it will not (and why), 1 that could not be told.",
         flags: &["context", "users", "json"],
     },
-    Cmd { name: "prepare", args: "MODEL[:LEVEL]", summary: "download a model and pack it for this GPU", detail: "The KV cache's tables are left for the first run.", flags: &["context"] },
+    Cmd { name: "prepare", args: "MODEL[:LEVEL]", summary: "download a model and pack it for this GPU", detail: "Any model the engine runs, at the level glyd run would load it at (the one given, else the one that fits this computer).", flags: &["context"] },
     Cmd { name: "costs", args: "MODEL[:LEVEL] [--predict]", summary: "a model's cost profile and predicted decode speed", detail: "docs/cost-profile.md.", flags: &["context"] },
     Cmd { name: "rates", args: "[--dir DIR]", summary: "this computer's memory tiers, measured", detail: "The GPU's memory, the link to it, the main memory and the disk under DIR.", flags: &[] },
     Cmd {

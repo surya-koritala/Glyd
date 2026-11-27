@@ -16,8 +16,8 @@ fn a_kernel_is_read_with_its_arguments_types() {
 // a comment with extern "C" __global__ void not_a_kernel(int x) in it
 /* and a block
    extern "C" __global__ void neither(int y) */
-struct G4Pf { int a; };
-extern "C" __global__ void __launch_bounds__(256, 2) one(const bf16* __restrict__ x, int n, float eps, unsigned m, long long o, size_t z, G4Pf pf) {
+struct NextPf { int a; };
+extern "C" __global__ void __launch_bounds__(256, 2) one(const bf16* __restrict__ x, int n, float eps, unsigned m, long long o, size_t z, NextPf pf) {
     if (n) return;
 }
 extern "C" __global__ void two(
@@ -26,7 +26,7 @@ extern "C" __global__ void two(
 __device__ void helper(int q) {}
 "#;
     let out = kernel_types::generate(&[("x.cu".to_string(), src.to_string())]).unwrap();
-    assert_eq!(args_of(&out, "one"), "(u64, i32, f32, u32, i64, u64, crate::gemma4::G4Pf,)");
+    assert_eq!(args_of(&out, "one"), "(u64, i32, f32, u32, i64, u64, crate::kern::NextPf,)");
     assert_eq!(args_of(&out, "two"), "(u64, u64,)");
     assert!(!out.contains("not_a_kernel") && !out.contains("neither") && !out.contains("helper"), "{out}");
     assert!(out.contains("pub const COUNT: usize = 2;"));
