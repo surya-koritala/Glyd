@@ -1160,6 +1160,13 @@ mod tests {
                 .unwrap_or_else(|| panic!("glyd_gpu.h has no {name}"))
         };
         assert_eq!(define("GLYD_GPU_API_VERSION"), API_VERSION, "GLYD_GPU_API_VERSION is not API_VERSION");
+        // (the header the Python package installs: its functions are a part of these, its number the library's; the wheel's install check holds the two to each other)
+        let public =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../glyd-gpu-py/include/glyd_gpu.h")).expect("glyd-gpu-py/include/glyd_gpu.h");
+        assert!(
+            public.contains(&format!("#define GLYD_GPU_API_VERSION {API_VERSION}\n")),
+            "glyd-gpu-py/include/glyd_gpu.h's GLYD_GPU_API_VERSION is not API_VERSION ({API_VERSION})"
+        );
         for (name, r) in [
             ("DECODE", Route::Decode),
             ("GEMM", Route::Gemm),
