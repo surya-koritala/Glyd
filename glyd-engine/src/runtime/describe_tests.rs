@@ -2123,3 +2123,136 @@ fn domyn_edge_on_the_reference_keeps_its_windows() {
     // (a wider window is another answer: the window is read, not ignored)
     assert_ne!(rows[5], run(&domyn_tiny(&[false, false], 4), &a)[5]);
 }
+
+/// #549, Granite Swash: the released granite-swash-2b (its recorded header) describes as 24 layers of Llama-style parts with Granite's multipliers (the
+/// embedding x 12, each part's output x 0.28, the scores x 1/128, the logits / 10), a sink a head on every layer, and a window of 128 on the layers its
+/// `layer_types` calls sliding; every shape is the checkpoint's and the checkpoint is read whole, its sinks among the tensors read.
+#[test]
+fn granite_swash_2b_describes_its_multipliers_windows_and_sinks() {
+    use super::kinds::{Body, Ffn, Mixer, Residual};
+    let h = fixture("headers/granite-swash-2b.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let types: Vec<&str> = cfg["layer_types"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+    assert_eq!((d.desc.blocks.len(), d.desc.head.tied, d.desc.embed.scale, d.desc.head.scale), (48, true, 12.0, 0.1));
+    for (i, b) in d.desc.blocks.iter().enumerate() {
+        assert_eq!(b.residual, Residual::AddScaled(0.28), "block {i}");
+        assert!(b.norm_out.is_none(), "block {i}");
+        match &b.body {
+            Body::Mixer(Mixer::Attention(a)) => {
+                assert_eq!((a.heads, a.kv_heads, a.head_dim, a.sinks, a.scale, a.rope.is_some()), (20, 4, 128, true, 0.0078125, true), "block {i}");
+                assert_eq!(a.window, (types[i / 2] == "sliding_attention").then_some(128), "layer {}", i / 2);
+                assert!(a.q_norm.is_none() && a.k_norm.is_none());
+            }
+            Body::Ffn(Ffn::Mlp(_)) => {}
+            _ => panic!("block {i}"),
+        }
+    }
+    assert!(types.contains(&"full_attention") && types.contains(&"sliding_attention"));
+    let table = crate::sizes::Table::expand(&crate::sizes::groups_of(&h).unwrap());
+    let have = header_names(&h);
+    assert_eq!(d.names().iter().filter(|n| n.ends_with("self_attn.sinks")).count(), 24);
+    for r in &table.rows {
+        let want: Vec<usize> = r.shape.iter().map(|&x| x as usize).collect();
+        assert_eq!(d.shapes.get(&r.name), Some(&want), "{}", r.name);
+    }
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+}
+
+/// A small config of the dense Granite Swash layout with `keys` over the class's defaults.
+fn granite_tiny(keys: serde_json::Value) -> serde_json::Value {
+    let mut c = serde_json::json!({
+        "architectures": ["GraniteSWAForCausalLM"], "model_type": "granite_swa", "hidden_size": 32, "num_hidden_layers": 2, "vocab_size": 61,
+        "num_attention_heads": 4, "num_key_value_heads": 2, "intermediate_size": 48, "hidden_act": "silu", "max_position_embeddings": 4096, "rope_theta": 10000.0,
+    });
+    c.as_object_mut().unwrap().extend(keys.as_object().unwrap().clone());
+    c
+}
+
+/// The Granite Swash config class's defaults are the description's where a config is silent: norms' eps 1e-5, the head tied, every multiplier 1, a window
+/// of 128 on every layer but each fourth from the first, the model's rotary on every layer. A `layer_rope_theta` gives a layer its own base, and none at 0.
+/// What the builder does not know is refused by name.
+#[test]
+fn granite_swash_defaults_are_its_config_classs() {
+    use super::kinds::{Body, Mixer, Residual};
+    let attn = |d: &super::describe::Described, layer: usize| match &d.desc.blocks[2 * layer].body {
+        Body::Mixer(Mixer::Attention(a)) => a.clone(),
+        _ => panic!(),
+    };
+    let d = describe(&granite_tiny(serde_json::json!({"num_hidden_layers": 5}))).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((d.desc.final_norm.eps, d.desc.head.tied, d.desc.embed.scale, d.desc.head.scale), (1e-5, true, 1.0, 1.0));
+    assert_eq!(d.desc.blocks[0].residual, Residual::Add);
+    assert_eq!((0..5).map(|l| attn(&d, l).window).collect::<Vec<_>>(), [None, Some(128), Some(128), Some(128), None]);
+    assert_eq!((attn(&d, 0).scale, attn(&d, 0).kv_heads), (1.0, 2));
+    let d = describe(&granite_tiny(serde_json::json!({"layer_rope_theta": [0, 500.0]}))).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert!(attn(&d, 0).rope.is_none() && attn(&d, 1).rope.is_some() && attn(&d, 1).rope != describe(&granite_tiny(serde_json::json!({}))).unwrap().desc.rope);
+    for (keys, word) in [
+        (serde_json::json!({"attention_bias": true}), "attention_bias"),
+        (serde_json::json!({"layer_types": ["full_attention", "global"]}), "layer_types[1]"),
+        (serde_json::json!({"layer_types": ["full_attention"]}), "layer_types has 1 entries for 2 layers"),
+        (serde_json::json!({"logits_scaling": 0}), "logits_scaling = 0"),
+        (serde_json::json!({"num_attention_heads": 5}), "heads of one width"),
+        (serde_json::json!({"shared_intermediate_size": 8}), "config key shared_intermediate_size is not understood"),
+    ] {
+        let e = describe(&granite_tiny(keys)).unwrap_err().msg;
+        assert!(e.contains(word), "{word}: {e}");
+    }
+}
+
+/// The dense Granite Swash layout on the CPU reference, a random model of each small config. The logits are divided by `logits_scaling`: by 4 they are
+/// half of what they are by 2, to the bit. A sink takes part in the softmax: with every sink far below the scores the answer is the one of a model with
+/// no sinks at all, and with the sinks at the scores' size it is another. A window of 3 on both layers leaves the last row of six unchanged, to the bit,
+/// when the first token changes.
+#[test]
+fn granite_swash_on_the_reference_scales_sinks_and_windows() {
+    let run = |cfg: &serde_json::Value, sink: f32, sinks: bool, toks: &[u32]| -> Vec<f32> {
+        let mut d = describe(cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        if !sinks {
+            for b in d.desc.blocks.iter_mut() {
+                if let super::kinds::Body::Mixer(super::kinds::Mixer::Attention(a)) = &mut b.body {
+                    a.sinks = false;
+                }
+            }
+        }
+        let src = |n: &str| {
+            let shape = d.shapes.get(n)?.clone();
+            let len: usize = shape.iter().product();
+            if n.ends_with(".sinks") {
+                return Some((shape, vec![sink; len]));
+            }
+            let mut s = n.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |a, b| (a ^ b as u64).wrapping_mul(0x0100_0000_01B3));
+            let norm = n.contains("norm");
+            let v = (0..len)
+                .map(|_| {
+                    s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                    let u = ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5;
+                    if norm {
+                        1.0 + 0.2 * u
+                    } else {
+                        0.6 * u
+                    }
+                })
+                .collect();
+            Some((shape, v))
+        };
+        let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg));
+        m.forward(toks, 0).unwrap_or_else(|e| panic!("{}", e.msg)).pop().unwrap()
+    };
+    let (a, first): ([u32; 6], [u32; 6]) = ([5, 9, 13, 17, 21, 25], [44, 9, 13, 17, 21, 25]);
+    let base = serde_json::json!({"embedding_multiplier": 4.0, "residual_multiplier": 0.5, "attention_multiplier": 0.25, "layer_types": ["full_attention", "full_attention"]});
+    let with = |more: serde_json::Value| {
+        let mut k = base.clone();
+        k.as_object_mut().unwrap().extend(more.as_object().unwrap().clone());
+        granite_tiny(k)
+    };
+    let by2 = run(&with(serde_json::json!({"logits_scaling": 2.0})), 0.0, true, &a);
+    let by4 = run(&with(serde_json::json!({"logits_scaling": 4.0})), 0.0, true, &a);
+    assert!(by2.iter().all(|x| x.is_finite()) && by2.iter().any(|&x| x != by2[0]));
+    assert_eq!(by4, by2.iter().map(|x| x / 2.0).collect::<Vec<f32>>(), "the logits over logits_scaling");
+    let c = with(serde_json::json!({"logits_scaling": 2.0}));
+    assert_eq!(run(&c, -1e9, true, &a), run(&c, 0.0, false, &a), "a sink far below the scores is no sink");
+    assert_ne!(by2, run(&c, 0.0, false, &a), "a sink at the scores' size takes its share of the softmax");
+    let windowed = with(serde_json::json!({"layer_types": ["sliding_attention", "sliding_attention"], "sliding_window": 3}));
+    assert_eq!(run(&windowed, 0.0, true, &a), run(&windowed, 0.0, true, &first), "two layers of three positions see four back");
+    assert_ne!(run(&c, 0.0, true, &a), run(&c, 0.0, true, &first), "the whole context sees the first token");
+}

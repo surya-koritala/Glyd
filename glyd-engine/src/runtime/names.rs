@@ -159,6 +159,9 @@ pub mod part {
     pub const MLP: Roles =
         &[("norm_in", "post_attention_layernorm.weight"), ("gate", "mlp.gate_proj.weight"), ("up", "mlp.up_proj.weight"), ("down", "mlp.down_proj.weight")];
 
+    // ---- Granite Swash: Llama-style names, and a learned sink a head beside the attention's matrices
+    pub const GRANITE_SINKS: Roles = &[("sinks", "self_attn.sinks")];
+
     // ---- Domyn Edge: Llama-style parts under its own names, a norm after each part as well as before it
     /// Attention between its two norms; the q norm has no weight.
     pub const DOMYN_ATTN: Roles = &[
