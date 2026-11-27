@@ -389,4 +389,191 @@ mod tests {
         assert!(m.layers.iter().all(|ops| ops.iter().any(|op| matches!(op, Op::GateUpSilu { .. })) && !ops.iter().any(|op| matches!(op, Op::Moe(_)))));
         assert_eq!((m.mats.len(), m.width(Slot::Gu), m.width(Slot::M)), (3 * 5 + 4 + 1, 2 * 3584, 3584));
     }
+
+    // The config paths where the Qwen3.5 layout once computed another thing than transformers (and the other engines): a config that carries the variant, built here from
+    // the released ones, is refused in words, or has the default transformers' config classes give a key it leaves out. Every released config is unchanged by them
+    // (`fixture_descriptions_are_unchanged`, `the_plans_are_the_recorded_ones`).
+
+    use crate::runtime::kinds::{Body, Ffn, Mixer};
+    use serde_json::{json, Value};
+
+    /// The released Qwen3.8-27B config (the layout's dense form); its text model is `text_config`.
+    fn dense() -> Value {
+        serde_json::from_str::<Value>(include_str!("../../tests/fixtures/qwen35_configs.json")).unwrap()["Qwen/Qwen3.8-27B"].clone()
+    }
+
+    /// The text model's keys of a config (`text_config` where there is one).
+    fn text(c: &mut Value) -> &mut serde_json::Map<String, Value> {
+        let nested = c.get("text_config").is_some();
+        (if nested { &mut c["text_config"] } else { c }).as_object_mut().unwrap()
+    }
+
+    /// The layout lowered whole from `c`, as both of its forms are loaded.
+    fn lowered(c: &Value) -> crate::ffi::Result<super::ModelDesc> {
+        let d = describe(c).unwrap_or_else(|e| panic!("describes: {}", e.msg));
+        let layers = d.desc.blocks.len() / 2;
+        super::super::lower::qwen35(&d, vec![2], 262_144, &Stage::whole(layers))
+    }
+
+    /// A rope that scales its frequencies (yarn, linear) is refused by the lowering the layout with experts and the dense layout both go through, in the dense reader's
+    /// words; before, the layout with experts took its theta and rotary dims and ran the plain rotary.
+    #[test]
+    fn a_rope_that_scales_is_refused_with_experts_and_without_in_the_same_words() {
+        for (ty, rope) in [
+            ("yarn", json!({"rope_type": "yarn", "factor": 4.0, "original_max_position_embeddings": 262144, "rope_theta": 1e7, "partial_rotary_factor": 0.25})),
+            ("linear", json!({"rope_type": "linear", "factor": 2.0, "rope_theta": 1e7, "partial_rotary_factor": 0.25})),
+        ] {
+            let words = format!("rope of type {ty}, which the engine does not run");
+            let (mut moe, mut dense) = (tiny(), dense());
+            moe["rope_parameters"] = rope.clone();
+            text(&mut dense).insert("rope_parameters".into(), rope);
+            assert_eq!(lowered(&moe).unwrap_err().msg, words, "with experts");
+            assert_eq!(lowered(&dense).unwrap_err().msg, words, "dense");
+            // (the dense reader says it before the lowering, and the same)
+            assert_eq!(crate::qwen35::Config35::parse(&dense.to_string(), "m", None).unwrap_err().msg, format!("m: {words}"));
+        }
+        // (the released rope, with its mrope sections for text, lowers)
+        assert!(lowered(&tiny()).is_ok() && lowered(&dense()).is_ok());
+    }
+
+    /// A config that gives no `partial_rotary_factor` rotates a quarter of the head, as `Qwen3_5TextConfig` and `Qwen3_5MoeTextConfig` default it; one that gives it at the
+    /// top, not in `rope_parameters`, rotates that, and `rope_parameters` wins where both say. Before, the layout with experts rotated the whole head in the first case and
+    /// dropped the top key in the second.
+    #[test]
+    fn the_partial_rotary_factor_is_transformers_quarter_and_its_top_key() {
+        let dim = |c: &Value| lowered(c).unwrap().ropes[0].dim;
+        let mut moe = tiny();
+        moe["rope_parameters"].as_object_mut().unwrap().remove("partial_rotary_factor");
+        moe.as_object_mut().unwrap().remove("partial_rotary_factor");
+        assert_eq!(dim(&moe), 64, "no factor anywhere: a quarter of 256");
+        moe["partial_rotary_factor"] = 0.5.into();
+        assert_eq!(dim(&moe), 128, "the top key");
+        moe["rope_parameters"]["partial_rotary_factor"] = 0.125.into();
+        assert_eq!(dim(&moe), 32, "rope_parameters first");
+        // (the dense layout: its reader and its lowering say the same)
+        let mut c = dense();
+        let t = text(&mut c);
+        t["rope_parameters"].as_object_mut().unwrap().remove("mrope_section");
+        t["rope_parameters"].as_object_mut().unwrap().remove("partial_rotary_factor");
+        t.remove("partial_rotary_factor");
+        for (top, want) in [(None, 64), (Some(0.5), 128)] {
+            if let Some(f) = top {
+                text(&mut c).insert("partial_rotary_factor".into(), f.into());
+            }
+            assert_eq!((crate::qwen35::Config35::parse(&c.to_string(), "m", None).unwrap().rotary_dim, dim(&c)), (want, want));
+        }
+    }
+
+    /// A config that gives no `rope_theta` has 10,000, or its top key's; before, the layout refused one whose `rope_parameters` left it out.
+    #[test]
+    fn a_missing_rope_theta_is_the_top_key_else_ten_thousand() {
+        let mut moe = tiny();
+        moe["rope_parameters"].as_object_mut().unwrap().remove("rope_theta");
+        assert_eq!(lowered(&moe).unwrap().ropes[0].theta, 10_000.0);
+        moe["rope_theta"] = 5e6.into();
+        assert_eq!(lowered(&moe).unwrap().ropes[0].theta, 5e6);
+        moe.as_object_mut().unwrap().remove("rope_parameters");
+        assert_eq!(lowered(&moe).unwrap().ropes[0].theta, 5e6);
+    }
+
+    /// A linear-attention output gate that is not the SiLU (`output_gate_type`, which `swish` reads as) is refused by the lowering, with experts too, in the words the dense
+    /// reader has; before, the layout with experts ran the SiLU gate whatever the config said.
+    #[test]
+    fn a_gate_on_the_recurrent_layers_that_is_not_silu_is_refused_with_experts_and_without() {
+        for (gate, ok) in [("sigmoid", false), ("gelu", false), ("swish", true), ("silu", true)] {
+            let (mut moe, mut dense) = (tiny(), dense());
+            moe["output_gate_type"] = gate.into();
+            text(&mut dense).insert("output_gate_type".into(), gate.into());
+            if ok {
+                let silu = |m: &super::ModelDesc| m.layers.iter().flatten().all(|op| !matches!(op, Op::GatedNorm { sigmoid: true, .. }));
+                assert!(silu(&lowered(&moe).unwrap()) && silu(&lowered(&dense).unwrap()), "{gate}");
+                continue;
+            }
+            let words = format!("a linear-attention output gate of type {gate}, which the engine does not run");
+            assert_eq!(lowered(&moe).unwrap_err().msg, words, "{gate}: with experts");
+            assert_eq!(lowered(&dense).unwrap_err().msg, words, "{gate}: dense");
+            if gate == "sigmoid" {
+                assert_eq!(crate::qwen35::Config35::parse(&dense.to_string(), "m", None).unwrap_err().msg, format!("m: {words}"));
+            }
+        }
+    }
+
+    /// The layout's mixture of experts leaves out what `Qwen3_5MoeTextConfig` defaults: a shared expert of 512 (a config without `shared_expert_intermediate_size` had none),
+    /// 256 experts of 512, 8 a token; a shared expert of 0 is none, as a zero-width one adds nothing.
+    #[test]
+    fn a_missing_experts_key_is_transformers_default_and_a_shared_zero_is_none() {
+        let shapes = |c: &Value| {
+            let d = describe(c).unwrap();
+            let moe = d.desc.blocks.iter().find_map(|b| if let Body::Ffn(Ffn::Moe(m)) = &b.body { Some(m.clone()) } else { None }).unwrap();
+            let shape = |suffix: &str| d.shapes.iter().find(|(n, _)| n.contains("layers.0.") && n.ends_with(suffix)).map(|(_, s)| s.clone());
+            (moe.experts, moe.router.top_k, moe.shared.is_some(), shape("experts.0.up_proj.weight"), shape("shared_expert.up_proj.weight"))
+        };
+        let mut c = tiny();
+        let wide = shapes(&c);
+        assert_eq!(wide, (32, 10, true, Some(vec![128, 1024]), Some(vec![128, 1024])));
+        // (the shared expert's width alone, then the experts' widths and counts)
+        c.as_object_mut().unwrap().remove("shared_expert_intermediate_size");
+        assert_eq!(shapes(&c), (32, 10, true, Some(vec![128, 1024]), Some(vec![512, 1024])));
+        for k in ["moe_intermediate_size", "num_experts", "num_experts_per_tok"] {
+            c.as_object_mut().unwrap().remove(k);
+        }
+        assert_eq!(shapes(&c), (256, 8, true, Some(vec![512, 1024]), Some(vec![512, 1024])));
+        c["shared_expert_intermediate_size"] = 0.into();
+        assert!(!shapes(&c).2);
+    }
+
+    /// A config that gives no `layer_types` has transformers': a full attention at every `full_attention_interval`-th layer (4 unless it says), the others linear; one
+    /// that gives no `head_dim` has heads of 256, not the hidden size over its heads.
+    #[test]
+    fn a_missing_layer_types_and_head_dim_are_transformers_defaults() {
+        let same = |a: &Value, b: &Value| assert_eq!(format!("{:?}", describe(a).unwrap().desc), format!("{:?}", describe(b).unwrap().desc));
+        let released = dense();
+        let mut c = dense();
+        text(&mut c).remove("layer_types");
+        same(&c, &released);
+        text(&mut c).remove("full_attention_interval");
+        same(&c, &released);
+        text(&mut c).remove("head_dim");
+        same(&c, &released);
+        // (a different interval)
+        text(&mut c).insert("full_attention_interval".into(), 2.into());
+        let d = describe(&c).unwrap();
+        assert!(d.desc.blocks.chunks(2).enumerate().all(|(l, b)| matches!(&b[0].body, Body::Mixer(Mixer::Attention(_))) == (l % 2 == 1)));
+        text(&mut c).insert("full_attention_interval".into(), 0.into());
+        assert!(describe(&c).unwrap_err().msg.contains("full_attention_interval"));
+        // (the dense reader: the 27B's hidden size over its heads is no head; transformers' 256 is)
+        let mut c = dense();
+        text(&mut c).remove("head_dim");
+        text(&mut c).remove("layer_types");
+        assert_eq!(crate::qwen35::Config35::parse(&c.to_string(), "m", None).unwrap().head_dim, 256);
+        assert_eq!(crate::qwen35::Config35::parse(&c.to_string(), "m", None).unwrap().kinds.len(), 64);
+    }
+
+    /// Qwen3.8-Flash-Next's config (`Qwen4ExpTextConfig`) leaves out its experts' widths (512 and a shared expert of 512) and its head width (256), and the top
+    /// `partial_rotary_factor` reaches its rotary where `rope_parameters` lacks it; before, the widths and the head were refused and the top key dropped.
+    #[test]
+    fn flash_nexts_missing_widths_are_transformers_defaults_and_its_top_rotary_key_is_read() {
+        let mut c: Value = serde_json::from_str(include_str!("../../tests/fixtures/qwen4x_config.json")).unwrap();
+        let released = describe(&c).unwrap();
+        let shape = |d: &crate::runtime::describe::Described, suffix: &str| {
+            d.shapes.iter().find(|(n, _)| n.contains("layers.0.") && n.ends_with(suffix)).map(|(_, s)| s.clone())
+        };
+        assert_eq!(
+            (shape(&released, "experts.gate_up_proj"), shape(&released, "shared_expert.up_proj.weight")),
+            (Some(vec![512, 1280, 2560]), Some(vec![640, 2560]))
+        );
+        for k in ["moe_intermediate_size", "shared_expert_intermediate_size", "head_dim"] {
+            text(&mut c).remove(k);
+        }
+        let d = describe(&c).unwrap();
+        assert_eq!((shape(&d, "experts.gate_up_proj"), shape(&d, "shared_expert.up_proj.weight")), (Some(vec![512, 1024, 2560]), Some(vec![512, 2560])));
+        assert_eq!(d.desc.rope.as_ref().unwrap().dim, released.desc.rope.as_ref().unwrap().dim);
+        // (the rotary: a top key when `rope_parameters` has none, and `rope_parameters` first)
+        let t = text(&mut c);
+        t["rope_parameters"].as_object_mut().unwrap().remove("partial_rotary_factor");
+        t.insert("partial_rotary_factor".into(), 0.5.into());
+        assert_eq!(describe(&c).unwrap().desc.rope.as_ref().unwrap().dim, 128);
+        text(&mut c)["rope_parameters"]["partial_rotary_factor"] = 0.25.into();
+        assert_eq!(describe(&c).unwrap().desc.rope.as_ref().unwrap().dim, 64);
+    }
 }

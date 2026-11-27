@@ -107,6 +107,20 @@ pub enum RopeScaling {
     },
 }
 
+impl RopeScaling {
+    /// transformers' `rope_type` of the scaling ("default" for none).
+    pub fn name(&self) -> &'static str {
+        match self {
+            RopeScaling::None => "default",
+            RopeScaling::Linear { .. } => "linear",
+            RopeScaling::DynamicNtk { .. } => "dynamic",
+            RopeScaling::Yarn { .. } => "yarn",
+            RopeScaling::Llama3 { .. } => "llama3",
+            RopeScaling::LongRope { .. } => "longrope",
+        }
+    }
+}
+
 /// Rotary position embedding on the first `dim` dimensions of a head (the rest pass through).
 ///
 /// `dim` is the rotated span; `freqs` of its `dim / 2` angles have a frequency (the rest are 0, which leaves their pairs as they are:
@@ -135,6 +149,18 @@ impl Rope {
             Some([_, h, _]) if i % 3 == 1 && i < 3 * h => 1,
             Some([_, _, w]) if i % 3 == 2 && i < 3 * w => 2,
             _ => 0,
+        }
+    }
+
+    /// The transformers `rope_type` this rope is where it is not the plain rotary of its `dim` (frequencies over the rotated span, no scaling): "proportional" where the
+    /// exponents' denominator is the head's, else the scaling's; None for the plain rotary (the one a layer kind's tables hold).
+    pub fn not_plain(&self) -> Option<&'static str> {
+        if self.freq_dim != self.dim {
+            Some("proportional")
+        } else if self.scaling != RopeScaling::None {
+            Some(self.scaling.name())
+        } else {
+            None
         }
     }
 
@@ -170,6 +196,20 @@ pub enum Act {
         beta: f32,
         linear: f32,
     },
+}
+
+impl Act {
+    /// The name transformers' configs give the activation (`hidden_act`, `output_gate_type`).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Act::Sigmoid => "sigmoid",
+            Act::Silu => "silu",
+            Act::GeluTanh => "gelu_pytorch_tanh",
+            Act::Gelu => "gelu",
+            Act::Relu2 => "relu2",
+            Act::Situ { .. } => "situ",
+        }
+    }
 }
 
 /// Where an attention output gate's values come from.
