@@ -191,6 +191,14 @@
     "plan": "66af95e594fd640a",
     "family": "DeepSeekV41"
   },
+  "headers/Domyn-Edge-Base.json": {
+    "blocks": 72,
+    "tensors": 434,
+    "kinds": "71d898e75055f703",
+    "weights": "79d34a1836df6db2",
+    "plan": "95218d17f177b31e",
+    "family": "refused: m is a DomynEdgeForCausalLM model, which this engine has no description of yet"
+  },
   "headers/GLM-5.3.json": {
     "blocks": 156,
     "tensors": 118629,
