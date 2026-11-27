@@ -113,6 +113,7 @@ then run on a GPU, and only then listed above.
 | Family | Stage |
 | :--- | :--- |
 | Domyn&nbsp;Edge | described |
+| Granite&nbsp;Swash (dense) | described |
 
 ## Serving and tools
 
