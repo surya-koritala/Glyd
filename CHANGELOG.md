@@ -8,6 +8,8 @@ every earlier format.
 
 ## v0.35.0 — 2026-11-27
 
+- The `glyd-gpu` wheel no longer holds the engine's program. Since the engine carries the GPU library's kernels as well, a wheel with both the libraries and the engine was 124 MB, and PyPI takes at most 100 MB. The installer (`curl -LsSf https://getglyd.com/install.sh | sh`) puts `glyd-engine` on the PATH, where the Python package's `glyd run` and `glyd serve` find it; with none there they take the vLLM path, as before. `GLYD_ENGINE=PATH` still names another engine.
+
 - A Nemotron-H config that lists the layers of its multi-token-prediction head (`mtp_layers_block_type`, as Nemotron 3.5 Lightning's does) is read: `fit` plans it and `serve` loads it, the head's `mtp.*` tensors left unread as before. The head's draft layers do not change the model's own logits. Before, `fit` exited 3 and `serve` stopped at once with "config key mtp_layers_block_type is not understood by the description builder", a model v0.34.2 served.
 - On Windows a model in a local directory is named by the directory's name in the engine's words (a refusal names `glm`, not the whole path), as on Linux and macOS; `bench --report` names its files with `/` on every system.
 - Muse Spark's residual gates compute as transformers' do: the gate's two factors in fp32 (they were rounded to bf16) and the gated add rounded to bf16 once (it was rounded three times), on the GPU and in the CPU reference; a gate stored in fp32 is read (it was refused).
