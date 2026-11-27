@@ -1,1 +1,0 @@
-- Gemma 4 can be served on 12-bit lossless KV pages: `GLYD_KV=lossless`, where the server has no draft model. The first run makes the model's KV tables (about 5 s on an RTX 4080 SUPER) and keeps them in Glyd's cache; the plan counts the pages' bytes, so a cache of 3.9 GiB in bf16 is 2.9 GiB. It is opt-in.

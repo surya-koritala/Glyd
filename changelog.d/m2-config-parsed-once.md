@@ -1,1 +1,0 @@
-- Internal: a model's config.json is parsed once into the typed `ModelConfig` and passed down. Each family's directory reader, the pack, hummingbird pack and usage tools, the ceiling tool, the tier checks, the plain dense kind's lowering and the planner's dense sizing take it where each parsed the file again; no plan, refusal or description changes.

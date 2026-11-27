@@ -16,7 +16,7 @@ Glyd.
 """
 import importlib
 
-__version__ = "0.34.2"  # the glyd package's: glyd[gpu] pins the same one
+__version__ = "0.35.0"  # the glyd package's: glyd[gpu] pins the same one
 from .fit import Fit, fit  # noqa: E402,F401
 
 _LAZY = {"from_pretrained": "hf", "compress": "model", "save_pretrained": "format"}

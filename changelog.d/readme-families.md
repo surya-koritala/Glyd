@@ -1,1 +1,0 @@
-- README: supported models are listed as model families with their compression levels, and the hardware table lists platforms and multi-GPU setups separately.
