@@ -64,7 +64,7 @@ fn word_in(name: &str, word: &str) -> bool {
     parts.windows(want.len()).any(|at| at[..want.len() - 1] == want[..want.len() - 1] && last(at[want.len() - 1], want[want.len() - 1]))
 }
 
-/// One group of tensors under a masked name: how many tensors, their type and shape (the first's), and their bytes in all.
+/// One group of tensors under a masked name with one type and shape: how many tensors, and their bytes in all.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Named {
     pub mask: String,
@@ -110,17 +110,13 @@ impl Report {
 
 fn group_names(names: impl Iterator<Item = String>, table: &Table) -> Vec<Named> {
     let rows: BTreeMap<&str, &sizes::Row> = table.rows.iter().map(|r| (r.name.as_str(), r)).collect();
-    let mut by: BTreeMap<String, Named> = BTreeMap::new();
+    // (a line for each type and shape under a masked name: a family whose layers differ in width, as Domyn Edge's head size does, shows it here)
+    let mut by: BTreeMap<(String, String, Vec<u64>), Named> = BTreeMap::new();
     for n in names {
         let mask = sizes::masked(&n);
         let row = rows.get(n.as_str());
-        let e = by.entry(mask.clone()).or_insert_with(|| Named {
-            mask,
-            tensors: 0,
-            dtype: row.map_or(String::new(), |r| r.dtype.clone()),
-            shape: row.map_or(Vec::new(), |r| r.shape.clone()),
-            bytes: 0,
-        });
+        let (dtype, shape) = (row.map_or(String::new(), |r| r.dtype.clone()), row.map_or(Vec::new(), |r| r.shape.clone()));
+        let e = by.entry((mask.clone(), dtype.clone(), shape.clone())).or_insert_with(|| Named { mask, tensors: 0, dtype, shape, bytes: 0 });
         e.tensors += 1;
         e.bytes += row.map_or(0, |r| r.bytes);
     }
@@ -409,7 +405,8 @@ mod tests {
         };
         let mut rows = vec![row("model.embed_tokens.weight", &[100, 64])];
         for l in 0..2 {
-            rows.push(row(&format!("model.layers.{l}.conv.weight"), &[64, 1, 3]));
+            // (the second layer's is another width: a line of its own)
+            rows.push(row(&format!("model.layers.{l}.conv.weight"), &[64, 1, 3 + 2 * l]));
             for e in 0..8 {
                 rows.push(row(&format!("model.layers.{l}.mlp.experts.{e}.up.weight"), &[128, 64]));
             }
@@ -420,8 +417,16 @@ mod tests {
         // (in the config's own order, the inert ones left out)
         assert_eq!(r.keys, ["hidden_size", "num_hidden_layers", "vocab_size", "num_local_experts", "conv_kernel"]);
         let groups: Vec<(&str, usize)> = r.groups.iter().map(|g| (g.mask.as_str(), g.tensors)).collect();
-        assert_eq!(groups, [("model.embed_tokens.weight", 1), ("model.layers.{L}.conv.weight", 2), ("model.layers.{L}.mlp.experts.{E}.up.weight", 16)]);
-        assert_eq!(r.groups[2].shape, [128, 64]);
+        assert_eq!(
+            groups,
+            [
+                ("model.embed_tokens.weight", 1),
+                ("model.layers.{L}.conv.weight", 1),
+                ("model.layers.{L}.conv.weight", 1),
+                ("model.layers.{L}.mlp.experts.{E}.up.weight", 16)
+            ]
+        );
+        assert_eq!((&r.groups[1].shape[..], &r.groups[2].shape[..], &r.groups[3].shape[..]), (&[64, 1, 3][..], &[64, 1, 5][..], &[128, 64][..]));
         assert_eq!(r.values[3], "8");
         let has: Vec<(&str, bool)> = r.signs.iter().map(|(w, _, _, h)| (w.as_str(), *h)).collect();
         assert_eq!(has, [("expert", true), ("conv", false)], "{:?}", r.signs);
