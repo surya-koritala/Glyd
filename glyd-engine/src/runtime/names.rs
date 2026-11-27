@@ -75,6 +75,10 @@ pub const GEMMA: Convention = Convention {
 pub const MUSE: Convention =
     Convention { name: "Muse Spark", unread: &["model.audio_tower.", "model.vision_tower.", "model.vision_adapter.", "model.vision_projection."], ..HF };
 
+/// MiMo V2's: Hugging Face's, with its audio encoder, the speech codes' embeddings and the vision tower, which the text model does not run. Its draft
+/// layers (`model.mtp.layers.`) are read as draft heads.
+pub const MIMO: Convention = Convention { name: "MiMo V2", unread: &["audio_encoder.", "speech_embeddings.", "visual."], ..HF };
+
 /// Kimi-K3's (the `kimi_linear` text model under `language_model.`), with the depth mix's output roles.
 pub const KIMI: Convention = Convention {
     name: "Kimi linear",
@@ -161,6 +165,39 @@ pub mod part {
 
     // ---- Granite Swash: Llama-style names, and a learned sink a head beside the attention's matrices
     pub const GRANITE_SINKS: Roles = &[("sinks", "self_attn.sinks")];
+
+    // ---- MiMo V2: the query, key and value products one matrix, a sink a head where a layer sort has them, a tensor an expert's matrix
+    /// Attention with its three products fused (`attention_projection_layout` "fused_qkv"): `qkv` is cut into the kind's `q`, `k` and `v` by the builder
+    /// (`describe::mimo_v2`: the matrix holds them a shard at a time, not q then k then v).
+    pub const MIMO_ATTN: Roles = &[
+        ("norm_in", "input_layernorm.weight"),
+        ("qkv", "self_attn.qkv_proj.weight"),
+        ("o", "self_attn.o_proj.weight"),
+        ("sinks", "self_attn.attention_sink_bias"),
+    ];
+    /// The same with a matrix a product (`attention_projection_layout` "split" or unsaid).
+    pub const MIMO_ATTN_SPLIT: Roles = &[
+        ("norm_in", "input_layernorm.weight"),
+        ("q", "self_attn.q_proj.weight"),
+        ("k", "self_attn.k_proj.weight"),
+        ("v", "self_attn.v_proj.weight"),
+        ("o", "self_attn.o_proj.weight"),
+        ("sinks", "self_attn.attention_sink_bias"),
+    ];
+    /// Sigmoid-routed experts with a choice bias and no shared expert.
+    pub const MIMO_MOE: Roles = &[
+        ("norm_in", "post_attention_layernorm.weight"),
+        ("router", "mlp.gate.weight"),
+        ("choice_bias", "mlp.gate.e_score_correction_bias"),
+        ("experts_gate_up", "mlp.experts.{E}.gate_proj.weight|mlp.experts.{E}.up_proj.weight"),
+        ("experts_down", "mlp.experts.{E}.down_proj.weight"),
+    ];
+    /// A draft layer's MLP (under `model.mtp.layers.{j}`): the dense one, its norm under the draft layer's name.
+    pub const MIMO_MTP_MLP: Roles =
+        &[("norm_in", "pre_mlp_layernorm.weight"), ("gate", "mlp.gate_proj.weight"), ("up", "mlp.up_proj.weight"), ("down", "mlp.down_proj.weight")];
+    /// A draft head's own roles (`kinds::MtpInput::Joined`).
+    pub const MIMO_MTP: Roles =
+        &[("eh_proj", "eh_proj.weight"), ("norm_embed", "enorm.weight"), ("norm_hidden", "hnorm.weight"), ("final_norm", "final_layernorm.weight")];
 
     // ---- Domyn Edge: Llama-style parts under its own names, a norm after each part as well as before it
     /// Attention between its two norms; the q norm has no weight.

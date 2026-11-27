@@ -173,6 +173,9 @@ impl AttnOp {
     /// F32 (transformers in float32) runs as Flash: the executor's activations are bf16.
     pub fn of(a: &kinds::Attn, src: Slot, ring: usize, table: Option<usize>, qk: Option<(usize, usize)>) -> Result<AttnOp> {
         let (d, nq, nk) = (a.head_dim, a.heads, a.kv_heads);
+        if a.v_scale != 1.0 {
+            return err(format!("attention whose values are scaled (v_scale {}): not an operation of this executor yet", a.v_scale));
+        }
         if ![64, 128, 256, 512].contains(&d) || a.v_head_dim != d {
             return err(format!("attention heads of {d} (values {}): the kernels take 64, 128, 256 or 512, the values as wide", a.v_head_dim));
         }
@@ -1191,6 +1194,7 @@ mod tests {
             indexer: None,
             rounding: AttnRounding::Flash,
             kv_from: None,
+            v_scale: 1.0,
         }
     }
 
@@ -1230,6 +1234,11 @@ mod tests {
         let mut wide = kind(128, None);
         (wide.heads, wide.kv_heads) = (64, 2);
         assert!(AttnOp::of(&wide, Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
+        // (a factor on the values is refused by its name)
+        let Err(scaled) = AttnOp::of(&Attn { v_scale: 0.707, ..kind(128, None) }, Slot::Mix, 0, Some(0), Some((2, 3))) else {
+            panic!("values scaled, and taken")
+        };
+        assert!(scaled.msg.contains("v_scale 0.707"), "{}", scaled.msg);
     }
 
     /// kernels/attn.cu's AttnArgs: 16 pointers, a long long and an unsigned long long, 21 ints, 5 floats, no padding.

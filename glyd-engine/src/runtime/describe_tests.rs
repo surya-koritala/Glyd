@@ -616,7 +616,7 @@ fn released_nemotron_config() {
         let of = |role: &str| match &roles.iter().find(|(r, _)| r == role).unwrap_or_else(|| panic!("no role {role}")).1 {
             Source::Tensor(n) => shape(n),
             Source::Experts(e) => [vec![e.len()], shape(&e[0][0])].concat(),
-            Source::Rows(_) => panic!("{role}"),
+            Source::Rows(_) | Source::RowsOf(..) => panic!("{role}"),
         };
         assert_eq!(of("norm_in"), [h]);
         match &b.body {
@@ -1958,7 +1958,7 @@ fn deepseek_v41s_tiny_model_runs_on_the_reference() {
     for (b, roles) in d.blocks.iter().enumerate() {
         for (role, src) in roles {
             let names = match src {
-                Source::Tensor(x) => vec![x.clone()],
+                Source::Tensor(x) | Source::RowsOf(x, _) => vec![x.clone()],
                 Source::Rows(v) => v.clone(),
                 Source::Experts(v) => v.iter().flatten().cloned().collect(),
             };
@@ -2384,4 +2384,297 @@ fn mellum_on_the_reference_routes_and_windows() {
     assert_ne!(row, run(&base, &first), "full layers see the first token");
     let windowed = mellum_tiny(serde_json::json!({"layer_types": ["sliding_attention", "sliding_attention"], "sliding_window": 3}));
     assert_eq!(run(&windowed, &a), run(&windowed, &first), "two layers of three positions see four back");
+}
+
+/// MiMo V2: the released MiMo-V2.6-Flash-RL (its recorded header) describes as 48 layers of two sorts as `hybrid_layer_pattern` says: 9 over the whole
+/// context (64 query heads over 4 key heads, a rotary of base 10,000,000) and 39 sliding (8 key heads, the query's own position and 128 before it, a sink
+/// a head, base 10,000); queries and keys 192 wide and values 128, the first 64 channels of a head rotated, every value times 0.707. The first layer's
+/// feed-forward is a gated MLP and the other 47 are 256 experts routed by a sigmoid with a choice bias, the best 8 divided by their sum, no shared
+/// expert. Its three draft layers are draft heads, each a sliding attention and a dense MLP. The fused query, key and value matrix is cut a shard at a
+/// time; every shape is the checkpoint's (an expert's 4-bit matrix two values a byte), every FP8 tensor of the header has its scales named and no other
+/// has, and the checkpoint is read whole but the audio encoder, the speech embeddings and the vision tower.
+#[test]
+fn mimo_v26_flash_describes_its_two_sorts_of_layers_experts_and_draft_heads() {
+    use super::describe::Source;
+    use super::kinds::{Body, Ffn, Mixer, MtpInput, RouterScore};
+    let h = fixture("headers/MiMo-V2.6-Flash-RL.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let pattern: Vec<u64> = cfg["hybrid_layer_pattern"].as_array().unwrap().iter().map(|t| t.as_u64().unwrap()).collect();
+    assert_eq!((d.desc.blocks.len(), d.desc.head.tied, d.desc.final_norm.eps, d.desc.embed.scale, d.fp8_block), (96, false, 1e-6, 1.0, Some(128)));
+    let (mut full, mut sliding, mut dense, mut sparse) = (0, 0, 0, 0);
+    for (i, b) in d.desc.blocks.iter().enumerate() {
+        assert!(b.norm_out.is_none(), "block {i}");
+        match &b.body {
+            Body::Mixer(Mixer::Attention(a)) => {
+                let swa = pattern[i / 2] == 1;
+                assert_eq!((a.heads, a.kv_heads, a.head_dim, a.v_head_dim), (64, if swa { 8 } else { 4 }, 192, 128), "layer {}", i / 2);
+                assert_eq!((a.window, a.sinks, a.v_scale, a.bias), (swa.then_some(129), swa, 0.707, false), "layer {}", i / 2);
+                assert!(a.q_norm.is_none() && a.k_norm.is_none() && a.gate.is_none(), "layer {}", i / 2);
+                let r = a.rope.as_ref().unwrap();
+                assert_eq!((r.theta, r.dim), (if swa { 1e4 } else { 1e7 }, 64), "layer {}", i / 2);
+                *if swa { &mut sliding } else { &mut full } += 1;
+            }
+            Body::Ffn(Ffn::Mlp(m)) => {
+                assert!(i == 1 && m.gated && !m.bias, "block {i}");
+                dense += 1;
+            }
+            Body::Ffn(Ffn::Moe(m)) => {
+                assert_eq!((m.experts, m.router.top_k, m.router.renorm, m.router.bias, m.router.scale), (256, 8, true, true, 1.0), "block {i}");
+                assert!(m.router.score == RouterScore::Sigmoid && m.router.groups.is_none() && m.shared.is_none() && m.latent.is_none(), "block {i}");
+                sparse += 1;
+            }
+            _ => panic!("block {i}"),
+        }
+    }
+    assert_eq!((full, sliding, dense, sparse), (9, 39, 1, 47));
+    // (the draft layers: three heads of the joined form, each a sliding layer's attention and a dense MLP)
+    assert_eq!((d.desc.mtp.len(), d.mtp.len(), d.mtp_layers), (3, 3, 3));
+    for head in &d.desc.mtp {
+        assert!(head.input == MtpInput::Joined && head.dspark.is_none() && head.blocks.len() == 2);
+        assert!(matches!(&head.blocks[0].body, Body::Mixer(Mixer::Attention(a)) if a.window == Some(129) && a.sinks && a.kv_heads == 8 && a.v_scale == 0.707));
+        assert!(matches!(&head.blocks[1].body, Body::Ffn(Ffn::Mlp(_))));
+    }
+    assert!(d.names().contains("model.mtp.layers.2.eh_proj.weight") && d.names().contains("model.mtp.layers.0.pre_mlp_layernorm.weight"));
+    // (the fused matrix, a shard at a time: 16 query heads, then the shard's key heads, then its value heads; a sliding layer's shard holds two of each)
+    let cut = |block: usize, role: &str| match &d.blocks[block].iter().find(|(r, _)| r == role).unwrap().1 {
+        Source::RowsOf(n, rows) => (n.clone(), rows.clone()),
+        other => panic!("{role}: {other:?}"),
+    };
+    let qkv = |l: usize| format!("model.layers.{l}.self_attn.qkv_proj.weight");
+    assert_eq!(cut(0, "q"), (qkv(0), vec![(0, 3072), (3392, 6464), (6784, 9856), (10176, 13248)]));
+    assert_eq!(cut(0, "k"), (qkv(0), vec![(3072, 3264), (6464, 6656), (9856, 10048), (13248, 13440)]));
+    assert_eq!(cut(0, "v"), (qkv(0), vec![(3264, 3392), (6656, 6784), (10048, 10176), (13440, 13568)]));
+    assert_eq!(cut(2, "k"), (qkv(1), vec![(3072, 3456), (6784, 7168), (10496, 10880), (14208, 14592)]));
+    assert_eq!(cut(2, "v").1[3], (14592, 14848));
+    // every tensor the description reads, at the checkpoint's shape and in the stored format the description says
+    let have = header_names(&h);
+    let tensors = header_tensors(&h);
+    let (mut fp8, mut fp4, mut sinks) = (0, 0, 0);
+    let scale_names: BTreeSet<&String> = d.scales.values().collect();
+    for n in d.names() {
+        let (dtype, shape, _) = &tensors[&n];
+        match (dtype.as_str(), d.scales.get(&n)) {
+            ("F8_E4M3", Some(s)) => {
+                assert_eq!((s, d.shapes.get(&n)), (&format!("{n}_scale_inv"), Some(shape)), "{n}");
+                fp8 += 1;
+            }
+            // (an expert's matrix: two 4-bit values a byte along a row, a byte's scale a run of 32)
+            ("U8", Some(s)) if n.ends_with(".weight") => {
+                let want = &d.shapes[&n];
+                assert_eq!((s, shape), (&format!("{n}_scale"), &vec![want[0], want[1] / 2]), "{n}");
+                assert_eq!(tensors[s].1, [want[0], want[1] / 32], "{s}");
+                fp4 += 1;
+            }
+            (_, None) if scale_names.contains(&n) => {}
+            (_, None) => {
+                assert!(dtype == "BF16" || n.ends_with("e_score_correction_bias"), "{n}: {dtype} with no scales named");
+                assert_eq!(d.shapes.get(&n), Some(shape), "{n}");
+                sinks += n.ends_with("attention_sink_bias") as usize;
+            }
+            (t, s) => panic!("{n}: {t}, scales {s:?}"),
+        }
+    }
+    // (48 + 3 fused matrices and the three matrices of the dense MLPs of layer 0 and the draft layers; 47 layers of 256 experts of three matrices)
+    assert_eq!((fp8, fp4, sinks), (51 + 4 * 3, 47 * 256 * 3, 39 + 3));
+    // (a fused matrix's scales start again at every shard: 4 shards of ceil(3,392 / 128) rows of blocks, where the whole matrix's rows are 106 blocks)
+    assert_eq!(tensors["model.layers.0.self_attn.qkv_proj.weight_scale_inv"].1, [4 * 27, 32]);
+    assert_eq!(d.unread, ["audio_encoder.", "speech_embeddings.", "visual."]);
+    assert!(have.iter().any(|n| n.starts_with("visual.")) && !d.names().iter().any(|n| n.starts_with("visual.") || n.starts_with("audio_encoder.")));
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+}
+
+/// A small config of the MiMo V2 layout with `keys` over it: two layers, the first over the whole context with a dense MLP, the second sliding with
+/// experts; queries and keys of 8 and values of 4, the fused matrix in two shards.
+fn mimo_tiny(keys: serde_json::Value) -> serde_json::Value {
+    let mut c = serde_json::json!({
+        "architectures": ["MiMoV2ForCausalLM"], "model_type": "mimo_v2", "hidden_size": 32, "num_hidden_layers": 2, "vocab_size": 61,
+        "layernorm_epsilon": 1e-6, "hidden_act": "silu", "max_position_embeddings": 4096, "attention_projection_layout": "fused_qkv",
+        "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 8, "v_head_dim": 4, "rope_theta": 10000.0,
+        "swa_num_attention_heads": 4, "swa_num_key_value_heads": 4, "swa_head_dim": 8, "swa_v_head_dim": 4, "swa_rope_theta": 100.0,
+        "partial_rotary_factor": 0.5, "hybrid_layer_pattern": [0, 1], "sliding_window_size": 2, "add_swa_attention_sink_bias": true,
+        "attention_value_scale": 0.5, "moe_layer_freq": [0, 1], "intermediate_size": 48, "moe_intermediate_size": 16, "n_routed_experts": 6,
+        "num_experts_per_tok": 2, "scoring_func": "sigmoid", "topk_method": "noaux_tc", "norm_topk_prob": true, "n_group": 1, "topk_group": 1,
+    });
+    c.as_object_mut().unwrap().extend(keys.as_object().unwrap().clone());
+    c
+}
+
+/// The MiMo V2 builder reads a config as the release's code does: a window of `sliding_window_size` and the query's own position, a sink where a
+/// sort's key says, values as wide as the head and not scaled where unsaid, a matrix a product where the layout is "split" or unsaid, no draft heads
+/// unless counted, a quantization_config's formats named as scales; and what it does not know is refused by name.
+#[test]
+fn mimo_v2_reads_its_config_as_the_releases_code_does() {
+    use super::describe::Source;
+    use super::kinds::{Body, Ffn, Mixer};
+    let attn = |d: &super::describe::Described, layer: usize| match &d.desc.blocks[2 * layer].body {
+        Body::Mixer(Mixer::Attention(a)) => a.clone(),
+        _ => panic!(),
+    };
+    let d = describe(&mimo_tiny(serde_json::json!({}))).unwrap_or_else(|e| panic!("{}", e.msg));
+    let (a, b) = (attn(&d, 0), attn(&d, 1));
+    assert_eq!((a.window, a.sinks, a.kv_heads, a.v_head_dim, a.v_scale), (None, false, 2, 4, 0.5));
+    assert_eq!((b.window, b.sinks, b.kv_heads, b.v_head_dim, b.v_scale), (Some(3), true, 4, 4, 0.5));
+    assert_eq!((a.rope.as_ref().unwrap().theta, b.rope.as_ref().unwrap().theta, a.rope.as_ref().unwrap().dim), (1e4, 100.0, 4));
+    assert!(matches!(&d.desc.blocks[1].body, Body::Ffn(Ffn::Mlp(_))) && matches!(&d.desc.blocks[3].body, Body::Ffn(Ffn::Moe(m)) if m.experts == 6));
+    assert!(d.desc.mtp.is_empty() && d.scales.is_empty() && d.fp8_block.is_none());
+    // (two shards of 2 query heads, a key head and a value head on the first layer: 16 + 8 + 4 rows each)
+    assert_eq!(d.shapes["model.layers.0.self_attn.qkv_proj.weight"], [56, 32]);
+    assert!(matches!(&d.blocks[0].iter().find(|(r, _)| r == "k").unwrap().1, Source::RowsOf(_, rows) if rows[..] == [(16, 24), (44, 52)]));
+    assert_eq!(d.shapes["model.layers.1.self_attn.attention_sink_bias"], [4]);
+    // (unsaid: the values as wide as the head and not scaled, a matrix a product, no sinks)
+    let mut plain = mimo_tiny(serde_json::json!({}));
+    for key in ["v_head_dim", "swa_v_head_dim", "attention_value_scale", "attention_projection_layout", "add_swa_attention_sink_bias"] {
+        plain.as_object_mut().unwrap().remove(key);
+    }
+    let p = describe(&plain).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((attn(&p, 1).v_head_dim, attn(&p, 1).v_scale, attn(&p, 1).sinks), (8, 1.0, false));
+    assert_eq!(p.shapes["model.layers.1.self_attn.v_proj.weight"], [32, 32]);
+    assert!(!p.names().iter().any(|n| n.contains("qkv_proj") || n.contains("attention_sink_bias")));
+    // (a draft layer is a head of the sliding sort; a quantization_config names the FP8 matrices' scales and the experts', and leaves out what it lists)
+    let quant = serde_json::json!({"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128], "store_dtype": "mxfp4", "mxfp4_block_size": 32,
+        "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj", "model.decoder.self_attn.o_proj"]});
+    let q = describe(&mimo_tiny(serde_json::json!({"num_nextn_predict_layers": 1, "quantization_config": quant}))).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((q.desc.mtp.len(), q.fp8_block), (1, Some(128)));
+    assert!(matches!(&q.desc.mtp[0].blocks[0].body, Body::Mixer(Mixer::Attention(a)) if a.window == Some(3) && a.sinks && a.kv_heads == 4));
+    let scale = |n: &str| q.scales.get(n).map(String::as_str);
+    assert_eq!(scale("model.layers.0.self_attn.qkv_proj.weight"), Some("model.layers.0.self_attn.qkv_proj.weight_scale_inv"));
+    assert_eq!(scale("model.layers.1.mlp.experts.5.up_proj.weight"), Some("model.layers.1.mlp.experts.5.up_proj.weight_scale"));
+    assert_eq!(scale("model.mtp.layers.0.mlp.down_proj.weight"), Some("model.mtp.layers.0.mlp.down_proj.weight_scale_inv"));
+    assert_eq!(scale("model.layers.1.self_attn.o_proj.weight"), Some("model.layers.1.self_attn.o_proj.weight_scale_inv"));
+    for left in ["model.layers.0.self_attn.o_proj.weight", "model.mtp.layers.0.self_attn.o_proj.weight", "model.layers.1.mlp.gate.weight", "lm_head.weight"] {
+        assert_eq!(scale(left), None, "{left}");
+    }
+    let quant_with = |key: &str, v: serde_json::Value| {
+        let mut q = quant.clone();
+        q[key] = v;
+        serde_json::json!({"quantization_config": q})
+    };
+    for (keys, word) in [
+        (serde_json::json!({"attention_bias": true}), "attention_bias"),
+        (serde_json::json!({"hidden_act": "gelu"}), "hidden_act"),
+        (serde_json::json!({"hybrid_layer_pattern": [0, 2]}), "hybrid_layer_pattern[1] = 2"),
+        (serde_json::json!({"hybrid_layer_pattern": [0]}), "hybrid_layer_pattern has 1 entries for 2 layers"),
+        (serde_json::json!({"moe_layer_freq": 1}), "no list moe_layer_freq"),
+        (serde_json::json!({"attention_projection_layout": "fused_kv"}), "attention_projection_layout fused_kv"),
+        (serde_json::json!({"swa_num_key_value_heads": 1}), "a fused qkv_proj of 2 shards"),
+        (serde_json::json!({"swa_num_key_value_heads": 3}), "not a whole number of heads a key head"),
+        (serde_json::json!({"swa_head_dim": null}), "no swa_head_dim"),
+        (serde_json::json!({"sliding_window_size": null}), "no sliding_window_size"),
+        (serde_json::json!({"sliding_window": 5}), "sliding_window = 5"),
+        (serde_json::json!({"rope_parameters": {"rope_type": "yarn", "rope_theta": 10000.0, "factor": 4.0}}), "rope_parameters.rope_type yarn"),
+        (serde_json::json!({"rope_parameters": {"rope_type": "default", "rope_theta": 500.0}}), "rope_parameters.rope_theta = 500.0"),
+        (serde_json::json!({"scoring_func": "softmax"}), "scoring_func"),
+        (serde_json::json!({"topk_method": "greedy"}), "topk_method"),
+        (serde_json::json!({"moe_router_dtype": "float16"}), "moe_router_dtype float16"),
+        (serde_json::json!({"n_shared_experts": 1}), "n_shared_experts"),
+        (serde_json::json!({"routed_scaling_factor": 2.5}), "routed_scaling_factor = 2.5"),
+        (serde_json::json!({"hybrid_block_size": 8}), "hybrid_block_size"),
+        (serde_json::json!({"attention_value_scale": 0.0}), "attention_value_scale"),
+        (serde_json::json!({"rms_norm_eps": 1e-5}), "config key rms_norm_eps is not understood"),
+        (serde_json::json!({"layernorm_epsilon": null}), "no layernorm_epsilon"),
+        (quant_with("fmt", "e5m2".into()), "where the description reads fp8 e4m3"),
+        (quant_with("weight_block_size", serde_json::Value::Null), "weight_block_size"),
+        (quant_with("store_dtype", "nvfp4".into()), "store_dtype"),
+        (quant_with("mxfp4_block_size", 16.into()), "mxfp4_block_size"),
+        (quant_with("kv_cache_scheme", "static".into()), "config key kv_cache_scheme is not understood"),
+    ] {
+        let e = describe(&mimo_tiny(keys)).unwrap_err().msg;
+        assert!(e.contains(word), "{word}: {e}");
+    }
+    // (the release writes `sliding_window` as the size; transformers' earlier class means the size and the query's own position by it)
+    for w in [2, 3] {
+        assert_eq!(attn(&describe(&mimo_tiny(serde_json::json!({"sliding_window": w}))).unwrap(), 1).window, Some(3));
+    }
+}
+
+/// The MiMo V2 layout on the CPU reference, a random model of each small config (values half as wide as the queries and keys, the fused matrix in
+/// two shards). The values' factor is read: at 0.5 the answer is not the one at 1, and it is, to the bit, the one of a model at 1 whose `o_proj` is
+/// halved (the product is linear in the values, and a half is exact: the fold the release's loader makes). A sink takes part in the softmax: far
+/// below the scores it is no sink, at the scores' size it is another answer. The fused matrix is its shards' rows: a model of a matrix a product,
+/// given the rows the description cuts, answers the same to the bit. Two sliding layers of the query's own position and 2 before it do not see a
+/// token five back, and a layer over the whole context does.
+#[test]
+fn mimo_v2_on_the_reference_scales_values_keeps_sinks_and_cuts_the_fused_matrix() {
+    // (a fixed draw a tensor: its name's bytes seed it; a norm's weights near 1)
+    fn draw(n: &str, len: usize) -> Vec<f32> {
+        let mut s = n.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |a, b| (a ^ b as u64).wrapping_mul(0x0100_0000_01B3));
+        let norm = n.contains("norm");
+        (0..len)
+            .map(|_| {
+                s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                let u = ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5;
+                if norm {
+                    1.0 + 0.2 * u
+                } else {
+                    0.6 * u
+                }
+            })
+            .collect()
+    }
+    // (`sink`: every sink's value, None a model with no sinks; `o_x`: a factor on every `o_proj`)
+    let run = |cfg: &serde_json::Value, sink: Option<f32>, o_x: f32, toks: &[u32]| -> Vec<f32> {
+        let mut d = describe(cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        if sink.is_none() {
+            for b in d.desc.blocks.iter_mut() {
+                if let super::kinds::Body::Mixer(super::kinds::Mixer::Attention(a)) = &mut b.body {
+                    a.sinks = false;
+                }
+            }
+        }
+        let fused = describe(&mimo_tiny(serde_json::json!({"hybrid_layer_pattern": cfg["hybrid_layer_pattern"]}))).unwrap();
+        let src = |n: &str| {
+            let shape = d.shapes.get(n)?.clone();
+            let len: usize = shape.iter().product();
+            if n.ends_with(".attention_sink_bias") {
+                return Some((shape, vec![sink.unwrap_or(0.0); len]));
+            }
+            // (a split layout's product: its rows of the fused matrix the same layer of the fused layout holds, shard by shard)
+            if let Some((at, part)) = n.strip_suffix("_proj.weight").and_then(|x| x.rsplit_once(".self_attn.")).filter(|(_, p)| ["q", "k", "v"].contains(p)) {
+                let whole = format!("{at}.self_attn.qkv_proj.weight");
+                let rows = fused.shapes[&whole][0];
+                let w = draw(&whole, rows * 32);
+                // (two shards; a shard's rows are its 2 query heads', then its keys', then its values', the keys twice as wide as the values)
+                let rest = rows / 2 - 16;
+                let (q, k, v) = (16, 2 * rest / 3, rest / 3);
+                let (from, many) = match part {
+                    "q" => (0, q),
+                    "k" => (q, k),
+                    _ => (q + k, v),
+                };
+                let cut: Vec<f32> = (0..2).flat_map(|i| w[(i * rows / 2 + from) * 32..(i * rows / 2 + from + many) * 32].to_vec()).collect();
+                assert_eq!(cut.len(), len, "{n}");
+                return Some((shape, cut));
+            }
+            let x = if n.ends_with(".o_proj.weight") { o_x } else { 1.0 };
+            Some((shape, draw(n, len).into_iter().map(|v| v * x).collect()))
+        };
+        let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg));
+        m.forward(toks, 0).unwrap_or_else(|e| panic!("{}", e.msg)).pop().unwrap()
+    };
+    let (a, first): ([u32; 6], [u32; 6]) = ([5, 9, 13, 17, 21, 25], [44, 9, 13, 17, 21, 25]);
+    let base = mimo_tiny(serde_json::json!({}));
+    let row = run(&base, Some(0.0), 1.0, &a);
+    assert!(row.len() == 61 && row.iter().all(|x| x.is_finite()) && row.iter().any(|&x| x != row[0]));
+    // the values' factor
+    let unscaled = mimo_tiny(serde_json::json!({"attention_value_scale": 1.0}));
+    assert_ne!(row, run(&unscaled, Some(0.0), 1.0, &a), "values times 0.5 are another answer than values as they are");
+    assert_eq!(row, run(&unscaled, Some(0.0), 0.5, &a), "values times 0.5 are o_proj times 0.5");
+    // the sinks (the second layer's)
+    assert_eq!(run(&base, Some(-1e9), 1.0, &a), run(&base, None, 1.0, &a), "a sink far below the scores is no sink");
+    assert_ne!(row, run(&base, None, 1.0, &a), "a sink at the scores' size takes its share of the softmax");
+    // the fused matrix, shard by shard
+    assert_eq!(
+        row,
+        run(&mimo_tiny(serde_json::json!({"attention_projection_layout": "split"})), Some(0.0), 1.0, &a),
+        "a matrix a product, of the fused one's rows"
+    );
+    // the window
+    assert_ne!(row, run(&base, Some(0.0), 1.0, &first), "a layer over the whole context sees the first token");
+    let windowed = mimo_tiny(serde_json::json!({"hybrid_layer_pattern": [1, 1]}));
+    assert_eq!(run(&windowed, Some(0.0), 1.0, &a), run(&windowed, Some(0.0), 1.0, &first), "two layers of three positions see four back");
+    assert_ne!(
+        run(&windowed, Some(0.0), 1.0, &a),
+        run(&mimo_tiny(serde_json::json!({"hybrid_layer_pattern": [1, 1], "sliding_window_size": 5})), Some(0.0), 1.0, &a)
+    );
 }

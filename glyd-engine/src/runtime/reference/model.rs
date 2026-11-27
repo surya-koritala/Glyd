@@ -35,6 +35,15 @@ pub fn load(src: Tensors, role: &str, s: &Source) -> Result<(Vec<usize>, Vec<f32
     let (mut shape, data) = match s {
         Source::Tensor(n) => get(src, n)?,
         Source::Rows(v) => rows(src, v)?,
+        Source::RowsOf(n, ranges) => {
+            let (shape, v) = get(src, n)?;
+            let [r, c] = shape[..] else { return err(format!("{n}: {shape:?}, where rows are cut from a matrix")) };
+            if let Some((a, b)) = ranges.iter().find(|(a, b)| a > b || *b > r) {
+                return err(format!("{n}: rows {a}..{b} of a matrix of {r}"));
+            }
+            let data: Vec<f32> = ranges.iter().flat_map(|&(a, b)| v[a * c..b * c].iter().copied()).collect();
+            (vec![data.len() / c.max(1), c], data)
+        }
         Source::Experts(v) => {
             let (mut shape, mut data) = (Vec::new(), Vec::new());
             for e in v {
