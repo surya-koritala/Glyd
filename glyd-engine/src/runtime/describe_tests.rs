@@ -1451,6 +1451,66 @@ fn nemotron_h_shared_expert_overlap_is_read_either_way() {
     assert_eq!(format!("{:#?}", on.desc), off);
 }
 
+/// Nemotron 3.5 Lightning's released config (the recorded header, tests/fixtures/headers/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.json) says
+/// `mtp_layers_block_type` (["attention", "moe"]: the layers of its multi-token-prediction head, one step of `num_nextn_predict_layers` 1). The head refused it for that
+/// key. It describes: 52 layers (23 Mamba-2, 6 attention, 23 mixtures of experts with no latent), the draft head counted and its tensors (`mtp.*`) left, every other tensor of the
+/// checkpoint read at the shape the config makes it; and what the key says changes nothing of the description (absent, another list, the older string form).
+#[test]
+fn nemotron_3_5_lightning_describes_and_leaves_its_draft_head() {
+    use super::kinds::*;
+    let h = fixture("headers/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    assert_eq!(cfg["mtp_layers_block_type"], serde_json::json!(["attention", "moe"]));
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let count = |f: &dyn Fn(&Body) -> bool| d.desc.blocks.iter().filter(|b| f(&b.body)).count();
+    assert_eq!(d.desc.blocks.len(), 52);
+    assert_eq!(count(&|b| matches!(b, Body::Mixer(Mixer::Mamba2(_)))), 23);
+    assert_eq!(count(&|b| matches!(b, Body::Mixer(Mixer::Attention(_)))), 6);
+    assert_eq!(count(&|b| matches!(b, Body::Ffn(Ffn::Moe(m)) if m.experts == 128 && m.latent.is_none())), 23);
+    // (the head: counted, none in the description, its tensors the unread `mtp.`)
+    assert_eq!((d.mtp_layers, d.desc.mtp.len(), d.mtp.len(), d.unread.as_slice()), (1, 0, 0, &["mtp.".to_string()][..]));
+    let have = header_names(&h);
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    let (names, draft): (Vec<&String>, Vec<&String>) = have.iter().partition(|n| !n.starts_with("mtp."));
+    assert_eq!(
+        draft.len(),
+        4 + 2 * 128 + 2 + 2 + 4 + 2,
+        "the head's tensors: eh_proj, enorm, hnorm, final_layernorm; 128 experts of two; the router's two; the shared expert's two; q k v o; two norms"
+    );
+    assert!(draft.iter().all(|n| !d.names().contains(*n)) && names.iter().all(|n| d.names().contains(*n)));
+    // (each tensor read, at the header's shape)
+    let mut shape = std::collections::BTreeMap::new();
+    for g in h["groups"].as_array().unwrap() {
+        let sh: Vec<usize> = g["shape"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+        let mask = g["mask"].as_str().unwrap().to_string();
+        let ls: Vec<String> = g["layers"].as_array().unwrap().iter().map(|l| l.as_u64().unwrap().to_string()).collect();
+        for l in if mask.contains("{L}") { ls } else { vec![String::new()] } {
+            for e in 0..g["experts"].as_u64().unwrap().max(1) {
+                shape.insert(mask.replace("{L}", &l).replace("{E}", &e.to_string()), sh.clone());
+            }
+        }
+    }
+    assert_eq!(d.shapes.keys().cloned().collect::<BTreeSet<_>>(), d.names(), "a shape for every tensor described");
+    for (n, want) in &d.shapes {
+        assert_eq!(&shape[n], want, "{n}");
+    }
+    // (the key is read and says nothing the description uses)
+    let same = format!("{:?}", (&d.desc, &d.blocks, &d.shapes, d.mtp_layers));
+    for edit in [
+        |c: &mut serde_json::Value| drop(c.as_object_mut().unwrap().remove("mtp_layers_block_type")),
+        |c: &mut serde_json::Value| c["mtp_layers_block_type"] = serde_json::json!(["linear_attention", "mlp"]),
+        |c: &mut serde_json::Value| {
+            c.as_object_mut().unwrap().remove("mtp_layers_block_type");
+            c["mtp_hybrid_override_pattern"] = "*E".into();
+        },
+    ] {
+        let mut c = cfg.clone();
+        edit(&mut c);
+        let e = describe(&c).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert_eq!(format!("{:?}", (&e.desc, &e.blocks, &e.shapes, e.mtp_layers)), same);
+    }
+}
+
 /// The tiny Qwen3.8-Flash-Next of tests/fixtures/qwen4x_tiny_manifest.json (the tensors transformers saved for that config: Condor's random model of the `qwen4x`
 /// logits case is made from it): its config describes exactly those tensors, each at its saved shape.
 #[test]

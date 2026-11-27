@@ -215,6 +215,14 @@
     "plan": "68b0d4fcd7227af7",
     "family": "Kimi"
   },
+  "headers/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.json": {
+    "blocks": 52,
+    "tensors": 6243,
+    "kinds": "a04479e89c38e648",
+    "weights": "4e85c6f222c9a171",
+    "plan": "177571f6bb9e5f4d",
+    "family": "NemotronH"
+  },
   "headers/Qwen3.8-2.4T-A95B.json": {
     "blocks": 184,
     "tensors": 142718,

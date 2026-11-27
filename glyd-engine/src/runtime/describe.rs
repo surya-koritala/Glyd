@@ -3116,7 +3116,7 @@ fn v41_shapes(out: &Described, inter: usize) -> std::collections::BTreeMap<Strin
 /// Mamba-2 (`M`), attention without any position embedding (`*`), or a mixture of experts (`E`) whose routed experts run in a latent
 /// (two projections around them; none where `moe_latent_size` is null) with a shared expert on the full vector. The router is
 /// DeepSeek-V3's: sigmoid scores, a bias for the choice, the chosen scores normed and times `routed_scaling_factor`. The pattern is
-/// `hybrid_override_pattern`, or a list of types (`layers_block_type`). The draft head (`mtp.*`) is counted and not described yet.
+/// `hybrid_override_pattern`, or a list of types (`layers_block_type`). The draft head (`mtp.*`, `mtp_layers_block_type`) is counted and left unread: see below.
 fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
     let k = Keys::new(tc, "nemotron_h");
     let (d, vocab) = (k.usize("hidden_size")?, k.usize("vocab_size")?);
@@ -3166,8 +3166,10 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
     if k.raw("sliding_window").is_some() {
         return err("nemotron_h: a sliding window is not supported");
     }
-    // (read and without effect: the attention has no position embedding; the time steps and the rescaling are how the weights were
-    // first set; the kernels and the logits kept are transformers' own choices; no layer of the pattern is a plain MLP)
+    // (read and without effect: the attention has no position embedding; the time steps' range and floor and the rescaling are how the weights were
+    // first set; the kernels and the logits kept are transformers' own choices; no layer of the pattern is a plain MLP. One difference, not measured: transformers'
+    // modeling also takes `time_step_min` as the floor of the step (`time_step_limit = (time_step_min, inf)`), where vLLM's and SGLang's Mamba-2 pass (0, inf)
+    // whatever the config says; the engine does what those two do)
     for x in [
         "rope_theta",
         "partial_rotary_factor",
@@ -3181,8 +3183,16 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
         "use_mamba_kernels",
         "num_logits_to_keep",
         "intermediate_size",
-        "mtp_hybrid_override_pattern",
     ] {
+        k.raw(x);
+    }
+    // (the draft head's, multi-token prediction: `num_nextn_predict_layers` steps, each the layers `mtp_layers_block_type` lists, the release's ["attention", "moe"]: an
+    // attention block that takes `eh_proj` of [enorm(embedding), hnorm(hidden)], then a mixture of experts and `final_layernorm`; `mtp_hybrid_override_pattern` is the
+    // same list as a string ("*E"), an older config's; tensors `mtp.layers.*`. It drafts the token after the next one (vLLM nemotron_h_mtp.py, SGLang nemotron_h_mtp.py)
+    // and the model's own logits do not depend on it, so the keys are read and the layers left: the tree has no draft head of this layout (`draftcheck`'s cases are
+    // Qwen3.8-Flash-Next's, GLM's and DeepSeek's), `mtp_layers` counts the steps and `unread` names the checkpoint's `mtp.`. transformers' config fills the key in
+    // (["full_attention", "moe"]) where a config has none, whether or not the model has a head: it is read with `num_nextn_predict_layers` 0 as well)
+    for x in ["mtp_layers_block_type", "mtp_hybrid_override_pattern"] {
         k.raw(x);
     }
     let has = |c: char| kinds.contains(&c);

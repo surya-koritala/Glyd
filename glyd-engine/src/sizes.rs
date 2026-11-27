@@ -510,7 +510,8 @@ pub(crate) mod tests {
 
     /// Records the headers of the recent models by ranges from the Hub (the files' headers and the small files; no weights) into tests/fixtures/headers:
     /// `GLYD_RECORD_HEADERS=1 cargo test -p glyd-engine --lib -- --ignored record_header_fixtures` (or GLYD_RECORD_HEADERS=REPO,REPO: those of the list alone).
-    /// Recorded and committed so far: nine of the ten repos listed below (gemma-4-12B-it, Kimi-K3, DeepSeek-V4-Flash-0731, Qwen3.8-27B, and
+    /// Recorded and committed so far: ten of the eleven repos listed below (Nemotron 3.5 Lightning, the Nemotron-H layout's release whose config says
+    /// `mtp_layers_block_type`; gemma-4-12B-it, Kimi-K3, DeepSeek-V4-Flash-0731, Qwen3.8-27B, and
     /// DeepSeek-V4.1-Flash-1017, the family's newest release, whose config, index and inference code are the first DeepSeek-V4.1-Flash's byte for byte;
     /// #333's Kimi-K3.1-Pro and Qwen3.8-2.4T-A95B; and GLM-5.3 and DeepSeek-V4-Flash's DSpark drafter). Muse Spark's repo is gated: its header is
     /// recorded with a token and kept out of the tree, so `runtime::describe_tests::every_recorded_release_describes_or_says_what_it_lacks`, which holds each
@@ -536,6 +537,7 @@ pub(crate) mod tests {
             "Qwen/Qwen3.8-2.4T-A95B",
             "deepseek-ai/DeepSeek-V4.1-Flash-1017",
             "deepseek-ai/DeepSeek-V4-Flash-DSpark",
+            "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
         ] {
             if !only.is_empty() && !only.contains(&repo) {
                 continue;
