@@ -817,6 +817,10 @@ pub fn serve(a: &Args) -> i32 {
     if let Err(r) = access_check(a) {
         return fail(&ui, &r);
     }
+    // (and a number of sequences it cannot serve: said here, as the earlier releases said it, not after the driver and the plan)
+    if let Err(r) = users_of(a) {
+        return fail(&ui, &r);
+    }
     // the level is run's, read before the GPU is looked at; the name served keeps the tag
     let given = a.pos.get(1).cloned().unwrap_or_default();
     // (a server never stops for an answer: a step it asks about is taken only with --yes)
