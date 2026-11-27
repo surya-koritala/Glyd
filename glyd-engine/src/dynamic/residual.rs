@@ -200,7 +200,7 @@ impl KernRes {
         launch!(self.add, [(e as u32).div_ceil(256), 1, 1], [256, 1, 1], s; x, a, e as i64)
     }
 
-    /// The gated residual of n rows of k: x = bf16(bf16(alpha x) + bf16(beta h)).
+    /// The gated residual of n rows of k: x = bf16(alpha x + beta h), the factors fp32 [k], one rounding (`muse::gated`).
     ///
     /// # Safety
     /// As `streams`.
@@ -222,8 +222,8 @@ impl KernRes {
     }
 
     /// A block's start in a depth mix: x [n, d] = bf16(x + o) where o is given (0: none); the depth mix of the `nb` sources at blk (a row's sources side by side, rows
-    /// `rs` values apart) and x, scored by wn wp; x made the source at `push` (blk's place for it; 0: none) and then zeros; y (rows ys apart) = the norm of the mix
-    /// by w (`eps`; the normed value rounded, times the weight, rounded again).
+    /// `rs` values apart) and x, scored by wn wp (each source normed by its RMS with `eps`); x made the source at `push` (blk's place for it; 0: none) and then
+    /// zeros; y (rows ys apart) = the norm of the mix by w (`eps`; the normed value rounded, times the weight, rounded again).
     ///
     /// # Safety
     /// As `streams`.

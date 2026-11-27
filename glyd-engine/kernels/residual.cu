@@ -372,12 +372,13 @@ extern "C" __global__ void res_add(bf16* x, const bf16* a, long long e) {
     if (i < e) x[i] = f2b(b2f(x[i]) + b2f(a[i]));
 }
 
-// The gated residual, x in place: x = bf16(bf16(alpha x) + bf16(beta h)) (alpha, beta: bf16 [K], the gate's factors). A thread a column.
-extern "C" __global__ void res_gate(bf16* x, const bf16* h, const bf16* alpha, const bf16* beta, int K) {
+// The gated residual, x in place: x = bf16(alpha x + beta h), as transformers' fp32 gate adds its bf16 inputs (alpha, beta: fp32 [K], the gate's factors): the
+// two products and their sum each rounded to fp32 (no fused multiply-add: src/muse.rs `gated` is the same arithmetic), then to bf16 once. A thread a column.
+extern "C" __global__ void res_gate(bf16* x, const bf16* h, const float* alpha, const float* beta, int K) {
     const int i = blockIdx.y * blockDim.x + threadIdx.x;
     if (i >= K) return;
     const size_t at = (size_t)blockIdx.x * K + i;
-    x[at] = f2b(b2f(f2b(b2f(alpha[i]) * b2f(x[at]))) + b2f(f2b(b2f(beta[i]) * b2f(h[at]))));
+    x[at] = f2b(__fadd_rn(__fmul_rn(alpha[i], b2f(x[at])), __fmul_rn(beta[i], b2f(h[at]))));
 }
 
 // The RMS norm whose weight scales its input: y = RMS(bf16(x w)) without a weight (eps), rounded; rows of K. Block a row, 256 threads (K up to 256 x 32).
@@ -400,7 +401,7 @@ extern "C" __global__ void __launch_bounds__(256) rmsnorm_in(const bf16* x, cons
 
 // ---- the depth mix ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // A block's start as one kernel: where o is given, x [n, D] = bf16(x + o) (the partial sum's add); out = the depth mix of the nb completed groups' sums
-// (blk: row i's source s at blk + i rs + s D) and x: u = wn wp (fp32), each source's score (u . v) / rms(v) (eps 1e-5), the softmax over the sources
+// (blk: row i's source s at blk + i rs + s D) and x: u = wn wp (fp32), each source's score (u . v) / rms(v) (eps: the model's, as vLLM's score norm's), the softmax over the sources
 // weighting their sum, rounded once; where push is given (blk's place for the next source), x made that source and then zeros (the next partial sum starts
 // empty); y (rows ys apart) = the RMS norm of the mix by w, the normed value rounded, times the weight, rounded again. A block a row of 512 threads, thread
 // t's eight-value chunks t and t + 512 (16-byte loads), the sources read four at a time with every source's sums in registers, each sum a warp's butterfly
@@ -505,10 +506,10 @@ extern "C" __global__ void __launch_bounds__(DM_T) depth_mix(const bf16* blk, lo
     float a[DM_SOURCES], m = -INFINITY, z = 0.f;
 #pragma unroll
     for (int s = 0; s < DM_SOURCES; s++)
-        if (s <= nb) m = fmaxf(m, tot[2 * s] * rsqrtf(tot[2 * s + 1] / D + 1e-5f));
+        if (s <= nb) m = fmaxf(m, tot[2 * s] * rsqrtf(tot[2 * s + 1] / D + eps));
 #pragma unroll
     for (int s = 0; s < DM_SOURCES; s++) {
-        a[s] = s <= nb ? expf(tot[2 * s] * rsqrtf(tot[2 * s + 1] / D + 1e-5f) - m) : 0.f;
+        a[s] = s <= nb ? expf(tot[2 * s] * rsqrtf(tot[2 * s + 1] / D + eps) - m) : 0.f;
         z += a[s];
     }
     float acc[DM_CH][8];

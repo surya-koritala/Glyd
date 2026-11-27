@@ -1,9 +1,11 @@
 //! The CPU reference of Muse Spark's text model (src/muse.rs), one sequence a token at a time, from the checkpoint's weights: fp32 inside (the products' sums in f64), rounded to bf16 where transformers'
-//! modeling_muse_spark.py holds a bf16 tensor (each bf16 operation's result, as eager PyTorch rounds it). Its attention sums in fp32 (transformers' eager attention rounds the scores to bf16 first; vLLM's do
+//! modeling_muse_spark.py holds a bf16 tensor (each bf16 operation's result, as eager PyTorch rounds it); its residual gates and routers are fp32 modules there,
+//! so a gate's factors are fp32 and its add rounded once (`muse::gated`). Its attention sums in fp32 (transformers' eager attention rounds the scores to bf16 first; vLLM's do
 //! not). Equal router scores: the smaller expert first. The GPU's kernels are checked against it; `random` writes a small model of the release's layout. A development build's only.
 
 use crate::ffi::{err, Error, Result};
-use crate::muse::{bf, plus_one, residual_gate, ConfigMuse};
+use crate::muse::{bf, gated, plus_one, ConfigMuse};
+use crate::runtime::reference::residual_gate;
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
@@ -229,13 +231,14 @@ impl RefMuse {
         mul(&ly.post, lat, &acc).into_iter().map(bf).collect()
     }
 
-    /// One token at the next position: its logits (bf16 values, soft-capped as transformers does).
+    /// One token at the next position: its logits (bf16 values, times the output multiplier and soft-capped as transformers does, each step rounded; the
+    /// multiplier alone where the config's soft-cap is none, which `muse::number` refuses).
     pub fn step(&mut self, token: u32) -> Vec<f32> {
         self.margin.set(f32::INFINITY);
         let (d, eps, pe) = (self.c.hidden, self.c.eps, self.c.post_eps);
         let mut x = rms(&self.embed[token as usize * d..][..d], eps);
         let gate = |x: &[f32], o: &[f32], (a, b): &(Vec<f32>, Vec<f32>)| -> Vec<f32> {
-            x.iter().zip(o).zip(a.iter().zip(b)).map(|((&r, &h), (&al, &be))| bf(bf(al * r) + bf(be * h))).collect()
+            x.iter().zip(o).zip(a.iter().zip(b)).map(|((&r, &h), (&al, &be))| gated(r, h, al, be)).collect()
         };
         for l in 0..self.layers.len() {
             let h = rms_w(&x, &self.layers[l].w_in, eps);
@@ -248,7 +251,8 @@ impl RefMuse {
         self.pos += 1;
         let y = rms_w(&x, &self.norm, eps);
         let (m, cap) = (self.c.out_mult, self.c.softcap);
-        mul(&self.head, d, &y).into_iter().map(|v| bf(bf(bf(bf(bf(v) * m) / cap).tanh()) * cap)).collect()
+        let capped = |a: f32| if cap > 0.0 { bf(bf(bf(a / cap).tanh()) * cap) } else { a };
+        mul(&self.head, d, &y).into_iter().map(|v| capped(bf(bf(v) * m))).collect()
     }
 }
 

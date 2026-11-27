@@ -113,14 +113,14 @@ pub fn situ(a: f32, b: f32, (beta, linear): (f32, f32)) -> f32 {
     bf16(beta * (a / beta).tanh() * sigmoid(a) * linear * (b / linear).tanh())
 }
 
-/// The depth mix of `src` (each a bf16 vector of the model's width): a query u = norm weight x proj weight, each source scored u . v / rms(v) (eps 1e-5), the
-/// softmax over the sources weighting their sum, rounded to bf16.
-fn mix(src: &[&[f32]], w_n: &[f32], w_p: &[f32]) -> Vec<f32> {
+/// The depth mix of `src` (each a bf16 vector of the model's width): a query u = norm weight x proj weight, each source scored u . v / rms(v) (`eps`, the
+/// model's rms_norm_eps, as vLLM's score norm's), the softmax over the sources weighting their sum, rounded to bf16.
+fn mix(src: &[&[f32]], w_n: &[f32], w_p: &[f32], eps: f32) -> Vec<f32> {
     let h = w_n.len();
     let s: Vec<f64> = src
         .iter()
         .map(|v| {
-            let r = 1.0 / ((v.iter().map(|&x| x * x).sum::<f32>() / h as f32 + 1e-5).sqrt());
+            let r = 1.0 / ((v.iter().map(|&x| x * x).sum::<f32>() / h as f32 + eps).sqrt());
             (0..h).map(|d| (w_n[d] * w_p[d]) as f64 * v[d] as f64).sum::<f64>() * r as f64
         })
         .collect();
@@ -446,7 +446,7 @@ impl RefKimi {
                 if blocks.is_empty() {
                     pv.clone()
                 } else {
-                    mix(&blocks.iter().map(|b| &b[..]).chain([&pv[..]]).collect::<Vec<_>>(), &ly.attn_res.0, &ly.attn_res.1)
+                    mix(&blocks.iter().map(|b| &b[..]).chain([&pv[..]]).collect::<Vec<_>>(), &ly.attn_res.0, &ly.attn_res.1, self.c.eps)
                 }
             };
             if l % self.c.res_block == 0 {
@@ -461,7 +461,7 @@ impl RefKimi {
             };
             let ly = &self.layers[l];
             let pv = add(p.take(), a);
-            let y = mix(&blocks.iter().map(|b| &b[..]).chain([&pv[..]]).collect::<Vec<_>>(), &ly.mlp_res.0, &ly.mlp_res.1);
+            let y = mix(&blocks.iter().map(|b| &b[..]).chain([&pv[..]]).collect::<Vec<_>>(), &ly.mlp_res.0, &ly.mlp_res.1, self.c.eps);
             let yn = rms(&y, &ly.post_norm, self.c.eps);
             let m = match &ly.ffn {
                 Ffn::Dense(w) => self.mlp(w, &yn),
@@ -473,7 +473,7 @@ impl RefKimi {
             }
         }
         let pv = p.expect("the last block's partial sum");
-        let hh = mix(&blocks.iter().map(|b| &b[..]).chain([&pv[..]]).collect::<Vec<_>>(), &self.out_res.0, &self.out_res.1);
+        let hh = mix(&blocks.iter().map(|b| &b[..]).chain([&pv[..]]).collect::<Vec<_>>(), &self.out_res.0, &self.out_res.1, self.c.eps);
         self.head.mul(&rms(&hh, &self.norm, self.c.eps))
     }
 }
@@ -489,9 +489,9 @@ impl RefKimi {
         }
     }
 
-    /// The depth mix of `src` with a norm and a projection weight.
-    pub(crate) fn mix_of(src: &[&[f32]], w_n: &[f32], w_p: &[f32]) -> Vec<f32> {
-        mix(src, w_n, w_p)
+    /// The depth mix of `src` with a norm and a projection weight, each source normed with `eps`.
+    pub(crate) fn mix_of(src: &[&[f32]], w_n: &[f32], w_p: &[f32], eps: f32) -> Vec<f32> {
+        mix(src, w_n, w_p, eps)
     }
 
     /// Layer `l`'s MLP or MoE on its normed input.
@@ -931,10 +931,10 @@ mod tests {
     #[test]
     fn the_mix_of_one_source_is_it_and_of_equal_scores_their_mean() {
         let v = [1.0f32, -2.0, 3.0, 0.5];
-        assert_eq!(mix(&[&v], &[1.0; 4], &[0.3; 4]), v.to_vec());
+        assert_eq!(mix(&[&v], &[1.0; 4], &[0.3; 4], 1e-5), v.to_vec());
         let (a, b) = ([1.0f32, 1.0, 1.0, 1.0], [3.0f32, 3.0, 3.0, 3.0]);
         // (the same direction, so the same score: the mean)
-        assert_eq!(mix(&[&a, &b], &[1.0; 4], &[1.0; 4]), vec![2.0; 4]);
+        assert_eq!(mix(&[&a, &b], &[1.0; 4], &[1.0; 4], 1e-5), vec![2.0; 4]);
     }
 
     /// The random model loads and steps: finite logits, the same for the same tokens from a fresh load, and its state carried (a token's logits depend on the ones before).

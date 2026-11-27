@@ -4189,9 +4189,10 @@ mod tests {
 
     /// Muse Spark's two CPU references on the same draw and the same expert choices (the description's, which its case holds the engine to, and
     /// src/muse_ref.rs's): the same function term by term (router, gated residuals, attention, experts, head); muse_ref.rs rounds to bf16 at every
-    /// operation of the release's eager bf16 arithmetic, the description's where its kinds say, so they part by those roundings alone: on the Mac,
-    /// 2026-11-25, KL mean 8.6e-6 and 1.3e-5 at most, within a tenth of the kind's bound, every best token (on their own choices 2.3e-3: router
-    /// flips). A minute: cargo test --profile ci -p glyd-engine --lib -- --ignored muse_references.
+    /// bf16 operation of the release's eager arithmetic (its residual gates and routers are fp32 modules), the description's where its kinds say, so
+    /// they part by those roundings alone: on the Mac, 2026-11-26, KL mean 7.0e-6 and 1.2e-5 at most, within a tenth of the kind's bound, every best
+    /// token (8.6e-6 and 1.3e-5 on 2026-11-25, with muse_ref.rs's gates rounded to bf16; on their own choices 2.3e-3 then: router flips). A minute:
+    /// cargo test --profile ci -p glyd-engine --lib -- --ignored muse_references.
     #[cfg(feature = "dev")]
     #[test]
     #[ignore]
