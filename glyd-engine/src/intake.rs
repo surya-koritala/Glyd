@@ -326,6 +326,9 @@ pub fn run(a: &Args) -> Result<bool> {
     let r = inspect(&config, &table)?;
     print!("{}", render(&name, &r));
     if let Some(dir) = a.flag("record") {
+        if dir.is_empty() {
+            return err("--record DIR: the folder to write the record into (glyd-engine/tests/fixtures/headers)");
+        }
         let Some(v) = record else { return err("--record takes a Hub repo: a directory's or a record's header is already here") };
         let file = Path::new(dir).join(format!("{}.json", name.rsplit('/').next().unwrap_or(&name)));
         std::fs::create_dir_all(dir).map_err(|e| Error(format!("{dir}: {e}")))?;
@@ -453,6 +456,13 @@ mod tests {
         ] {
             assert_eq!(word_in(name, word), is, "{word} in {name}");
         }
+    }
+
+    /// `--record DIR` takes its folder (elsewhere `--record` is a switch: `args::BY_COMMAND`).
+    #[test]
+    fn record_takes_a_folder() {
+        let a = Args::from(["intake", "org/model", "--record", "some/dir"].map(String::from));
+        assert_eq!((a.flag("record"), a.need(1, "MODEL").unwrap()), (Some("some/dir"), "org/model"));
     }
 
     /// The words of a refusal give its keys back, one or several, and another refusal gives none.
