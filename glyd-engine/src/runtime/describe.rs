@@ -576,6 +576,7 @@ pub fn describe_config_in(c: &ModelConfig, have: Option<&BTreeSet<String>>) -> R
         "qwen3_5_text" | "qwen3_5_moe_text" | "qwen3_5" | "qwen3_5_moe" => qwen35(tc, prefix, mt, tied_top, have),
         "qwen4_exp_text" => qwen4x(tc, prefix, mt, tied_top).and_then(|d| with_tower(d, c)),
         "gemma4_text" | "gemma4_unified_text" => gemma4(tc, prefix, mt, tied_top),
+        "domynedge" => domyn_edge(tc, prefix, mt, tied_top),
         "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
         "" => err("config.json names no model_type"),
         m => err(format!("model_type {m} has no description builder yet")),
@@ -697,6 +698,131 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
         mtp: Vec::new(),
         vision: None,
         rope: Some(rp),
+    };
+    let mut out = finish(&k, desc, &names::HF, prefix, roles, 0)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    out.shapes = shapes;
+    Ok(out)
+}
+
+/// A list a config gives a value a layer in (`key`), as long as the model has layers.
+fn per_layer<'a>(k: &Keys<'a>, key: &str, layers: usize) -> Result<&'a Vec<Value>> {
+    let v = k.raw(key).and_then(Value::as_array).ok_or_else(|| Error(format!("{}: no list {key}", k.what)))?;
+    if v.len() != layers {
+        return err(format!("{}: {key} has {} entries for {layers} layers", k.what, v.len()));
+    }
+    Ok(v)
+}
+
+/// Domyn Edge (`domynedge`, DomynEdgeForCausalLM): a dense decoder of Llama-style parts where each part has a norm before it and a norm after it (the
+/// part's output is normed, then added), and where the layers are of two sorts, said a layer in the config's lists:
+///  - `position_layers`: "rope" (rotary positions, `rope_parameters`) or "nope" (none);
+///  - `window_sizes`: [left, right] keys a query sees besides its own; left -1 is the whole context, left w a window of w + 1 with itself (the release's
+///    `sliding_window`, which counts the query's own position, is that w + 1); right is 0 (a decoder sees nothing after itself);
+///  - `head_sizes`: the head width, with which a layer's q, k, v and o matrices and its k norm change size (`num_attention_heads` and
+///    `num_key_value_heads` are every layer's): Domyn-Edge-Base has 256 on its 12 whole-context layers and 64 on its 24 windowed ones;
+///  - `layer_types`: "full_attention" or "sliding_attention", which must say what `window_sizes` says.
+/// The queries are normed a head with no weight and the keys with one, both before the rotation; the scores are scaled by 1 / sqrt(head width).
+/// The MLP is the gated one (`hidden_act`), with no biases anywhere. The embedding is tied to the head and not scaled.
+fn domyn_edge(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
+    let (heads, kv) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?);
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    let act = act(k.str("hidden_act")?.unwrap_or("silu"))?;
+    let inter = k.usize("intermediate_size")?;
+    let Some(Value::Object(rp)) = k.raw("rope_parameters") else { return err(format!("{mt}: no rope_parameters")) };
+    let (positions, windows, head_sizes, types) = (
+        per_layer(&k, "position_layers", layers)?,
+        per_layer(&k, "window_sizes", layers)?,
+        per_layer(&k, "head_sizes", layers)?,
+        per_layer(&k, "layer_types", layers)?,
+    );
+    let sliding_window = k.opt_usize("sliding_window")?;
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
+    let mut first_rope = None;
+    for l in 0..layers {
+        let hd = head_sizes[l].as_u64().filter(|&h| h > 0).ok_or_else(|| Error(format!("{mt}: head_sizes[{l}] = {} is not a width", head_sizes[l])))? as usize;
+        let rope = match positions[l].as_str() {
+            Some("rope") => Some(rope(rp, hd, max_pos, &format!("{mt} rope_parameters"))?),
+            Some("nope") => None,
+            _ => return err(format!("{mt}: position_layers[{l}] = {} is not supported (rope or nope)", positions[l])),
+        };
+        let window = match windows[l].as_array().map(|w| w.iter().map(Value::as_i64).collect::<Vec<_>>()).as_deref() {
+            Some([Some(-1), Some(0)]) => None,
+            Some([Some(left), Some(0)]) if *left > 0 => Some(*left as usize + 1),
+            _ => return err(format!("{mt}: window_sizes[{l}] = {} is not supported ([-1, 0] or [left, 0])", windows[l])),
+        };
+        match (types[l].as_str(), window) {
+            (Some("full_attention"), None) | (Some("sliding_attention"), Some(_)) => {}
+            _ => return err(format!("{mt}: layer_types[{l}] = {} does not agree with window_sizes[{l}] = {}", types[l], windows[l])),
+        }
+        if let (Some(w), Some(sw)) = (window, sliding_window) {
+            if w != sw {
+                return err(format!("{mt}: window_sizes[{l}] = {} is a window of {w} and sliding_window says {sw}", windows[l]));
+            }
+        }
+        first_rope = first_rope.or(rope.clone());
+        let a = Attn {
+            heads,
+            kv_heads: kv,
+            head_dim: hd,
+            v_head_dim: hd,
+            window,
+            sinks: false,
+            rope,
+            q_norm: Some(Norm::rms_bare(eps)),
+            k_norm: Some(Norm::rms(eps)),
+            v_norm: None,
+            gate: None,
+            softcap: None,
+            bias: false,
+            scale: (hd as f32).powf(-0.5),
+            k_eq_v: false,
+            indexer: None,
+            rounding: AttnRounding::F32,
+            kv_from: None,
+        };
+        let p = names::HF.layer(prefix, l);
+        let (ar, fr) = (names::roles(part::DOMYN_ATTN, &p, 0, all), names::roles(part::DOMYN_MLP, &p, 0, all));
+        let (q, kvw) = (heads * hd, kv * hd);
+        shape_roles(
+            &mut shapes,
+            &ar,
+            &[
+                ("norm_in", vec![d]),
+                ("q", vec![q, d]),
+                ("k", vec![kvw, d]),
+                ("v", vec![kvw, d]),
+                ("o", vec![d, q]),
+                ("k_norm", vec![hd]),
+                ("norm_out", vec![d]),
+            ],
+        );
+        shape_roles(
+            &mut shapes,
+            &fr,
+            &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter]), ("norm_out", vec![d])],
+        );
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Attention(a)), norm_out: Some(Norm::rms(eps)), residual: Residual::Add });
+        roles.push(ar);
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: Some(Norm::rms(eps)), residual: Residual::Add });
+        roles.push(fr);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: Norm::rms(eps),
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32 },
+        mtp: Vec::new(),
+        vision: None,
+        rope: first_rope,
     };
     let mut out = finish(&k, desc, &names::HF, prefix, roles, 0)?;
     shapes.insert(out.embed.clone(), vec![vocab, d]);
