@@ -293,7 +293,7 @@ pub fn to_value(v: &Json) -> Value {
         Json::Number(n) => n.parse::<i64>().map(Value::from).or_else(|_| n.parse::<f64>().map(Value::from)).unwrap_or_else(|_| Value::from(n.as_str())),
         Json::String(s) => Value::from(s.as_str()),
         Json::Array(a) => a.iter().map(to_value).collect::<Vec<_>>().into_iter().collect(),
-        Json::Object(o) => o.iter().map(|(k, x)| (Value::from(k.as_str()), to_value(x))).collect(),
+        Json::Object(o) => Value::from_pairs(o.iter().map(|(k, x)| (Value::from(k.as_str()), to_value(x)))),
     }
 }
 
@@ -434,8 +434,7 @@ impl Chat {
     /// `from_template` with the clock `strftime_now` reads (a fixed one, for a test).
     pub fn with_clock(src: &str, clock: Arc<dyn Fn() -> Civil + Send + Sync>) -> Result<Chat> {
         let mut env = Environment::new();
-        env.set_trim_blocks(true);
-        env.set_lstrip_blocks(true);
+        env.set_syntax(minijinja::syntax::SyntaxConfig::builder().trim_blocks(true).lstrip_blocks(true).build().map_err(|e| Error(e.to_string()))?);
         env.set_fuel(Some(TEMPLATE_FUEL));
         env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
         // Python's `iterable` test: none is not one (minijinja iterates none as an empty sequence), and a template may ask `tools is iterable and tools | length > 0` of its `tools = none`

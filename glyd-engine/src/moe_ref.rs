@@ -33,7 +33,22 @@ pub fn scores(r: &Router, logits: &[f32]) -> Vec<f32> {
 /// the chosen expert and `r.scale`.
 pub fn route(r: &Router, logits: &[f32], bias: Option<&[f32]>, escale: Option<&[f32]>) -> (Vec<usize>, Vec<f32>) {
     let s = scores(r, logits);
-    let rank: Vec<f32> = (0..s.len()).map(|e| if r.scoring != Scoring::Softmax { s[e] + bias.map_or(0.0, |b| b[e]) } else { s[e] }).collect();
+    let mut rank: Vec<f32> = (0..s.len()).map(|e| if r.scoring != Scoring::Softmax { s[e] + bias.map_or(0.0, |b| b[e]) } else { s[e] }).collect();
+    // (the choice within the best groups: a group's score the sum of its two largest ranks, equal sums the smaller group; the other groups' experts out)
+    if let Some((groups, keep)) = r.groups {
+        let per = s.len() / groups.max(1);
+        let mut sums: Vec<(usize, f32)> = (0..groups)
+            .map(|g| {
+                let mut v = rank[g * per..(g + 1) * per].to_vec();
+                v.sort_by(|a, b| b.total_cmp(a));
+                (g, v.iter().take(2).sum())
+            })
+            .collect();
+        sums.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        for &(g, _) in sums.iter().skip(keep) {
+            rank[g * per..(g + 1) * per].fill(f32::NEG_INFINITY);
+        }
+    }
     let mut ord: Vec<usize> = (0..s.len()).collect();
     ord.sort_by(|&a, &b| (rank[b] + 0.0).total_cmp(&(rank[a] + 0.0)).then(a.cmp(&b))); // (+ 0.0: a negative zero is a zero; a NaN sorts, and is no expert)
     ord.truncate(r.top_k);
@@ -54,7 +69,7 @@ pub fn route(r: &Router, logits: &[f32], bias: Option<&[f32]>, escale: Option<&[
     (ord, w)
 }
 
-/// The activation of the gate and up sums of an MLP (not relu squared): act(min(g, lim)) * clamp(u, -lim, lim).
+/// The activation of the gate and up sums of an MLP (not relu squared): act(min(g, lim)) * clamp(u, -lim, lim); `Act::SwiGluAfter`'s min(silu(g), lim) * clamp(u, -lim, lim).
 fn gated(a: &Act, g: f32, u: f32) -> f32 {
     match *a {
         Act::SwiGlu { limit } => {
@@ -64,6 +79,8 @@ fn gated(a: &Act, g: f32, u: f32) -> f32 {
         Act::GeGlu => gelu_tanh(g) * u,
         Act::Relu2 => unreachable!("relu squared has no gate"),
         Act::Situ { beta, linear } => beta * (g / beta).tanh() / (1.0 + (-g).exp()) * linear * (u / linear).tanh(),
+        // (the limit on the activated gate)
+        Act::SwiGluAfter { limit: l } => silu(g).min(l) * u.min(l).max(-l),
     }
 }
 
@@ -233,6 +250,27 @@ mod tests {
         assert!(close(w[0], 3.0 * a / (a + b)) && close(w[1], 0.5 * b / (a + b)), "{w:?}");
     }
 
+    /// The choice within the best groups (DeepSeek-V3's n_group and topk_group, Ling's): a group's score is the sum of its two largest biased scores, the
+    /// experts of a group that is not kept are never chosen, and the weights are the chosen experts' own scores; equal sums keep the smaller group.
+    #[test]
+    fn the_choice_is_made_inside_the_best_groups() {
+        let grouped = |g: usize, keep: usize| Router { groups: Some((g, keep)), ..Router::sigmoid(2, 1.0) };
+        // (scores 0.9 0.8 | 0.95 0.1: group 0 sums 1.7 against 1.05, so expert 2, the largest score of all, is not chosen)
+        let logit = |p: f32| (p / (1.0 - p)).ln();
+        let logits = [logit(0.9), logit(0.8), logit(0.95), logit(0.1)];
+        assert_eq!(route(&Router::sigmoid(2, 1.0), &logits, None, None).0, vec![2, 0]);
+        let (ids, w) = route(&grouped(2, 1), &logits, None, None);
+        assert_eq!(ids, vec![0, 1]);
+        assert!(close(w[0], 0.9 / 1.7) && close(w[1], 0.8 / 1.7), "{w:?}");
+        // (both groups kept: as without groups; a bias moves the groups' sums, not the weights)
+        assert_eq!(route(&grouped(2, 2), &logits, None, None).0, vec![2, 0]);
+        let (ids, w) = route(&grouped(2, 1), &logits, Some(&[0.0, 0.0, 0.0, 1.0]), None);
+        assert_eq!(ids, vec![3, 2]);
+        assert!(close(w[0], 0.1 / 1.05) && close(w[1], 0.95 / 1.05), "{w:?}");
+        // (equal sums: the smaller group)
+        assert_eq!(route(&grouped(2, 1), &[1.0, 0.0, 0.0, 1.0], None, None).0, vec![0, 1]);
+    }
+
     /// DeepSeek's noaux_tc: the bias picks the experts and does not weigh them; the weights are the sigmoid scores renormalized, times the scale.
     #[test]
     fn sigmoid_routing_with_a_selection_bias() {
@@ -305,6 +343,9 @@ mod tests {
         assert_eq!(gated(&clamped.act, 5.0, 3.0), silu(1.0) * 1.0);
         assert_eq!(gated(&clamped.act, -5.0, -3.0), -silu(-5.0));
         assert_eq!(gated(&clamped.act, 0.5, 0.25), silu(0.5) * 0.25);
+        // (the limit on the activated gate: silu(5) held to 1, where the gate's own limit gives silu(1))
+        let after = Act::SwiGluAfter { limit: 1.0 };
+        assert_eq!((gated(&after, 5.0, 3.0), gated(&after, -5.0, -3.0), gated(&after, 0.5, 0.25)), (1.0, -silu(-5.0), silu(0.5) * 0.25));
         let lc = RefLayer { cfg: &clamped, ..l };
         assert_ne!(lc.token(&x, &[e], &[w]), want);
     }

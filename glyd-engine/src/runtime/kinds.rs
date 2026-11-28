@@ -801,7 +801,8 @@ impl Clamp {
         }
     }
 
-    /// The limit of the form the executor's kernels compute (the gate before its activation); the other form is refused by its name.
+    /// The limit where a block's kernels hold the gate before its activation alone (DeepSeek-V4's weighed activation, GLM-5.3-Flash's dense MLP); the
+    /// other form is refused there by its name. The experts' core and the plain residual's dense MLP take both (`moe::Act::SwiGluAfter`).
     pub fn before(c: Option<Clamp>) -> crate::ffi::Result<Option<f32>> {
         match c {
             None => Ok(None),
@@ -810,8 +811,8 @@ impl Clamp {
         }
     }
 
-    /// The refusal of a SwiGLU whose limit holds the activated gate: the CPU reference computes it, the executor's kernels hold the gate before its activation.
-    pub const ACTIVATED_NOT_RUN: &'static str = "a SwiGLU limit on the activated gate (min(silu(gate), limit)), which the executor does not run yet";
+    /// The refusal of a SwiGLU whose limit holds the activated gate, by a block whose kernels hold the gate before its activation alone (`before`).
+    pub const ACTIVATED_NOT_RUN: &'static str = "a SwiGLU limit on the activated gate (min(silu(gate), limit)), which this layout's kernels do not run yet";
 }
 
 /// The limit alone where the gate is held before its activation: descriptions of that form read as they did when the limit was a number (the digests of

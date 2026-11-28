@@ -120,22 +120,53 @@ fn normed(m: &kinds::Moe) -> Option<kinds::Norm> {
 
 /// The core layer's shape and arithmetic for the kind `m` over a model `hidden` wide, its experts `inter` wide: the router reads the model's width, the experts
 /// the latent's where the kind has one. Experts whose outputs are normed take each pair's activation from a kernel of its own, rounded (never the first
-/// product's), and their router's logits times the kind's scale. What the core's layer does not run is refused in words: hash routing and grouped choices are
-/// other operations' (`MoeOp`'s variants, a family's own block), a logit scale the normed experts' alone.
+/// product's), and their router's logits times the kind's scale. What the core's layer does not run is refused in words: hash routing is another
+/// operation's (`MoeOp`'s variants, a family's own block), a logit scale the normed experts' alone, a shared expert whose SwiGLU limit is another than its
+/// experts' the block's that holds it so (`cfg_shared`: the resident block's).
 pub fn cfg(m: &kinds::Moe, hidden: usize, inter: usize) -> Result<MoeCfg> {
+    match cfg_shared(m, hidden, inter)? {
+        (c, None) => Ok(c),
+        (_, Some(a)) => err(format!(
+            "experts of {:?} beside a shared expert of {:?} ({a:?}): a shared expert whose limit is another than its experts' is the resident block's",
+            m.expert, m.shared
+        )),
+    }
+}
+
+/// `cfg`, and the shared expert's own activation where it is not the routed experts': a gated SiLU MLP as they are, with another SwiGLU limit or none
+/// (Ling's two lists of limits a layer); None where it is theirs. `moe::Shared::act` holds it.
+pub fn cfg_shared(m: &kinds::Moe, hidden: usize, inter: usize) -> Result<(MoeCfg, Option<Act>)> {
     let r = &m.router;
     r.one_scored().map_err(|e| e.context("experts"))?;
-    if r.hash || r.groups.is_some() {
-        return err(format!("experts of {m:?}: hash routing and grouped choices are not the resident block's"));
+    if r.hash {
+        return err(format!("experts of {m:?}: hash routing is not the resident block's"));
     }
     if r.logit_scale != 1.0 && normed(m).is_none() {
         return err(format!("experts of {m:?}: a logit scale is the router's of experts whose outputs are normed"));
     }
-    // (the SwiGLU limit the kernels compute holds the gate before its activation; the limit on the activated gate is refused by its name)
-    let limit = kinds::Clamp::before(m.expert.clamp).map_err(|e| e.context(&format!("experts of {:?}", m.expert)))?;
     // (the gpt-oss SwiGLU, the experts' or the shared expert's: refused by its name)
     if let Some(why) = m.expert.not_run().or(m.shared.and_then(|s| s.not_run())) {
         return err(format!("experts of {:?}: {why}", m.expert));
+    }
+    // (a SwiGLU limit: on the gate before its activation, or on the activated gate, each its own mode of the activation's kernel)
+    let swiglu = |c: Option<kinds::Clamp>| match c {
+        None => Act::SwiGlu { limit: None },
+        Some(kinds::Clamp::Gate(l)) => Act::SwiGlu { limit: Some(l) },
+        Some(kinds::Clamp::Activated(l)) => Act::SwiGluAfter { limit: l },
+    };
+    let limit = match m.expert.clamp {
+        Some(kinds::Clamp::Gate(l)) => Some(l),
+        _ => None,
+    };
+    let after = matches!(m.expert.clamp, Some(kinds::Clamp::Activated(_)));
+    // (the shared expert's own activation: its experts' kind but for the limit)
+    let own = m.shared.filter(|s| *s != m.expert);
+    let plain_silu = |x: &kinds::Mlp| x.act == kinds::Act::Silu && x.gated && !x.bias;
+    if own.is_some_and(|s| !plain_silu(&s) || !plain_silu(&m.expert) || normed(m).is_some()) {
+        return err(format!(
+            "experts of {:?} beside a shared expert of {:?}: the kernels take one activation and no biases, or SwiGLU with two limits",
+            m.expert, m.shared
+        ));
     }
     let scoring = match r.score {
         RouterScore::Softmax => Scoring::Softmax,
@@ -145,11 +176,11 @@ pub fn cfg(m: &kinds::Moe, hidden: usize, inter: usize) -> Result<MoeCfg> {
     if r.bias && scoring == Scoring::Softmax {
         return err("a softmax router with a choice bias: the kernels add the bias to sigmoid and sqrt-softplus scores");
     }
-    if m.expert.bias || m.shared.is_some_and(|s| s != m.expert) {
+    if m.expert.bias {
         return err(format!("experts of {:?} beside a shared expert of {:?}: the kernels take one activation and no biases", m.expert, m.shared));
     }
     let act = match (m.expert.act, m.expert.gated, normed(m)) {
-        (kinds::Act::Silu, true, Some(n)) if n.kind == NormKind::Rms && n.weight == NormWeight::InputPlusOne && m.shared.is_none() => {
+        (kinds::Act::Silu, true, Some(n)) if n.kind == NormKind::Rms && n.weight == NormWeight::InputPlusOne && m.shared.is_none() && !after => {
             Act::SwiGlu { limit: Some(limit.unwrap_or(f32::INFINITY)) }
         }
         (_, _, Some(n)) => {
@@ -158,15 +189,35 @@ pub fn cfg(m: &kinds::Moe, hidden: usize, inter: usize) -> Result<MoeCfg> {
                 m.expert
             ))
         }
-        (kinds::Act::Silu, true, None) => Act::SwiGlu { limit },
+        (kinds::Act::Silu, true, None) => swiglu(m.expert.clamp),
         (kinds::Act::GeluTanh, true, None) if m.expert.clamp.is_none() => Act::GeGlu,
         (kinds::Act::Relu2, false, None) if m.expert.clamp.is_none() => Act::Relu2,
         (kinds::Act::Situ { beta, linear }, true, None) if m.expert.clamp.is_none() => Act::Situ { beta, linear },
         _ => return err(format!("experts of {:?}: the kernels take SwiGLU, GeGLU, relu squared and SiTU", m.expert)),
     };
     // (a softmax router is a bf16 product, its logits rounded before the scores; the others' scores are made in fp32)
-    let router = Router { scoring, top_k: r.top_k, renorm: r.renorm, scale: r.scale, bf16_logits: scoring == Scoring::Softmax };
-    Ok(MoeCfg { experts: m.experts, router_hidden: hidden, hidden: m.latent.as_ref().map_or(hidden, |l| l.dim), inter, router, act })
+    // (the choice within the best groups is the selection's own: `moe::Router::groups`)
+    let router = Router { scoring, top_k: r.top_k, renorm: r.renorm, scale: r.scale, bf16_logits: scoring == Scoring::Softmax, groups: r.groups };
+    if let Some((g, keep)) = r.groups {
+        if g == 0
+            || g > crate::moe::MAX_GROUPS
+            || !m.experts.is_multiple_of(g)
+            || m.experts / g < 2
+            || keep == 0
+            || keep > g
+            || r.top_k > keep * (m.experts / g)
+        {
+            return err(format!(
+                "experts of {m:?}: {} experts in {g} groups of which {keep} are kept, {} a token: the router takes up to {} groups of two experts or more, the kept \
+                 ones holding a token's experts",
+                m.experts,
+                r.top_k,
+                crate::moe::MAX_GROUPS
+            ));
+        }
+    }
+    let cfg = MoeCfg { experts: m.experts, router_hidden: hidden, hidden: m.latent.as_ref().map_or(hidden, |l| l.dim), inter, router, act };
+    Ok((cfg, own.map(|s| swiglu(s.clamp))))
 }
 
 /// The operation of block `block` whose experts work in a latent and whose outputs are normed: the router reads H by its fp32 weights, its logits times `mult`
@@ -687,7 +738,8 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
             }
         }
     };
-    let c = cfg(m, hidden, inter)?;
+    // (the shared expert's own activation where its limit is not its experts': held beside its matrices)
+    let (c, shared_act) = cfg_shared(m, hidden, inter)?;
     // (the shared expert's matrices at the stage's layout of the block's other matrices, where it gives one)
     let dense = at.and_then(|(_, h)| h.dense).unwrap_or(level);
     let packed = |members: Vec<String>| -> Result<PackBuf> { upload_packed(pack_as(ck, v7, &members, dense, st)?) };
@@ -734,9 +786,9 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
             match shapes {
                 Some((f, Some((ur, uc)), Some((dr, dc)))) => {
                     shared8 = Some((f.mat(ck, &first, ur, uc)?, f.mat(ck, &second, dr, dc)?));
-                    Some(Shared { inter, up: PackBuf::shape_only(ur, uc)?, down: PackBuf::shape_only(dr, dc)?, gate })
+                    Some(Shared { inter, up: PackBuf::shape_only(ur, uc)?, down: PackBuf::shape_only(dr, dc)?, gate, act: shared_act })
                 }
-                _ => Some(Shared { inter, up: packed(first)?, down: packed(second)?, gate }),
+                _ => Some(Shared { inter, up: packed(first)?, down: packed(second)?, gate, act: shared_act }),
             }
         }
     };
@@ -1636,7 +1688,7 @@ pub(crate) fn latent_block(
             let Mat::Packed(sd) = packed_mat(ck, &[one("shared_down")?], layout)? else {
                 return err(format!("{f}: the shared experts' down projection is not packed"));
             };
-            Some(Shared { inter: si, up: PackBuf::shape_only(2 * si, h)?, down: sd, gate: None })
+            Some(Shared { inter: si, up: PackBuf::shape_only(2 * si, h)?, down: sd, gate: None, act: None })
         }
         None => None,
     };
@@ -1870,6 +1922,37 @@ mod tests {
         assert_eq!((c.router.scoring, c.router.scale, c.router.bf16_logits, c.act), (Scoring::Sigmoid, 2.5, false, Act::SwiGlu { limit: Some(10.0) }));
     }
 
+    /// Ling's experts as the core's layer takes them: the choice within the best groups is the selection's own (`moe::Router::groups`), a SwiGLU limit on the
+    /// activated gate its own activation, and a shared MLP whose limit is another than its experts', or none, holds its own (`cfg_shared`). `cfg` alone, which
+    /// the blocks that hold no shared activation of their own ask, refuses that shared MLP by name.
+    #[test]
+    fn grouped_choices_and_two_limits_become_the_core_layers() {
+        let mut m = qwen();
+        m.router = Router { score: RouterScore::Sigmoid, bias: true, scale: 2.5, top_k: 8, groups: Some((8, 4)), ..m.router };
+        m.shared_gate = false;
+        let (c, own) = super::cfg_shared(&m, 2560, 768).unwrap();
+        assert_eq!((c.router.groups, c.router.flags() >> 8, c.act, own), (Some((8, 4)), 8 | (4 << 8), Act::SwiGlu { limit: None }, None));
+        c.check().unwrap();
+        let limit = |x: f32| Some(kinds::Clamp::Activated(x));
+        // (the experts' limit and the shared MLP's: 4 and 7 on the release's last layers; a layer whose experts alone have one; one whose shared MLP alone)
+        (m.expert.clamp, m.shared.as_mut().unwrap().clamp) = (limit(4.0), limit(7.0));
+        let (c, own) = super::cfg_shared(&m, 2560, 768).unwrap();
+        assert_eq!((c.act, own, c.fused()), (Act::SwiGluAfter { limit: 4.0 }, Some(Act::SwiGluAfter { limit: 7.0 }), 0));
+        c.check().unwrap();
+        assert!(super::cfg(&m, 2560, 768).unwrap_err().msg.contains("is the resident block's"));
+        m.shared.as_mut().unwrap().clamp = None;
+        assert_eq!(super::cfg_shared(&m, 2560, 768).unwrap().1, Some(Act::SwiGlu { limit: None }));
+        (m.expert.clamp, m.shared.as_mut().unwrap().clamp) = (None, limit(5.0));
+        let (c, own) = super::cfg_shared(&m, 2560, 768).unwrap();
+        assert_eq!((c.act, c.fused(), own), (Act::SwiGlu { limit: None }, 1, Some(Act::SwiGluAfter { limit: 5.0 })));
+        // (one limit for both: the layer's activation, no shared one of its own)
+        (m.expert.clamp, m.shared.as_mut().unwrap().clamp) = (limit(4.0), limit(4.0));
+        assert_eq!(super::cfg(&m, 2560, 768).unwrap().act, Act::SwiGluAfter { limit: 4.0 });
+        // (a shared MLP of another activation is still not the kernels')
+        m.shared.as_mut().unwrap().act = kinds::Act::GeluTanh;
+        assert!(super::cfg_shared(&m, 2560, 768).unwrap_err().msg.contains("one activation and no biases"));
+    }
+
     /// Experts that work in a latent and whose outputs are normed: the experts' width is the latent's, the router's the model's; each pair's activation is a
     /// kernel's of its own (an infinite clamp: never the first product's, so a stack's rows can be sliced across GPUs), and the router's logit scale is
     /// theirs, the operation's to apply. A latent whose outputs are not normed keeps the first product's activation.
@@ -1936,7 +2019,11 @@ mod tests {
             assert!(e.contains(word), "{e}");
         };
         refused(&|m| m.router.hash = true, "hash routing");
-        refused(&|m| m.router.groups = Some((8, 4)), "grouped choices");
+        // (groups the selection does not hold: more than a warp's lanes, groups of one expert, fewer experts kept than a token takes)
+        refused(&|m| m.router.groups = Some((64, 4)), "up to 32 groups");
+        refused(&|m| m.router.groups = Some((7, 4)), "groups of two experts or more");
+        refused(&|m| (m.experts, m.router.groups) = (32, Some((32, 4))), "groups of two experts or more");
+        refused(&|m| (m.experts, m.router.top_k, m.router.groups) = (32, 10, Some((8, 2))), "the kept ones holding a token's experts");
         refused(&|m| m.router.logit_scale = 2.0, "logit scale");
         refused(&|m| m.router.bias = true, "choice bias");
         refused(&|m| m.expert.bias = true, "no biases");

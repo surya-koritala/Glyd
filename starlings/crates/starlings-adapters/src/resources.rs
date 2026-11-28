@@ -76,12 +76,15 @@ impl HostSnapshot {
     }
     pub fn collect(cache: &Path) -> Self {
         let mut snapshot = Self::collect_contribution();
+        // (sysinfo 0.40 returns an error where the system has no such list: no disk then)
         let disks =
-            Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing().with_storage());
+            Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing().with_storage())
+                .ok();
         snapshot.report.cache_available_bytes = cache
             .canonicalize()
             .ok()
-            .and_then(|cache| {
+            .zip(disks)
+            .and_then(|(cache, disks)| {
                 disks
                     .iter()
                     .filter(|disk| cache.starts_with(disk.mount_point()))
@@ -95,10 +98,14 @@ impl HostSnapshot {
     pub fn collect_contribution() -> Self {
         let mut snapshot = Self::collect_memory();
         snapshot.report.max_sensor_temperature_c = Components::new_with_refreshed_list()
-            .iter()
-            .filter_map(|sensor| sensor.temperature())
-            .filter(|value| value.is_finite() && (-100.0..=200.0).contains(value))
-            .reduce(f32::max)
+            .ok()
+            .and_then(|sensors| {
+                sensors
+                    .iter()
+                    .filter_map(|sensor| sensor.temperature())
+                    .filter(|value| value.is_finite() && (-100.0..=200.0).contains(value))
+                    .reduce(f32::max)
+            })
             .map(Observation::Measured)
             .unwrap_or(Observation::Unavailable);
         snapshot
@@ -107,13 +114,16 @@ impl HostSnapshot {
     pub fn collect_memory() -> Self {
         let at = Instant::now();
         let wall = SystemTime::now();
-        let mut system = System::new();
-        system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
-        let mut total = system.total_memory();
-        let mut available = system.available_memory().min(total);
-        if let Some(cgroup) = system.cgroup_limits() {
-            total = total.min(cgroup.total_memory);
-            available = available.min(cgroup.free_memory).min(total);
+        // (no system to ask: no memory, as a system whose memory cannot be read gives)
+        let (mut total, mut available) = (0, 0);
+        if let Ok(mut system) = System::new() {
+            system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
+            total = system.total_memory();
+            available = system.available_memory().min(total);
+            if let Some(cgroup) = system.cgroup_limits() {
+                total = total.min(cgroup.total_memory);
+                available = available.min(cgroup.free_memory).min(total);
+            }
         }
         let memory_pools = host_pool(
             std::env::consts::OS,
@@ -162,7 +172,7 @@ impl HostSnapshot {
         }
         starlings_protocol::content_hash(&serde_json::json!({
             "os":report.os, "architecture":report.architecture,
-            "os_version":System::os_version(), "kernel_version":System::kernel_version(),
+            "os_version":System::os_version().ok(), "kernel_version":System::kernel_version().ok(),
             "memory_pools":report.memory_pools.iter().filter(|p| p.pool_id == "host").map(|p| (&p.pool_id, p.total_bytes)).collect::<Vec<_>>(),
             "available_cpu_threads":report.available_cpu_threads,
         })).ok()

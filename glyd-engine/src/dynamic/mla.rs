@@ -46,6 +46,9 @@ pub enum MlaIn {
     Fused { w: usize },
     /// q's latent and the key-value latent (and its shared key part) as two products (GLM-5.3's q_a and kv_a).
     Apart { q_a: usize, kv_a: usize },
+    /// The queries one product of the layer's input, with no latent of their own (the operation's `q_b` is then [heads (nope + rope), hidden]: Ling's
+    /// q_proj), and the key-value latent (and its shared key part) its own product.
+    Direct { kv_a: usize },
 }
 
 /// Where the indexer's scores are computed as its family's reference computes them.
@@ -179,7 +182,9 @@ pub fn f8_small_name(name: &str) -> bool {
 /// token. Scores q . k times `scale` over the latent and the shared key part (rope channels as they are: none rotated), values the latent's; sigmoid(gate) on each
 /// head's output where `gate` (its columns after q's latent in a fused product). `q_round`: the q latent's norm's rounding as the kind gives it; `Rounding::Twice`
 /// (the normed value rounded, then times the weight, rounded: KimiRMSNorm, and transformers' RMSNorm in bf16, GLM-5.3's since its description says so) runs
-/// rms2_rows512 (512 threads, Kimi-K3's order of sums), any other rms2_rows (256 threads, the same roundings in another order of sums).
+/// rms2_rows512 (512 threads, Kimi-K3's order of sums), any other rms2_rows (256 threads, the same roundings in another order of sums). Queries of one
+/// product (`MlaIn::Direct`) have no latent: `q_rank` is 0, `q_b` multiplies the layer's input, and the operation has two small tensors of the latent, the
+/// key-value latent's norm and kv_b_proj (`q_norm` is the first of them and is not read as a norm of the queries).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MlaOp {
     pub heads: usize,
@@ -196,6 +201,10 @@ pub struct MlaOp {
     pub kv_b: usize,
     pub q_round: kinds::Rounding,
     pub gate: bool,
+    /// The output gate of one value a head (`kinds::GateFrom::Head`, Ling's): the small tensor [heads, hidden] whose product of the layer's input, in fp32 as
+    /// the kind's reference holds it, gates every channel of its head's output by its sigmoid (kernels/mla.cu `mla_gate_head`). After the latent's own
+    /// small tensors and an indexer's; a release may hold it in FP8 with block scales (`f8_small`).
+    pub head_gate: Option<usize>,
     pub scale: f32,
     pub eps: f32,
     pub ring: usize,
@@ -237,7 +246,17 @@ impl MlaOp {
         if let Some((_, part)) = not_run.iter().find(|x| x.0) {
             return err(format!("a latent attention: {part}"));
         }
-        let q_rank = k.q_lora.ok_or_else(|| Error("a latent attention whose query has no low rank: not an operation of this executor".into()))?;
+        // (the queries: through a latent of their own, in a fused product or apart; or one product of the layer's input)
+        let q_rank = match (k.q_lora, input) {
+            (Some(r), MlaIn::Fused { .. } | MlaIn::Apart { .. }) => r,
+            (None, MlaIn::Direct { .. }) => 0,
+            (Some(r), MlaIn::Direct { .. }) => {
+                return err(format!("a latent attention whose queries have a latent of {r}, given as one product of the layer's input"))
+            }
+            (None, _) => {
+                return err("a latent attention whose query has no low rank, given a product of its latent: its queries are one product of the layer's input")
+            }
+        };
         let rot = match (&k.rope, table) {
             (None, _) => None,
             (Some(r), Some(t)) if r.style == kinds::RopeStyle::Interleaved && r.scaling == kinds::RopeScaling::None && r.mrope.is_none() && r.dim == k.rope_dim && r.freq_dim == r.dim && r.freqs * 2 == r.dim => {
@@ -249,14 +268,17 @@ impl MlaOp {
                 ))
             }
         };
-        let gate = match (k.gate, input) {
-            (None, _) => false,
-            (Some(g), _) if g.from == kinds::GateFrom::Head => {
-                return err("a latent attention with an output gate of one value a head, which the executor does not run yet")
-            }
+        // (the output gate: a value a channel in a fused input product, or one a head, a small tensor's product of the layer's input)
+        let (gate, by_head) = match (k.gate, input) {
+            (None, _) => (false, false),
             (Some(g), _) if g.from == kinds::GateFrom::Latent => return err(format!("a latent attention: {}", kinds::GateFrom::LATENT_NOT_RUN)),
-            (Some(g), MlaIn::Fused { .. }) if g.act == kinds::Act::Sigmoid && g.norm.is_none() => true,
-            (Some(g), _) => return err(format!("a latent attention's gate of {g:?}: the kernels take a sigmoid gate in a fused input product")),
+            (Some(g), _) if g.from == kinds::GateFrom::Head && g.act == kinds::Act::Sigmoid && g.norm.is_none() => (false, true),
+            (Some(g), MlaIn::Fused { .. }) if g.from != kinds::GateFrom::Head && g.act == kinds::Act::Sigmoid && g.norm.is_none() => (true, false),
+            (Some(g), _) => {
+                return err(format!(
+                    "a latent attention's gate of {g:?}: the kernels take a sigmoid gate, a value a channel in a fused input product or one a head"
+                ))
+            }
         };
         if let Some(x) = k.indexer.as_ref().filter(|x| x.rope > 0 && rot.is_none()) {
             return err(format!("a latent attention's indexer whose first {} channels turn, under no rotary of the attention's", x.rope));
@@ -292,6 +314,10 @@ impl MlaOp {
                 Some(ix.at(s0 + 3, ring + 1))
             }
         };
+        // (the latent's small tensors: the q latent's norm where the queries have one, the key-value latent's norm, kv_b_proj; the gate a head's after them
+        // and an indexer's)
+        let base = if q_rank == 0 { 2 } else { 3 };
+        let head_gate = by_head.then(|| s0 + base + indexer.as_ref().map_or(0, MlaIndexer::small_count));
         let a = MlaOp {
             heads: k.heads,
             nope: k.nope,
@@ -303,10 +329,11 @@ impl MlaOp {
             q_b,
             o,
             q_norm: s0,
-            kv_norm: s0 + 1,
-            kv_b: s0 + 2,
+            kv_norm: s0 + base - 2,
+            kv_b: s0 + base - 1,
             q_round: k.q_norm.rounding,
             gate,
+            head_gate,
             scale: k.scale,
             eps: k.q_norm.eps,
             ring,
@@ -318,22 +345,32 @@ impl MlaOp {
         Ok(a)
     }
 
-    /// The small tensors the operation reads: the three of the latent, and an indexer's (`MlaIndexer::small_count`).
+    /// The small tensors of the latent: the q latent's norm, the key-value latent's norm and kv_b_proj; the last two where the queries are one product.
+    fn latent_small(&self) -> usize {
+        if self.q_rank == 0 {
+            2
+        } else {
+            3
+        }
+    }
+
+    /// The small tensors the operation reads: the latent's (`latent_small`), an indexer's (`MlaIndexer::small_count`), and the gate a head's.
     pub fn small_count(&self) -> usize {
-        3 + self.indexer.as_ref().map_or(0, MlaIndexer::small_count)
+        self.latent_small() + self.indexer.as_ref().map_or(0, MlaIndexer::small_count) + self.head_gate.is_some() as usize
     }
 
     /// The small tensors it takes released in FP8 with fp32 block scales (the release's E4M3 codes in bf16 and their scales: `Part::scales`): kv_b_proj, and
-    /// its indexer's products (its queries', keys', head weights' and a pooled indexer's gate).
+    /// its indexer's products (its queries', keys', head weights' and a pooled indexer's gate), and the gate a head's.
     pub fn f8_small(&self) -> Vec<usize> {
         let ix = self.indexer.iter().flat_map(|x| [x.q_b, x.k, x.weights].into_iter().chain(x.pooled().then_some(x.gate)));
-        std::iter::once(self.kv_b).chain(ix).collect()
+        std::iter::once(self.kv_b).chain(ix).chain(self.head_gate).collect()
     }
 
-    /// The matrices it multiplies by, in the order a loader holds them: a fused input product, q_b, o; or q_a, q_b, kv_a, o.
+    /// The matrices it multiplies by, in the order a loader holds them: a fused input product, q_b, o; or q_a, q_b, kv_a, o; or the queries' one product,
+    /// kv_a, o.
     pub fn mat_count(&self) -> usize {
         match self.input {
-            MlaIn::Fused { .. } => 3,
+            MlaIn::Fused { .. } | MlaIn::Direct { .. } => 3,
             MlaIn::Apart { .. } => 4,
         }
     }
@@ -344,9 +381,12 @@ impl MlaOp {
         let (input, q_b, o) = match self.input {
             MlaIn::Fused { .. } => (MlaIn::Fused { w: m0 }, m0 + 1, m0 + 2),
             MlaIn::Apart { .. } => (MlaIn::Apart { q_a: m0, kv_a: m0 + 2 }, m0 + 1, m0 + 3),
+            MlaIn::Direct { .. } => (MlaIn::Direct { kv_a: m0 + 1 }, m0, m0 + 2),
         };
         let indexer = self.indexer.as_ref().map(|x| x.at(s0 + 3, ring + 1));
-        MlaOp { input, q_b, o, q_norm: s0, kv_norm: s0 + 1, kv_b: s0 + 2, ring, indexer, ..self.clone() }
+        let base = self.latent_small();
+        let head_gate = self.head_gate.map(|_| s0 + base + indexer.as_ref().map_or(0, MlaIndexer::small_count));
+        MlaOp { input, q_b, o, q_norm: s0, kv_norm: s0 + base - 2, kv_b: s0 + base - 1, ring, indexer, head_gate, ..self.clone() }
     }
 
     /// Its caches as rings of the description: the latents', and an indexer's [key | gate score] a token; keys alone.
@@ -373,6 +413,18 @@ impl MlaOp {
         }
         if self.gate && !matches!(self.input, MlaIn::Fused { .. }) {
             return err("a latent attention's gate outside a fused input product");
+        }
+        if self.gate && self.head_gate.is_some() {
+            return err("a latent attention with a gate a channel and a gate a head");
+        }
+        // (an indexer's queries are a product of the normed query latent, which queries of one product do not have)
+        if (self.q_rank == 0) != matches!(self.input, MlaIn::Direct { .. }) || (self.q_rank == 0 && (self.indexer.is_some() || self.lent.is_some())) {
+            return err(format!(
+                "a latent attention whose queries have a latent of {} in {:?}{}: queries of one product have none, and no indexer, whose queries are its product",
+                self.q_rank,
+                self.input,
+                if self.indexer.is_some() || self.lent.is_some() { ", with an indexer" } else { "" }
+            ));
         }
         if let Some(r) = self.rot {
             let ix = self.indexer.as_ref().map_or(0, |x| x.dim);
@@ -460,6 +512,7 @@ pub(crate) struct KernMla {
     merge: crate::kt::mla_merge,
     expand: crate::kt::mla_expand_v,
     gate: crate::kt::mla_gate,
+    gate_head: crate::kt::mla_gate_head,
     dense_cnt: crate::kt::mla_dense_cnt,
     rope: crate::kt::mla_rope,
     /// The pages a 12-bit latent ring unpacks for a sequence (`Dyn::kv12_latents`).
@@ -491,6 +544,7 @@ impl KernMla {
             merge: dev.typed()?,
             expand: dev.typed()?,
             gate: dev.typed()?,
+            gate_head: dev.typed()?,
             dense_cnt: dev.typed()?,
             rope: dev.typed()?,
             pages: dev.typed()?,
@@ -580,6 +634,7 @@ impl MlaRun {
         let x = most(&|a| match a.input {
             MlaIn::Fused { w } => mats[w].whole_rows(),
             MlaIn::Apart { q_a, kv_a } => mats[q_a].whole_rows().max(mats[kv_a].whole_rows()),
+            MlaIn::Direct { kv_a } => mats[kv_a].whole_rows(),
         });
         let b = |n: usize| Buf::new(n.max(4));
         Ok(Some(MlaRun {
@@ -589,7 +644,8 @@ impl MlaRun {
             ov: b(ch * most(&|a| a.heads * a.v) * 2)?,
             ix: b(ch * most(&|a| ix(a, &|x| x.dim)) * 2)?,
             iq: b(ch * most(&|a| ix(a, &|x| x.pick.heads * x.dim)) * 2)?,
-            wts: b(ch * most(&|a| ix(a, &|x| x.pick.heads)) * 4)?,
+            // (an indexer's head weights, or the product of a gate a head: fp32, a value a head)
+            wts: b(ch * most(&|a| ix(a, &|x| x.pick.heads).max(if a.head_gate.is_some() { a.heads } else { 0 })) * 4)?,
             qa: b(sub * most(&|a| a.heads * (a.kv_rank + a.rope)) * 4)?,
             olat: b(sub * most(&|a| a.heads * a.kv_rank) * 4)?,
             scores: b(sub * most(&|a| a.pmax(ctx)) * 4)?,
@@ -788,19 +844,27 @@ impl Dyn {
         let seqs: Vec<(usize, usize, u64, usize)> = self.seq_parts(n).into_iter().skip(lead).collect();
         let lr = lead as u32;
         // the q latent (and, fused, the gate and the key-value latent) product, its norm, q
-        let (q_at, q_row) = match a.input {
-            MlaIn::Fused { w } => (w, p.mats[w].whole_rows()),
-            MlaIn::Apart { q_a, .. } => (q_a, p.mats[q_a].whole_rows()),
+        let x = r.x.ptr;
+        // (the row stride of the product q's latent is in; none where the queries are one product of the layer's input)
+        let q_row = match a.input {
+            MlaIn::Fused { w } => p.mats[w].whole_rows(),
+            MlaIn::Apart { q_a, .. } => p.mats[q_a].whole_rows(),
+            MlaIn::Direct { .. } => 0,
         };
-        self.lin(&p.mats[q_at], h, n, r.x.ptr)?;
-        self.mark("latent attention: q latent product")?;
-        let (qn, x) = (p.small[a.q_norm].ptr, r.x.ptr);
-        if a.q_round == kinds::Rounding::Twice {
-            launch!(k.rms2_512, [nr, 1, 1], [512, 1, 1], s; x, q_row as i32, qn, r.qr.ptr, a.q_rank as i32, a.q_rank as i32, a.eps)?;
+        if let MlaIn::Fused { w: q_at } | MlaIn::Apart { q_a: q_at, .. } = a.input {
+            self.lin(&p.mats[q_at], h, n, x)?;
+            self.mark("latent attention: q latent product")?;
+            let qn = p.small[a.q_norm].ptr;
+            if a.q_round == kinds::Rounding::Twice {
+                launch!(k.rms2_512, [nr, 1, 1], [512, 1, 1], s; x, q_row as i32, qn, r.qr.ptr, a.q_rank as i32, a.q_rank as i32, a.eps)?;
+            } else {
+                launch!(k.rms2, [nr, 1, 1], [256, 1, 1], s; x, q_row as i32, qn, r.qr.ptr, a.q_rank as i32, 0u64, 0u64, 0i64, a.q_rank as i32, a.eps)?;
+            }
+            self.lin(&p.mats[a.q_b], r.qr.ptr, n, r.q.ptr)?;
         } else {
-            launch!(k.rms2, [nr, 1, 1], [256, 1, 1], s; x, q_row as i32, qn, r.qr.ptr, a.q_rank as i32, 0u64, 0u64, 0i64, a.q_rank as i32, a.eps)?;
+            // (queries of one product: no latent, no norm)
+            self.lin(&p.mats[a.q_b], h, n, r.q.ptr)?;
         }
-        self.lin(&p.mats[a.q_b], r.qr.ptr, n, r.q.ptr)?;
         // (a rotary: each head's rope channels, after its nope ones, turned at the row's position)
         if let Some(rt) = a.rot {
             self.mla_rope(r.q.ptr, nh * qw, (nh, qw), a.nope, pos, rt.table, a.rope / 2, n)?;
@@ -809,7 +873,7 @@ impl Dyn {
         // the key-value latent normed into the cache, the shared key part after it
         let (kv, kv_row) = match a.input {
             MlaIn::Fused { w } => (x + ((a.q_rank + if a.gate { nh * a.v } else { 0 }) * 2) as u64, p.mats[w].whole_rows()),
-            MlaIn::Apart { kv_a, .. } => {
+            MlaIn::Apart { kv_a, .. } | MlaIn::Direct { kv_a } => {
                 self.lin(&p.mats[kv_a], h, n, x)?;
                 (x, p.mats[kv_a].whole_rows())
             }
@@ -990,6 +1054,13 @@ impl Dyn {
         if a.gate {
             let w = nh * a.v;
             launch!(k.gate, [((n * w) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; r.ov.ptr, x + (a.q_rank * 2) as u64, q_row as i32, w as i32, n as i32)?;
+        }
+        if let Some(g) = a.head_gate {
+            // (a gate a head: its product of the layer's input in fp32, a value a head (its block scales where it is released in FP8), into the indexer's
+            // head weights' room, which the picks are done with; then every channel of a head's output times its sigmoid)
+            let hid = p.d.hidden;
+            k.small_linear_f32(s, h, hid, (p.small[g].ptr, p.scales(g)), r.wts.ptr, nh, n, nh, hid)?;
+            launch!(k.gate_head, [((n * nh * a.v) as u32).div_ceil(256), 1, 1], [256, 1, 1], s; r.ov.ptr, r.wts.ptr, nh as i32, a.v as i32, n as i32)?;
         }
         self.lin(&p.mats[a.o], r.ov.ptr, n, p.slot(Slot::O))?;
         self.mark("latent attention: o product")

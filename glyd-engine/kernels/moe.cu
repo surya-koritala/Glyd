@@ -8,11 +8,14 @@
 #define MOE_RENORM 2   // the chosen scores divided by their sum
 #define MOE_BF16 4     // the logits rounded to bf16 first (the gate is a bf16 Linear)
 #define MOE_SQRTSP 8   // the scores by sqrt(softplus) (DeepSeek-V4; softplus is the logit itself past 20, as torch's)
+#define MOE_GROUPS_SHIFT 8  // the flags' bits 8 to 15: the experts' groups, the choice made inside the best of them (0: no groups); at most 32
+#define MOE_KEEP_SHIFT 16   // bits 16 to 23: the groups kept
 #define MOE_SILU 0     // moe_act's modes: silu(gate) up, gelu_tanh(gate) up, relu(x)^2 without a gate
 #define MOE_GELU 1
 #define MOE_RELU2 2
 #define MOE_SITU 3     // situ: lim tanh(g / lim) sigmoid(g) x lin tanh(u / lin) (Kimi-K3: 4 and 25)
 #define MOE_SILU_R 4   // silu(gate) rounded to bf16, then times up (transformers' act_fn on a bf16 tensor, then the product: Muse Spark's), no clamp
+#define MOE_SILU_A 5   // min(silu(gate), lim) clamp(up, -lim, lim): the limit holds the activated gate, not the gate before it (Ling's)
 
 // 8 bf16 of a 16-byte load as floats (exact).
 __device__ __forceinline__ void moe_bf8(const uint4 q, float* f) {
@@ -75,7 +78,10 @@ extern "C" __global__ void __launch_bounds__(256) moe_logits(const bf16* x, int 
 // A token's experts and their weights from its logits [E]: a warp a token, a lane's experts lane + 32 i in registers (N * 32 >= E). The scores: softmax over the experts, or sigmoid; the k largest of the
 // scores (+ bias [E] where there is one: the bias picks, the score weighs; with softmax scores it is the expert cache's -1e30 for an expert a pack left out), largest first, equal ones by the smaller expert; their scores divided by their sum + 1e-20 (RENORM),
 // times escale[expert] (Gemma 4's per-expert scale) where there is one, times scale (routed_scaling_factor). ids [T, k] are int64, as glyd_gpu_moe_way reads them (-1: no expert, if k > E); wts [T, k] fp32.
-// k at most 32.
+// k at most 32. With groups in the flags (MOE_GROUPS_SHIFT: G groups of E / G experts one after another, at most 32; MOE_KEEP_SHIFT: how many are kept) the
+// choice is made inside the best groups: a group's score is the sum of its two largest choice scores (the scores + bias), the groups of the largest sums are
+// kept (equal sums: the smaller group), and an expert of another group is never chosen (DeepSeek-V3's noaux_tc with n_group and topk_group, as Ling runs it);
+// the weights are the chosen experts' own scores as without groups.
 template <int N>
 __device__ __forceinline__ void moe_select_row(const float* row, const float* bias, const float* escale, long long* ids, float* wts, int t, int E, int k, int flags, float scale);
 
@@ -119,6 +125,62 @@ __device__ __forceinline__ void moe_select_row(const float* row, const float* bi
     }
 #pragma unroll
     for (int i = 0; i < N; i++) c[i] = lane + 32 * i < E ? (bias ? s[i] + bias[lane + 32 * i] : s[i]) : -INFINITY;
+    const int ng = (flags >> MOE_GROUPS_SHIFT) & 0xff, keep = (flags >> MOE_KEEP_SHIFT) & 0xff;
+    if (ng > 0) {
+        // (the choice within the best groups: lane g keeps group g's score, the sum of the two largest choice scores of its experts g per .. g per + per - 1)
+        const int per = E / ng;
+        float gsc = -INFINITY;
+        for (int g = 0; g < ng; g++) {
+            float b1 = -INFINITY, b2 = -INFINITY;  // the lane's two largest of the group
+#pragma unroll
+            for (int i = 0; i < N; i++) {
+                const int e = lane + 32 * i;
+                if (e < E && e / per == g) {
+                    if (c[i] > b1) {
+                        b2 = b1;
+                        b1 = c[i];
+                    } else if (c[i] > b2) {
+                        b2 = c[i];
+                    }
+                }
+            }
+            float m1 = b1;  // the warp's largest and the lane that holds it (of equal ones the smaller lane)
+            int who = lane;
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) {
+                const float ov = __shfl_xor_sync(MOE_FULL, m1, o);
+                const int ow = __shfl_xor_sync(MOE_FULL, who, o);
+                if (ov > m1 || (ov == m1 && ow < who)) {
+                    m1 = ov;
+                    who = ow;
+                }
+            }
+            // (the second largest: the largest of what is left, the holder's own second and every other lane's first)
+            const float m2 = moe_warp_max(lane == who ? b2 : b1);
+            if (lane == g) gsc = m1 + m2;
+        }
+        unsigned kept = 0;  // the groups kept, a bit a group: every lane holds the same
+        for (int r = 0; r < keep; r++) {
+            float bv = gsc;
+            int bi = lane;
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) {
+                const float ov = __shfl_xor_sync(MOE_FULL, bv, o);
+                const int oi = __shfl_xor_sync(MOE_FULL, bi, o);
+                if (ov > bv || (ov == bv && oi < bi)) {
+                    bv = ov;
+                    bi = oi;
+                }
+            }
+            kept |= 1u << bi;
+            if (lane == bi) gsc = -INFINITY;
+        }
+#pragma unroll
+        for (int i = 0; i < N; i++) {
+            const int e = lane + 32 * i;
+            if (e < E && !((kept >> (e / per)) & 1u)) c[i] = -INFINITY;
+        }
+    }
     float sw = 0.f;  // lane r keeps the r-th choice and its score
     int sid = -1;
     for (int r = 0; r < k; r++) {
@@ -215,7 +277,7 @@ __device__ __forceinline__ float moe_situ(float g, float u, float lim, float lin
 
 // out [rows, I]: MOE_SILU or MOE_GELU (tanh): act(min(g, lim)) * clamp(u, -lim, lim) of gu [rows, 2 I] (the gate in the first I columns, the up in the next I; lim = INFINITY: no clamp, GLM-5.x's is 10);
 // MOE_SITU: lim tanh(g / lim) sigmoid(g) x lin tanh(u / lin) of the same halves (moe_situ: the host's to the bit); MOE_RELU2: relu(x)^2 of gu [rows, I] (in place where out = gu). One rounding (MOE_SILU_R: silu(g) rounded before the
-// product too). I a multiple of 8; a thread takes
+// product too; MOE_SILU_A: min(silu(g), lim) * clamp(u, -lim, lim), the limit on the activated gate). I a multiple of 8; a thread takes
 // 8 columns, block (row, chunk of 256 threads' columns). With an experts' plan (`plan` of E experts, not null) the rows are its order's: a row past the pairs it routes is none (no
 // product wrote it), as in v4_moe_act.
 extern "C" __global__ void moe_act(const bf16* gu, bf16* out, int I, int mode, float lim, float lin, const int* plan, int E) {
@@ -247,6 +309,11 @@ extern "C" __global__ void moe_act(const bf16* gu, bf16* out, int I, int mode, f
             if (mode == MOE_SILU_R) {
                 const float g = b2f(gp[k]), u = b2f(up[k]);
                 op[k] = f2b(b2f(f2b(g / (1.f + expf(-g)))) * u);
+                continue;
+            }
+            if (mode == MOE_SILU_A) {
+                const float g = b2f(gp[k]), u = fminf(fmaxf(b2f(up[k]), -lim), lim);
+                op[k] = f2b(fminf(g / (1.f + expf(-g)), lim) * u);
                 continue;
             }
             const float g = fminf(b2f(gp[k]), lim), u = fminf(fmaxf(b2f(up[k]), -lim), lim);
