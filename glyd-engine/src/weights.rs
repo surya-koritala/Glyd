@@ -742,13 +742,21 @@ pub(crate) fn ordered<T: Send>(
                 }
                 g[i].take().unwrap()
             };
-            taken.store(i + 1, Ordering::SeqCst);
+            // (under the lock: a worker reads `taken` and `stop` under it before it waits, so a change it has not seen cannot fall between its
+            // reading and its waiting, where the wake-up would be lost and the worker, and with it this loop, would wait for ever)
+            {
+                let _g = slots.lock().unwrap();
+                taken.store(i + 1, Ordering::SeqCst);
+            }
             cv.notify_all();
             match r.and_then(|v| each(i, v)) {
                 Ok(()) => {}
                 Err(e) => {
                     result = Err(e);
-                    stop.store(true, Ordering::SeqCst);
+                    {
+                        let _g = slots.lock().unwrap();
+                        stop.store(true, Ordering::SeqCst);
+                    }
                     cv.notify_all();
                     break;
                 }
@@ -893,6 +901,16 @@ mod tests {
         assert_eq!(got, (0..40).map(|i| i * i).collect::<Vec<_>>());
         let e = ordered(40, 4, 6, &|i| if i == 17 { err("seventeen") } else { Ok(i) }, |_, _| Ok(())).unwrap_err();
         assert_eq!(e.to_string(), "seventeen");
+        // (many short runs with a narrow window: a wake-up lost between a worker's reading of what is taken and its waiting left the run waiting for ever)
+        for round in 0..2000 {
+            let mut sum = 0usize;
+            ordered(24, 8, 1, &|i| Ok(i), |_, v| {
+                sum += v;
+                Ok(())
+            })
+            .unwrap_or_else(|e| panic!("round {round}: {e}"));
+            assert_eq!(sum, 276);
+        }
     }
 
     #[test]
