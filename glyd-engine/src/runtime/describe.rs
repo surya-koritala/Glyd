@@ -594,6 +594,8 @@ pub fn describe_config_in(c: &ModelConfig, have: Option<&BTreeSet<String>>) -> R
         "lfm3" => lfm3(tc, prefix, mt, tied_top),
         "mimo_v2" => mimo_v2(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
         "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
+        // (a wrapper whose text model has no type of its own, MiniMax M3.1's: the family is the wrapper's)
+        "" if c.nested && !c.model_type.is_empty() => err(format!("model_type {} has no description builder yet", c.model_type)),
         "" => err("config.json names no model_type"),
         m => err(format!("model_type {m} has no description builder yet")),
     }

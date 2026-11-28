@@ -479,4 +479,14 @@ mod tests {
         assert_eq!(describe::keys_named("glm: config keys a_b, c_d, e are not understood by the description builder"), ["a_b", "c_d", "e"]);
         assert!(describe::keys_named("model_type x has no description builder yet").is_empty());
     }
+
+    /// A wrapper whose text model names no type of its own is a family by the wrapper's type: it is said to have no builder (so its text keys are
+    /// listed), not to name no model type. A config with no type anywhere still says so.
+    #[test]
+    fn a_wrapper_without_a_text_type_is_its_own_family() {
+        let of = |text: &str| describe::describe(&serde_json::from_str(text).unwrap()).unwrap_err().msg;
+        assert_eq!(of(r#"{"model_type": "some_vl", "text_config": {"hidden_size": 8}}"#), "model_type some_vl has no description builder yet");
+        assert_eq!(of(r#"{"text_config": {"hidden_size": 8}}"#), "config.json names no model_type");
+        assert_eq!(of(r#"{"hidden_size": 8}"#), "config.json names no model_type");
+    }
 }

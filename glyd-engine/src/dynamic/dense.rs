@@ -43,14 +43,25 @@ pub fn load(dir: &Path, o: &Opts) -> Result<Dyn> {
 /// `load` of a config.json parsed once (`m`: `dir`'s). A model whose feed-forwards are mixtures of experts (Mellum's) loads each layer's as the Moe kind's
 /// block (`experts::block`: its router, its experts and a shared expert where it has one, at the level of the other matrices), every expert on the GPU.
 pub fn load_of(dir: &Path, m: &ModelConfig, o: &Opts) -> Result<Dyn> {
+    load_cached(dir, m, o, None)
+}
+
+/// `load_of`, its experts in the expert cache where `caching` is given (a plan that keeps them in the computer's memory: src/tiering.rs, its places a
+/// layer on the GPU, the cache's layer a block's number among the model's blocks of experts), as the Qwen3.5 layout's loader takes one; a model with no
+/// experts refuses a caching.
+pub fn load_cached(dir: &Path, m: &ModelConfig, o: &Opts, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
     let (kinds, label) = crate::runtime::describe::describe_dir_of(dir, m)?;
     let (eos, max_pos) = ends(dir, m);
     let d = super::lower::dense(&kinds, eos, max_pos).map_err(|e| e.context(&label))?;
     if super::experts::of_layers(&kinds, (0, d.layers.len()), 2).next().is_none() {
+        if caching.is_some() {
+            return crate::ffi::err(format!("{label}: it has no experts to keep in the expert cache"));
+        }
         return Dyn::new(dir, m, d, None, o);
     }
     let st = super::Stage::whole(d.layers.len());
-    let held = super::experts::Held { hb: None, cache: None, ordinal: o.device, f8: None, dense: None, codebooks: None, codes: None };
+    let store = caching.map(crate::hbg_store::store_for);
+    let held = super::experts::Held { hb: None, cache: caching.zip(store.as_ref()), ordinal: o.device, f8: None, dense: None, codebooks: None, codes: None };
     let hidden = kinds.desc.hidden;
     let experts = |ck: &glyd_gpu::safetensors::Checkpoint, level: crate::weights::Layout| -> Result<Vec<Box<dyn super::experts::MoeBlock>>> {
         super::experts::of_layers(&kinds, st.layers, 2)
@@ -60,5 +71,6 @@ pub fn load_of(dir: &Path, m: &ModelConfig, o: &Opts) -> Result<Dyn> {
             })
             .collect()
     };
-    Dyn::new_placed(dir, m, d, None, st, o, &experts, &super::Placing::default()).map_err(|e| e.context(&label))
+    let placing = super::Placing { across: false, ram: crate::dense_ram::Placer::last(st.layers.0, st.layers.1, caching.map_or(0, |x| x.dense)), hi: None };
+    Dyn::new_placed(dir, m, d, None, st, o, &experts, &placing).map_err(|e| e.context(&label))
 }
