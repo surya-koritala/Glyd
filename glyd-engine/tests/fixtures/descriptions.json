@@ -223,6 +223,14 @@
     "plan": "78a88e2091c277f7",
     "family": "GlmDsa"
   },
+  "headers/Hy4-flash.json": {
+    "blocks": 88,
+    "tensors": 1436,
+    "kinds": "658bbcce710d68bb",
+    "weights": "0e41e80411d0b762",
+    "plan": "af6bdab47f07e3a8",
+    "family": "refused: m is a HYV4FlashForConditionalGeneration model, which this engine has no description of yet"
+  },
   "headers/Kimi-K3.1-Pro.json": {
     "blocks": 186,
     "tensors": 497172,
@@ -269,7 +277,7 @@
     "kinds": "e49591501c977bb3",
     "weights": "a4359dec65860b12",
     "plan": "ab1b183f4358d678",
-    "family": "refused: m is a MiMoV2ForCausalLM model, which this engine has no description of yet"
+    "family": "Layers"
   },
   "headers/MiniMax-M3.1-Flash.json": {
     "blocks": 120,

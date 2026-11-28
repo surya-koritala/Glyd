@@ -14,6 +14,10 @@
 //! `indexer_types` of a `shared` layer after a `full` one; record.py runs where torch and a transformers that has `glm_moe_dsa` are installed (a CPU
 //! is enough), and `hf_tests` then holds this reference to what it wrote.
 //!
+//! Hunyuan's compressed indexer (`IndexForm::Grouped`: `group_key`, `picks_grouped`) is written from the family's two readers (vLLM
+//! models/hy_v4_flash/nvidia/compressed_indexer.py, indexpool_ops.py and indexpool_prepare.py; SGLang models/hunyuan_v4_flash.py `FlashIndexPool` and
+//! its kernels), in f32, without their bf16 rounding and their FP8 quantization of keys and queries; it is held by this file's tests by hand.
+//!
 //! A query's picks can be given (`LatentCache::take`): a check then holds an engine to this reference on the engine's own picks, where a near tie
 //! taken the other way would move a row by more than arithmetic does. Each query's record (`Picked`) has the indexer's own picks and the pools'
 //! scores, by which two choices' distance is measured (`Picked::margin_between`).
@@ -29,13 +33,16 @@ use crate::runtime::kinds::{IndexForm, Indexer, Mla, NormKind, Rope};
 /// `lent`: for a layer whose indexer is `shared`, the picks of the latent attention before it for the queries about to run, each query's in
 /// turn (the model lends them a call's: `RefModel::share_into`; a check, one query's), taken by those queries. `take`: the
 /// picks of the queries to come, each query's in turn, in the place of the indexer's own (a check's: another engine's picks, the entries each
-/// query attends to; an empty list: the indexer's own); `picked`: each query's record in turn (`Picked`), where a check reads them.
+/// query attends to; an empty list: the indexer's own); `picked`: each query's record in turn (`Picked`), where a check reads them. `pool`: with an
+/// indexer of the grouped form (`IndexForm::Grouped`), each closed group's key in turn, made when the group's last token arrived (the tokens' keys in
+/// `ikey` are then the normed keys as they are, and `igate` holds nothing).
 #[derive(Default)]
 pub struct LatentCache {
     pub pos: Vec<u32>,
     pub lat: Vec<Vec<f32>>,
     pub ikey: Vec<Vec<f32>>,
     pub igate: Vec<Vec<f32>>,
+    pub pool: Vec<Vec<f32>>,
     pub margin: f32,
     pub picks: Vec<usize>,
     pub made: Vec<Vec<usize>>,
@@ -221,6 +228,97 @@ fn choose_pools(ix: &Indexer, q: &[f32], w: &[f32], keys: &[Vec<f32>], seen: &[u
     Picked { own: out.clone(), picks: out, gap: super::ffn::margin(&score, keep), score, block: b }
 }
 
+/// The grouped form's rotary (`IndexForm::Grouped`): the trailing `Indexer::rope` channels of a group's key or of a query head `x` turned to `pos`
+/// by the attention's rotary `r`, in the indexer's own pairing where it has one; nothing with no rotary of the indexer's.
+fn trailing_turn(ix: &Indexer, r: Option<&Rope>, x: &mut [f32], pos: u32) -> Result<()> {
+    if ix.rope == 0 {
+        return Ok(());
+    }
+    match r {
+        Some(r) if r.dim == ix.rope && x.len() >= r.dim => {
+            let (inv, af) = rope::inv_freq_at(r, pos + 1);
+            let at = x.len() - r.dim;
+            rope::apply(&Rope { style: ix.rope_style.unwrap_or(r.style), ..r.clone() }, &inv, af, &mut x[at..], pos);
+            Ok(())
+        }
+        _ => err(format!("MLA: an indexer whose trailing {} channels are rotated, under an attention's rotary of {:?} channels", ix.rope, r.map(|r| r.dim))),
+    }
+}
+
+/// A closed group's key of the grouped form (`IndexForm::Grouped`), before its rotary: from its tokens' normed keys `keys` (the group's, in order), the
+/// softmax over the tokens, a channel at a time, of the gate product of each key plus the position term, weighing the value product of each key; the sum
+/// (in f32, in the tokens' order) normed by `pool`.
+pub fn group_key(ix: &Indexer, pool: &crate::runtime::kinds::Norm, p: &Params, keys: &[Vec<f32>]) -> Result<Vec<f32>> {
+    let dim = ix.head_dim;
+    let ape = p.vec("indexer_pool_ape")?;
+    if ape.len() != keys.len() * dim || keys.iter().any(|k| k.len() != dim) {
+        return err(format!("MLA: a group of {} keys of {dim} under a position term of {} values", keys.len(), ape.len()));
+    }
+    let values: Vec<Vec<f32>> = keys.iter().map(|k| p.prod("indexer_pool_value", k)).collect::<Result<_>>()?;
+    let gates: Vec<Vec<f32>> = keys.iter().map(|k| p.prod("indexer_pool_gate", k)).collect::<Result<_>>()?;
+    if values.iter().chain(&gates).any(|v| v.len() != dim) {
+        return err(format!("MLA: a group's value and gate products are of the key's {dim} channels"));
+    }
+    let pooled: Vec<f32> = (0..dim)
+        .map(|ch| {
+            let mut g: Vec<f32> = gates.iter().enumerate().map(|(i, gt)| gt[ch] + ape[i * dim + ch]).collect();
+            softmax(&mut g);
+            values.iter().zip(&g).map(|(v, &a)| v[ch] * a).sum::<f32>()
+        })
+        .collect();
+    Ok(norm(pool, &pooled, Some(p.vec("indexer_pool_norm")?), None))
+}
+
+/// The grouped form's choice (`IndexForm::Grouped`) for the query whose entry is the last of `seen` (the sequence's tokens from the first, in order): the
+/// groups closed before the query's own are scored, sum_h w_h relu(q_h . key) with w the weights' product of the block's input `h` times heads^-0.5
+/// head_dim^-0.5 and q the indexer's product of the normed query latent `qr`, each head's trailing channels turned to `pos` (`rope`: the attention's
+/// rotary); the best `top_k / block` - 1 kept whole, equal scores the earlier first; then the query's own group up to the query. While the closed groups
+/// number no more than are kept, every token.
+#[allow(clippy::too_many_arguments)]
+pub fn picks_grouped(
+    ix: &Indexer,
+    rope: Option<&Rope>,
+    p: &Params,
+    c: &LatentCache,
+    seen: &[usize],
+    qr: Option<&[f32]>,
+    h: &[f32],
+    pos: u32,
+) -> Result<Picked> {
+    let (b, dim) = (ix.block.max(1), ix.head_dim);
+    let all = || Picked { picks: seen.to_vec(), own: seen.to_vec(), gap: f32::INFINITY, score: Vec::new(), block: b };
+    let Some(&me) = seen.last() else { return Ok(all()) };
+    if seen.len() != me + 1 {
+        return err(format!("MLA: a grouped indexer's query at entry {me} of {} it sees: the sequence's tokens from the first", seen.len()));
+    }
+    let (closed, keep) = (me / b, (ix.top_k / b).saturating_sub(1));
+    if closed <= keep {
+        return Ok(all());
+    }
+    if c.pool.len() < closed {
+        return err(format!("MLA: a grouped indexer with {} group keys for {closed} closed groups", c.pool.len()));
+    }
+    let qr = qr.ok_or_else(|| crate::ffi::Error("MLA: an indexer reads the query's low rank, and this layer has none".into()))?;
+    let mut q = p.prod("indexer_wq_b", qr)?;
+    let w = p.prod("indexer_weights", h)?;
+    if q.len() != ix.heads * dim || w.len() != ix.heads {
+        return err(format!("MLA: an indexer of {} query values and {} weights for {} heads of {dim}", q.len(), w.len(), ix.heads));
+    }
+    for head in q.chunks_mut(dim) {
+        trailing_turn(ix, rope, head, pos)?;
+    }
+    let f = ((ix.heads as f64).lpowf(-0.5) * (dim as f64).lpowf(-0.5)) as f32;
+    let w: Vec<f32> = w.iter().map(|x| x * f).collect();
+    let score: Vec<f32> = c.pool[..closed].iter().map(|key| (0..ix.heads).map(|hh| dot(&q[hh * dim..][..dim], key).max(0.0) * w[hh]).sum()).collect();
+    let mut ord: Vec<usize> = (0..closed).collect();
+    ord.sort_by(|&x, &y| score[y].total_cmp(&score[x]).then(x.cmp(&y)));
+    ord.truncate(keep);
+    ord.sort_unstable();
+    let mut out: Vec<usize> = ord.iter().flat_map(|&j| j * b..(j + 1) * b).collect();
+    out.extend(closed * b..=me);
+    Ok(Picked { own: out.clone(), picks: out, gap: super::ffn::margin(&score, keep), score, block: b })
+}
+
 /// A position's factor of each head where queries are scaled by position (`Mla::pos_scale`, `Indexer::pos_scale`): s[h] ln(pos + 1) + b[h], in f32
 /// (transformers' `MistralLarge4TextSoftmaxScaling`: the logarithm of the position plus one as a float, times the head's scale, plus its bias).
 pub fn pos_factors(s: &[f32], b: &[f32], pos: u32) -> Vec<f32> {
@@ -309,10 +407,26 @@ pub fn step_with(m: &Mla, p: &Params, c: &mut LatentCache, shared: Option<&Laten
     };
     // (the indexer's key and pool gate of this token, where the layer has an indexer of its own)
     if let Some(ix) = m.indexer.as_ref().filter(|_| p.has("indexer_wk")) {
-        let mut key = key_norm(ix, p, &p.prod("indexer_wk", h)?)?;
-        index_turn(ix, &rot, &mut key, pos)?;
-        c.ikey.push(key);
-        c.igate.push(if ix.block > 1 { p.prod("indexer_pool_gate", h)? } else { Vec::new() });
+        if let IndexForm::Grouped { key, pool } = ix.form {
+            // (the grouped form: the token's normed key as it is; the group this token closes pooled into one key, turned at its first token's position)
+            if m.rope_learned || m.window.is_some() || ix.q_in.is_some() || ix.pos_scale || ix.shared {
+                return err("MLA: an indexer of the grouped form on a layer with a window, learned rotary frequencies, or queries of another form");
+            }
+            c.ikey.push(norm(&key, &p.prod("indexer_wk", h)?, Some(p.vec("indexer_k_norm")?), None));
+            c.igate.push(Vec::new());
+            let b = ix.block.max(1);
+            if c.ikey.len() % b == 0 && c.pool.len() < c.ikey.len() / b {
+                let first = c.ikey.len() - b;
+                let mut g = group_key(ix, &pool, p, &c.ikey[first..])?;
+                trailing_turn(ix, m.rope.as_ref(), &mut g, c.pos[first])?;
+                c.pool.push(g);
+            }
+        } else {
+            let mut key = key_norm(ix, p, &p.prod("indexer_wk", h)?)?;
+            index_turn(ix, &rot, &mut key, pos)?;
+            c.ikey.push(key);
+            c.igate.push(if ix.block > 1 { p.prod("indexer_pool_gate", h)? } else { Vec::new() });
+        }
     }
     let kv_b = p.vec("kv_b")?;
     if kv_b.len() != nh * (nope + vd) * kr {
@@ -358,7 +472,10 @@ pub fn step_with(m: &Mla, p: &Params, c: &mut LatentCache, shared: Option<&Laten
                 }
                 index_turn(ix, &rot, x, pos)
             };
-            let mut got = picks(ix, p, c, before, q_in.as_deref().or(qr.as_deref()), h, &turn)?;
+            let mut got = match ix.form {
+                IndexForm::Grouped { .. } => picks_grouped(ix, m.rope.as_ref(), p, c, before, qr.as_deref(), h, pos)?,
+                _ => picks(ix, p, c, before, q_in.as_deref().or(qr.as_deref()), h, &turn)?,
+            };
             // (a check's picks for this query in the place of the indexer's own: entries the indexer may pick, each once, in order)
             if let Some(t) = c.take.pop_front().filter(|t| !t.is_empty()) {
                 if t.windows(2).any(|w| w[0] >= w[1]) || t.iter().any(|e| before.binary_search(e).is_err()) {
@@ -372,15 +489,16 @@ pub fn step_with(m: &Mla, p: &Params, c: &mut LatentCache, shared: Option<&Laten
             }
             r
         }
-        None => (seen, f32::INFINITY),
+        // (a window and no indexer: the query's last tokens alone, itself the last of them)
+        None => (seen[seen.len() - m.window.map_or(seen.len(), |w| w.min(seen.len()))..].to_vec(), f32::INFINITY),
     };
     c.margin = margin;
     if m.indexer.is_some() {
         c.picks = seen.clone();
         c.made.push(seen.clone());
     }
-    if m.window.is_some() && m.indexer.as_ref().is_none_or(|ix| ix.shared || ix.block > 1) {
-        return err("MLA: a window of the last tokens beside the picks is of a layer with its own indexer of a key a token");
+    if m.window.is_some() && m.indexer.as_ref().is_some_and(|ix| ix.shared || ix.block > 1) {
+        return err("MLA: a window of the last tokens beside the picks is of a layer whose own indexer has a key a token");
     }
     let sinks = if m.sinks { Some(p.vec("sinks")?) } else { None };
     if sinks.is_some_and(|s| s.len() != nh) {
@@ -1030,9 +1148,163 @@ mod tests {
             differ |= rel(&step(&plain, &p, &mut c, h, t as u32).unwrap(), &got) > 1e-4;
         }
         assert!(differ, "the window changed no row");
+        // (beside the picks of an indexer of the layer's own with a key a token: a pooled or a shared one with a window is refused; with no indexer the
+        // window is all the query reads, which `a_window_alone_is_the_last_tokens` holds)
         let mut d = LatentCache::default();
-        assert!(step(&Mla { indexer: None, ..m.clone() }, &p, &mut d, &hs[0], 0).is_err());
+        let pooled = Mla { indexer: m.indexer.clone().map(|ix| Indexer { block: 2, ..ix }), ..m.clone() };
+        assert!(step(&pooled, &p, &mut d, &hs[0], 0).unwrap_err().msg.contains("a key a token"));
         assert!(!format!("{plain:?}").contains("window") && format!("{m:?}").ends_with("window: 3 }"));
+    }
+
+    /// A window with no indexer (`Mla::window`, Hunyuan's sliding layers): a query at p attends to p - window + 1 ..= p and to nothing before them.
+    /// On a layer with a rotary in interleaved pairs and sinks, a window of 5 over twelve tokens: each query's output is, to the bit, the layer without a
+    /// window run from an empty cache on those tokens alone at their own positions (the sequence's first tokens while it is shorter than the window); it
+    /// is the unwindowed layer's until the window is full and another answer after; and a window of one token reads the query itself.
+    #[test]
+    fn a_window_alone_is_the_last_tokens() {
+        use crate::runtime::kinds::RopeStyle;
+        let (m0, mut p) = layer(4, 1);
+        p.put("q_b", &[48, 24], fill("mla.q_b.window", 48 * 24, -0.3, 0.3));
+        p.put("kv_a", &[24, D], fill("mla.kv_a.window", 24 * D, -0.3, 0.3));
+        p.put("sinks", &[2], vec![0.4, -0.2]);
+        let r = Rope { style: RopeStyle::Interleaved, ..Rope::plain(1e4, 8) };
+        let plain = Mla { rope_dim: 8, rope: Some(r), scale: 24f32.lpowf(-0.5), indexer: None, sinks: true, ..m0 };
+        let m = Mla { window: Some(5), ..plain.clone() };
+        let hs = inputs(12);
+        let (mut a, mut all) = (LatentCache::default(), LatentCache::default());
+        for (t, h) in hs.iter().enumerate() {
+            let got = step(&m, &p, &mut a, h, t as u32).unwrap();
+            let first = (t + 1).saturating_sub(5);
+            let mut alone = LatentCache::default();
+            let want = (first..=t).map(|j| step(&plain, &p, &mut alone, &hs[j], j as u32).unwrap()).last().unwrap();
+            assert_eq!(got, want, "token {t}: tokens {first} to {t} alone");
+            let whole = step(&plain, &p, &mut all, h, t as u32).unwrap();
+            assert_eq!(got == whole, t < 5, "token {t}: the window is every token until it is full");
+        }
+        assert_eq!(a.lat.len(), 12, "the cache keeps every token: the window is the query's");
+        let mut one = LatentCache::default();
+        for (t, h) in hs.iter().enumerate().take(3) {
+            let mut alone = LatentCache::default();
+            assert_eq!(step(&Mla { window: Some(1), ..plain.clone() }, &p, &mut one, h, t as u32).unwrap(), step(&plain, &p, &mut alone, h, t as u32).unwrap());
+        }
+        assert!(format!("{m:?}").ends_with("indexer: None, sinks: true, window: 5 }"));
+    }
+
+    /// Hunyuan's compressed indexer (`IndexForm::Grouped`) by hand, on a latent attention with a rotary in interleaved pairs: groups of 4 tokens, 2
+    /// heads of 16 whose trailing 8 channels turn, 12 tokens kept (two closed groups and the query's own). Over 23 tokens, a token at a time. Each
+    /// token's key in the cache is its RMS-normed key, not turned. A group's key is made when its fourth token arrives and not before: the softmax
+    /// over its tokens, a channel at a time, of the gate product of each key plus the position term weighs the value product of each key; normed;
+    /// its trailing channels turned by hand at the group's first position. A query scores the groups closed before its own and no other: by hand,
+    /// sum over the heads of w relu(q . key) with the query's trailing channels turned at its own position; it keeps the best two whole and every
+    /// token of its own group up to itself, a full group too (the pooled form of the gated indexer would score that one). The layer's output is, to
+    /// the bit, the layer with no indexer run from an empty cache on the kept tokens alone at their positions. While two groups or fewer are closed,
+    /// every token is kept.
+    #[test]
+    fn a_grouped_indexer_by_hand() {
+        use crate::runtime::kinds::RopeStyle;
+        let (m0, mut p) = layer(12, 4);
+        p.put("q_b", &[48, 24], fill("mla.q_b.grouped", 48 * 24, -0.3, 0.3));
+        p.put("kv_a", &[24, D], fill("mla.kv_a.grouped", 24 * D, -0.3, 0.3));
+        for role in ["indexer_pool_value", "indexer_pool_gate"] {
+            p.put(role, &[16, 16], fill(&format!("mla.grouped.{role}"), 256, -0.8, 0.8));
+        }
+        p.put("indexer_pool_norm", &[16], fill("mla.grouped.pool_norm", 16, 0.5, 1.5));
+        let n = Norm::rms(1e-5);
+        let r = Rope { style: RopeStyle::Interleaved, ..Rope::plain(1e7, 8) };
+        let ix = Indexer { form: IndexForm::Grouped { key: n, pool: n }, rope: 8, ..m0.indexer.clone().unwrap() };
+        let plain = Mla { rope_dim: 8, rope: Some(r.clone()), scale: 24f32.lpowf(-0.5), indexer: None, ..m0.clone() };
+        let m = Mla { indexer: Some(ix.clone()), ..plain.clone() };
+        let hs = inputs(23);
+        // (by hand: a vector's trailing 8 channels turned in pairs (2i, 2i + 1) to `pos`)
+        let turned = |x: &[f32], pos: u32| -> Vec<f32> {
+            let (inv, _) = rope::inv_freq_at(&r, pos + 1);
+            let mut y = x.to_vec();
+            for i in 0..4 {
+                let angle = pos as f32 * inv[i];
+                let (cos, sin) = ((angle as f64).lcos() as f32, (angle as f64).lsin() as f32);
+                let (a, b) = (x[8 + 2 * i], x[9 + 2 * i]);
+                (y[8 + 2 * i], y[9 + 2 * i]) = (a * cos - b * sin, b * cos + a * sin);
+            }
+            y
+        };
+        let keys: Vec<Vec<f32>> = hs.iter().map(|h| norm(&n, &p.prod("indexer_wk", h).unwrap(), p.opt("indexer_k_norm"), None)).collect();
+        let (ape, pw) = (p.vec("indexer_pool_ape").unwrap(), p.vec("indexer_pool_norm").unwrap());
+        let group = |g: usize| -> Vec<f32> {
+            let toks = &keys[g * 4..(g + 1) * 4];
+            let values: Vec<Vec<f32>> = toks.iter().map(|k| p.prod("indexer_pool_value", k).unwrap()).collect();
+            let gates: Vec<Vec<f32>> = toks.iter().map(|k| p.prod("indexer_pool_gate", k).unwrap()).collect();
+            let pooled: Vec<f32> = (0..16)
+                .map(|ch| {
+                    let mut w: Vec<f32> = (0..4).map(|i| gates[i][ch] + ape[i * 16 + ch]).collect();
+                    softmax(&mut w);
+                    values[0][ch] * w[0] + values[1][ch] * w[1] + values[2][ch] * w[2] + values[3][ch] * w[3]
+                })
+                .collect();
+            let f = 1.0 / (pooled.iter().map(|v| v * v).sum::<f32>() / 16.0 + 1e-5).sqrt();
+            assert!(rel(&norm(&n, &pooled, Some(pw), None), &pooled.iter().zip(pw).map(|(v, w)| v * f * w).collect::<Vec<_>>()) < 1e-6);
+            turned(&norm(&n, &pooled, Some(pw), None), g as u32 * 4)
+        };
+        let mut c = LatentCache { picked: Some(Vec::new()), ..Default::default() };
+        let (mut own_full, mut chosen) = (0, std::collections::BTreeSet::new());
+        for (t, h) in hs.iter().enumerate() {
+            let got = step(&m, &p, &mut c, h, t as u32).unwrap();
+            assert_eq!((c.ikey[t].clone(), c.igate[t].len()), (keys[t].clone(), 0), "token {t}: its normed key, as it is");
+            let closed = t / 4;
+            assert_eq!(c.pool.len(), (t + 1) / 4, "token {t}: a group's key when its last token arrives");
+            for (g, key) in c.pool.iter().enumerate() {
+                assert_eq!(*key, group(g), "token {t}: group {g}'s key");
+            }
+            let rec = c.picked.as_ref().unwrap().last().unwrap().clone();
+            let own: Vec<usize> = (closed * 4..=t).collect();
+            let want: Vec<usize> = if closed <= 2 {
+                assert!(rec.score.is_empty() && rec.gap == f32::INFINITY, "token {t}");
+                (0..=t).collect()
+            } else {
+                let qr = norm(&m.q_norm, &p.prod("q_a", h).unwrap(), p.opt("q_a_norm"), None);
+                let q = p.prod("indexer_wq_b", &qr).unwrap();
+                let w = p.prod("indexer_weights", h).unwrap();
+                let f = (0.5f64.sqrt() * 0.25) as f32;
+                let score: Vec<f32> = (0..closed)
+                    .map(|g| {
+                        let key = group(g);
+                        (0..2).map(|hh| dot(&turned(&q[hh * 16..][..16], t as u32), &key).max(0.0) * (w[hh] * f)).sum::<f32>()
+                    })
+                    .collect();
+                assert_eq!(rec.score, score, "token {t}: the closed groups' scores, and no other's");
+                let mut ord: Vec<usize> = (0..closed).collect();
+                ord.sort_by(|&x, &y| score[y].total_cmp(&score[x]).then(x.cmp(&y)));
+                ord.truncate(2);
+                ord.sort_unstable();
+                chosen.insert(ord.clone());
+                ord.iter().flat_map(|&g| g * 4..(g + 1) * 4).chain(own.clone()).collect()
+            };
+            assert_eq!((c.picks.clone(), rec.own.clone(), rec.block), (want.clone(), want.clone(), 4), "token {t}");
+            own_full += (closed > 2 && own.len() == 4) as usize;
+            // (the layer with no indexer, from an empty cache, on the kept tokens alone at their own positions)
+            let mut alone = LatentCache::default();
+            let same = want.iter().map(|&j| step(&plain, &p, &mut alone, &hs[j], j as u32).unwrap()).last().unwrap();
+            assert_eq!(got, same, "token {t}");
+        }
+        assert!(own_full >= 2 && chosen.len() > 1, "queries whose own group was full, and more than one choice: {own_full}, {chosen:?}");
+        // (the cache forgets a group with its tokens; a window, or queries of another form, are refused with it)
+        let mut l = crate::runtime::reference::RefLayer::new(
+            crate::runtime::kinds::Block {
+                norm_in: Norm::rms(1e-6),
+                body: crate::runtime::kinds::Body::Mixer(crate::runtime::kinds::Mixer::Mla(m.clone())),
+                norm_out: None,
+                residual: crate::runtime::kinds::Residual::Add,
+            },
+            D,
+            Params::new(),
+        );
+        l.seqs.insert(0, crate::runtime::reference::SeqState::Mla(c));
+        l.forget_from(0, 14);
+        let Some(crate::runtime::reference::SeqState::Mla(c)) = l.seqs.get(&0) else { panic!("no cache") };
+        assert_eq!((c.ikey.len(), c.pool.len()), (14, 3));
+        let mut d = LatentCache::default();
+        assert!(step(&Mla { window: Some(4), ..m.clone() }, &p, &mut d, &hs[0], 0).unwrap_err().msg.contains("grouped form"));
+        let text = format!("{ix:?}");
+        assert!(text.contains("form: Grouped { key: Norm {") && text.ends_with("rope: 8 }"), "{text}");
     }
 
     /// An indexer's rotary that pairs its channels its own way (`Indexer::rope_style`, ERNIE's: halves beside the attention's interleaved pairs): each

@@ -126,6 +126,12 @@ fn label(b: &Block) -> (Class, String) {
     match &b.body {
         Body::Mixer(Mixer::Attention(a)) => {
             let mut s = format!("attention: {} heads over {} of {}", a.heads, a.kv_heads, a.head_dim);
+            if a.v_head_dim != a.head_dim {
+                s += &format!(", values of {}", a.v_head_dim);
+            }
+            if a.v_scale != 1.0 {
+                s += &format!(", values times {}", a.v_scale);
+            }
             if let Some(w) = a.window {
                 s += &format!(", window {w}");
             }
@@ -1042,7 +1048,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes, 
 
 /// `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain | --sequence]`: the cases (all unless named), then each class's worst against its bound.
 pub fn run(a: &crate::args::Args) -> Result<()> {
-    const ALL: [&str; 22] = [
+    const ALL: [&str; 23] = [
         "gemma4",
         "gemma4-kv",
         "qwen35",
@@ -1053,6 +1059,7 @@ pub fn run(a: &crate::args::Args) -> Result<()> {
         "granite-swa",
         "mellum",
         "lfm3",
+        "mimo",
         "nemotron-h",
         "muse",
         "kimi",

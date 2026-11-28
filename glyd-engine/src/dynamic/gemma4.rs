@@ -20,6 +20,7 @@ pub(crate) fn attention(c: &ConfigG4, kind: KindG4, nq: usize, q_norm: usize, k_
         k_off: nq * d,
         v_off: (writes && has_v).then_some((nq + nk) * d),
         d,
+        dv: d,
         nq,
         nk,
         writes,
@@ -36,6 +37,8 @@ pub(crate) fn attention(c: &ConfigG4, kind: KindG4, nq: usize, q_norm: usize, k_
         sbf16: true,
         picked: false,
         sinks: None,
+        v_scale: 1.0,
+        shards: 1,
     })
 }
 

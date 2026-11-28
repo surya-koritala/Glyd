@@ -263,7 +263,8 @@ pub struct OutGate {
 /// `block` tokens, or a compressed entry), the best kept. Ibis's block indexer, GLM's pooled-key indexer and DeepSeek-V4's
 /// compressed-entry indexer are this kind with parameters. In `Ref`: a latent attention's (`reference::mla`, GLM-5.3-Flash),
 /// DeepSeek-V4's (`reference::comp`), and on a GQA attention (`reference::attention`) Ibis's (`IndexForm::Mean`) and MiniMax M3's, whose score is not
-/// this sum: each index head keeps blocks of its own by the best dot product in each (`IndexForm::Max`).
+/// this sum: each index head keeps blocks of its own by the best dot product in each (`IndexForm::Max`). Hunyuan's compressed indexer is the form
+/// `IndexForm::Grouped` on a latent attention.
 #[derive(Clone, PartialEq)]
 pub struct Indexer {
     pub heads: usize,
@@ -280,7 +281,8 @@ pub struct Indexer {
     pub form: IndexForm,
     /// The gated form's rotary: the first `rope` channels of each query head and of each token's key rotated to their positions by the attention's rotary
     /// (the full-size GLM's indexer, its `qk_rope_head_dim`); 0: none (GLM-5.3-Flash, Kimi-K3.1, DeepSeek-V4). The mean form's
-    /// queries and pools are rotated as `IndexForm::Mean` says, whatever this is.
+    /// queries and pools are rotated as `IndexForm::Mean` says, whatever this is. The grouped form's: the TRAILING `rope` channels of each query head and
+    /// of each group's key (`IndexForm::Grouped`).
     pub rope: usize,
     /// How the indexer's own rotary pairs its `rope` channels where that is not the attention's pairing (the same frequencies and positions): ERNIE's
     /// latent attention turns interleaved pairs and its indexer halves, (i, i + rope / 2). None: as the attention's rotary.
@@ -298,6 +300,10 @@ impl Indexer {
     /// The refusal of an indexer whose rotary pairs its channels otherwise than its attention's: the CPU reference computes it, the executor turns the
     /// indexer's channels by the attention's table.
     pub const ROPE_STYLE_NOT_RUN: &'static str = "an indexer's rotary of another pairing than its attention's, which the executor does not run yet";
+    /// The refusal of an indexer of the grouped form (`IndexForm::Grouped`): the CPU reference computes it, the executor's indexers pool a product of the
+    /// block's input and score every complete pool.
+    pub const GROUPED_NOT_RUN: &'static str =
+        "an indexer whose closed groups of tokens are each one key pooled from the tokens' normed keys, which the executor does not run yet";
 }
 
 /// The derived form, with `form` said only where it is not the gated form with LayerNorm-ed keys (`IndexForm::LAYER_KEYS`), `rope` only where it
@@ -341,6 +347,22 @@ pub enum IndexForm {
     /// raw keys, normed by `norm` (role `index_k_norm`) and rotated at the pool's first position; a pool's score sum_h relu(q_h . k) /
     /// sqrt(head_dim), the heads unweighted.
     Mean { norm: Norm },
+    /// Hunyuan's compressed indexer, on a latent attention. A key a token from its own product of the block's input (`indexer_wk`), normed by `key`
+    /// (role `indexer_k_norm`) and not turned. Each closed group of `block` tokens (tokens g block .. (g + 1) block of the sequence) is one key: the
+    /// softmax over the group's tokens, a channel at a time, of `indexer_pool_gate` of the token's normed key plus `indexer_pool_ape` [block,
+    /// head_dim] weighs `indexer_pool_value` of it (both [head_dim, head_dim]: products of the key, not of the block's input); the sum normed by
+    /// `pool` (role `indexer_pool_norm`), and its TRAILING `Indexer::rope` channels turned to the group's first token's position by the attention's
+    /// rotary. The queries are a product of the attention's query latent (`indexer_wq_b`), each head's trailing `rope` channels turned to the query's
+    /// position. A group's score is sum_h w_h relu(q_h . key), w the weights' product of the block's input (`indexer_weights`) times heads^-0.5
+    /// head_dim^-0.5. A query scores the groups closed before its own (g < its index / block), keeps the best `top_k / block` - 1 of them whole and,
+    /// whatever they score, every token of its own group up to itself, full or not: `top_k` tokens at most. A group's key is made once, when its last
+    /// token arrives.
+    ///
+    /// This is the f32 form. The family's readers round each token's key, each group's key (after its norm, and again after its rotary) and each
+    /// query (after its rotary) to bf16, then turn every key and query by an orthonormal Hadamard transform and quantize it to FP8 with a
+    /// power-of-two scale a vector before they score; and they leave the turned channels de-interleaved, the same order in keys and queries, which
+    /// moves no score.
+    Grouped { key: Norm, pool: Norm },
     /// MiniMax M3's sparse attention: the `heads` queries from one product of the block's input (role `index_q` [heads head_dim, hidden]) and ONE key a
     /// token from another (`index_k` [head_dim, hidden]); each query head normed by `norm` (role `index_q_norm` [head_dim]) and the key by `norm` (role
     /// `index_k_norm`), each rotated at its own token's position by the attention's rope (on the first `dim` channels of the head); a token's normed and
@@ -473,7 +495,8 @@ pub struct Mla {
     pub sinks: bool,
     /// With an indexer of the layer's own: the query attends to its last `window` tokens whatever the indexer picks, and the indexer picks its
     /// `top_k` among the tokens before them (ERNIE's latent layers: the model's `sliding_window`, so a query reads up to `top_k` + `window` tokens in
-    /// one softmax). None: the indexer picks among every token the query sees.
+    /// one softmax). With no indexer: the query attends to its last `window` tokens alone, itself the last of them (Hunyuan's sliding layers: a query
+    /// at p reads p - window + 1 ..= p, as `Attn::window`). None: the indexer picks among every token the query sees, or the query reads them all.
     pub window: Option<usize>,
     /// The queries scaled by their position ("scalable softmax"): each query head h, after its rotary, times `q_scale_s`[h] ln(pos + 1) + `q_scale_b`[h],
     /// pos the query's own position (the first token's 0, whose factor is the bias alone); the keys are not scaled, so every score of the query, and the
@@ -492,10 +515,10 @@ pub struct Mla {
 impl Mla {
     /// The refusal of a latent attention with sinks: the CPU reference computes them, the executor's latent attention has no sink.
     pub const SINKS_NOT_RUN: &'static str = "a latent attention with sinks, which the executor does not run yet";
-    /// The refusal of a latent attention whose last tokens are attended beside the indexer's picks: the CPU reference computes it, the executor's
-    /// indexer picks among every token.
+    /// The refusal of a latent attention with a window (its last tokens attended beside the indexer's picks, or alone): the CPU reference computes it,
+    /// the executor's indexer picks among every token and its latent attention with no indexer reads them all.
     pub const WINDOW_NOT_RUN: &'static str =
-        "a latent attention that reads a window of its last tokens beside its indexer's picks, which the executor does not run yet";
+        "a latent attention that reads a window of its last tokens (beside its indexer's picks, or alone), which the executor does not run yet";
 }
 
 /// The derived form, with `head_mix`, `sinks`, `window`, `pos_scale`, `kv_from` and `rope_learned` said only where they are set: the other latent
@@ -918,7 +941,8 @@ pub enum Ffn {
 /// hidden, dim], `value` [hidden, dim], `norm_key` and `norm_conv` [streams hidden] (their kind `norm`, a stream at a time), `conv`
 /// [streams hidden, conv]; and the hash's own int64 tensors, what the parameters make: `ngram_mult` [order], `ngram_sizes`,
 /// `ngram_offsets` [(order - 1) heads]. A sequence's state: its last `order` - 1 tokens and the convolution's last (conv - 1) dilation
-/// inputs. `form` says where a family's differs (DeepSeek-V4.1's Engram: `NgramForm::Engram`); `table` where the tables are held.
+/// inputs. `form` says where a family's differs (DeepSeek-V4.1's Engram: `NgramForm::Engram`; Hunyuan's: `NgramForm::EngramNormed`); `table` where the
+/// tables are held.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Ngram {
     pub order: usize,
@@ -959,6 +983,22 @@ pub enum NgramForm {
     /// segments: a position before the sequence reads as `eos` (its pad id) and the end token is a token like another; no convolution (`conv`
     /// 0): the output is g. The key and the value may be one product, role `kv` [(streams + 1) hidden, dim], the keys' rows first.
     Engram,
+    /// Hunyuan's n-gram memory: `Engram`'s hash, gate and stream-by-stream add (compressed ids, numpy's multipliers, no segments, no convolution), with
+    /// these of its own. The compressed vocabulary is a tensor of the checkpoint (role `ngram_map`, int32 [its length]: a token past its length is its
+    /// own id), and the multipliers' bound is of its largest id plus one, (2^63 - 1) / (largest + 1) / 2, not of `vocab`, which is the model's vocabulary;
+    /// `seed` is the config's seed plus 10007 times the layer's number counted from 1. A position whose token is `eos` (the pad id) adds nothing to the
+    /// streams, and is a token like another in the n-grams of the positions after it. Each table's row is RMS-normed on its own before the products, r
+    /// w / sqrt(mean r^2 + f32's epsilon) (role `ngram_norm` [tables row], a table's weights in turn). The keys and the value are products with a bias
+    /// (`kv` and `kv_bias` [(streams + 1) hidden], the keys' first). The gate is `Engram`'s on the keys normed by `norm` (`norm_key`) and the streams normed
+    /// by the block's `norm_in`, its signed root of 0 being 0. The value is normed with a weight: signal = `value_gamma` v / sqrt(mean v^2 + f32's
+    /// epsilon) (role [hidden]); stream s adds (sigmoid(gate_s) + `stream_scale`_s) signal, the scale a value a channel (role [streams hidden]).
+    EngramNormed,
+}
+
+impl Ngram {
+    /// The refusal of Hunyuan's form of the n-gram memory: the CPU reference computes it, the executor's n-gram operations are the other two forms'.
+    pub const NORMED_NOT_RUN: &'static str =
+        "an n-gram memory whose rows and value are normed, with a compressed vocabulary from the checkpoint, which the executor does not run yet";
 }
 
 /// The derived form, with `form` said only where it is not `Segmented` and `table` only where it is not `Gpu`: descriptions of that form read as they did
@@ -1047,7 +1087,8 @@ pub struct GateP {
 
 /// n residual streams mixed per block: mHC (GLM-5.3, DeepSeek-V4). The block's input is a weighted sum of the streams; its output is
 /// spread back over them with the Sinkhorn-projected mixing of the streams. Roles `hc_fn` [(2 + n) n, n hidden], `hc_base` [(2 + n) n],
-/// `hc_scale` [3]. Ibis's gated residuals are the other rule of several streams (`GatedStreamsP`).
+/// `hc_scale` [3]. Ibis's gated residuals are the other rule of several streams (`GatedStreamsP`). Streams that keep apart (`apart`: Hunyuan's) are
+/// this kind without the mixing: `hc_fn` [2 n, n hidden], `hc_base` [2 n], `hc_scale` [2].
 #[derive(Clone, Copy, PartialEq)]
 pub struct StreamsP {
     pub streams: usize,
@@ -1069,9 +1110,18 @@ pub struct StreamsP {
     /// The weightless norm's epsilon outside the root: the flattened streams times 1 / (sqrt(mean x^2) + norm_eps), where the others' is
     /// 1 / sqrt(mean x^2 + norm_eps) (ERNIE's residual streams, in its blocks and in its hyper-head: `Collapse::Weighted` norms as the model's streams do).
     pub eps_outside: bool,
+    /// Streams that do not mix with each other (Hunyuan's independent hyper-connections): no mixing matrix and no Sinkhorn pass (`sinkhorn_iters` 0),
+    /// so the roles hold an input weight and an output weight a stream and two scales. With w = (`hc_fn` x) r, x the token's flattened streams and r
+    /// their weightless norm's factor (the product first, then the factor): the block's input is sum_i pre_i x_i, pre_i = sigmoid(w[i] scale[0] +
+    /// base[i]) + eps, as mHC's; stream i then adds post_i times the block's output to itself, post_i = this magnitude times sigmoid(w[n + i] scale[1]
+    /// + base[n + i]) + eps (mHC's is 2 sigmoid, no eps, beside the mix of the streams). None: mHC's.
+    pub apart: Option<f32>,
 }
 
 impl StreamsP {
+    /// The refusal of streams that do not mix: the CPU reference computes them, the executor's kernels read mHC's roles and mix.
+    pub const APART_NOT_RUN: &'static str = "residual streams that do not mix with each other, which the executor does not run yet";
+
     /// The refusal of streams whose norm has its epsilon outside the root: the CPU reference computes it, the executor's kernels the other form.
     pub const EPS_OUTSIDE_NOT_RUN: &'static str =
         "residual streams whose norm has its epsilon outside the root (1 / (rms + eps)), which the executor does not run yet";
@@ -1087,7 +1137,7 @@ impl StreamsP {
     }
 }
 
-/// The derived form, with `lagged` and `eps_outside` said only where they are set: the other blocks' descriptions read as before the fields (the digests of
+/// The derived form, with `lagged`, `eps_outside` and `apart` said only where they are set: the other blocks' descriptions read as before the fields (the digests of
 /// tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for StreamsP {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1102,6 +1152,9 @@ impl std::fmt::Debug for StreamsP {
         }
         if self.eps_outside {
             s.field("eps_outside", &self.eps_outside);
+        }
+        if let Some(m) = &self.apart {
+            s.field("apart", m);
         }
         s.finish()
     }
@@ -1246,7 +1299,8 @@ pub enum Collapse {
     DepthMix,
     /// DeepSeek-V4's hyper-head: a weighted sum of the streams, the weights sigmoid(`out_hc_fn` rms(streams) `out_hc_scale` +
     /// `out_hc_base`) + eps (roles [n, n hidden], [1], [n]); rms the weightless norm of the flattened streams at `norm_eps`, its epsilon where the model's
-    /// streams have theirs (`StreamsP::eps_outside`).
+    /// streams have theirs (`StreamsP::eps_outside`). Over streams that keep apart (`StreamsP::apart`) the product is of the streams as they are and the
+    /// norm's factor multiplies it after, as their blocks' weights are made.
     Weighted { eps: f32, norm_eps: f32 },
     /// Ibis's final mixer: the gated residuals' input mix (`GatedStreamsP`) with the model's roles `out_mix_down`, `out_mix_up`, each stream
     /// normed by the final norm (its weight [n hidden], a stream's each) before the mix, and no norm after it.
