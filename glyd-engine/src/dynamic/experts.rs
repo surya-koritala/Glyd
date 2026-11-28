@@ -132,6 +132,10 @@ pub fn cfg(m: &kinds::Moe, hidden: usize, inter: usize) -> Result<MoeCfg> {
     }
     // (the SwiGLU limit the kernels compute holds the gate before its activation; the limit on the activated gate is refused by its name)
     let limit = kinds::Clamp::before(m.expert.clamp).map_err(|e| e.context(&format!("experts of {:?}", m.expert)))?;
+    // (the gpt-oss SwiGLU, the experts' or the shared expert's: refused by its name)
+    if let Some(why) = m.expert.not_run().or(m.shared.and_then(|s| s.not_run())) {
+        return err(format!("experts of {:?}: {why}", m.expert));
+    }
     let scoring = match r.score {
         RouterScore::Softmax => Scoring::Softmax,
         RouterScore::Sigmoid => Scoring::Sigmoid,
@@ -1914,6 +1918,14 @@ mod tests {
                 m.shared = Some(m.expert);
             },
             "SwiGLU",
+        );
+        refused(
+            &|m| {
+                m.expert.act = kinds::Act::SwigluOai { alpha: 1.702 };
+                m.expert.clamp = Some(kinds::Clamp::Gate(7.0));
+                m.shared = Some(m.expert);
+            },
+            kinds::Act::SWIGLU_OAI_NOT_RUN,
         );
     }
 

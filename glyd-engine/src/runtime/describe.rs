@@ -2,9 +2,10 @@
 //! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), Qwen3.8-Flash-Next (Ibis's
 //! model: gated residuals, the indexer on GQA, the hashed n-gram embedding), gemma-4 text, GLM-5.3 and
 //! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, DeepSeek-V4, Nemotron 3
-//! (`nemotron_h`), LFM3 (`lfm3`: described, not run yet), Ling 3 (`bailing_hybrid`: described, not run yet), ERNIE 5.5 (`ernie5_5_moe`:
-//! described, not run yet), Hy4 Flash (`hy_v4_flash`: its config read and held, refused at the parts no kind says yet), Mistral Large (`mistral_large4_text`:
-//! described, not run yet), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
+//! (`nemotron_h`), LFM3 (`lfm3`), Ling 3 (`bailing_hybrid`: described, not run yet), ERNIE 5.5 (`ernie5_5_moe`: described, not run yet), Hy4 Flash
+//! (`hy_v4_flash`: its config read and held, refused at the parts no kind says yet), Mistral Large (`mistral_large4_text`: described, not run
+//! yet), MiniMax M3 (`minimax_m3_vl`: described, not run yet), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3).
+//! Weight maps name the released tensors,
 //! through the tables of their naming convention (`names`); a format detail such as Kimi-K3's MXFP4 experts (`.weight_packed` for
 //! `.weight`) is the loader's. The config comes parsed once (`config::ModelConfig`).
 //!
@@ -605,7 +606,8 @@ pub fn describe_config_in(c: &ModelConfig, have: Option<&BTreeSet<String>>) -> R
         "lfm3" => lfm3(tc, prefix, mt, tied_top),
         "mimo_v2" => mimo_v2(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
         "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
-        // (a wrapper whose text model has no type of its own, MiniMax M3.1's: the family is the wrapper's)
+        // (a wrapper whose text model has no type of its own: the family is the wrapper's. MiniMax M3's is one)
+        "" if c.nested && c.model_type == "minimax_m3_vl" => minimax_m3(c),
         "" if c.nested && !c.model_type.is_empty() => err(format!("model_type {} has no description builder yet", c.model_type)),
         "" => err("config.json names no model_type"),
         m => err(format!("model_type {m} has no description builder yet")),
@@ -1742,6 +1744,387 @@ fn mimo_v2(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<boo
     }
     (out.shapes, out.scales, out.mtp) = (shapes, scales, mtp_roles);
     out.fp8_block = quant.map(|q| q.block);
+    Ok(out)
+}
+
+/// MiniMax M3's `quantization_config` as released (M3.1): `quant_method` "mxfp8", every product of a layer but the modules of `ignored_layers` FP8 E4M3 with
+/// a byte's power-of-two scale a run of 32 columns of a row (`weight_block_size` [1, 32]; the scales under the name `weight_scale_inv`, which here is what a
+/// value is multiplied by, 2^(byte - 127)); the routed experts NVFP4 as llm-compressor packs it (`moe_quant_algo` "NVFP4", `moe_quant_format`
+/// "nvfp4-pack-quantized", `group_size` 16: `weight_packed` two 4-bit E2M1 values a byte, `weight_scale` an FP8 E4M3 scale a run of 16 columns of a row,
+/// `weight_global_scale` one fp32 number a matrix that the block scales were multiplied by, so a weight is its E2M1 value times its run's scale over the
+/// global scale). Anything else is refused with what differs.
+struct MinimaxQuant {
+    ignored: Vec<String>,
+}
+
+impl MinimaxQuant {
+    /// Whether the config leaves the matrix `w`'s module in bf16: the module, or a part of the model above it, is in `ignored_layers` (a name there is a
+    /// whole path, `language_model.model.layers.3.block_sparse_moe.gate`, or its end, `lm_head`, `model.embed_tokens`).
+    fn leaves(&self, w: &str) -> bool {
+        let m = w.strip_suffix(".weight").unwrap_or(w);
+        self.ignored.iter().any(|x| m == x || m.ends_with(&format!(".{x}")) || m.starts_with(&format!("{x}.")) || m.contains(&format!(".{x}.")))
+    }
+}
+
+fn minimax_quant(q: &Value, mt: &str) -> Result<MinimaxQuant> {
+    let what = format!("{mt}: quantization_config");
+    let Some(o) = q.as_object() else { return err(format!("{what} = {q} is not an object")) };
+    let k = Keys::new(o, &what);
+    let method = k.str("quant_method")?;
+    if method != Some("mxfp8") {
+        return err(format!("{what}: quant_method {method:?}, where the description reads mxfp8"));
+    }
+    match k.raw("weight_block_size").and_then(Value::as_array).map(|a| a.iter().map(Value::as_u64).collect::<Vec<_>>()).as_deref() {
+        Some([Some(1), Some(32)]) => {}
+        _ => {
+            return err(format!(
+                "{what}: weight_block_size {} is not supported: a scale a run of 32 columns of a row, [1, 32], is",
+                o.get("weight_block_size").unwrap_or(&Value::Null)
+            ))
+        }
+    }
+    // (the activations' quantization is the serving engine's choice of arithmetic, not the weights': only the release's own is taken)
+    k.expect("activation_scheme", &Value::from("dynamic"))?;
+    // (the experts' format: the one the release's loader reads)
+    let (algo, fmt) = (k.str("moe_quant_algo")?, k.str("moe_quant_format")?);
+    if algo != Some("NVFP4") || fmt != Some("nvfp4-pack-quantized") {
+        return err(format!(
+            "{what}: moe_quant_algo {algo:?}, moe_quant_format {fmt:?}: the experts' stored format is read as NVFP4, nvfp4-pack-quantized, only"
+        ));
+    }
+    k.expect("group_size", &Value::from(16))?;
+    let ignored = match k.raw("ignored_layers") {
+        None => Vec::new(),
+        Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+        Some(v) => return err(format!("{what}: ignored_layers = {v} is not a list of modules")),
+    };
+    k.finish()?;
+    Ok(MinimaxQuant { ignored })
+}
+
+/// MiniMax M3 (the wrapper `minimax_m3_vl`, MiniMaxM3SparseForConditionalGeneration, whose `text_config` names no model type of its own): a pre-norm decoder
+/// of one grouped-query attention and, a layer, a dense gated MLP or a mixture of experts, read as the release's own serving code reads its config (SGLang's
+/// `minimax_m3.py`, of which the release's `configuration_minimax_m3_vl.py` says it is the mirror) and held to transformers' `minimax_m3_vl` and llama.cpp's
+/// `minimax-m3.cpp` where those say the same thing in other keys.
+///  - `use_gemma_norm`: every norm of the model (a layer's two, the last one, the q and k norms and the indexer's) is the RMS norm times (1 + weight)
+///    (`NormWeight::PlusOne`); false or unsaid, times the weight;
+///  - `num_attention_heads` query heads over `num_key_value_heads` of `head_dim` (unsaid: hidden / heads), no biases, the scores scaled by 1 / sqrt(head_dim);
+///    `qk_norm_type` "per_head" norms each query and key head with one weight of `head_dim` (the other types, one vector a layer and a weight a head, are
+///    not described; `use_qk_norm` is read by no code and must not say false); `attention_output_gate` is read by no code and must be false;
+///  - the rotary: plain, base `rope_theta` (unsaid: 10,000 in SGLang, 5,000,000 in transformers' class; SGLang's is taken), on the first `rotary_dim`
+///    channels of a head (unsaid: the whole head), paired (i, i + rotary_dim / 2); `partial_rotary_factor`, which transformers reads in its place, must say
+///    the same span;
+///  - `sparse_attention_config`: `sparse_attention_freq` says a layer 1 (sparse) or 0; a sparse layer has the block-max indexer (`IndexForm::Max`):
+///    `sparse_num_index_heads` queries of `sparse_index_dim` and one key a token, normed as the attention's and rotated by its rotary; blocks of
+///    `sparse_block_size` positions; `sparse_score_type` "max" scores a block by its best key ("lse", the log of the sum of the exponentials, is not
+///    described); `sparse_local_block` blocks ending at the query's own are always kept, among the `sparse_topk_blocks` kept; `sparse_init_block` first
+///    blocks of the sequence always kept: only 0; an index head chooses for one KV head, so the two counts must be equal (SGLang joins the choices of
+///    several index heads a KV head, which no release has); `sparse_disable_index_value` 1 says the indexer has no values of its own: 0 (an
+///    `index_v_proj` and an `index_o_proj` whose product is added to the attention's output) is not described; `use_sparse_attention` is read by no code;
+///  - `hidden_act` "swigluoai" with `swiglu_alpha` and `swiglu_limit`: min(g, l) sigmoid(alpha min(g, l)) (clamp(u, -l, l) + 1) in the dense MLPs, the
+///    experts and the shared expert alike (`Act::SwigluOai`, `Clamp::Gate`);
+///  - `moe_layer_freq` says a layer 0 (a dense MLP of `dense_intermediate_size`) or not 0 (unsaid: every layer): `num_local_experts` of
+///    `intermediate_size`, the sigmoid of the router's logits (`scoring_func`), with `use_routing_bias` a choice bias `e_score_correction_bias`, the best
+///    `num_experts_per_tok` kept and divided by their sum, the experts' sum times `routed_scaling_factor`; with `n_shared_experts` a shared expert of
+///    `intermediate_size` x `n_shared_experts` added unscaled (transformers sizes it by `shared_intermediate_size`, which must say the same; it and vLLM
+///    build one whatever the count says, vLLM of `intermediate_size`: at the releases' one shared expert of that width the four agree).
+/// Stored formats (`quantization_config`, `minimax_quant`): the attention's and the indexer's products, the dense MLPs and the shared expert FP8 with a
+/// scale a run of 32 (`X.weight_scale_inv`); the routed experts NVFP4, `X.weight_packed` the codes, `X.weight_scale` their runs' scales and, the scales' own
+/// scale, `X.weight_global_scale`; the routers fp32, the norms, the embedding and the head bf16. No loader of the engine reads either format yet: the
+/// description names the tensors. The blocks are not square, so `fp8_block` says none.
+/// Left unread, by name: the vision tower, its projector and the patch merger (`vision_config` and the wrapper's keys of the image's path;
+/// `names::MINIMAX`), and the release's draft model, which is a checkpoint of its own beside this one (`dspark/`).
+fn minimax_m3(c: &ModelConfig) -> Result<Described> {
+    let (mt, tc) = (c.model_type.as_str(), &c.text);
+    const IMAGE: [&str; 11] = [
+        "vision_config",
+        "img_token_compression_config",
+        "image_grid_pinpoints",
+        "image_seq_length",
+        "multimodal_projector_bias",
+        "process_image_mode",
+        "projector_hidden_act",
+        "projector_hidden_size",
+        "vision_feature_layer",
+        "vision_feature_select_strategy",
+        "num_reward_heads",
+    ];
+    top_keys(&c.top, mt, &[&["text_config", "quantization_config", "tie_word_embeddings"][..], &IMAGE[..]].concat())?;
+    // (a key no code of the release reads; only what the release says of it is taken)
+    if let Some(v) = c.top.get("num_reward_heads").filter(|v| !v.is_null() && v.as_u64() != Some(0)) {
+        return err(format!("{mt}: num_reward_heads = {v} is not supported (only 0)"));
+    }
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, c.top.get("tie_word_embeddings").and_then(Value::as_bool))?;
+    let n = if k.bool("use_gemma_norm", false)? { Norm::rms_plus_one(eps) } else { Norm::rms(eps) };
+    // the attention
+    let (heads, kv) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?);
+    let hd = k.opt_usize("head_dim")?.unwrap_or(d / heads.max(1));
+    if heads == 0 || kv == 0 || hd == 0 || heads % kv != 0 {
+        return err(format!(
+            "{mt}: {heads} heads of {hd} over {kv} key heads (num_attention_heads, head_dim, num_key_value_heads) are not whole heads a key head"
+        ));
+    }
+    k.expect("use_qk_norm", &Value::Bool(true))?;
+    match k.str("qk_norm_type")? {
+        Some("per_head") => {}
+        None => return err(format!("{mt}: no qk_norm_type: the release's code then norms a layer's heads as one vector (per_layer), which is not described")),
+        Some(o) => return err(format!("{mt}: qk_norm_type {o} is not supported (only per_head: a norm a head, one weight of the head's width)")),
+    }
+    k.expect("attention_output_gate", &Value::Bool(false))?;
+    for key in ["rope_scaling", "rope_parameters"] {
+        k.expect(key, &Value::Null)?;
+    }
+    let theta = k.opt_f64("rope_theta")?.unwrap_or(10_000.0);
+    let rdim = k.opt_usize("rotary_dim")?.unwrap_or(hd);
+    if rdim == 0 || rdim % 2 != 0 || rdim > hd {
+        return err(format!("{mt}: rotary_dim = {rdim} is not an even span of a head of {hd}"));
+    }
+    if let Some(p) = k.opt_f64("partial_rotary_factor")?.filter(|p| (hd as f64 * p) as usize != rdim) {
+        return err(format!("{mt}: partial_rotary_factor = {p} of a head of {hd}, where rotary_dim rotates {rdim} channels: the two must say the same span"));
+    }
+    let rp = Rope::plain(theta, rdim);
+    // the sparse attention: which layers, and their indexer
+    let (indexed, indexer) = match k.raw("sparse_attention_config") {
+        None => (vec![false; layers], None),
+        Some(Value::Object(o)) => {
+            let s = Keys::new(o, &format!("{mt}: sparse_attention_config"));
+            s.expect("use_sparse_attention", &Value::Bool(true))?;
+            let flags = |key: &str| -> Result<Vec<bool>> {
+                per_layer(&s, key, layers)?
+                    .iter()
+                    .enumerate()
+                    .map(|(l, v)| v.as_u64().map(|x| x != 0).ok_or_else(|| Error(format!("{}: {key}[{l}] = {v} is not 0 or 1", s.what))))
+                    .collect()
+            };
+            let indexed = flags("sparse_attention_freq")?;
+            let (ih, idim) = (s.usize("sparse_num_index_heads")?, s.usize("sparse_index_dim")?);
+            let (keep, block, local) = (s.usize("sparse_topk_blocks")?, s.usize("sparse_block_size")?, s.usize("sparse_local_block")?);
+            match s.str("sparse_score_type")? {
+                None | Some("max") => {}
+                Some(o) => return err(format!("{}: sparse_score_type {o} is not supported (only max: a block's best key)", s.what)),
+            }
+            if let Some(i) = s.raw("sparse_init_block").filter(|v| v.as_u64() != Some(0)) {
+                return err(format!("{}: sparse_init_block = {i} is not supported (only 0: no block of the sequence's start is always kept)", s.what));
+            }
+            // (1: the indexer chooses and adds nothing; unsaid, the release's code gives a layer the indexer's own values and output product)
+            let chooses = match s.raw("sparse_disable_index_value") {
+                None => vec![false; layers],
+                Some(_) => flags("sparse_disable_index_value")?,
+            };
+            if let Some(l) = (0..layers).find(|&l| indexed[l] && !chooses[l]) {
+                return err(format!(
+                    "{}: sparse_disable_index_value does not say 1 for the sparse layer {l}: an indexer with values of its own (index_v_proj, index_o_proj) is not described",
+                    s.what
+                ));
+            }
+            if ih != kv {
+                return err(format!(
+                    "{}: sparse_num_index_heads = {ih} for {kv} key heads is not supported: an index head chooses the blocks of one key head",
+                    s.what
+                ));
+            }
+            if idim == 0 || block == 0 || keep == 0 || local > keep || rdim > idim {
+                return err(format!(
+                    "{}: an indexer of heads of {idim} keeping {keep} blocks of {block}, {local} of them the query's own and the ones before it, under a rotary of {rdim}",
+                    s.what
+                ));
+            }
+            s.finish()?;
+            let form = IndexForm::Max { norm: n, local };
+            (
+                indexed,
+                Some(Indexer {
+                    heads: ih,
+                    head_dim: idim,
+                    top_k: keep * block,
+                    block,
+                    shared: false,
+                    form,
+                    rope: 0,
+                    rope_style: None,
+                    q_in: None,
+                    pos_scale: false,
+                }),
+            )
+        }
+        Some(v) => return err(format!("{mt}: sparse_attention_config = {v} is not an object")),
+    };
+    // the feed-forward
+    match k.str("hidden_act")? {
+        Some("swigluoai") => {}
+        o => return err(format!("{mt}: hidden_act {o:?} is not supported (only swigluoai, with swiglu_alpha and swiglu_limit)")),
+    }
+    let (alpha, limit) = (k.f64("swiglu_alpha")? as f32, k.f64("swiglu_limit")? as f32);
+    if !(alpha.is_finite() && limit.is_finite() && alpha > 0.0 && limit > 0.0) {
+        return err(format!("{mt}: swiglu_alpha = {alpha} and swiglu_limit = {limit} are not a sigmoid's gain and a limit"));
+    }
+    let mlp = Mlp { act: Act::SwigluOai { alpha }, gated: true, bias: false, clamp: Some(Clamp::Gate(limit)) };
+    let sparse: Vec<bool> = match k.raw("moe_layer_freq") {
+        None => vec![true; layers],
+        Some(_) => per_layer(&k, "moe_layer_freq", layers)?
+            .iter()
+            .enumerate()
+            .map(|(l, v)| v.as_u64().map(|x| x != 0).ok_or_else(|| Error(format!("{mt}: moe_layer_freq[{l}] = {v} is not a count"))))
+            .collect::<Result<_>>()?,
+    };
+    let (any_sparse, any_dense) = (sparse.iter().any(|s| *s), sparse.iter().any(|s| !*s));
+    let count = |key: &str, used: bool| -> Result<usize> {
+        match k.opt_usize(key)? {
+            Some(x) if x > 0 || !used => Ok(x),
+            None if !used => Ok(0),
+            _ => err(format!("{mt}: no {key}")),
+        }
+    };
+    let dense_inter = count("dense_intermediate_size", any_dense)?;
+    let (inter, ne, top_k) = (count("intermediate_size", any_sparse)?, count("num_local_experts", any_sparse)?, count("num_experts_per_tok", any_sparse)?);
+    if top_k > ne {
+        return err(format!("{mt}: num_experts_per_tok = {top_k} of {ne} experts"));
+    }
+    k.expect("scoring_func", &Value::from("sigmoid"))?;
+    let scale = k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32;
+    let n_shared = k.opt_usize("n_shared_experts")?.unwrap_or(0);
+    let shared_inter = inter * n_shared;
+    if let Some(s) = k.opt_usize("shared_intermediate_size")?.filter(|s| any_sparse && n_shared > 0 && *s != shared_inter) {
+        return err(format!(
+            "{mt}: shared_intermediate_size = {s}, where {n_shared} shared experts of intermediate_size {inter} are {shared_inter} wide: the references size it by one and by the other"
+        ));
+    }
+    let bias = k.bool("use_routing_bias", false)?;
+    let moe = Moe {
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias,
+            groups: None,
+            top_k,
+            renorm: true,
+            scale,
+            hash: false,
+            routers: 1,
+            expert_scale: false,
+        },
+        experts: ne,
+        expert: mlp,
+        shared: (n_shared > 0).then_some(mlp),
+        shared_gate: false,
+        latent: None,
+    };
+    k.raw("quantization_config");
+    let quant = c.top.get("quantization_config").or(tc.get("quantization_config")).map(|q| minimax_quant(q, mt)).transpose()?;
+    let (ih, idim) = indexer.as_ref().map_or((0, 0), |x| (x.heads, x.head_dim));
+    let (mut shapes, mut scales) = (BTreeMap::new(), BTreeMap::new());
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for l in 0..layers {
+        let p = names::MINIMAX.layer("", l);
+        let a = Attn {
+            heads,
+            kv_heads: kv,
+            head_dim: hd,
+            v_head_dim: hd,
+            window: None,
+            sinks: false,
+            rope: Some(rp.clone()),
+            q_norm: Some(n),
+            k_norm: Some(n),
+            v_norm: None,
+            gate: None,
+            softcap: None,
+            bias: false,
+            scale: (hd as f32).powf(-0.5),
+            k_eq_v: false,
+            indexer: indexer.clone().filter(|_| indexed[l]),
+            rounding: AttnRounding::F32,
+            kv_from: None,
+            v_scale: 1.0,
+        };
+        let ar = names::roles(part::MINIMAX_ATTN, &p, 0, |r| indexed[l] || !r.starts_with("index_"));
+        shape_roles(
+            &mut shapes,
+            &ar,
+            &[
+                ("norm_in", vec![d]),
+                ("q", vec![heads * hd, d]),
+                ("k", vec![kv * hd, d]),
+                ("v", vec![kv * hd, d]),
+                ("o", vec![d, heads * hd]),
+                ("q_norm", vec![hd]),
+                ("k_norm", vec![hd]),
+                ("index_q", vec![ih * idim, d]),
+                ("index_k", vec![idim, d]),
+                ("index_q_norm", vec![idim]),
+                ("index_k_norm", vec![idim]),
+            ],
+        );
+        let (fr, body) = if sparse[l] {
+            let mut fr = names::roles(part::MINIMAX_MOE, &p, ne, |r| (bias || r != "choice_bias") && (n_shared > 0 || !r.starts_with("shared_")));
+            // (NVFP4 experts as released: each matrix its codes, `.weight_packed`, their runs' scales, and the scales' own scale)
+            for (_, src) in fr.iter_mut().filter(|(role, _)| quant.is_some() && role.starts_with("experts_")) {
+                if let Source::Experts(e) = src {
+                    for w in e.iter_mut().flatten() {
+                        let at = w.strip_suffix(".weight").unwrap_or(w).to_string();
+                        w.push_str("_packed");
+                        scales.insert(w.clone(), format!("{at}.weight_scale"));
+                        scales.insert(format!("{at}.weight_scale"), format!("{at}.weight_global_scale"));
+                    }
+                }
+            }
+            // (an expert's matrices at their rows and columns: its codes as released are two to a byte)
+            shape_roles(
+                &mut shapes,
+                &fr,
+                &[
+                    ("norm_in", vec![d]),
+                    ("router", vec![ne, d]),
+                    ("choice_bias", vec![ne]),
+                    ("experts_gate_up", vec![inter, d]),
+                    ("experts_down", vec![d, inter]),
+                    ("shared_gate", vec![shared_inter, d]),
+                    ("shared_up", vec![shared_inter, d]),
+                    ("shared_down", vec![d, shared_inter]),
+                ],
+            );
+            (fr, Ffn::Moe(moe.clone()))
+        } else {
+            let fr = names::roles(part::MLP, &p, 0, all);
+            shape_roles(
+                &mut shapes,
+                &fr,
+                &[("norm_in", vec![d]), ("gate", vec![dense_inter, d]), ("up", vec![dense_inter, d]), ("down", vec![d, dense_inter])],
+            );
+            (fr, Ffn::Mlp(mlp))
+        };
+        // (the stored formats: a product whose module the quantization_config does not leave out is FP8, its scales a run of 32 beside it)
+        const FP8: [&str; 12] = ["q", "k", "v", "o", "index_q", "index_k", "gate", "up", "down", "shared_gate", "shared_up", "shared_down"];
+        for (role, src) in ar.iter().chain(&fr) {
+            if let (true, Source::Tensor(w), Some(q)) = (FP8.contains(&role.as_str()), src, &quant) {
+                if !q.leaves(w) {
+                    scales.insert(w.clone(), format!("{w}_scale_inv"));
+                }
+            }
+        }
+        let block = |body: Body| Block { norm_in: n, body, norm_out: None, residual: Residual::Add };
+        blocks.extend([block(Body::Mixer(Mixer::Attention(a))), block(Body::Ffn(body))]);
+        roles.extend([ar, fr]);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: n,
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32, correction: false },
+        mtp: Vec::new(),
+        vision: None,
+        rope: Some(rp),
+    };
+    let mut out = finish(&k, desc, &names::MINIMAX, "", roles, 0)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    (out.shapes, out.scales) = (shapes, scales);
     Ok(out)
 }
 

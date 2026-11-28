@@ -79,6 +79,20 @@ pub const MUSE: Convention =
 /// layers (`model.mtp.layers.`) are read as draft heads.
 pub const MIMO: Convention = Convention { name: "MiMo V2", unread: &["audio_encoder.", "speech_embeddings.", "visual."], ..HF };
 
+/// MiniMax M3's (its vision-language wrapper `minimax_m3_vl`): the text model under `language_model.model.`, its head beside it at `language_model.lm_head`;
+/// the vision tower and its two projectors into the text model's width, which the text model does not run; and an expert matrix's `input_global_scale`,
+/// the scale of a static 4-bit quantization of the matrix's input that the release's quantization does not use (its activations are quantized by their own
+/// size, `activation_scheme` "dynamic") and that the weights' reconstruction does not read.
+pub const MINIMAX: Convention = Convention {
+    name: "MiniMax M3",
+    layers: "language_model.model.layers.",
+    embed: "language_model.model.embed_tokens.weight",
+    final_norm: "language_model.model.norm.weight",
+    head: "language_model.lm_head.weight",
+    extra: &[],
+    unread: &["vision_tower.", "multi_modal_projector.", "patch_merge_mlp.", "*.input_global_scale"],
+};
+
 /// LFM's: Hugging Face's, the norm after the last layer under the name `embedding_norm` (it norms no embedding: the head reads it), and no towers.
 pub const LFM: Convention = Convention { name: "LFM", final_norm: "{p}embedding_norm.weight", unread: &[], ..HF };
 
@@ -234,6 +248,33 @@ pub mod part {
     /// A draft head's own roles (`kinds::MtpInput::Joined`).
     pub const MIMO_MTP: Roles =
         &[("eh_proj", "eh_proj.weight"), ("norm_embed", "enorm.weight"), ("norm_hidden", "hnorm.weight"), ("final_norm", "final_layernorm.weight")];
+
+    // ---- MiniMax M3: Llama-style attention with the block indexer's products and norms beside it; Mixtral's names for the experts
+    /// Attention with q and k norms a head and, on a sparse layer, the indexer's queries, its one key and their norms.
+    pub const MINIMAX_ATTN: Roles = &[
+        ("norm_in", "input_layernorm.weight"),
+        ("q", "self_attn.q_proj.weight"),
+        ("k", "self_attn.k_proj.weight"),
+        ("v", "self_attn.v_proj.weight"),
+        ("o", "self_attn.o_proj.weight"),
+        ("q_norm", "self_attn.q_norm.weight"),
+        ("k_norm", "self_attn.k_norm.weight"),
+        ("index_q", "self_attn.index_q_proj.weight"),
+        ("index_k", "self_attn.index_k_proj.weight"),
+        ("index_q_norm", "self_attn.index_q_norm.weight"),
+        ("index_k_norm", "self_attn.index_k_norm.weight"),
+    ];
+    /// Sigmoid-routed experts (`w1` the gate, `w3` the up, `w2` the down) with a choice bias beside the router and one shared expert.
+    pub const MINIMAX_MOE: Roles = &[
+        ("norm_in", "post_attention_layernorm.weight"),
+        ("router", "block_sparse_moe.gate.weight"),
+        ("choice_bias", "block_sparse_moe.e_score_correction_bias"),
+        ("experts_gate_up", "block_sparse_moe.experts.{E}.w1.weight|block_sparse_moe.experts.{E}.w3.weight"),
+        ("experts_down", "block_sparse_moe.experts.{E}.w2.weight"),
+        ("shared_gate", "block_sparse_moe.shared_experts.gate_proj.weight"),
+        ("shared_up", "block_sparse_moe.shared_experts.up_proj.weight"),
+        ("shared_down", "block_sparse_moe.shared_experts.down_proj.weight"),
+    ];
 
     // ---- Domyn Edge: Llama-style parts under its own names, a norm after each part as well as before it
     /// Attention between its two norms; the q norm has no weight.
