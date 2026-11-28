@@ -40,7 +40,7 @@ The builders are in `glyd-engine/src/runtime/describe.rs`; `describe_config_in` 
   math (ids, dtypes, training settings) are listed once, in `INERT`;
 - gives each key the **default the release's own code gives it** (transformers' configuration class, or the release's modelling file), and
   refuses a value it does not support (`expect`) in words that say which key and which value;
-- returns the blocks as layer kinds (`runtime/kinds.rs`: the mixers Attention, Mla, Compressed, Linear and Mamba2, the feed-forwards Mlp and
+- returns the blocks as layer kinds (`runtime/kinds.rs`: the mixers Attention, Mla, Compressed, Linear, Mamba2 and ShortConv, the feed-forwards Mlp and
   Moe, Ngram, PerLayer, and the residual forms), and for each block the checkpoint's tensors by role (`runtime/names.rs`).
 
 Write it from the release's own code and its paper, in Glyd's terms. Where the family is one of another engine's too, read how that engine

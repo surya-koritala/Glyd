@@ -1,5 +1,5 @@
 //! MHA, GQA and MQA attention (`kinds::Attn`): full or sliding window, optional q/k/v norms, rope (full, partial, proportional or none),
-//! learned sinks, a score soft-cap, a factor on the values, an output gate, and the rounding points of `kinds::AttnRounding`. Query head h reads KV head
+//! learned sinks, a score soft-cap, a factor on the values, an output gate (a value a channel, or one a head), and the rounding points of `kinds::AttnRounding`. Query head h reads KV head
 //! h / (heads / kv_heads). One token at a time against the sequence's cache; a prompt is its tokens in order. With Ibis's indexer
 //! (`IndexForm::Mean`) a query attends only to the tokens it picks (`mean_picks`).
 
@@ -121,6 +121,11 @@ pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>,
         };
         (raw_q, g)
     };
+    // (a gate of one value a head: `g` is [heads, hidden])
+    let per_head = a.gate.is_some_and(|g| g.from == GateFrom::Head);
+    if let Some(g) = gate.as_ref().filter(|g| g.len() != if per_head { nh } else { nh * vd }) {
+        return err(format!("attention: an output gate of {} values for {nh} heads of {vd} ({:?})", g.len(), a.gate.map(|g| g.from)));
+    }
     let raw_k = if store.is_some() { vec![0.0; nk * hd] } else { prod("k")? };
     let mut v = if a.k_eq_v || store.is_some() { raw_k.clone() } else { prod("v")? };
     let mut k = raw_k;
@@ -232,7 +237,13 @@ pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>,
             }
             // (SDPA: the gate's activation rounded too)
             let ga = |z: f32| if prescale { r16(act(g.act, z)) } else { act(g.act, z) };
-            o.iter_mut().zip(&gv[head * vd..][..vd]).for_each(|(x, &z)| *x = r16(*x * ga(z)));
+            if per_head {
+                // (the head's one gate on each of its channels)
+                let z = ga(gv[head]);
+                o.iter_mut().for_each(|x| *x = r16(*x * z));
+            } else {
+                o.iter_mut().zip(&gv[head * vd..][..vd]).for_each(|(x, &z)| *x = r16(*x * ga(z)));
+            }
         }
         out.extend(o);
     }
@@ -455,5 +466,25 @@ mod tests {
         let in_q = run(&q, &pq, hidden, tokens);
         let own_no_norm = run(&Attn { gate: Some(OutGate { norm: None, ..a.gate.unwrap() }), ..a.clone() }, &p, hidden, tokens);
         assert_eq!(in_q, own_no_norm, "an in-query gate is the own gate of the same rows");
+    }
+
+    /// A gate of one value a head (`GateFrom::Head`, LFM's): each head's output times sigmoid of the head's row of `g` on the layer's input. It moves the
+    /// output; it is the own gate whose rows are the head's row for every channel of the head, bit for bit; a `g` of another size is refused.
+    #[test]
+    fn a_gate_a_head_scales_the_whole_head() {
+        let (hidden, tokens, nh, hd) = (64, 7, 4, 128);
+        let (mut a, mut p) = layer(nh, 2, hd, hidden);
+        a.gate = Some(OutGate { act: crate::runtime::kinds::Act::Sigmoid, from: GateFrom::Head, norm: None });
+        let g = fill("attn.g_head", nh * hidden, -1.0, 1.0);
+        p.put("g", &[nh, hidden], g.clone());
+        let gated = run(&a, &p, hidden, tokens);
+        assert!(rel(&gated, &run(&Attn { gate: None, ..a.clone() }, &p, hidden, tokens)) > 0.05);
+        let mut own = p.clone();
+        own.put("g", &[nh * hd, hidden], (0..nh).flat_map(|h| g[h * hidden..][..hidden].repeat(hd)).collect());
+        let per_channel = Attn { gate: Some(OutGate { from: GateFrom::Own, ..a.gate.unwrap() }), ..a.clone() };
+        assert_eq!(gated, run(&per_channel, &own, hidden, tokens));
+        // (a `g` of a value a channel under a gate of a value a head)
+        let mut c = KvCache::default();
+        assert!(step(&a, &own, &mut c, &fill("attn.input", hidden, -1.0, 1.0), 0).unwrap_err().msg.contains("output gate"));
     }
 }

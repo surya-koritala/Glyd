@@ -44,7 +44,7 @@ const SIGNS: &[(&str, &str, bool)] = &[
     ("mtp", "a draft head (MtpHead)", true),
     ("ngram", "an n-gram embedding (Body::Ngram): check its form against the kind's", true),
     ("linear_attn", "linear attention (Mixer::Linear)", true),
-    ("conv", "a short convolution: no kind yet", false),
+    ("conv", "a short convolution (Mixer::ShortConv): check its form against the kind's", true),
     ("num_loops", "looped depth: no kind yet", false),
     ("loop", "looped depth: no kind yet", false),
     ("value_residual", "a value residual: no residual form yet", false),
@@ -132,6 +132,7 @@ fn kinds_of(d: &Described) -> Vec<(String, usize)> {
             Body::Mixer(Mixer::Compressed(_)) => "Compressed attention",
             Body::Mixer(Mixer::Linear(_)) => "Linear attention",
             Body::Mixer(Mixer::Mamba2(_)) => "Mamba2",
+            Body::Mixer(Mixer::ShortConv(_)) => "ShortConv (gated short convolution)",
             Body::Ffn(Ffn::Mlp(_)) => "Mlp",
             Body::Ffn(Ffn::Moe(_)) => "Moe",
             Body::Ngram(_) => "Ngram",
@@ -397,7 +398,7 @@ mod tests {
     fn a_new_family_gets_its_keys_groups_and_signs() {
         let config = serde_json::json!({
             "architectures": ["NewThingForCausalLM"], "model_type": "new_thing", "hidden_size": 64, "num_hidden_layers": 2, "vocab_size": 100,
-            "num_local_experts": 8, "conv_kernel": 3, "bos_token_id": 1, "transformers_version": "5.0"
+            "num_local_experts": 8, "conv_kernel": 3, "num_loops": 2, "bos_token_id": 1, "transformers_version": "5.0"
         })
         .to_string();
         let row = |name: &str, shape: &[u64]| sizes::Row {
@@ -418,7 +419,7 @@ mod tests {
         let r = inspect(&config, &Table { rows }).unwrap();
         assert!(!r.ok() && r.no_builder, "{:?}", r.refusal);
         // (in the config's own order, the inert ones left out)
-        assert_eq!(r.keys, ["hidden_size", "num_hidden_layers", "vocab_size", "num_local_experts", "conv_kernel"]);
+        assert_eq!(r.keys, ["hidden_size", "num_hidden_layers", "vocab_size", "num_local_experts", "conv_kernel", "num_loops"]);
         let groups: Vec<(&str, usize)> = r.groups.iter().map(|g| (g.mask.as_str(), g.tensors)).collect();
         assert_eq!(
             groups,
@@ -432,9 +433,15 @@ mod tests {
         assert_eq!((&r.groups[1].shape[..], &r.groups[2].shape[..], &r.groups[3].shape[..]), (&[64, 1, 3][..], &[64, 1, 5][..], &[128, 64][..]));
         assert_eq!(r.values[3], "8");
         let has: Vec<(&str, bool)> = r.signs.iter().map(|(w, _, _, h)| (w.as_str(), *h)).collect();
-        assert_eq!(has, [("expert", true), ("conv", false)], "{:?}", r.signs);
+        assert_eq!(has, [("expert", true), ("conv", true), ("num_loops", false)], "{:?}", r.signs);
         let page = render("org/new", &r);
-        assert!(page.contains("a new family") && page.contains("LACKS a short convolution") && page.contains("has   a mixture of experts"), "{page}");
+        assert!(
+            page.contains("a new family")
+                && page.contains("LACKS looped depth")
+                && page.contains("has   a short convolution")
+                && page.contains("has   a mixture of experts"),
+            "{page}"
+        );
         assert!(page.contains("    16 x  model.layers.{L}.mlp.experts.{E}.up.weight  BF16 [128, 64]"), "{page}");
     }
 

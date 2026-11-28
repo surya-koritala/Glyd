@@ -2,7 +2,7 @@
 //! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), Qwen3.8-Flash-Next (Ibis's
 //! model: gated residuals, the indexer on GQA, the hashed n-gram embedding), gemma-4 text, GLM-5.3 and
 //! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, DeepSeek-V4, Nemotron 3
-//! (`nemotron_h`), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
+//! (`nemotron_h`), LFM3 (`lfm3`: described, not run yet), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
 //! through the tables of their naming convention (`names`); a format detail such as Kimi-K3's MXFP4 experts (`.weight_packed` for
 //! `.weight`) is the loader's. The config comes parsed once (`config::ModelConfig`).
 //!
@@ -586,6 +586,7 @@ pub fn describe_config_in(c: &ModelConfig, have: Option<&BTreeSet<String>>) -> R
         "granite_swa" => granite_swa(tc, prefix, mt, tied_top),
         "mellum" => layer_typed(tc, prefix, mt, tied_top, &MELLUM),
         "aion_instruct" => layer_typed(tc, prefix, mt, tied_top, &AION),
+        "lfm3" => lfm3(tc, prefix, mt, tied_top),
         "mimo_v2" => mimo_v2(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
         "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
         "" => err("config.json names no model_type"),
@@ -1142,6 +1143,218 @@ fn layer_typed(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option
         rope: Some(ropes.0),
     };
     let mut out = finish(&k, desc, &names::HF, prefix, roles, mtp_layers)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    out.shapes = shapes;
+    Ok(out)
+}
+
+/// LFM3 (`lfm3`, Lfm3ForCausalLM): a decoder whose layers are of three sorts, each a mixer then the gated SiLU MLP (`feed_forward`: w1 the gate, w3 the up
+/// projection, w2 the down; no biases), each part `x + norm_after(part(norm_before(x)))`.
+///  - `layer_types` says a layer "conv", "full_attention" or "sliding_attention" (unsaid: layer i full where i mod 4 is 2, sliding where i mod 4 is 0 past the
+///    first, else conv);
+///  - a conv layer is the gated short convolution (`kinds::ShortConv`): `conv_L_cache` taps a channel (7 unsaid), with `conv_bias` a bias on its two products
+///    and its convolution (false unsaid);
+///  - an attention layer has Qwen3-style queries and keys (normed a head, each norm with a weight, before the rotation), scores scaled by 1 / sqrt(head
+///    width), and with `use_attention_gate` (true unsaid: transformers' key; the release's own code has the gate always) each head's output times
+///    sigmoid(g_h . x), x the layer's normed input, the one the queries read: a value a head (`GateFrom::Head`). A sliding layer's query sees
+///    `sliding_window` positions, its own among them (256 unsaid);
+///  - `use_sandwich_norm` (true unsaid) gives each part the norm after it; without it a part's output is added as it is;
+///  - `rope_parameters` holds the rotary of each attention layer type under the type's name. Unsaid: the sliding layers' plain at a base of 10,000, the
+///    full layers' at 1,000,000 with `partial_rotary_factor` 0.5. A `rope_type` "default" with a partial factor below 1 is what transformers calls
+///    "proportional": the whole head pairs as (i, i + head / 2), the first factor x head / 2 pairs turn at theta^(-2i / head) (the exponent over the whole
+///    head) and the rest do not turn. That is how the release's own modelling file reads the "default" + 0.5 its config writes, and what vLLM and SGLang
+///    rewrite it to; transformers' own port, as first added, turns the whole head given "default" (it reads the factor only under "proportional", its class's
+///    default), and the plain reading of a partial rotary (the first half of the head, exponents over that half: `rope`'s) is a third function. The
+///    release's is taken. A scaled type with a partial factor is refused: the release cuts such a type's frequencies of the whole head, which no rotary
+///    here does.
+/// The norms are RMS with a weight at `norm_eps` (1e-5 unsaid; `rms_norm_eps` is the same key by the class's attribute map). The norm after the last layer
+/// is named `embedding_norm`. The head is the embedding unless `tie_word_embeddings` (or the older `tie_embedding`) says not. The defaults are the config
+/// class's.
+fn lfm3(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab) =
+        (k.opt_usize("hidden_size")?.unwrap_or(2048), k.opt_usize("num_hidden_layers")?.unwrap_or(24), k.opt_usize("vocab_size")?.unwrap_or(128_000));
+    let eps = match (k.opt_f64("norm_eps")?, k.opt_f64("rms_norm_eps")?) {
+        (Some(a), Some(b)) if a != b => return err(format!("{mt}: norm_eps {a} and rms_norm_eps {b} differ")),
+        (a, b) => a.or(b).unwrap_or(1e-5) as f32,
+    };
+    // (the older key wins where a config has both, as the release's config class takes it)
+    let tied = k.bool("tie_embedding", k.bool("tie_word_embeddings", tied_top.unwrap_or(true))?)?;
+    let (heads, kv) = (k.opt_usize("num_attention_heads")?.unwrap_or(16), k.opt_usize("num_key_value_heads")?.unwrap_or(4));
+    if heads == 0 || kv == 0 || !heads.is_multiple_of(kv) {
+        return err(format!("{mt}: {heads} query heads to {kv} KV heads"));
+    }
+    let hd = k.opt_usize("head_dim")?.unwrap_or(d / heads);
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    k.expect("attention_bias", &Value::Bool(false))?;
+    let inter = k.opt_usize("intermediate_size")?.unwrap_or(7680);
+    let conv = ShortConv { taps: k.opt_usize("conv_L_cache")?.unwrap_or(7), bias: k.bool("conv_bias", false)? };
+    if conv.taps == 0 {
+        return err(format!("{mt}: conv_L_cache = 0 is not a convolution"));
+    }
+    let (sandwich, gate) = (k.bool("use_sandwich_norm", true)?, k.bool("use_attention_gate", true)?);
+    #[derive(Clone, Copy, PartialEq)]
+    enum Sort {
+        Conv,
+        Full,
+        Sliding,
+    }
+    let sorts: Vec<Sort> = match k.raw("layer_types") {
+        None => (0..layers)
+            .map(|i| {
+                if i % 4 == 2 {
+                    Sort::Full
+                } else if i % 4 == 0 && i > 0 {
+                    Sort::Sliding
+                } else {
+                    Sort::Conv
+                }
+            })
+            .collect(),
+        Some(_) => per_layer(&k, "layer_types", layers)?
+            .iter()
+            .enumerate()
+            .map(|(l, t)| match t.as_str() {
+                Some("conv") => Ok(Sort::Conv),
+                Some("full_attention") => Ok(Sort::Full),
+                Some("sliding_attention") => Ok(Sort::Sliding),
+                _ => err(format!("{mt}: layer_types[{l}] = {t} is not supported (conv, full_attention or sliding_attention)")),
+            })
+            .collect::<Result<_>>()?,
+    };
+    let has = |s: Sort| sorts.contains(&s);
+    // (the class's 256 where the key is absent; a null is no window, which a config with sliding layers cannot say)
+    let window = k.opt_usize("sliding_window")?;
+    if has(Sort::Sliding) && matches!(tc.get("sliding_window"), Some(Value::Null)) {
+        return err(format!("{mt}: sliding_window = null, where its layer_types name sliding_attention layers"));
+    }
+    let window = window.unwrap_or(256);
+    let unsaid = |theta: f64, partial: Option<f64>| {
+        let mut m = Map::from_iter([("rope_type".to_string(), Value::from("default")), ("rope_theta".to_string(), Value::from(theta))]);
+        m.extend(partial.map(|p| ("partial_rotary_factor".to_string(), Value::from(p))));
+        m
+    };
+    let (full_rope, sliding_rope) = match k.raw("rope_parameters") {
+        None => (unsaid(1_000_000.0, Some(0.5)), unsaid(10_000.0, None)),
+        Some(Value::Object(o)) => {
+            if let Some(other) = o.keys().find(|t| !matches!(t.as_str(), "full_attention" | "sliding_attention")) {
+                return err(format!("{mt}: rope_parameters.{other} is not an attention layer type (full_attention, sliding_attention)"));
+            }
+            // (a type no layer is of may be left out: its rotary is then read by nothing)
+            let of = |ty: &str, needed: bool| match o.get(ty) {
+                Some(Value::Object(p)) => Ok(p.clone()),
+                None if !needed => Ok(unsaid(10_000.0, None)),
+                _ => err(format!("{mt}: rope_parameters has no {ty}, which its layer_types name")),
+            };
+            (of("full_attention", has(Sort::Full))?, of("sliding_attention", has(Sort::Sliding))?)
+        }
+        Some(v) => return err(format!("{mt}: rope_parameters = {v} is not the rotary of each attention layer type")),
+    };
+    // (the release's reading of a partial factor: see above)
+    let rope_of = |mut p: Map<String, Value>, ty: &str| -> Result<Rope> {
+        let what = format!("{mt} rope_parameters.{ty}");
+        let partial = p.get("partial_rotary_factor").and_then(Value::as_f64).unwrap_or(1.0);
+        match p.get("rope_type").and_then(Value::as_str).unwrap_or("default") {
+            "default" if partial < 1.0 => {
+                p.insert("rope_type".into(), Value::from("proportional"));
+            }
+            "default" | "proportional" => {}
+            // (the release's config class refuses the two: their frequencies are made anew in a pass, over the rotated part alone)
+            t @ ("dynamic" | "longrope") => return err(format!("{what}: rope_type {t} is not supported (the release's class refuses it)")),
+            t if partial != 1.0 => {
+                return err(format!("{what}: rope_type {t} with partial_rotary_factor {partial} is not supported (default or proportional)"))
+            }
+            _ => {}
+        }
+        rope(&p, hd, max_pos, &what)
+    };
+    let ropes = (rope_of(full_rope, "full_attention")?, rope_of(sliding_rope, "sliding_attention")?);
+    let n = Norm::rms(eps);
+    let after = sandwich.then_some(n);
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
+    let mut first_rope = None;
+    for (l, sort) in sorts.iter().enumerate() {
+        let p = names::LFM.layer(prefix, l);
+        let (body, mr) = match sort {
+            Sort::Conv => {
+                let r = names::roles(part::LFM_CONV, &p, 0, |r| (conv.bias || !r.ends_with("_bias")) && (sandwich || r != "norm_out"));
+                // (the convolution as the checkpoint holds it: a channel, one input channel, its taps)
+                let want = [
+                    ("in", vec![3 * d, d]),
+                    ("in_bias", vec![3 * d]),
+                    ("conv", vec![d, 1, conv.taps]),
+                    ("conv_bias", vec![d]),
+                    ("o", vec![d, d]),
+                    ("o_bias", vec![d]),
+                ];
+                shape_roles(&mut shapes, &r, &want);
+                (Body::Mixer(Mixer::ShortConv(conv)), r)
+            }
+            Sort::Full | Sort::Sliding => {
+                let sliding = *sort == Sort::Sliding;
+                let a = Attn {
+                    heads,
+                    kv_heads: kv,
+                    head_dim: hd,
+                    v_head_dim: hd,
+                    window: sliding.then_some(window),
+                    sinks: false,
+                    rope: Some(if sliding { ropes.1.clone() } else { ropes.0.clone() }),
+                    q_norm: Some(n),
+                    k_norm: Some(n),
+                    v_norm: None,
+                    gate: gate.then_some(OutGate { act: Act::Sigmoid, from: GateFrom::Head, norm: None }),
+                    softcap: None,
+                    bias: false,
+                    scale: (hd as f32).powf(-0.5),
+                    k_eq_v: false,
+                    indexer: None,
+                    rounding: AttnRounding::F32,
+                    kv_from: None,
+                    v_scale: 1.0,
+                };
+                first_rope = first_rope.or(a.rope.clone());
+                let r = names::roles(part::LFM_ATTN, &p, 0, |r| (gate || r != "g") && (sandwich || r != "norm_out"));
+                let (q, kvw) = (heads * hd, kv * hd);
+                let want = [
+                    ("q", vec![q, d]),
+                    ("k", vec![kvw, d]),
+                    ("v", vec![kvw, d]),
+                    ("o", vec![d, q]),
+                    ("q_norm", vec![hd]),
+                    ("k_norm", vec![hd]),
+                    ("g", vec![heads, d]),
+                ];
+                shape_roles(&mut shapes, &r, &want);
+                (Body::Mixer(Mixer::Attention(a)), r)
+            }
+        };
+        let fr = names::roles(part::LFM_MLP, &p, 0, |r| sandwich || r != "norm_out");
+        for r in [&mr, &fr] {
+            shape_roles(&mut shapes, r, &[("norm_in", vec![d]), ("norm_out", vec![d])]);
+        }
+        shape_roles(&mut shapes, &fr, &[("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
+        blocks.push(Block { norm_in: n, body, norm_out: after, residual: Residual::Add });
+        roles.push(mr);
+        blocks.push(Block { norm_in: n, body: Body::Ffn(Ffn::Mlp(gated(Act::Silu))), norm_out: after, residual: Residual::Add });
+        roles.push(fr);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: n,
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32 },
+        mtp: Vec::new(),
+        vision: None,
+        rope: first_rope,
+    };
+    let mut out = finish(&k, desc, &names::LFM, prefix, roles, 0)?;
     shapes.insert(out.embed.clone(), vec![vocab, d]);
     shapes.insert(out.final_norm.clone(), vec![d]);
     if let Some(h) = &out.head {
