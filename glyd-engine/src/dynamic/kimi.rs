@@ -174,6 +174,7 @@ pub(crate) fn latent(c: &ConfigKimi) -> MlaOp {
         kv_b: 0,
         q_round: crate::runtime::kinds::Rounding::Twice,
         gate: true,
+        head_gate: None,
         scale: ((m.nope + m.rope) as f32).powf(-0.5),
         eps: 1e-6,
         ring: 0,

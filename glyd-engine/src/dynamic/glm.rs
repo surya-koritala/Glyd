@@ -184,6 +184,7 @@ pub(crate) fn latent(c: &ConfigGlm) -> MlaOp {
         kv_b: 0,
         q_round: Rounding::Twice,
         gate: false,
+        head_gate: None,
         scale: (m.nope as f32).powf(-0.5),
         eps: c.eps,
         ring: 0,

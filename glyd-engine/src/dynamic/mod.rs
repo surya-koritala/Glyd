@@ -851,6 +851,7 @@ impl Op {
             Op::Mla(ref a) => match a.input {
                 MlaIn::Fused { w } => vec![w, a.q_b, a.o],
                 MlaIn::Apart { q_a, kv_a } => vec![q_a, kv_a, a.q_b, a.o],
+                MlaIn::Direct { kv_a } => vec![kv_a, a.q_b, a.o],
             },
             _ => Vec::new(),
         }

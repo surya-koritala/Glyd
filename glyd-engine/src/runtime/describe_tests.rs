@@ -3027,9 +3027,10 @@ fn ling_3_2_air_describes_its_two_mixers_its_experts_and_its_draft_head() {
     assert!(have.iter().any(|n| n.starts_with("model.visual.")) && have.contains("linear_proj.0.weight"));
     assert!(!d.names().iter().any(|n| n.starts_with("model.visual.") || n.starts_with("linear_proj.")));
     d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
-    // (described, not run: the executor names what it lacks)
-    let e = crate::dynamic::split::loader(&d).err().map(|e| e.msg).unwrap_or_default();
-    assert!(e.contains("Kimi delta attention on plain residuals"), "{e}");
+    // (its layers have a loader of the dynamic route, the latent attention's with plain residuals; what the executor lacks of them, its lowering names)
+    assert!(crate::dynamic::split::loader(&d).is_ok());
+    let e = crate::dynamic::split::lowered_described(&d, 42, 4096).err().map(|e| e.msg).unwrap_or_default();
+    assert!(e.contains("grouped choices"), "{e}");
 }
 
 /// A small config of the Ling layout in its wrapper with `keys` over its text config: five layers in groups of two (layers 1 and 3 latent attentions,
