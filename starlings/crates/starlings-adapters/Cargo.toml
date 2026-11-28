@@ -27,7 +27,7 @@ serde_json.workspace = true
 sha2.workspace = true
 nvml-wrapper = { version = "=0.13.0", default-features = false }
 
-sysinfo = { version = "0.39.6", default-features = false, features = ["system", "disk", "component"] }
+sysinfo = { version = "0.40.3", default-features = false, features = ["system", "disk", "component"] }
 ureq = { version = "3.4.2", default-features = false }
 
 time = { workspace = true, features = ["formatting"] }
