@@ -6406,7 +6406,8 @@ mod tests {
     /// one-GPU row is, with no reader of its own: from each one's released config (its recorded header), `level_of` gives its weights at each level (fewer
     /// bytes at each lower one, penguin's under bf16's), a ring a layer of that layer's own head width and window (Domyn Edge's 12 layers of 256 over the whole
     /// context and 24 of 64 in a window, where one head width for every layer would be wrong), no state, and the dense engine as its loader; Mellum 2's experts
-    /// are placed. The plain dense kind's own models keep their row.
+    /// are placed. LFM's short convolutions keep a state a sequence, which the description gives and the plan counts: each of its 13 conv layers' 2,048
+    /// channels' last 6 values, fp32. The plain dense kind's own models keep their row.
     #[test]
     fn a_described_family_is_sized_from_its_description() {
         use crate::weights::Layout;
@@ -6415,16 +6416,20 @@ mod tests {
             assert_eq!(crate::support::family(&text, name).unwrap(), crate::support::Family::Layers, "{name}");
             sizing::level_of(&args(&["run", "m"]), "m", name, layout, &mc(&text), None, None, Some(LOSSY_CTX))
         };
-        for (name, layers, moe) in
-            [("Domyn-Edge-Base", 36, false), ("granite-swash-2b", 24, false), ("Mellum2.1-12B-A2.5B-Instruct", 28, true), ("Aion-1.0-Instruct-2.3B", 28, false)]
-        {
+        for (name, layers, moe, state) in [
+            ("Domyn-Edge-Base", 36, false, 0),
+            ("granite-swash-2b", 24, false, 0),
+            ("Mellum2.1-12B-A2.5B-Instruct", 28, true, 0),
+            ("Aion-1.0-Instruct-2.3B", 28, false, 0),
+            ("LFM3-1.7B", 24, false, 13 * 2048 * 6 * 4),
+        ] {
             // (a mixture of experts too: the dense engine holds its experts lossless at penguin, and at the block levels in their layout)
             let levels: &[Layout] = &[Layout::Tiered, Layout::Int6, Layout::Int5, Layout::Int4];
             let by_level: Vec<u64> = levels
                 .iter()
                 .map(|&l| {
                     let lv = level(name, l).unwrap_or_else(|e| panic!("{name} at {l:?}: {e:?}"));
-                    assert_eq!((lv.kind, lv.row.name, lv.state, lv.draft), (Kind::Qwen3, "described layers", 0, None), "{name}");
+                    assert_eq!((lv.kind, lv.row.name, lv.state, lv.draft), (Kind::Qwen3, "described layers", state, None), "{name}");
                     assert_eq!(lv.layers.as_ref().unwrap().low.layers.len(), layers, "{name}");
                     assert_eq!(lv.experts.is_some(), moe, "{name}");
                     if let Some(e) = &lv.experts {
@@ -6457,6 +6462,7 @@ mod tests {
             ("granite-swash-2b", "penguin"),
             ("Mellum2.1-12B-A2.5B-Instruct", "kestrel"),
             ("Aion-1.0-Instruct-2.3B", "penguin"),
+            ("LFM3-1.7B", "penguin"),
         ] {
             let (text, _) = recorded_release(name);
             let dir = model_dir("described", name, &text);

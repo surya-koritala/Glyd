@@ -2874,6 +2874,34 @@ mod tests {
         assert!(dense(&config(&["conv"], serde_json::json!({"conv_L_cache": 16})), vec![2], 4096).is_ok());
     }
 
+    /// LFM's small model (the logits checks' random one): the description reads every tensor of its manifest at the manifest's shape, and the dense lowering
+    /// names every one of them, a matrix's member or a small tensor (the head is the embedding); four conv layers' states, 512 channels' last 6 values in fp32
+    /// each; a ring for each of the two attention layers, the second's a window of 9; and it is a family the description is the whole of.
+    #[test]
+    fn the_random_lfm_lowers_with_every_tensor_named() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/lfm3_tiny_manifest.json")).unwrap()).unwrap();
+        let text = manifest["config"].as_str().unwrap();
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap_or_else(|e| panic!("{}", e.msg));
+        let have: std::collections::BTreeSet<String> = manifest["tensors"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
+        kinds.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+        for t in manifest["tensors"].as_array().unwrap() {
+            let shape: Vec<usize> = t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+            assert_eq!(kinds.shapes.get(t[0].as_str().unwrap()), Some(&shape), "{}", t[0]);
+        }
+        let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        let named: std::collections::BTreeSet<String> =
+            d.mats.iter().flat_map(|it| it.members.iter()).chain(&d.small).filter(|n| !n.is_empty()).cloned().collect();
+        assert_eq!(named, have);
+        assert_eq!((d.layers.len(), d.states.clone(), d.lm == d.embed, d.final_norm.is_none()), (6, vec![512 * 6 * 4; 4], true, true));
+        assert_eq!(d.rings.iter().map(|r| (r.d, r.nk, r.window)).collect::<Vec<_>>(), vec![(128, 2, 0), (128, 2, 9)]);
+        // (q, k, v and the gate's four rows, padded to rows that pack: 1,028 to 1,088; a conv layer's input product is wider)
+        assert_eq!((d.width(Slot::Proj), d.width(Slot::Xc), d.width(Slot::Att)), (3 * 512, 512, 4 * 128));
+        let kinds_of: Vec<bool> = d.layers.iter().map(|ops| ops.iter().any(|o| matches!(o, Op::ShortConv { .. }))).collect();
+        assert_eq!(kinds_of, [true, true, false, true, false, true]);
+        assert_eq!(crate::runtime::config::ModelConfig::parse(text).unwrap().family(), Some(crate::support::Family::Layers));
+    }
+
     /// A plain dense decoder's config (the model type the description builder reads it by, the attention's settings) of three layers of hidden 256, 4 query heads over 2
     /// of 64, an MLP of 512, a vocabulary of 1,024: test shapes, no release's.
     fn dense_config(model_type: &str, extra: serde_json::Value) -> serde_json::Value {

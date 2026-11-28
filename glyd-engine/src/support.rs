@@ -45,7 +45,9 @@ pub enum Family {
     /// The families whose description is the whole of them: layers of one attention and one feed-forward (a gated MLP or a mixture of experts) that the dense
     /// lowering takes as described (`dynamic::lower::dense`), with no reader, loader or sizing of their own. Domyn Edge, Granite Swash and Mellum 2 are the
     /// first (`runtime::describe::LAYERS`); a family joins by its description builder and its model type in that list. One GPU, at every block level: sized
-    /// from the description as every one-GPU row is (src/plan.rs `sizing::level_of`), loaded by the dense loader (`dynamic::dense::load_of`).
+    /// from the description as every one-GPU row is (src/plan.rs `sizing::level_of`), loaded by the dense loader (`dynamic::dense::load_of`). LFM is one: a
+    /// layer's mixer the gated short convolution in the attention's place on most layers, whose state a sequence (each conv layer's channels' last values,
+    /// fp32) the description's lowering gives the plan and the scheduler; its convolution's biases, which no release has on, are refused by name.
     Layers,
 }
 
