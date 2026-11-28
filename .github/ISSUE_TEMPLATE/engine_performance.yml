@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        A number needs a machine and a command. Run the same command twice and report the second run, so the model's first load is not in it. For Condor (the big-MoE-on-one-card path) use the "Condor: bench result or slow speed" form.
+        A number needs a machine and a command. Run the same command twice and report the second run, so the model's first load is not in it. For Ibis (the big-MoE-on-one-card path) use the "Ibis: bench result or slow speed" form.
   - type: input
     id: version
     attributes:

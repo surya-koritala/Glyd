@@ -7,7 +7,7 @@ $H = if ($env:GLYD_QWEN) { $env:GLYD_QWEN } else { Join-Path $HOME '.glyd-qwen-3
 function Say($t) { Write-Host $t -ForegroundColor White }
 function Ask($q, $d) { if ($Yes) { return $d }; $a = Read-Host "$q [$d]"; if ($a) { $a } else { $d } }
 
-Say 'Condor: Qwen3.8-Flash-Next (Hummingbird level) on your GPU'
+Say 'Ibis: Qwen3.8-Flash-Next (Hummingbird level) on your GPU'
 if (-not (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue)) { throw 'No NVIDIA driver found (nvidia-smi). Install the NVIDIA driver 580 or newer, then run this again.' }
 $gpu, $vram, $drv = (nvidia-smi.exe --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits | Select-Object -First 1) -split ',\s*'
 $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)

@@ -1,4 +1,4 @@
-//! Condor's hashed n-gram embedding (`kinds::Ngram`, Qwen3.8-Flash-Next's per-layer embedding): the hash's numbers (transformers'
+//! Ibis's hashed n-gram embedding (`kinds::Ngram`, Qwen3.8-Flash-Next's per-layer embedding): the hash's numbers (transformers'
 //! `Qwen4ExpTextNGramEmbedding`: splitmix64 multipliers, prime table sizes), a position's table rows, and the block's body on one token
 //! with its sequence's state. The gate's and the convolution's norms are the kind's `norm`, each stream normed on its own.
 

@@ -1,4 +1,4 @@
-# Setting up Condor (Qwen3.8-Flash-Next): steps for an AI assistant
+# Setting up Ibis (Qwen3.8-Flash-Next): steps for an AI assistant
 
 You are setting up Glyd's Qwen3.8-Flash-Next (Hummingbird level) for a user: Qwen3.8-Flash-Next running on their own NVIDIA GPU, with a chat page and an OpenAI- and
 Anthropic-compatible API. Follow these steps in order, and tell the user what you find at each one.
@@ -16,7 +16,7 @@ uname -sm
 
 | Requirement | Needed |
 |---|---|
-| System | Linux on x86-64, Ubuntu 22.04 or newer (tested on 22.04, 24.04 and 26.04). These steps are Linux's; on Windows run `setup.ps1` (see `condor/README.md`). WSL2 is untested. |
+| System | Linux on x86-64, Ubuntu 22.04 or newer (tested on 22.04, 24.04 and 26.04). These steps are Linux's; on Windows run `setup.ps1` (see `ibis/README.md`). WSL2 is untested. |
 | GPU | NVIDIA, Ampere or newer (RTX 30, 40 or 50 series, A-series, H100), 16 GB or more |
 | Driver | 580 or newer |
 | RAM | 64 GB |
@@ -27,7 +27,7 @@ If something is short, stop and tell the user which requirement, and by how much
 ## 2. Install
 
 ```sh
-git clone https://github.com/surya-koritala/Glyd && cd Glyd/condor
+git clone https://github.com/surya-koritala/Glyd && cd Glyd/ibis
 tools/install.sh                  # Glyd's engine (prebuilt from this repository's source) under ~/.glyd-qwen-3.8-flash; no sudo
                                   # (tools/install.sh --source builds it here instead: needs Rust and the CUDA toolkit)
 tools/download.sh                 # precise mode (recommended), about 82 GB; --fast for fast mode, about 68 GB

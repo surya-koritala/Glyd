@@ -2,13 +2,13 @@
 # this repository's source. Windows 10/11 x64, an NVIDIA GPU (Ampere or newer) with driver 580+. No admin rights.
 #   powershell -ExecutionPolicy Bypass -File tools\install.ps1 [VERSION]
 # VERSION: a Glyd release whose assets hold glyd-engine.exe, libglyd_gpu_cuda13.dll and SHA256SUMS (a release built for Windows);
-# default: Condor's last Windows build (v0.2.4), until Glyd's release workflow builds Windows too (ROADMAP.md).
+# default: Ibis's last Windows build (v0.2.4), until Glyd's release workflow builds Windows too (ROADMAP.md).
 param([string]$Version = 'latest')
 $ErrorActionPreference = 'Stop'
 $Here = Split-Path -Parent $PSScriptRoot
 $H = if ($env:GLYD_QWEN) { $env:GLYD_QWEN } else { Join-Path $HOME '.glyd-qwen-3.8-flash' }
 New-Item -ItemType Directory -Force (Join-Path $H 'bin') | Out-Null
-$Base = if ($Version -eq 'latest') { 'https://github.com/surya-koritala/condor/releases/download/v0.2.4' } else { "https://github.com/surya-koritala/Glyd/releases/download/$Version" }
+$Base = if ($Version -eq 'latest') { 'https://github.com/surya-koritala/ibis/releases/download/v0.2.4' } else { "https://github.com/surya-koritala/Glyd/releases/download/$Version" }
 if ($env:GLYD_RELEASE_URL) { $Base = $env:GLYD_RELEASE_URL }   # (a mirror, or a local folder for a test before a release)
 if (-not (Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue)) { throw 'no nvidia-smi: an NVIDIA driver is needed' }
 $files = 'glyd-engine.exe', 'libglyd_gpu_cuda13.dll', 'SHA256SUMS'

@@ -879,7 +879,7 @@ const EFF_LOSSY: f64 = 1.0;
 const EFF_LOSSLESS: f64 = 0.72;
 const LAYER_S: f64 = 35e-6;
 /// Of the computer's memory bandwidth, what the CPU's expert products reach; the time a mixture-of-experts layer with its experts in RAM adds for the GPU and host
-/// to meet besides `LAYER_S` (calibrated on Condor's Qwen3.8-Flash-Next on an RTX 4080 SUPER, 0.20 ms a layer in all).
+/// to meet besides `LAYER_S` (calibrated on Ibis's Qwen3.8-Flash-Next on an RTX 4080 SUPER, 0.20 ms a layer in all).
 const EFF_CPU: f64 = 0.70;
 const SYNC_PER_MOE_LAYER: f64 = 0.165e-3;
 /// A prompt's tokens a second: 2 x the parameters a token multiplies over the GPU's tensor rate (`Device::tflops`) at `PROMPT_EFF` of it, and 1.11 µs a token a
@@ -1277,7 +1277,7 @@ pub fn score_classes(records: &[serde_json::Value]) -> Vec<(String, Vec<f64>, Ve
         .collect()
 }
 
-/// The share of expert reads a cache holding a share `f` of the experts serves at one row, f^HIT_EXPONENT: experts are used unevenly and a sequence uses its own again (Condor: 70-76% at about a quarter;
+/// The share of expert reads a cache holding a share `f` of the experts serves at one row, f^HIT_EXPONENT: experts are used unevenly and a sequence uses its own again (Ibis: 70-76% at about a quarter;
 /// the routing record benchmarks/moe-skew-2026-10-09's decode traces' least-recently-used places: 61, 73 and 80% at 17, 32 and 46%, where this says 67, 77 and 84: offload.rs's test). A router that chooses uniformly (a random model's) is 1.
 pub const HIT_EXPONENT: f64 = 0.23;
 /// How fast the reuse of the places between steps goes as a step's rows' distinct experts fill them (`step_hit`), fitted to the same record's decode traces at 4 to 20 rows (offload.rs's test).
@@ -2850,7 +2850,7 @@ fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
                 println!("note: the hummingbird level comes as a pre-packed download: glyd/{}-hummingbird", f.name);
             } else if f.family.route.expert_cache == crate::support::ExpertCache::Codes {
                 println!(
-                    "note: the hummingbird level is a codes pack of the experts beside the weights (DIR/pack): the pre-packed glyd/{}-hummingbird's (condor/tools/download.sh); --pack precise, best or fast plans each",
+                    "note: the hummingbird level is a codes pack of the experts beside the weights (DIR/pack): the pre-packed glyd/{}-hummingbird's (ibis/tools/download.sh); --pack precise, best or fast plans each",
                     f.name
                 );
             } else {
@@ -5058,9 +5058,9 @@ pub mod sizing {
     }
 
     /// What a codes pack's plan is asked (`codes_plan_with`): the context, the users (a server's: `served`), the prompt chunk, the always-on matrices' layout
-    /// (penguin's lossless tiered one for `run`; Condor's server's level, four bits by default) and that of the attention blocks' own matrices and the LM head
-    /// where it differs (`hi`: Condor's server's `--hi`), the sidecars over the pack's experts whose copies the GPU's places hold (its mode's, `--side`'s, or
-    /// none: `--no-side`), whether the layers may be cut over the GPUs given in their order (Condor's server's `--gpus 0,1`; else the GPU with the most free
+    /// (penguin's lossless tiered one for `run`; Ibis's server's level, four bits by default) and that of the attention blocks' own matrices and the LM head
+    /// where it differs (`hi`: Ibis's server's `--hi`), the sidecars over the pack's experts whose copies the GPU's places hold (its mode's, `--side`'s, or
+    /// none: `--no-side`), whether the layers may be cut over the GPUs given in their order (Ibis's server's `--gpus 0,1`; else the GPU with the most free
     /// memory holds them), the cuts asked (`--split`), the places a layer asked (`--places`), and the computer's memory `--host-memory` gives the experts.
     #[derive(Clone, Debug)]
     pub(crate) struct CodesAsk {
@@ -5164,7 +5164,7 @@ pub mod sizing {
         if let Some(l) = (0..nl).find(|&l| !cb.has(l)) {
             return Err(Refusal::unsupported(
                 format!("{name}: its codes pack {} has no experts of layer {l} of the model's {nl}", pack.display()),
-                "Give the pack of this model's experts: the release's (condor/tools/download.sh), or one made for it",
+                "Give the pack of this model's experts: the release's (ibis/tools/download.sh), or one made for it",
             ));
         }
         // (the always-on matrices as the loader holds them; the tables its description reads on the host and the routed experts none of the GPU's)
@@ -5383,7 +5383,7 @@ pub mod sizing {
             format!(
                 "{name} ({family}) at the hummingbird level runs from a codes pack of its experts beside its weights (DIR/pack) or named by --pack, and {model} has none here"
             ),
-            "Name its pack (the release's: condor/tools/download.sh): run DIR:hummingbird --pack PACK, or put it in DIR/pack, or serve it with qwenserve CKPT PACK",
+            "Name its pack (the release's: ibis/tools/download.sh): run DIR:hummingbird --pack PACK, or put it in DIR/pack, or serve it with qwenserve CKPT PACK",
         )
     }
 
@@ -5399,7 +5399,7 @@ pub mod sizing {
     }
 
     /// The codes pack `--pack DIR` names to `run`, `serve` and `prepare` (`name_pack`), for a model whose directory holds none beside its weights: the
-    /// release's download keeps its packs beside `model/` (condor/tools/download.sh: `DIR/model`, `DIR/precise-v2`).
+    /// release's download keeps its packs beside `model/` (ibis/tools/download.sh: `DIR/model`, `DIR/precise-v2`).
     static PACK: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
     /// `--pack DIR` of `a` as this process's codes pack (`codes_of`), where it names one.
@@ -6945,7 +6945,7 @@ mod tests {
 
     #[test]
     fn predictions_match_what_was_measured() {
-        // tokens/s measured with one user and a short prompt (CHANGELOG; starlings/benchmarks; condor/README.md)
+        // tokens/s measured with one user and a short prompt (CHANGELOG; starlings/benchmarks; ibis/README.md)
         let within = |p: &Plan, want: f64, tol: f64| {
             let got = chosen(p).tok_s;
             assert!((got / want - 1.0).abs() < tol, "{got:.1} tok/s, measured {want}");
@@ -8067,7 +8067,7 @@ mod tests {
     /// A codes pack's plan is the one expert-cache rule's (`expert_cache_with` of the pack's source, `codes_experts`, as every other source's): `run`'s places
     /// are the rule's on the GPU's room past its floor and the scratch, beside the users' keys, values and states; a computer whose memory holds less than a
     /// token's experts in every layer is refused by the rule in words (the plan's own rule planned it, reading every expert from the disk); over two GPUs named
-    /// (Condor's server's `--gpus 0,1`) the rule cuts the layers where one GPU leaves fewer places, each part its own places and its share of one sequence; the
+    /// (Ibis's server's `--gpus 0,1`) the rule cuts the layers where one GPU leaves fewer places, each part its own places and its share of one sequence; the
     /// cut and the places asked (`--split`, `--places`) are held, or refused in the plan's words.
     #[test]
     fn a_codes_packs_plan_is_the_one_expert_cache_rules() {
@@ -8122,7 +8122,7 @@ mod tests {
     /// GLYD_ENGINE_BATCH_PREFILL (a product's switch: at 0 prompts run one a pass and no finished sequence is kept) is read in one place, which the engine's
     /// steps, the plan's sequences and the checks share (`dynamic::batch_prefill`): `fit --users 8` plans what `serve --users 8` does with it at 0 and at 1,
     /// and each sequence's states have a copy at its mark at 1 alone. On a model with states, the release's shapes with its codes pack (planned as `glyd serve`
-    /// and Condor's server plan it).
+    /// and Ibis's server plan it).
     #[test]
     fn fit_and_serve_plan_alike_with_the_batch_prefill_switch_at_0_and_1() {
         let (dir, c, table, pack) = qx_release("qx-switch");
@@ -8145,11 +8145,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
-    /// Condor's server (`qwenserve`) loads by its plan (`qwen4x::serve_plan`, the planned route's rule): its users and context, the always-on matrices at its
+    /// Ibis's server (`qwenserve`) loads by its plan (`qwen4x::serve_plan`, the planned route's rule): its users and context, the always-on matrices at its
     /// level (four bits: more places than the lossless layout leaves on the same GPU), `--places` held; a GPU named twice shares its memory between its two
     /// parts; a GPU too small, and a cut that does not name a layer for each GPU after the first, refused in words.
     #[test]
-    fn condors_server_loads_by_its_plan() {
+    fn ibis_server_loads_by_its_plan() {
         let (dir, _, _, pack) = qx_release("qx-serve");
         let host = 64u64 << 30;
         let words = |more: &[&str]| -> crate::args::Args {
@@ -8201,12 +8201,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
-    /// Condor's server's `--hi` is planned where the loader puts it (`Placing::hi`): the release's attention blocks' own matrices and its LM head
+    /// Ibis's server's `--hi` is planned where the loader puts it (`Placing::hi`): the release's attention blocks' own matrices and its LM head
     /// (`Described::attention_and_head`: the head and each full-attention layer's q, k, v, o and indexer products, nothing of a Gated DeltaNet layer, a gated
     /// residual or the experts) at the second layout's share of their bf16 bytes, every other at the layout's; the default form's plan (four bits, five for
     /// those) holds those bytes more and no more places than four bits alone. The plan opens the sidecars the form names (`--no-side`: none).
     #[test]
-    fn condors_server_plans_its_second_layout_and_sidecars() {
+    fn ibis_server_plans_its_second_layout_and_sidecars() {
         use crate::weights::Layout::{Int4, Int5};
         let (dir, c, table, pack) = qx_release("qx-hi");
         let (nl, every) = (c.num("num_hidden_layers").unwrap(), c.num("full_attention_interval").unwrap());
@@ -9021,7 +9021,7 @@ mod tests {
 
     /// P16: no preset by fixture model by level where `fit` and `run` disagree: for every one, `fit` refuses exactly where `run` does, in `run`'s words and with its
     /// status, and where `run` loads a plan `fit` prints that plan. The models are the families' fixtures, one of a dense architecture the engine does not run, and
-    /// Qwen3.8-Flash-Next (Condor's); every machine preset, AMD, Apple, Arm and the multi-GPU ones among them; every level this build has, those a family does not run at too.
+    /// Qwen3.8-Flash-Next (Ibis's); every machine preset, AMD, Apple, Arm and the multi-GPU ones among them; every level this build has, those a family does not run at too.
     #[test]
     fn fit_and_run_agree_on_every_preset_and_model() {
         let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();

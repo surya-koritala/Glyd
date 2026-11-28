@@ -354,7 +354,7 @@ jobs:
           cp engine/glyd "out/$d/"
           cp glyd-engine/LICENSE "out/$d/LICENSE"
           chmod +x "out/$d/glyd"
-          # (the engine's old command: this program under that name, which it takes for the engine's command line; install.sh and condor/tools/install.sh copy it)
+          # (the engine's old command: this program under that name, which it takes for the engine's command line; install.sh and ibis/tools/install.sh copy it)
           ln -s glyd "out/$d/glyd-engine"
           tar -C out --owner=0 --group=0 -czf "out/$d.tar.gz" "$d"
           (cd out && sha256sum "$d.tar.gz" > "$d.tar.gz.sha256" && cat "$d.tar.gz.sha256" && tar -tzvf "$d.tar.gz")
@@ -692,7 +692,7 @@ jobs:
 
   attach-engine:
     # The engine bundles (engine-bundle: glyd with the engine linked, glyd-engine as a link to it, LICENSE, a tarball for each Linux architecture, and its sha256) attached to this
-    # repository's GitHub release of the tag: what install.sh and condor/tools/install.sh download on Linux with an NVIDIA GPU. release.yml makes the release
+    # repository's GitHub release of the tag: what install.sh and ibis/tools/install.sh download on Linux with an NVIDIA GPU. release.yml makes the release
     # (its attach job); this job waits up to 30 minutes for it, then uploads, replacing assets of the same name.
     # The Windows zip (engine-windows: glyd.exe; attested and signed like the tarballs, but not code-signed: P13) goes up with them where that job succeeded; its failure does not hold the Linux bundles back.
     needs: [plan, engine-bundle, sign-engine, engine-windows]

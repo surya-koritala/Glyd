@@ -1,6 +1,6 @@
 # Roadmap
 
-The plan for all of Glyd (the engine, Condor and Starlings in one program) is [ROADMAP.md](../../ROADMAP.md) at the top of the repository.
+The plan for all of Glyd (the engine, Ibis and Starlings in one program) is [ROADMAP.md](../../ROADMAP.md) at the top of the repository.
 
 The next releases, in order, and how releases are supported:
 [getglyd.com/roadmap](https://getglyd.com/roadmap/). This file is the codec's research plan.

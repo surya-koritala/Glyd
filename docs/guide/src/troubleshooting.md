@@ -54,5 +54,5 @@ These are exit 3 unless noted. The message says what to do; the usual ones:
 ## Still stuck
 
 Run `glyd doctor` and `glyd preflight MODEL` and put what they print in an
-[issue](https://github.com/surya-koritala/Glyd/issues) with the model, the command and the GPU. For Condor, choose "Condor:
+[issue](https://github.com/surya-koritala/Glyd/issues) with the model, the command and the GPU. For Ibis, choose "Ibis:
 something went wrong".

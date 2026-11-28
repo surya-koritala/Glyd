@@ -8,7 +8,7 @@
 - [Serving and the APIs](serve.md)
 - [Connecting tools](tools.md)
 - [Several GPUs and Starlings](multi-gpu.md)
-- [Condor: a big MoE on one GPU](condor.md)
+- [Ibis: a big MoE on one GPU](ibis.md)
 - [Troubleshooting](troubleshooting.md)
 - [API reference](api.md)
 - [The background service](service.md)

@@ -48,7 +48,7 @@ HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3
   Elsewhere, or with `--split CUTS --devices GPUS`, the layers are split between the GPUs (one at work at a time). The
   numbers: [research/tp-8xa100-2026-10-22](../research/tp-8xa100-2026-10-22/README.md). The Qwen3.5 layout is cut over the GPUs at every level (the lossy levels in stages, one sequence at a time) and Nemotron-H at penguin.
   Qwen3.8-Flash-Next (penguin, `glyd run`, `serve` and `fit`) is cut over the GPUs too, the same way: one GPU where one holds it, its layers split where
-  not (`--split CUTS --devices GPUS` chooses); Condor's `qwenserve CKPT PACK --gpus 0,1` cuts the layers over those cards with each part's experts in a cache
+  not (`--split CUTS --devices GPUS` chooses); Ibis's `qwenserve CKPT PACK --gpus 0,1` cuts the layers over those cards with each part's experts in a cache
   of its own (one request at a time across GPUs, as the release did).
 - The environment it reads: GLYD_API_KEY (or VLLM_API_KEY; `--api-key` works but `ps` shows it), HF_HUB_CACHE or HF_HOME
   for a Hub name, HF_HUB_OFFLINE=1. A directory needs nothing else: a CUDA build loads no GPU library (its kernels are its own),
@@ -312,7 +312,7 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
   (`limits.concurrency`); a model with a draft model, a model split across GPUs, or one with an operation that takes one sequence, one request at a time (`concurrency: 1`). `GLYD_ENGINE_BATCH_PREFILL=0` makes every reply the one the same
   request alone gets: prompts run one a pass, and a model with experts (Muse Spark, Kimi-K3, GLM-5.3-Flash) decodes one sequence a step (its
   experts' products differ in the last bits at several rows). There is one exception: a model whose expert cache has the host compute
-  some misses (Kimi-K3 at penguin, a Condor codes pack). There, which pairs the host computes follows the copy link's timing. Such a
+  some misses (Kimi-K3 at penguin, a Ibis codes pack). There, which pairs the host computes follows the copy link's timing. Such a
   reply holds within the kind's bound from one run to the next, not to the bit (docs/design/runtime.md, the expert cache's
   "Run to run").
 - A field this server does not know is answered without it, and said once on stderr.

@@ -1,5 +1,5 @@
 //! GLM-5.3-Flash's and Kimi-K3's kernels (kernels/glm.cu, kernels/mla.cu) with typed launches: Kimi delta attention, the embedding into the residual streams, the indexer's
-//! score and pick and the small dense product (`KernGlm`), and the streams' mixing weights a launch takes (`Hc`), which the executor and Condor run. The latent attention's
+//! score and pick and the small dense product (`KernGlm`), and the streams' mixing weights a launch takes (`Hc`), which the executor and Ibis run. The latent attention's
 //! own launches are the layer kind's (src/dynamic/mla.rs), the streams' mixing the streams kind's (src/dynamic/residual.rs).
 
 use crate::dev::{Buf, Dev};
@@ -29,7 +29,7 @@ pub struct KernGlm {
     out: crate::kt::glm_kda_out,
     out_w32: crate::kt::glm_kda_out_w32,
     small: crate::kt::small_linear,
-    // the indexer's score and pick (kernels/mla.cu), which Condor's engine runs on its own caches; the latent attention itself is src/dynamic/mla.rs's
+    // the indexer's score and pick (kernels/mla.cu), which Ibis's engine runs on its own caches; the latent attention itself is src/dynamic/mla.rs's
     idx_score: crate::kt::idx_score,
     select: crate::kt::idx_pick,
 }

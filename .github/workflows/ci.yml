@@ -13,7 +13,7 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore: ['**.md', 'docs/**', 'benchmarks/**', 'research/**', 'condor/**', 'starlings/**', 'cards/**', 'tools/**']
+    paths-ignore: ['**.md', 'docs/**', 'benchmarks/**', 'research/**', 'ibis/**', 'starlings/**', 'cards/**', 'tools/**']
   # (no paths-ignore here: a required check must report on every pull request, so the `changes` job decides and the jobs it gates are skipped; `CI result` is the one check to require)
   pull_request:
     branches: [main]
@@ -132,7 +132,7 @@ jobs:
           while IFS= read -r f; do
             case "$f" in
               .github/workflows/ci.yml) code=true ;;
-              *.md | docs/* | benchmarks/* | research/* | condor/* | starlings/* | cards/* | tools/* | .github/workflows/*) ;;
+              *.md | docs/* | benchmarks/* | research/* | ibis/* | starlings/* | cards/* | tools/* | .github/workflows/*) ;;
               *) code=true ;;
             esac
           done < "$RUNNER_TEMP/changed"

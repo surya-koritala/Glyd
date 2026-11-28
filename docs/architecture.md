@@ -211,6 +211,6 @@ sequenceDiagram
 | `glyd-gpu/` | packer and verifier |
 | `src/`, `glyd-store/` | codec and store |
 | `starlings/` | cluster: own Cargo workspace, `rust-toolchain.toml` |
-| `condor/` | MoE-on-one-GPU setup scripts, chat app, benchmarks |
+| `ibis/` | MoE-on-one-GPU setup scripts, chat app, benchmarks |
 | `bindings/`, `glyd-gpu-py/` | Python/Go bindings, Python GPU package (frozen) |
 | `benchmarks/`, `research/` | measured results and research records |

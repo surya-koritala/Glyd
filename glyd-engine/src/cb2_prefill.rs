@@ -420,7 +420,7 @@ impl Cb2Kern {
             (2560, 640) => true,
             _ => return err(format!("the streaming prefill's kernels are made for experts of 2,048 x 4,096 and 640 x 2,560, not {inter} x {hid}")),
         };
-        // (GLM-5.3-Flash's or Condor's experts, in two or three stages: one of four kernels that take the same arguments)
+        // (GLM-5.3-Flash's or Ibis's experts, in two or three stages: one of four kernels that take the same arguments)
         macro_rules! pick {
             ($g2:ident, $g3:ident, $q2:ident, $q3:ident) => {
                 match (qwen, stages) {

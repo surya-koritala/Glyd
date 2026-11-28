@@ -7,7 +7,7 @@
 google/gemma-4-12B-it | 2026-05-23 | refuse | run | run | the 16 GB plan is kestrel (glyd/gemma-4-12B-kestrel, packed 2026-11-21)
 nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 | 2026-08-01 | run | run | run | Mamba-2 hybrid MoE: wren on 8 GB with its experts in RAM (needs about 24 GiB of free RAM), kestrel on 16 GB (glyd/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16-wren and -kestrel, packed 2026-11-21)
 Qwen/Qwen3.8-27B | 2026-08-05 | refuse | refuse | run | dense Qwen3.5 family
-Qwen/Qwen3.8-Flash-Next | 2026-08-24 | refuse | refuse | refuse | Condor's model: glyd run takes it with P8
+Qwen/Qwen3.8-Flash-Next | 2026-08-24 | refuse | refuse | refuse | Ibis's model: glyd run takes it with P8
 Qwen/Qwen-AgentWorld-35B-A3B | 2026-06-22 | refuse | refuse | refuse | Qwen3.5 MoE
 zai-org/GLM-5.3-Flash | 2026-08-25 | refuse | refuse | refuse | 328B MoE
 meta-models/Muse-Glimmer-30B | 2026-08-09 | refuse | refuse | refuse | Muse Glimmer

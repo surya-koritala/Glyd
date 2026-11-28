@@ -8,7 +8,7 @@ no longer counts. What qualifies and fits a 16 GB card, checked with `glyd-engin
 | `google/gemma-4-12B-it` | 2026-05-23 | lossless 14.9 GiB does not fit; **kestrel 9.0 GiB and linnet 7.6 GiB run** (the engine only: vLLM has no lossy levels) |
 | `google/gemma-4-12B-it-qat-w4a16-ct` (vLLM's 4-bit checkpoint of it) | 2026-06-05 | vLLM 0.30 runs it, 8.28 GiB: the comparison |
 | `Qwen/Qwen3.8-27B` | 2026-08-05 | does not fit at any level (wren 14.6 GiB + KV against 13.2 GiB free) |
-| `Qwen/Qwen3.8-Flash-Next` | 2026-08-24 | 180B parameters; "does not run with glyd run yet" (Condor) |
+| `Qwen/Qwen3.8-Flash-Next` | 2026-08-24 | 180B parameters; "does not run with glyd run yet" (Ibis) |
 | `Qwen/Qwen3.5-9B`, Gemma 4 E4B, the rest of the Gemma 4 family | 2026-02/03 | older than the cutoff (and vLLM's on this GPU: the engine does not take Qwen3.5 lossless) |
 
 **No model of the Qwen3 dense family (Qwen3ForCausalLM, the one family `glyd run` hands to the engine by default) is newer than 2025.** Gemma 4 12B is the one model that can be measured, at the engine's lossy levels.

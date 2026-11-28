@@ -5,7 +5,7 @@
 # usable, at least 100 GB of disk and 64 GB of RAM. The contract is rp_run.sh's (~/results, DONE however it ends), and ~/results.tar.gz is left to copy back.
 # Uploaded beside it (the instance's home), made on the PC or the laptop:
 #   amd_src.tar     git archive -o amd_src.tar HEAD Cargo.toml Cargo.lock src third_party glyd-store glyd-gpu glyd-engine gpu research/lossy-2026 research/qwen-kld
-#   pub.tar         tar -cf pub.tar -C ~/glyd-condor-next tools tests/test_server.py bench/compare.py   (the public repo: the chat page and the checks)
+#   pub.tar         tar -cf pub.tar -C ~/glyd-ibis-next tools tests/test_server.py bench/compare.py   (the public repo: the chat page and the checks)
 #   strata_v1.json  ~/glyd-scratch/qwen-users/kld/strata_v1.json (its first chunk is read as kld_engine.py reads it)
 #   scp -P PORT tools/runpod/jobs/amd_job.sh amd_src.tar pub.tar strata_v1.json USER@HOST: && ssh -p PORT USER@HOST 'nohup bash amd_job.sh > job.log 2>&1 &'
 #   then, once ~/results/DONE is there: scp -P PORT USER@HOST:results.tar.gz . ; and destroy the instance.

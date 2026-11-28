@@ -8,7 +8,7 @@
 | Linux x86_64, NVIDIA older than Ampere (Turing and before) | Refused: "older than the engine runs on". |
 | Linux aarch64 (Grace, Jetson, DGX Spark) | The engine, planned as on x86_64 and built and unit-tested for aarch64 (CI, no GPU); it has not run a model on one yet, and the speed bar's list names no Arm-hosted GPU. |
 | macOS, Apple GPU | Refused: Apple GPUs are not supported yet. File compression only. |
-| Windows x86_64, NVIDIA Ampere or newer, driver 535 or newer | From v0.34.0 a zip with `glyd.exe` (the engine linked in; its kernels are in the program, so no GPU library), and `install.ps1` (below). The release workflow builds it and installs it on a runner with no GPU; a first chat on a Windows GPU is still to be shown ([#159](https://github.com/surya-koritala/Glyd/issues/159)). [Condor](condor.md) has PowerShell scripts for its own model. |
+| Windows x86_64, NVIDIA Ampere or newer, driver 535 or newer | From v0.34.0 a zip with `glyd.exe` (the engine linked in; its kernels are in the program, so no GPU library), and `install.ps1` (below). The release workflow builds it and installs it on a runner with no GPU; a first chat on a Windows GPU is still to be shown ([#159](https://github.com/surya-koritala/Glyd/issues/159)). [Ibis](ibis.md) has PowerShell scripts for its own model. |
 | AMD (RDNA 3 and 4) | A development build: `GLYD_HIP=1 cargo build --release -p glyd --features engine`. Not in releases. |
 | No GPU | Refused: "no GPU was found: the engine's CPU backend is not built yet". |
 

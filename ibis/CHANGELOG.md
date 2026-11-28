@@ -2,10 +2,10 @@
 
 ## Unreleased
 
-- Condor moved into the Glyd repository (`condor/`), and the engine is open source: Glyd's engine and GPU library are Apache-2.0 and
+- Ibis moved into the Glyd repository (`ibis/`), and the engine is open source: Glyd's engine and GPU library are Apache-2.0 and
   their source is in the same repository. Nothing about the model, the modes or the commands changes.
 - `tools/install.sh` installs the engine bundle of a Glyd release (built by Glyd's release workflow from the public source); until a
-  Glyd release carries one, it installs Condor's v0.2.4 engine as before. `tools/install.sh --source` builds the engine and the GPU
+  Glyd release carries one, it installs Ibis's v0.2.4 engine as before. `tools/install.sh --source` builds the engine and the GPU
   library on your machine (Rust and the CUDA toolkit), for the GPUs it finds there.
 - `./setup.sh` reinstalls the engine when Glyd's latest release is newer than the installed one (an engine built with `--source` stays).
 
@@ -39,7 +39,7 @@
   unchanged; total speed stays near one user's, since every pass is still one user's. A new long prompt pauses the other streams
   while it is read. `tests/test_parallel.py`.
 - Two cards: `GLYD_GPUS=0,1` splits the layers over them. On 2x4090: the same output as one card, byte for byte; 189 vs 186 tok/s.
-- The MCP server reports its name as `condor`.
+- The MCP server reports its name as `ibis`.
 
 ## 0.2.2
 
@@ -52,7 +52,7 @@
   can be deleted after. Engines before v0.2.2 keep using `pack/`. 66 GB in all for fast mode (was 68).
 - Known: with the new fast experts two of the 19 tool-call tests in `tests/test_agents.py` fail (a forced tool choice gets a second call;
   the 12-round tool loop overruns), 19 of 19 with precise and best. On the list for v0.2.3.
-- The project is Condor and the repository is surya-koritala/condor (old links redirect). More Flash-class models will come here.
+- The project is Ibis and the repository is surya-koritala/ibis (old links redirect). More Flash-class models will come here.
 - Precise and best are unchanged.
 
 ## 0.2.1
@@ -80,7 +80,7 @@
 - tools/bench.sh prints a block to paste into a "Bench result" issue. docs/HOW_IT_WORKS.md and docs/CLIENTS.md.
 - Windows 10/11 x64, native: setup.ps1 and tools\\*.ps1 (the .sh scripts' twins). Tested on one machine so far (an L4, 64 GB).
 - 12 GB cards and 32 GB of RAM: setup picks fast mode below 64 GB of RAM; measured on a 4080 SUPER held back to those sizes.
-- The repository is now surya-koritala/glyd-condor (Glyd Condor); the old links redirect.
+- The repository is now surya-koritala/glyd-ibis (Glyd Ibis); the old links redirect.
 
 ## 0.1.1
 

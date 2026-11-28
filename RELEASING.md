@@ -40,7 +40,7 @@ bird: penguin, kestrel, linnet, wren, hummingbird.
    - `release-gpu.yml`: the GPU library (for the Python package), the engine, the `glyd-gpu` wheels to PyPI, and the engine bundles
      (`glyd-engine-vX.Y.Z-linux-*.tar.gz` and their `.sha256`: `glyd` with the engine linked, `glyd-engine` as a link to it, LICENSE; the engine loads
      no GPU library, so none is in them; and, where its job succeeded, `glyd-engine-vX.Y.Z-windows-x86_64.zip` with its `.sha256`) attached to the same
-     GitHub release (`attach-engine`), which `install.sh` and `condor/tools/install.sh` download.
+     GitHub release (`attach-engine`), which `install.sh` and `ibis/tools/install.sh` download.
    PyPI's trusted publisher for `glyd-gpu` must name this repository and `release-gpu.yml` (environment `pypi`).
 4. Check the release page has the CLI tarballs, the wheels and the engine bundles (the Linux tarballs, and the Windows zip where its job succeeded), each tarball's `.sigstore.json`, `SHA256SUMS`, `SHA256SUMS-engine` and the two SBOMs
    (`*.spdx.json`), and verify one tarball as a user would (docs/verify-releases.md).

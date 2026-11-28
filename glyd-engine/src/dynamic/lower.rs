@@ -507,7 +507,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
     })
 }
 
-/// Qwen3.8-Flash-Next (`qwen4_exp_text`, Condor's model) on the shared operations, from its layer kinds alone: every block inside the gated residuals (`Op::StreamsPre`
+/// Qwen3.8-Flash-Next (`qwen4_exp_text`, Ibis's model) on the shared operations, from its layer kinds alone: every block inside the gated residuals (`Op::StreamsPre`
 /// with `StreamsMix::Gated`, `Op::StreamsPost` gated) over the four streams the embedding row becomes (`Op::Streams`), the final mixer (`HeadMix::Gated`); Gated DeltaNet
 /// with the sigmoid gate (`Op::GatedNorm` `sigmoid`); the sparse attention (`Op::IdxMean`, `Op::IdxPick` of `IdxKeys::Pools` unweighted, `Op::Attn` `picked`); the experts
 /// (`Op::Moe`, block k the k-th layer's); the n-gram embedding before its layer (`Op::NgramRows`, its product, `Op::NgramAdd`). The matrices are the checkpoint's by

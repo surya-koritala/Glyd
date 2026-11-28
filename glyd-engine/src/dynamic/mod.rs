@@ -1020,7 +1020,7 @@ impl Part {
 /// Where a stage's packed matrices are held beyond its GPU's own memory. `across`: every layer across the thread's group of GPUs where it has one
 /// (src/dynamic/tp.rs), this GPU holding its slice of the rows of each matrix big enough to slice (a Hub-format directory's, packed here). `ram`: the layers
 /// whose packed matrices are in the computer's memory, copied into one slot on the GPU before each runs (src/dense_ram.rs). `hi`: the layout of the attention
-/// blocks' own matrices and the LM head (`Described::attention_and_head`), the others' the stage's (Condor's server's `--hi`).
+/// blocks' own matrices and the LM head (`Described::attention_and_head`), the others' the stage's (Ibis's server's `--hi`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Placing {
     pub across: bool,
