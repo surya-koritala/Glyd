@@ -2678,3 +2678,237 @@ fn mimo_v2_on_the_reference_scales_values_keeps_sinks_and_cuts_the_fused_matrix(
         run(&mimo_tiny(serde_json::json!({"hybrid_layer_pattern": [1, 1], "sliding_window_size": 5})), Some(0.0), 1.0, &a)
     );
 }
+
+/// LFM: the released LFM3-1.7B (its recorded header) describes as 24 layers of a mixer and the gated MLP, each part between two norms: 13 gated short
+/// convolutions of 7 taps with no biases, 6 attentions over the whole context and 5 with a window of 256; every attention 16 heads over 4 of 128, its
+/// queries and keys normed with a weight, its output gated a head; the full layers' rotary the release's reading of "default" with a partial factor of
+/// 0.5 (the whole head paired, the first 32 of the 64 pairs turning, exponents over 128, base 1,000,000), the sliding layers' plain at 10,000. The head
+/// is the embedding, the last norm the checkpoint's `embedding_norm`. Every shape the description gives is the checkpoint's, and it is read whole.
+#[test]
+fn lfm3_describes_its_three_sorts_of_layers() {
+    use super::kinds::{Act, Body, Ffn, GateFrom, Mixer, NormWeight, OutGate, Rope, ShortConv};
+    let h = fixture("headers/LFM3-1.7B.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((d.desc.blocks.len(), d.desc.head.tied, d.head.is_none(), d.desc.hidden, d.desc.vocab), (48, true, true, 2048, 128_000));
+    assert_eq!((d.final_norm.as_str(), d.desc.final_norm.eps, d.desc.embed.norm), ("model.embedding_norm.weight", 1e-5, None));
+    let (mut conv, mut full, mut sliding) = (Vec::new(), Vec::new(), Vec::new());
+    for (i, b) in d.desc.blocks.iter().enumerate() {
+        assert!(b.norm_out.is_some() && b.norm_in.eps == 1e-5, "block {i}: a norm before the part and one after");
+        match &b.body {
+            Body::Mixer(Mixer::ShortConv(c)) => {
+                assert_eq!((*c, c.state(2048)), (ShortConv { taps: 7, bias: false }, 6 * 2048), "block {i}");
+                conv.push(i / 2);
+            }
+            Body::Mixer(Mixer::Attention(a)) => {
+                assert_eq!((a.heads, a.kv_heads, a.head_dim, a.v_head_dim, a.bias, a.sinks), (16, 4, 128, 128, false, false), "block {i}");
+                assert_eq!((a.q_norm.unwrap().weight, a.k_norm.unwrap().weight, a.v_norm), (NormWeight::Plain, NormWeight::Plain, None), "block {i}");
+                assert_eq!(a.gate, Some(OutGate { act: Act::Sigmoid, from: GateFrom::Head, norm: None }), "block {i}");
+                assert_eq!(a.scale, 128f32.powf(-0.5), "block {i}");
+                let r = a.rope.clone().unwrap();
+                match a.window {
+                    None => {
+                        assert_eq!(r, Rope::proportional(1e6, 128, 0.5), "block {i}");
+                        assert_eq!((r.dim, r.freqs, r.freq_dim), (128, 32, 128), "block {i}");
+                        full.push(i / 2);
+                    }
+                    Some(256) => {
+                        assert_eq!(r, Rope::plain(1e4, 128), "block {i}");
+                        sliding.push(i / 2);
+                    }
+                    w => panic!("block {i}: a window of {w:?}"),
+                }
+            }
+            Body::Ffn(Ffn::Mlp(m)) => assert!(i % 2 == 1 && m.gated && m.act == Act::Silu && !m.bias, "block {i}"),
+            _ => panic!("block {i} is no kind of the layout"),
+        }
+    }
+    assert_eq!((conv.len(), full, sliding), (13, vec![2, 6, 10, 14, 18, 22], vec![4, 8, 12, 16, 20]));
+    assert_eq!(conv, [0, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23]);
+    // (every tensor read has the checkpoint's shape: the convolution's [2048, 1, 7], its input product's [6144, 2048], a gate's [16, 2048])
+    let table = crate::sizes::Table::expand(&crate::sizes::groups_of(&h).unwrap());
+    let have = header_names(&h);
+    assert_eq!((d.names().len(), have.len()), (286, 286));
+    for r in &table.rows {
+        let want: Vec<usize> = r.shape.iter().map(|&x| x as usize).collect();
+        assert_eq!(d.shapes.get(&r.name), Some(&want), "{}", r.name);
+    }
+    for (n, s) in [("conv.conv", vec![2048, 1, 7]), ("conv.in_proj", vec![6144, 2048]), ("conv.out_proj", vec![2048, 2048])] {
+        assert_eq!(d.shapes.get(&format!("model.layers.0.{n}.weight")), Some(&s), "{n}");
+    }
+    assert_eq!(d.shapes.get("model.layers.2.self_attn.gate_proj.weight"), Some(&vec![16, 2048]));
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+}
+
+/// A small config of the LFM layout: heads of 8 (4 over 2), a convolution of 3 taps, the layers' sorts as given, and `keys` over them.
+fn lfm_tiny(sorts: &[&str], keys: serde_json::Value) -> serde_json::Value {
+    let mut c = serde_json::json!({
+        "architectures": ["Lfm3ForCausalLM"], "model_type": "lfm3", "hidden_size": 32, "num_hidden_layers": sorts.len(), "vocab_size": 61,
+        "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 8, "intermediate_size": 48, "norm_eps": 1e-5, "tie_word_embeddings": true,
+        "max_position_embeddings": 4096, "conv_L_cache": 3, "conv_bias": false, "sliding_window": 3, "use_sandwich_norm": true, "layer_types": sorts,
+        "rope_parameters": {"full_attention": {"rope_type": "default", "rope_theta": 1000000.0, "partial_rotary_factor": 0.5},
+            "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0}},
+    });
+    c.as_object_mut().unwrap().extend(keys.as_object().unwrap().clone());
+    c
+}
+
+/// The LFM builder reads its config as the release's code does: what a config leaves unsaid is the class's (the layers' sorts by their number, the two
+/// rotaries, a window of 256, 7 taps, the gate and the second norms on, the head tied); a rotary written "proportional" is the one written "default"
+/// with the same partial factor; each switch takes away what it names and its tensors with it; and what the builder does not take is refused in words
+/// that name the key and the value.
+#[test]
+fn lfm3_reads_its_config_as_the_releases_code_does() {
+    use super::kinds::{Body, Mixer, Rope};
+    let ok = lfm_tiny(&["conv", "full_attention", "sliding_attention"], serde_json::json!({}));
+    let base = describe(&ok).unwrap_or_else(|e| panic!("{}", e.msg));
+    let attn = |d: &super::describe::Described, b: usize| match &d.desc.blocks[b].body {
+        Body::Mixer(Mixer::Attention(a)) => a.clone(),
+        other => panic!("block {b}: {other:?}"),
+    };
+    assert_eq!((attn(&base, 2).rope, attn(&base, 4).rope, attn(&base, 4).window), (Some(Rope::proportional(1e6, 8, 0.5)), Some(Rope::plain(1e4, 8)), Some(3)));
+    // (the class's own: only the model type and the sizes that keep it small said)
+    let bare = serde_json::json!({"model_type": "lfm3", "hidden_size": 32, "num_hidden_layers": 9, "vocab_size": 61, "intermediate_size": 48});
+    let d = describe(&bare).unwrap_or_else(|e| panic!("{}", e.msg));
+    let sorts: Vec<&str> = (0..9)
+        .map(|l| match &d.desc.blocks[2 * l].body {
+            Body::Mixer(Mixer::ShortConv(c)) => {
+                assert_eq!((c.taps, c.bias), (7, false));
+                "conv"
+            }
+            Body::Mixer(Mixer::Attention(a)) if a.window == Some(256) => "sliding",
+            Body::Mixer(Mixer::Attention(a)) if a.window.is_none() => "full",
+            other => panic!("layer {l}: {other:?}"),
+        })
+        .collect();
+    assert_eq!(sorts, ["conv", "conv", "full", "conv", "sliding", "conv", "full", "conv", "sliding"]);
+    let (f, s) = (attn(&d, 4), attn(&d, 8));
+    assert_eq!((f.heads, f.kv_heads, f.head_dim, f.gate.is_some(), d.desc.head.tied, d.desc.final_norm.eps), (16, 4, 2, true, true, 1e-5));
+    assert_eq!((f.rope, s.rope), (Some(Rope::proportional(1e6, 2, 0.5)), Some(Rope::plain(1e4, 2))));
+    assert!(d.desc.blocks.iter().all(|b| b.norm_out.is_some()));
+    // ("proportional" written out is the same description)
+    let mut prop = ok.clone();
+    prop["rope_parameters"]["full_attention"]["rope_type"] = "proportional".into();
+    assert_eq!(describe(&prop).unwrap().desc, base.desc);
+    // (the switches: no gate, no second norms, biases on the convolution's parts, an untied head; the older tie key over the newer)
+    let off = describe(&lfm_tiny(&["conv", "full_attention"], serde_json::json!({"use_attention_gate": false, "use_sandwich_norm": false}))).unwrap();
+    assert!(attn(&off, 2).gate.is_none() && off.desc.blocks.iter().all(|b| b.norm_out.is_none()));
+    assert!(!off.names().iter().any(|n| n.contains("gate_proj") || n.contains("post_")), "{:?}", off.names());
+    let biased = describe(&lfm_tiny(&["conv"], serde_json::json!({"conv_bias": true, "tie_word_embeddings": false}))).unwrap();
+    assert!(matches!(biased.desc.blocks[0].body, Body::Mixer(Mixer::ShortConv(c)) if c.bias && c.taps == 3));
+    for n in ["conv.in_proj.bias", "conv.conv.bias", "conv.out_proj.bias"] {
+        assert!(biased.shapes.contains_key(&format!("model.layers.0.{n}")), "{n}");
+    }
+    assert_eq!(biased.head.as_deref(), Some("lm_head.weight"));
+    assert!(!describe(&lfm_tiny(&["conv"], serde_json::json!({"tie_embedding": false}))).unwrap().desc.head.tied);
+    // (the refusals)
+    let refused = |sorts: &[&str], keys: serde_json::Value| describe(&lfm_tiny(sorts, keys)).err().map(|e| e.msg).unwrap_or_default();
+    let all = ["conv", "full_attention", "sliding_attention"];
+    let e = refused(&["conv", "mamba"], serde_json::json!({}));
+    assert!(e.contains("layer_types[1]") && e.contains("mamba") && e.contains("conv, full_attention or sliding_attention"), "{e}");
+    let e = refused(&all, serde_json::json!({"layer_types": ["conv"]}));
+    assert!(e.contains("layer_types has 1 entries for 3 layers"), "{e}");
+    let e = refused(&all, serde_json::json!({"rope_parameters": {"full_attention": {"rope_theta": 1e6}}}));
+    assert!(e.contains("rope_parameters has no sliding_attention"), "{e}");
+    let e = refused(&all, serde_json::json!({"rope_parameters": {"conv": {"rope_theta": 1e6}}}));
+    assert!(e.contains("rope_parameters.conv is not an attention layer type"), "{e}");
+    let yarn = serde_json::json!({"rope_type": "yarn", "rope_theta": 1e6, "partial_rotary_factor": 0.5, "factor": 2.0, "original_max_position_embeddings": 64});
+    let e = refused(&all, serde_json::json!({"rope_parameters": {"full_attention": yarn, "sliding_attention": {"rope_theta": 1e4}}}));
+    assert!(e.contains("rope_parameters.full_attention") && e.contains("rope_type yarn with partial_rotary_factor 0.5"), "{e}");
+    let e = refused(
+        &all,
+        serde_json::json!({"rope_parameters": {"full_attention": {"rope_type": "dynamic", "rope_theta": 1e6, "factor": 2.0}, "sliding_attention": {"rope_theta": 1e4}}}),
+    );
+    assert!(e.contains("rope_type dynamic is not supported"), "{e}");
+    let e = refused(&all, serde_json::json!({"sliding_window": null}));
+    assert!(e.contains("sliding_window = null"), "{e}");
+    describe(&lfm_tiny(&["conv", "full_attention"], serde_json::json!({"sliding_window": null}))).unwrap_or_else(|e| panic!("{}", e.msg));
+    let e = refused(&all, serde_json::json!({"attention_bias": true}));
+    assert!(e.contains("attention_bias = true is not supported"), "{e}");
+    let e = refused(&all, serde_json::json!({"conv_L_cache": 0}));
+    assert!(e.contains("conv_L_cache = 0"), "{e}");
+    let e = refused(&all, serde_json::json!({"rms_norm_eps": 1e-6}));
+    assert!(e.contains("norm_eps") && e.contains("rms_norm_eps") && e.contains("differ"), "{e}");
+    let e = refused(&all, serde_json::json!({"num_key_value_heads": 3}));
+    assert!(e.contains("4 query heads to 3 KV heads"), "{e}");
+    let e = refused(&all, serde_json::json!({"block_ffn_dim_multiplier": 1.0, "hidden_act": "gelu"}));
+    assert!(e.contains("config keys block_ffn_dim_multiplier, hidden_act are not understood"), "{e}");
+}
+
+/// The LFM layout on the CPU reference, a random model of each small config (every tensor of the shape its description gives). The convolution is causal
+/// and remembers exactly its taps: with two conv layers of 3 taps a row reads 4 tokens back, so the last row of a prompt of seven does not change, to the
+/// bit, when the second token does, and changes when the third does; no row changes when a later token does. A prompt at once and the same prompt a token
+/// at a time (the convolutions' states and the attentions' caches kept between the calls) are the same bits, in a model of all three sorts of layers.
+/// The gate a head changes the answer, the second norms change it, and a convolution of other taps is another answer.
+#[test]
+fn lfm3_on_the_reference_is_causal_keeps_its_taps_and_steps_as_it_prompts() {
+    let load = |cfg: &serde_json::Value| -> RefModel {
+        let d = describe(cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        let src = |n: &str| {
+            let shape = d.shapes.get(n)?.clone();
+            let len: usize = shape.iter().product();
+            // (a fixed draw a tensor: its name's bytes seed it; a norm's weights near 1)
+            let mut s = n.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |a, b| (a ^ b as u64).wrapping_mul(0x0100_0000_01B3));
+            let norm = n.contains("norm");
+            let v = (0..len)
+                .map(|_| {
+                    s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                    let u = ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5;
+                    if norm {
+                        1.0 + 0.2 * u
+                    } else {
+                        0.6 * u
+                    }
+                })
+                .collect();
+            Some((shape, v))
+        };
+        RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg))
+    };
+    let run = |cfg: &serde_json::Value, toks: &[u32]| load(cfg).forward(toks, 0).unwrap_or_else(|e| panic!("{}", e.msg));
+    let none = serde_json::json!({});
+    let a: [u32; 7] = [5, 9, 13, 17, 21, 25, 29];
+    let with = |i: usize, t: u32| {
+        let mut b = a;
+        b[i] = t;
+        b
+    };
+    // (the taps' memory: two conv layers of 3 taps reach 2 + 2 tokens back and no further)
+    let convs = lfm_tiny(&["conv", "conv"], none.clone());
+    let rows = run(&convs, &a);
+    assert_eq!((rows.len(), rows[6].len()), (7, 61));
+    assert!(rows.iter().flatten().all(|x| x.is_finite()) && rows[6].iter().any(|&x| x != rows[6][0]), "finite, and not one value");
+    assert_eq!(rows[6], run(&convs, &with(1, 44))[6], "five tokens back is past two layers of three taps");
+    assert_ne!(rows[6], run(&convs, &with(2, 44))[6], "four tokens back is inside them");
+    let one = lfm_tiny(&["conv"], none.clone());
+    let r1 = run(&one, &a);
+    assert_eq!(r1[6], run(&one, &with(3, 44))[6], "three tokens back is past one layer of three taps");
+    assert_ne!(r1[6], run(&one, &with(4, 44))[6]);
+    // (other taps, another answer; one tap reads its own token alone)
+    assert_ne!(r1[6], run(&lfm_tiny(&["conv"], serde_json::json!({"conv_L_cache": 5})), &a)[6]);
+    let single = lfm_tiny(&["conv"], serde_json::json!({"conv_L_cache": 1}));
+    assert_eq!(run(&single, &a)[6], run(&single, &with(5, 44))[6]);
+    // (causal: a later token changes no earlier row, in a model of all three sorts; and a row over the whole context sees the first token)
+    let sorts = ["conv", "full_attention", "conv", "sliding_attention"];
+    let mixed = lfm_tiny(&sorts, none.clone());
+    let rows = run(&mixed, &a);
+    let later = run(&mixed, &with(6, 44));
+    assert_eq!(rows[..6], later[..6], "a later token changes no earlier row");
+    assert_ne!(rows[6], later[6]);
+    assert_ne!(rows[6], run(&mixed, &with(0, 44))[6], "a layer over the whole context sees the first token");
+    // (a prompt at once, then two more tokens; and every token alone, in order: the same bits)
+    let mut m = load(&mixed);
+    let mut by_step = Vec::new();
+    for (t, &tok) in a.iter().enumerate() {
+        by_step.extend(m.forward(&[tok], t as u32).unwrap_or_else(|e| panic!("{}", e.msg)));
+    }
+    assert_eq!(by_step, rows, "a token at a time is the prompt");
+    let mut m = load(&mixed);
+    let mut parts = m.forward(&a[..5], 0).unwrap();
+    parts.extend(m.forward(&a[5..], 5).unwrap());
+    assert_eq!(parts, rows, "a prompt, then its next tokens");
+    // (the gate a head and the second norms are read, not ignored)
+    assert_ne!(rows[6], run(&lfm_tiny(&sorts, serde_json::json!({"use_attention_gate": false})), &a)[6], "the gate changes the answer");
+    assert_ne!(rows[6], run(&lfm_tiny(&sorts, serde_json::json!({"use_sandwich_norm": false})), &a)[6], "the second norms change it");
+    assert_ne!(rows[6], run(&lfm_tiny(&sorts, serde_json::json!({"conv_bias": true})), &a)[6], "the convolution's biases change it");
+}

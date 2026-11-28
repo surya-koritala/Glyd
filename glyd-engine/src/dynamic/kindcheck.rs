@@ -175,6 +175,8 @@ fn label(b: &Block) -> (Class, String) {
             LinearKind::KimiDelta => (Class::KimiDelta, format!("Kimi delta attention: {} heads of {}", l.k_heads, l.k_dim)),
         },
         Body::Mixer(Mixer::Mamba2(m)) => (Class::Mamba2, format!("Mamba-2: {} heads of {}, state {}, {} groups", m.heads, m.head_dim, m.state, m.groups)),
+        // (no kernel yet: a description that holds one is refused before a block is compared, `split::SHORT_CONV_NOT_RUN`; the class is its nearest, a state a channel)
+        Body::Mixer(Mixer::ShortConv(c)) => (Class::Mamba2, format!("short convolution: {} taps{}", c.taps, if c.bias { ", biases" } else { "" })),
         Body::Ffn(Ffn::Mlp(m)) => {
             (Class::Mlp, format!("MLP: {:?}{}{}", m.act, if m.gated { ", gated" } else { "" }, m.clamp.map_or(String::new(), |c| format!(", limit {c}"))))
         }

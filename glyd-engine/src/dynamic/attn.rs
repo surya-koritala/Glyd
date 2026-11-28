@@ -185,6 +185,9 @@ impl AttnOp {
         if a.sinks || a.bias || a.indexer.is_some() {
             return err("attention with sinks, a bias or an indexer: not an operation of this executor");
         }
+        if a.gate.is_some_and(|g| g.from == kinds::GateFrom::Head) {
+            return err("attention with an output gate of one value a head, which the executor does not run yet");
+        }
         let in_query = a.gate.is_some_and(|g| g.from == kinds::GateFrom::InQuery);
         let q_step = if in_query { 2 * d } else { d };
         let k_off = nq * q_step;
@@ -1235,6 +1238,9 @@ mod tests {
         (wide.heads, wide.kv_heads) = (64, 2);
         assert!(AttnOp::of(&wide, Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
         // (a factor on the values is refused by its name)
+        // (a gate of one value a head, LFM's: refused by its name)
+        let Err(head) = AttnOp::of(&kind(128, Some(GateFrom::Head)), Slot::Mix, 0, Some(0), Some((2, 3))) else { panic!("a gate a head lowered") };
+        assert!(head.msg.contains("an output gate of one value a head, which the executor does not run yet"), "{}", head.msg);
         let Err(scaled) = AttnOp::of(&Attn { v_scale: 0.707, ..kind(128, None) }, Slot::Mix, 0, Some(0), Some((2, 3))) else {
             panic!("values scaled, and taken")
         };

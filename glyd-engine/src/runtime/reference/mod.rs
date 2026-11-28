@@ -61,6 +61,7 @@ pub mod mtp;
 pub mod ngram;
 pub mod norm;
 pub mod rope;
+pub mod short_conv;
 pub mod vision;
 
 #[cfg(test)]
@@ -534,7 +535,7 @@ fn roles(b: &Block) -> Vec<String> {
         Body::Mixer(Mixer::Mla(_)) => &["q", "q_a", "q_b", "kv_a", "kv_b", "o", "g", "indexer_wq_b", "indexer_wk", "indexer_weights", "indexer_pool_gate"],
         Body::Mixer(Mixer::Linear(_)) => &["qkv", "q", "k", "v", "beta", "decay", "gate", "o"],
         Body::Mixer(Mixer::Compressed(_)) => &["q_a", "q_b", "kv", "o_a", "o_b", "comp_kv", "comp_gate", "idx_kv", "idx_gate", "idx_q_b", "idx_weights"],
-        Body::Mixer(Mixer::Mamba2(_)) => &["in", "o"],
+        Body::Mixer(Mixer::Mamba2(_) | Mixer::ShortConv(_)) => &["in", "o"],
         Body::Ngram(_) => &["key", "value"],
         Body::PerLayer(_) => &["gate", "proj"],
         Body::Ffn(_) => &[
@@ -711,6 +712,7 @@ pub enum SeqState {
     Linear(linear::LinearState),
     Comp(comp::CompState),
     Mamba(mamba::MambaState),
+    ShortConv(short_conv::ConvState),
     Ngram(ngram::NgramState),
 }
 
@@ -806,6 +808,11 @@ impl RefLayer {
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Mamba(mamba::MambaState::new(m)));
                 let SeqState::Mamba(s) = st else { return err("a sequence's state is not a Mamba-2 state") };
                 mamba::step(m, p, s, h)
+            }
+            Body::Mixer(Mixer::ShortConv(c)) => {
+                let st = self.seqs.entry(seq).or_insert_with(|| SeqState::ShortConv(short_conv::ConvState::new(c, h.len())));
+                let SeqState::ShortConv(s) = st else { return err("a sequence's state is not a short convolution's") };
+                short_conv::step(c, p, s, h)
             }
             Body::PerLayer(pl) => err(format!("the per-layer input {}'s branch reads its token's input: it runs in the model (`RefModel::body`)", pl.layer)),
             Body::Ngram(n) => {
@@ -1017,6 +1024,7 @@ impl Backend for Ref {
             | KindRef::GatedDeltaNet
             | KindRef::KimiDelta
             | KindRef::Mamba2
+            | KindRef::ShortConv
             | KindRef::Mlp
             | KindRef::Moe
             | KindRef::Ngram

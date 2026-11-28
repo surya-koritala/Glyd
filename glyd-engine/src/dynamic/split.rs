@@ -1001,6 +1001,9 @@ pub struct Loader {
     pub stage: StageLoad,
 }
 
+/// The refusal of a description that holds a gated short convolution (`kinds::ShortConv`): the CPU reference computes it, the executor has no operation for it.
+pub const SHORT_CONV_NOT_RUN: &str = "its layers hold a short convolution, which the executor does not run yet";
+
 /// The layer kinds a loader of the dynamic route lowers, as a description tells them apart (`lowering`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Lowering {
@@ -1032,6 +1035,10 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
     let residual = |f: &dyn Fn(&Residual) -> bool| blocks.iter().any(|b| f(&b.residual));
     let linear = |k: LinearKind| mixer(&|m| matches!(m, Mixer::Linear(l) if l.kind == k));
     let plain = blocks.iter().all(|b| matches!(b.residual, Residual::Add));
+    // (a kind the reference has and no lowering yet: refused by its name before the kinds beside it choose a lowering)
+    if mixer(&|m| matches!(m, Mixer::ShortConv(_))) {
+        return err(SHORT_CONV_NOT_RUN);
+    }
     Ok(if mixer(&|m| matches!(m, Mixer::Compressed(_))) {
         Lowering::Compressed
     } else if mixer(&|m| matches!(m, Mixer::Mamba2(_))) && plain {

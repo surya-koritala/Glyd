@@ -246,6 +246,7 @@ pub fn step(m: &Mla, p: &Params, c: &mut LatentCache, h: &[f32], pos: u32) -> Re
         return err(format!("MLA: kv_b of {} values for {nh} x ({nope} + {vd}) x {kr}", kv_b.len()));
     }
     let gate = match m.gate {
+        Some(g) if g.from == crate::runtime::kinds::GateFrom::Head => return err("MLA: an output gate of one value a head is plain attention's (`Attn`)"),
         Some(_) => Some(p.prod("g", h)?),
         None => None,
     };

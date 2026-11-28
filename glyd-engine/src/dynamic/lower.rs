@@ -290,6 +290,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         let (ar, fr) = (&d.blocks[2 * l], &d.blocks[2 * l + 1]);
         let a = match &ab.body {
             Body::Mixer(Mixer::Attention(a)) => a,
+            Body::Mixer(Mixer::ShortConv(_)) => return err(format!("{what}: layer {l}: {}", super::split::SHORT_CONV_NOT_RUN)),
             b => return err(format!("{what}: layer {l}'s first block is {b:?}, not attention")),
         };
         // (the feed-forward: the gated SiLU MLP, or a mixture of experts, the layer's block of them in `Op::Moe`'s order: `experts::of_layers`)
@@ -2764,6 +2765,27 @@ mod tests {
         }
         let twice = rounds(&deepseek_v4(&kinds, vec![1], 1 << 20, &st, &vo).unwrap());
         assert!(twice.len() == 4 * 43 + 1 && twice.iter().all(|&r| r == Rounding::Twice));
+    }
+
+    /// The kinds the CPU reference has and the executor has no operation for are refused by their names, not lowered and not a panic: a description that holds a
+    /// gated short convolution (LFM's) by the planner's lowering and by the dense one, and one whose attention gates its output a head by the dense lowering.
+    #[test]
+    fn a_short_convolution_and_a_gate_a_head_are_refused_by_name() {
+        let lfm = |sorts: &[&str]| {
+            let c = serde_json::json!({"model_type": "lfm3", "hidden_size": 256, "num_hidden_layers": sorts.len(), "vocab_size": 1024, "intermediate_size": 512,
+                "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 64, "layer_types": sorts, "sliding_window": 16, "max_position_embeddings": 4096});
+            crate::runtime::describe::describe(&c).unwrap_or_else(|e| panic!("{}", e.msg))
+        };
+        let conv = lfm(&["conv", "full_attention", "sliding_attention"]);
+        let Err(e) = super::super::split::lowered_described(&conv, 3, 4096) else { panic!("a short convolution lowered") };
+        assert!(e.msg.contains("a short convolution, which the executor does not run yet"), "{}", e.msg);
+        let Err(e) = super::super::split::loader(&conv).map(|_| ()) else { panic!("a short convolution has a loader") };
+        assert_eq!(e.msg, super::super::split::SHORT_CONV_NOT_RUN);
+        let Err(e) = dense(&conv, vec![2], 4096) else { panic!("a short convolution lowered as attention") };
+        assert!(e.msg.contains("layer 0") && e.msg.contains(super::super::split::SHORT_CONV_NOT_RUN), "{}", e.msg);
+        let gated = lfm(&["full_attention", "sliding_attention"]);
+        let Err(e) = super::super::split::lowered_described(&gated, 2, 4096) else { panic!("a gate a head lowered") };
+        assert!(e.msg.contains("an output gate of one value a head, which the executor does not run yet"), "{}", e.msg);
     }
 
     /// A plain dense decoder's config (the model type the description builder reads it by, the attention's settings) of three layers of hidden 256, 4 query heads over 2

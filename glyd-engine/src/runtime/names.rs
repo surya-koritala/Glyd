@@ -79,6 +79,9 @@ pub const MUSE: Convention =
 /// layers (`model.mtp.layers.`) are read as draft heads.
 pub const MIMO: Convention = Convention { name: "MiMo V2", unread: &["audio_encoder.", "speech_embeddings.", "visual."], ..HF };
 
+/// LFM's: Hugging Face's, the norm after the last layer under the name `embedding_norm` (it norms no embedding: the head reads it), and no towers.
+pub const LFM: Convention = Convention { name: "LFM", final_norm: "{p}embedding_norm.weight", unread: &[], ..HF };
+
 /// Kimi-K3's (the `kimi_linear` text model under `language_model.`), with the depth mix's output roles.
 pub const KIMI: Convention = Convention {
     name: "Kimi linear",
@@ -217,6 +220,39 @@ pub mod part {
         ("up", "feedforward.up_proj.weight"),
         ("down", "feedforward.down_proj.weight"),
         ("norm_out", "post_feedforward_norm.weight"),
+    ];
+
+    // ---- LFM: a layer's mixer (a gated short convolution or an attention) and its MLP, each between two norms where the config has the second
+    /// The gated short convolution (`kinds::ShortConv`), its biases where the config has them.
+    pub const LFM_CONV: Roles = &[
+        ("norm_in", "operator_norm.weight"),
+        ("in", "conv.in_proj.weight"),
+        ("in_bias", "conv.in_proj.bias"),
+        ("conv", "conv.conv.weight"),
+        ("conv_bias", "conv.conv.bias"),
+        ("o", "conv.out_proj.weight"),
+        ("o_bias", "conv.out_proj.bias"),
+        ("norm_out", "post_operator_norm.weight"),
+    ];
+    /// Attention with normed queries and keys and the gate of one value a head (`g` [heads, hidden]).
+    pub const LFM_ATTN: Roles = &[
+        ("norm_in", "operator_norm.weight"),
+        ("q", "self_attn.q_proj.weight"),
+        ("k", "self_attn.k_proj.weight"),
+        ("v", "self_attn.v_proj.weight"),
+        ("o", "self_attn.o_proj.weight"),
+        ("q_norm", "self_attn.q_norm.weight"),
+        ("k_norm", "self_attn.k_norm.weight"),
+        ("g", "self_attn.gate_proj.weight"),
+        ("norm_out", "post_operator_norm.weight"),
+    ];
+    /// The gated MLP: `w1` the gate, `w3` the up projection, `w2` the down.
+    pub const LFM_MLP: Roles = &[
+        ("norm_in", "ffn_norm.weight"),
+        ("gate", "feed_forward.w1.weight"),
+        ("up", "feed_forward.w3.weight"),
+        ("down", "feed_forward.w2.weight"),
+        ("norm_out", "post_ffn_norm.weight"),
     ];
 
     // ---- Qwen3.5 / 3.8

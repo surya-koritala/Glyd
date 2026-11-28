@@ -231,6 +231,14 @@
     "plan": "68b0d4fcd7227af7",
     "family": "Kimi"
   },
+  "headers/LFM3-1.7B.json": {
+    "blocks": 48,
+    "tensors": 286,
+    "kinds": "3dfecceb7c19b868",
+    "weights": "b987f9af3f494f80",
+    "plan": "0fa9ead20583f698",
+    "family": "refused: m is a Lfm3ForCausalLM model, which this engine has no description of yet"
+  },
   "headers/Mellum2.1-12B-A2.5B-Instruct.json": {
     "blocks": 56,
     "tensors": 5631,

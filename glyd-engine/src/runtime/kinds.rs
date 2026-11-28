@@ -219,6 +219,9 @@ pub enum GateFrom {
     Own,
     /// Interleaved with the queries in `q`: per head, head_dim query rows then head_dim gate rows (Qwen3.5/3.8 `q_proj`).
     InQuery,
+    /// Its own product of one value a head, role `g` [heads, hidden]: every channel of a head's output times the head's one gate (LFM's
+    /// `self_attn.gate_proj`). On plain attention (`Attn`) alone.
+    Head,
 }
 
 /// An attention output gate: `o = norm(o_head) * act(gate)` per head before the output product.
@@ -313,7 +316,8 @@ pub enum AttnRounding {
 ///
 /// Roles: `q` [heads * head_dim (x2 with an `InQuery` gate), hidden], `k` [kv_heads * head_dim, hidden], `v` [kv_heads * v_head_dim,
 /// hidden] (absent with `k_eq_v`), `o` [hidden, heads * v_head_dim]; `q_bias`, `k_bias`, `v_bias` with `bias`; `q_norm`, `k_norm`
-/// [head_dim] where those norms have a weight; `g` with an `Own` gate; `sinks` [heads] with `sinks`. With `kv_from` no `k`, `v`, `k_norm`.
+/// [head_dim] where those norms have a weight; `g` with an `Own` gate ([heads, hidden] with a `Head` one); `sinks` [heads] with `sinks`. With
+/// `kv_from` no `k`, `v`, `k_norm`.
 #[derive(Clone, PartialEq)]
 pub struct Attn {
     pub heads: usize,
@@ -533,6 +537,27 @@ pub struct Mamba2 {
     pub norm_eps: f32,
 }
 
+/// The gated short convolution (LFM's `conv` layers): one product of the block's input gives three vectors of the hidden width, B, C and x, in that
+/// order; u = B x, channel by channel; each channel of u through its own causal convolution of `taps` taps over the sequence (a token reads its own u
+/// and the `taps` - 1 before it, zeros before the sequence's first; no activation); y = C conv(u); then the output product. No state but the
+/// convolution's.
+///
+/// Roles: `in` [3 hidden, hidden] (the rows of B, then C, then x), `conv` [hidden, taps] (each channel's taps, oldest first), `o` [hidden, hidden]; with
+/// `bias`, `in_bias` [3 hidden], `conv_bias` [hidden] and `o_bias` [hidden]. The state is the last `taps` - 1 values of u (the gated product, not the
+/// input) a channel, per sequence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShortConv {
+    pub taps: usize,
+    pub bias: bool,
+}
+
+impl ShortConv {
+    /// The values a sequence's state holds in a layer of `hidden` channels: the last `taps` - 1 gated products of each.
+    pub fn state(&self, hidden: usize) -> usize {
+        hidden * self.taps.saturating_sub(1)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Mixer {
     Attention(Attn),
@@ -540,6 +565,7 @@ pub enum Mixer {
     Compressed(Comp),
     Linear(Linear),
     Mamba2(Mamba2),
+    ShortConv(ShortConv),
 }
 
 /// A dense MLP: `down(act(gate x) * (up x))` when gated, `down(act(up x))` otherwise.
@@ -739,7 +765,7 @@ impl Body {
             Body::Mixer(Mixer::Linear(l)) if l.kind == LinearKind::GatedDeltaNet => &[&["qkv", "gate"], &["beta", "decay"], &["o"]],
             Body::Mixer(Mixer::Linear(_)) => &[&["q", "k", "v"], &["o"], &["decay_a"], &["decay_b"], &["gate"], &["gate_a"], &["gate_b"], &["beta"]],
             Body::Mixer(Mixer::Mla(_)) => &[&["q_a"], &["q_b"], &["q"], &["kv_a"], &["kv_b"], &["g"], &["o"]],
-            Body::Mixer(Mixer::Mamba2(_)) => &[&["in"], &["o"]],
+            Body::Mixer(Mixer::Mamba2(_) | Mixer::ShortConv(_)) => &[&["in"], &["o"]],
             Body::Ffn(Ffn::Mlp(_)) => &[&["gate", "up"], &["down"]],
             Body::Ffn(Ffn::Moe(_)) => &[&["latent_down"], &["latent_up"], &["shared_gate", "shared_up"], &["shared_down"]],
             Body::Mixer(Mixer::Compressed(_)) | Body::Ngram(_) | Body::PerLayer(_) => return None,

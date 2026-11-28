@@ -138,6 +138,8 @@ fn wanted(kind: KindRef) -> Option<&'static str> {
         KindRef::GatedDeltaNet => Some("Gated DeltaNet"),
         KindRef::KimiDelta => Some("Kimi delta attention"),
         KindRef::Mamba2 => Some("Mamba-2"),
+        // (no operation of the executor is one yet: a block of the kind is refused by this name)
+        KindRef::ShortConv => Some("short convolution"),
         KindRef::Moe => Some("mixture of experts"),
         KindRef::Ngram => Some("n-gram embedding"),
         KindRef::Mlp | KindRef::PerLayer => None,
