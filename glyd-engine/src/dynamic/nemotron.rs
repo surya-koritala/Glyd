@@ -144,6 +144,7 @@ pub(crate) fn attention(nq: usize, nk: usize, ring: usize) -> AttnOp {
         picked: false,
         sinks: None,
         v_scale: 1.0,
+        shards: 1,
     }
 }
 

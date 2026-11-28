@@ -172,6 +172,9 @@ pub struct AttnOp {
     /// The values' factor (`kinds::Attn::v_scale`; 1: none): the preparation multiplies each value by it as it writes the cache, in fp32, rounded once to the
     /// bf16 the cache holds, where the CPU reference multiplies. Every path reads the cache, so every path takes it.
     pub v_scale: f32,
+    /// The projection's rows are stored in this many shards, `stride` / `shards` apart, each its query heads, then its key heads, then its value heads (a fused
+    /// q-k-v matrix as MiMo stores it, `sharded`): `k_off` and `v_off` are then into a shard. 1: every query head, then every key head, then every value head.
+    pub shards: usize,
 }
 
 impl AttnOp {
@@ -278,7 +281,27 @@ impl AttnOp {
             picked: false,
             sinks: None,
             v_scale: a.v_scale,
+            shards: 1,
         })
+    }
+
+    /// This operation reading a product stored in `shards` shards, each shard its query heads' rows, then its key heads', then its value heads' (the fused
+    /// matrix as its checkpoint holds it, multiplied as it is: the preparation finds each head in its shard, so no row of the stored matrix is moved). Each
+    /// shard holds whole heads of each sort; a gate, whose values the kernels find by one step, and values that are the keys' projection are refused.
+    pub fn sharded(mut self, shards: usize) -> Result<AttnOp> {
+        if shards == 0 || self.nq % shards != 0 || self.nk % shards != 0 {
+            return err(format!(
+                "a fused q, k and v product of {shards} shards for {} query heads over {} key-value heads: whole heads a shard are wanted",
+                self.nq, self.nk
+            ));
+        }
+        if self.gate.is_some() || self.v_off.is_none() || self.q_step != self.d {
+            return err("a fused q, k and v product stored in shards with an output gate, or with the keys as the values: not an operation of this executor");
+        }
+        self.k_off = self.nq / shards * self.d;
+        self.v_off = Some(self.k_off + self.nk / shards * self.d);
+        self.shards = shards;
+        Ok(self)
     }
 
     /// `of` for a kind with sinks, the small tensor `sinks` holding them [heads].
@@ -334,6 +357,7 @@ impl AttnOp {
             gnorm: g.norm as i32,
             g_head: g.head as i32,
             dv: self.dv as i32,
+            shards: self.shards as i32,
             round: self.round as i32,
             sbf16: self.sbf16 as i32,
             S: SPLITS as i32,
@@ -429,6 +453,8 @@ pub(crate) struct AttnArgs {
     pub g_head: i32,
     /// The values' head width (`AttnOp::dv`); 0: `d`.
     pub dv: i32,
+    /// The shards the projection's rows are stored in (`AttnOp::shards`); 0 or 1: none.
+    pub shards: i32,
     pub round: i32,
     pub sbf16: i32,
     pub S: i32,
@@ -1308,6 +1334,14 @@ mod tests {
         };
         assert!(gated.msg.contains("values of 128 and an output gate"), "{}", gated.msg);
         assert!(AttnOp::of(&Attn { v_head_dim: 128, k_eq_v: true, ..kind(192, None) }, Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
+        // (the product stored in shards, MiMo's fused matrix: 8 query heads over 2 in 2 shards, each 4 query heads, a key head and a value head; the rows as
+        // wide, the keys' and values' places into a shard. Heads that do not divide into the shards, and a gate, are refused)
+        let fused = narrow.clone().sharded(2).unwrap();
+        assert_eq!((fused.shards, fused.stride, fused.k_off, fused.v_off), (2, 10 * 192 + 2 * 128, 4 * 192, Some(5 * 192)));
+        assert_eq!((fused.args(3, 1e-5).shards, narrow.args(3, 1e-5).shards, narrow.clone().sharded(1).unwrap()), (2, 1, narrow.clone()));
+        assert!(narrow.clone().sharded(4).is_err() && narrow.clone().sharded(0).is_err());
+        let Err(gated) = m.clone().sharded(2) else { panic!("a gate on a product in shards, and taken") };
+        assert!(gated.msg.contains("stored in shards with an output gate"), "{}", gated.msg);
         let mut wide = kind(128, None);
         (wide.heads, wide.kv_heads) = (64, 2);
         assert!(AttnOp::of(&wide, Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
@@ -1324,8 +1358,7 @@ mod tests {
         assert!(zero.msg.contains("values are scaled by 0"), "{}", zero.msg);
     }
 
-    /// kernels/attn.cu's AttnArgs: 16 pointers, a long long and an unsigned long long, 23 ints, 6 floats (and the four bytes that round its size up to its
-    /// alignment, in C as here).
+    /// kernels/attn.cu's AttnArgs: 16 pointers, a long long and an unsigned long long, 24 ints, 6 floats, no padding.
     #[test]
     fn the_arguments_are_the_kernels_struct() {
         assert_eq!(std::mem::size_of::<AttnArgs>(), 18 * 8 + 30 * 4);
@@ -1334,11 +1367,12 @@ mod tests {
                 std::mem::offset_of!(AttnArgs, gnorm),
                 std::mem::offset_of!(AttnArgs, g_head),
                 std::mem::offset_of!(AttnArgs, dv),
+                std::mem::offset_of!(AttnArgs, shards),
                 std::mem::offset_of!(AttnArgs, round),
                 std::mem::offset_of!(AttnArgs, softcap),
                 std::mem::offset_of!(AttnArgs, v_scale)
             ),
-            (18 * 8 + 17 * 4, 18 * 8 + 18 * 4, 18 * 8 + 19 * 4, 18 * 8 + 20 * 4, 18 * 8 + 27 * 4, 18 * 8 + 28 * 4)
+            (18 * 8 + 17 * 4, 18 * 8 + 18 * 4, 18 * 8 + 19 * 4, 18 * 8 + 20 * 4, 18 * 8 + 21 * 4, 18 * 8 + 28 * 4, 18 * 8 + 29 * 4)
         );
         assert_eq!(
             (

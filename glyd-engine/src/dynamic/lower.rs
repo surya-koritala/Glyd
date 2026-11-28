@@ -218,7 +218,9 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
 /// description gives. The products are the library's at every row count, a long chunk's decoded and multiplied dense where its route says so: the products,
 /// norms, activation, embedding and head of the dense engine this replaces, kernel for kernel. A layer's mixer may be the gated short convolution in the
 /// attention's place (LFM's conv layers: its input product into Proj, `Op::ShortConv` over the sequence's state into Xc, its output product; a state a
-/// layer, fp32, in `states`), and an attention's gate one value a head (LFM's: its matrix stacked after q, k and v, the rows padded to rows that pack). A
+/// layer, fp32, in `states`), and an attention's gate one value a head (LFM's: its matrix stacked after q, k and v, the rows padded to rows that pack). An
+/// attention's values may be narrower than its queries and keys and times a factor, and its q, k and v one stored matrix cut in shards (MiMo's: the matrix as
+/// stored is the product's, `AttnOp::sharded`; stored in FP8 it is refused by name). A
 /// kind this lowering does not take (a bias, a rope with scaling, a norm or activation of another kind) is refused, named.
 pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
     use super::SmallForm;
@@ -372,9 +374,47 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
             // (a gate of one value a head, LFM's: its matrix's rows, one a query head, stacked after q, k and v, the product's rows then padded with zero rows to
             // rows the library packs; the attention reads its rows that far apart)
             let head_gate = a.gate.is_some_and(|g| g.from == crate::runtime::kinds::GateFrom::Head);
-            let qkv = match head_gate {
-                false => item(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?], &shape)?,
-                true => padded(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?, one(ar, "g")?], &shape, 64)?,
+            // (q, k and v cut from one stored matrix's rows, MiMo's fused one: the matrix as stored, which the attention reads by its shards)
+            let fused = match (role(ar, "q"), role(ar, "k"), role(ar, "v")) {
+                (Some(Source::RowsOf(w, q)), Some(Source::RowsOf(wk, k)), Some(Source::RowsOf(wv, v))) if w == wk && w == wv => Some((w, [q, k, v])),
+                (Some(Source::RowsOf(..)), _, _) | (_, Some(Source::RowsOf(..)), _) | (_, _, Some(Source::RowsOf(..))) => {
+                    return err(format!("{what}: layer {l}'s q, k and v are cut from rows of more than one matrix, where one fused matrix holds the three"));
+                }
+                _ => None,
+            };
+            let qkv = match (&fused, head_gate) {
+                (Some((w, cuts)), _) => {
+                    let it = item(vec![(*w).clone()], &shape)?;
+                    // (shard i: its query heads' rows, then its key heads', then its value heads'; the kernels find a head so, and in no other order)
+                    let shards = cuts[0].len();
+                    let widths = [a.heads * a.head_dim, a.kv_heads * a.head_dim, a.kv_heads * a.v_head_dim];
+                    let each = it.rows / shards.max(1);
+                    let mut at = 0;
+                    let in_shards = shards > 0
+                        && it.rows == widths.iter().sum::<usize>()
+                        && widths.iter().all(|w| w % shards == 0)
+                        && cuts.iter().zip(widths).all(|(cut, w)| {
+                            let ok = cut.len() == shards && cut.iter().enumerate().all(|(i, &r)| r == (i * each + at, i * each + at + w / shards));
+                            at += w / shards;
+                            ok
+                        });
+                    if !in_shards {
+                        return err(format!(
+                            "{what}: layer {l}'s q, k and v are rows {cuts:?} of {w} ({} rows), where the executor reads a fused matrix in shards, each its query heads' rows, then its key heads', then its value heads'",
+                            it.rows
+                        ));
+                    }
+                    // (FP8 as released: a fused matrix's block scales start again at every shard, a grid no reader of the engine's takes)
+                    if d.scales.contains_key(*w) {
+                        return err(format!(
+                            "{what}: layer {l}'s fused q, k and v matrix {w} is stored in FP8 with block scales that start again at each of its {shards} shards, which the loader does not read yet"
+                        ));
+                    }
+                    attn = attn.sharded(shards).map_err(|e| e.context(&format!("{what}: layer {l}")))?;
+                    it
+                }
+                (None, false) => item(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?], &shape)?,
+                (None, true) => padded(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?, one(ar, "g")?], &shape, 64)?,
             };
             let stride = qkv.rows;
             if head_gate && stride >= attn.stride {
@@ -2903,6 +2943,52 @@ mod tests {
         let kinds_of: Vec<bool> = d.layers.iter().map(|ops| ops.iter().any(|o| matches!(o, Op::ShortConv { .. }))).collect();
         assert_eq!(kinds_of, [true, true, false, true, false, true]);
         assert_eq!(crate::runtime::config::ModelConfig::parse(text).unwrap().family(), Some(crate::support::Family::Layers));
+    }
+
+    /// A small config of MiMo's layout: three layers 256 wide, each a dense MLP; the first over the whole context (8 query heads over 2), the others sliding over
+    /// 8 positions and the query's own (8 over 4, a sink a head); queries and keys of 192 with their first 64 channels turned, values of 128 times 0.707; the
+    /// three products one matrix in 2 shards, or with `keys` over it.
+    fn mimo_config(keys: serde_json::Value) -> Described {
+        let mut c = serde_json::json!({
+            "architectures": ["MiMoV2ForCausalLM"], "model_type": "mimo_v2", "hidden_size": 256, "num_hidden_layers": 3, "vocab_size": 1024,
+            "layernorm_epsilon": 1e-6, "hidden_act": "silu", "max_position_embeddings": 4096, "attention_projection_layout": "fused_qkv",
+            "num_attention_heads": 8, "num_key_value_heads": 2, "head_dim": 192, "v_head_dim": 128, "rope_theta": 10000000.0,
+            "swa_num_attention_heads": 8, "swa_num_key_value_heads": 4, "swa_head_dim": 192, "swa_v_head_dim": 128, "swa_rope_theta": 10000.0,
+            "partial_rotary_factor": 0.334, "hybrid_layer_pattern": [0, 1, 1], "sliding_window_size": 8, "add_swa_attention_sink_bias": true,
+            "attention_value_scale": 0.707, "moe_layer_freq": [0, 0, 0], "intermediate_size": 512, "scoring_func": "sigmoid", "topk_method": "noaux_tc",
+        });
+        c.as_object_mut().unwrap().extend(keys.as_object().unwrap().clone());
+        crate::runtime::describe::describe(&c).unwrap_or_else(|e| panic!("{}", e.msg))
+    }
+
+    /// MiMo's attention on the dense lowering: the fused matrix as stored is the product's one member, and the attention reads its heads by the shards (2: on
+    /// the first layer each 4 query heads, a key head and a value head; on a sliding one 4, 2 and 2); values of 128 under heads of 192, so the output is 8 x 128
+    /// wide where the queries are 8 x 192 and the ring's heads 192; the values' factor; a sliding layer's window and sinks. With a matrix a product the same
+    /// operation with no shards, its three matrices stacked. The fused matrix stored in FP8, whose block scales start again at every shard, is refused by name.
+    #[test]
+    fn a_fused_product_in_shards_and_narrower_values_lower() {
+        let d = dense(&mimo_config(serde_json::json!({})), vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        let attn = |d: &ModelDesc, l: usize| d.layers[l].iter().find_map(|o| if let Op::Attn(a) = o { Some(a.clone()) } else { None }).unwrap();
+        let (full, swa) = (attn(&d, 0), attn(&d, 1));
+        assert_eq!((full.d, full.dv, full.nq, full.nk, full.v_scale, full.window, full.sinks), (192, 128, 8, 2, 0.707, 0, None));
+        assert_eq!((full.shards, full.stride, full.k_off, full.v_off), (2, 10 * 192 + 2 * 128, 4 * 192, Some(5 * 192)));
+        assert_eq!((swa.shards, swa.stride, swa.k_off, swa.v_off, swa.nk, swa.window), (2, 12 * 192 + 4 * 128, 4 * 192, Some(6 * 192), 4, 9));
+        assert!(swa.sinks.is_some() && full.warp_only() && !full.lib_decode());
+        assert_eq!((full.rope.map(|r| (r.span, r.pairs)), d.ropes.len()), (Some((64, 32)), 2));
+        let qkv = &d.mats[d.layers[0].iter().find_map(|o| if let Op::Linear { w, y: Slot::Proj, .. } = o { Some(*w) } else { None }).unwrap()];
+        assert_eq!((qkv.members.clone(), qkv.rows, qkv.cols), (vec!["model.layers.0.self_attn.qkv_proj.weight".to_string()], 2176, 256));
+        assert_eq!((d.width(Slot::Proj), d.width(Slot::Qo), d.width(Slot::Att)), (12 * 192 + 4 * 128, 8 * 192, 8 * 128));
+        assert_eq!(d.rings.iter().map(|r| (r.d, r.nk, r.window)).collect::<Vec<_>>(), vec![(192, 2, 0), (192, 4, 9), (192, 4, 9)]);
+        // (a matrix a product: q, k and v stacked, no shards)
+        let split = dense(&mimo_config(serde_json::json!({"attention_projection_layout": "split"})), vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        let s = attn(&split, 1);
+        assert_eq!((s.shards, s.stride, s.k_off, s.v_off, s.dv), (1, 12 * 192 + 4 * 128, 8 * 192, Some(12 * 192), 128));
+        assert_eq!(split.mats[0].members.len(), 3);
+        // (FP8 as released)
+        let quant = serde_json::json!({"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128], "store_dtype": "mxfp4", "mxfp4_block_size": 32,
+            "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]});
+        let Err(e) = dense(&mimo_config(serde_json::json!({"quantization_config": quant})), vec![2], 4096) else { panic!("a fused FP8 matrix, and lowered") };
+        assert!(e.msg.contains("qkv_proj.weight is stored in FP8 with block scales that start again at each of its 2 shards"), "{}", e.msg);
     }
 
     /// A plain dense decoder's config (the model type the description builder reads it by, the attention's settings) of three layers of hidden 256, 4 query heads over 2

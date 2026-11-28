@@ -38,6 +38,7 @@ pub(crate) fn attention(c: &ConfigG4, kind: KindG4, nq: usize, q_norm: usize, k_
         picked: false,
         sinks: None,
         v_scale: 1.0,
+        shards: 1,
     })
 }
 

@@ -41,6 +41,8 @@ struct AttnArgs {
     int os, gs, g_step, gnorm;
     int g_head;        // the gate is one value a head (every dim of head h times the sigmoid of the value at t gs + h g_step), not a value a dim
     int dv;            // the values' head width where it is not the queries' and keys' (`kinds::Attn::v_head_dim` below head_dim); 0: d
+    int shards;        // the projection's rows are stored in this many shards, stride / shards apart, each its query heads, then its key heads (k_off into the
+                       // shard), then its value heads (v_off into it): a fused q-k-v matrix as MiMo stores it; 0 or 1: q, then k, then v
     int round, sbf16, S;
     float q_scale, eps, scale, sl2, softcap;
     float v_scale;     // the values times this as the cache takes them (`kinds::Attn::v_scale`); 0 or 1: as they are
@@ -74,6 +76,14 @@ __device__ __forceinline__ float at_score(const AttnArgs& a, float s) {
 // scores are after their scale, so it is not scaled. A row with no key (m = -inf) is all sink: the sum is then infinite and the output 0.
 __device__ __forceinline__ float at_sink(const AttnArgs& a, int h, float m) { return a.sink ? exp2f(b2f(a.sink[h]) * 1.4426950408889634f - m) : 0.f; }
 
+// Where head j of `heads` (the query heads, the key heads or the value heads) starts in the projection's row: `off` + j `step`; of a row stored in shards, the
+// same within the head's shard (its heads / shards heads of the sort, `off` into the shard), the shards stride / shards apart.
+__device__ __forceinline__ int at_head(const AttnArgs& a, int j, int heads, int off, int step) {
+    if (a.shards <= 1) return off + j * step;
+    const int per = heads / a.shards;
+    return (j / per) * (a.stride / a.shards) + off + (j % per) * step;
+}
+
 // ---- the preparation --------------------------------------------------------------------------------------------------------------------------------------------------
 // Row r's head hh (a query head below nq, else key head hh - nq with its values): the norm (one block sum), the queries' scale, the rotary (value j < span with
 // its pair j +- span / 2, angle j mod span / 2 where that is below `pairs`; an M-RoPE row's angle k from the table's row of the position its section turns by),
@@ -104,7 +114,7 @@ __device__ __forceinline__ void attn_prep_t(const AttnArgs& a) {
     if (p < 0) return;
     const bool isq = hh < a.nq;
     const int kh = hh - a.nq;
-    const bf16* x = isq ? row + (size_t)hh * a.q_step : row + a.k_off + kh * D;
+    const bf16* x = row + (isq ? at_head(a, hh, a.nq, 0, a.q_step) : at_head(a, kh, a.nk, a.k_off, D));
     float v0 = b2f(x[t]), v1 = b2f(x[t + H]);
     if (a.norm) {
         const float s = at_rs(block_sum(v0 * v0 + v1 * v1), D, a.eps, a.round);
@@ -138,7 +148,7 @@ __device__ __forceinline__ void attn_prep_t(const AttnArgs& a) {
     o[t + H] = f2b(v1);
     if (isq) return;
     const int DV = at_dv(a);
-    const bf16* xv = a.v_off >= 0 ? row + a.v_off + kh * DV : x;
+    const bf16* xv = a.v_off >= 0 ? row + at_head(a, kh, a.nk, a.v_off, DV) : x;
     float u0 = t < DV ? b2f(xv[t]) : 0.f, u1 = t + H < DV ? b2f(xv[t + H]) : 0.f;
     if (a.v_norm) {
         const float s = at_rs(block_sum(u0 * u0 + u1 * u1), DV, a.eps, a.round);

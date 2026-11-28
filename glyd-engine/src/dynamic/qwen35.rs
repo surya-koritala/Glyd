@@ -165,6 +165,7 @@ pub(crate) fn attention(d: usize, nq: usize, nk: usize, rotary: usize, qk: (usiz
         picked: false,
         sinks: None,
         v_scale: 1.0,
+        shards: 1,
     }
 }
 
