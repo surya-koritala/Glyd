@@ -149,6 +149,21 @@ impl Described {
         self.blocks.iter().chain(heads).flatten().filter(|(r, _)| r.starts_with("experts_")).flat_map(|(_, s)| s.names()).collect()
     }
 
+    /// The stored formats as the description says them, for a reader of the checkpoint (`formats::Stored::tensor`): each quantized matrix's scales, the
+    /// FP8 matrices' block, and the shards of a matrix whose roles are each cut from it a range of rows a shard (`Source::RowsOf`: as many shards as a
+    /// role has ranges, MiMo V2's fused `qkv_proj`), where its block scales may start again.
+    pub fn stored(&self) -> crate::formats::Stored {
+        let mut shards = BTreeMap::new();
+        let heads = self.mtp.iter().flat_map(|(blocks, own)| blocks.iter().flatten().chain(own));
+        for (_, src) in self.blocks.iter().flatten().chain(&self.extra).chain(heads) {
+            if let Source::RowsOf(n, ranges) = src {
+                let k = shards.entry(n.clone()).or_insert(0);
+                *k = ranges.len().max(*k);
+            }
+        }
+        crate::formats::Stored { scales: self.scales.clone(), block: self.fp8_block, shards }
+    }
+
     /// Whether a checkpoint of the tensor names `have` is slim: it holds none of the routed experts the description reads (in any stored form, `stored`),
     /// where it reads some; a codes pack holds them (Glyd's release of Qwen3.8-Flash-Next: `model/` beside its packs).
     pub fn slim(&self, have: &BTreeSet<String>) -> bool {
@@ -1461,7 +1476,9 @@ struct MimoSort {
 ///    `mimo_v2_nextn.py`; layer j drafts step j, vLLM's `mimo_v2_mtp.py`).
 /// Stored formats (`quantization_config`, `mimo_quant`): the fused products and the dense MLPs FP8 with their block scales, which on a fused matrix
 /// start again at every shard (a shard's rows are not a whole number of blocks); `o`, the routers, the norms, the embedding and the head bf16; the
-/// routed experts MXFP4, `weight` the codes and `weight_scale` the scales, the format Kimi-K3's experts are packed in under compressed-tensors' names.
+/// routed experts MXFP4, `weight` the codes and `weight_scale` the scales, the format Kimi-K3's experts are packed in under compressed-tensors' names
+/// (two codes a byte, the even column in the low four bits, as llama.cpp's converter unpacks this release's experts). The CPU reference reads the
+/// three forms by the description's scales and shards (`Described::stored`, `formats::Stored`); the executor's loaders read none of them.
 /// Where the references differ: an unsaid `rope_theta` is 10,000 in SGLang and 1,000,000 in vLLM (SGLang's is taken); transformers' earlier class has
 /// one set of heads with twice the key heads on sliding layers and a rotary a layer type in `rope_parameters`, where this layout says each sort's keys.
 /// The audio encoder, the speech embeddings and the vision tower (`audio_config`, `vision_config`, `processor_config`, `vision_model_type`) are left
@@ -1829,8 +1846,9 @@ fn minimax_quant(q: &Value, mt: &str) -> Result<MinimaxQuant> {
 ///    build one whatever the count says, vLLM of `intermediate_size`: at the releases' one shared expert of that width the four agree).
 /// Stored formats (`quantization_config`, `minimax_quant`): the attention's and the indexer's products, the dense MLPs and the shared expert FP8 with a
 /// scale a run of 32 (`X.weight_scale_inv`); the routed experts NVFP4, `X.weight_packed` the codes, `X.weight_scale` their runs' scales and, the scales' own
-/// scale, `X.weight_global_scale`; the routers fp32, the norms, the embedding and the head bf16. No loader of the engine reads either format yet: the
-/// description names the tensors. The blocks are not square, so `fp8_block` says none.
+/// scale, `X.weight_global_scale`; the routers fp32, the norms, the embedding and the head bf16. The CPU reference reads both formats by the
+/// tensors the description names (`Described::stored`, `formats::Stored`: the block [1, 32] from the scales' shape, `formats::nvfp4`); the executor's
+/// loaders read neither. The blocks are not square, so `fp8_block` says none.
 /// Left unread, by name: the vision tower, its projector and the patch merger (`vision_config` and the wrapper's keys of the image's path;
 /// `names::MINIMAX`), and the release's draft model, which is a checkpoint of its own beside this one (`dspark/`).
 fn minimax_m3(c: &ModelConfig) -> Result<Described> {
@@ -4218,8 +4236,9 @@ const MISTRAL_FP8: &[(&str, &str)] = &[
 /// The norms are RMS norms computed in fp32, cast, then times the weight (`Rounding::Twice`).
 /// Stored formats: the checkpoint is Mistral's consolidated one, in Mistral's names (`names::MISTRAL`). `quantization_config` (fp8, blocks of
 /// `weight_block_size`): every product of a layer but the modules of `modules_to_not_convert` is FP8 E4M3 with an fp32 scale a block, W = code x scale, in a
-/// tensor named `X.qscale_weight` beside `X.weight` (the scales of DeepSeek's `weight_scale_inv`, under Mistral's name; no loader of the engine reads that
-/// name yet). As released the key-value latent's two products, the indexer's key product and head weights, the routers, the embedding and the head are bf16.
+/// tensor named `X.qscale_weight` beside `X.weight` (the scales of DeepSeek's `weight_scale_inv`, under Mistral's name: the CPU reference reads them by
+/// the description's `scales`, `formats::Stored`; the executor's loaders read `weight_scale_inv` alone). As released the key-value latent's two
+/// products, the indexer's key product and head weights, the routers, the embedding and the head are bf16.
 /// Left unread: the vision encoder, its norm, patch merger and adapter (`vision_config` and the wrapper's projector keys), and the draft model under
 /// `mtp_dspark.`, which the config says nothing of.
 fn mistral_large4(c: &ModelConfig) -> Result<Described> {

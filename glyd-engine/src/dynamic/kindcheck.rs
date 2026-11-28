@@ -45,7 +45,7 @@ use crate::runtime::cuda::{self, Cuda, Exec};
 use crate::runtime::kinds::{AttnRounding, Block, Body, Ffn, Indexer, LinearKind, Mixer, NormKind, NormWeight, Residual, StreamsP};
 use crate::runtime::reference::comp::CompState;
 use crate::runtime::reference::mla::{LatentCache, Picked};
-use crate::runtime::reference::model::{checkpoint_tensor, Depth, RefModel};
+use crate::runtime::reference::model::{described_source, Depth, RefModel};
 use crate::runtime::reference::{bf16, collapse, hc_weights, Hc, RefLayer, SeqState};
 use crate::weights::Layout;
 use std::ops::Range;
@@ -904,7 +904,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes, 
         .map_err(|e| Error(format!("config.json: {e}")))?;
     let d = crate::runtime::describe::describe(&cfg)?;
     let ck = glyd_gpu::safetensors::Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
-    let mut m = RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n))?;
+    let mut m = RefModel::load(&d, &described_source(&ck, &d))?;
     // (Engram's compressed vocabulary, which the directory holds beside the weights)
     crate::logits::put_token_map(&mut m, dir)?;
     let layers = dy.big.d.layers.len();
@@ -932,7 +932,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes, 
             return err(format!("{id}: --sequence is not for a depth mix or lagged mHC"));
         }
         Passes::Sequence => {
-            let mut alone = RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n))?;
+            let mut alone = RefModel::load(&d, &described_source(&ck, &d))?;
             crate::logits::put_token_map(&mut alone, dir)?;
             Some((alone, given.map_or_else(|| crate::logits::token_list(prompt + steps, m.desc.vocab, 0), <[u32]>::to_vec)))
         }

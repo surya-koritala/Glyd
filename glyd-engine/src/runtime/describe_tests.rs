@@ -5163,3 +5163,352 @@ fn hy4_on_the_reference_runs_both_sorts_of_layer_the_streams_the_memory_and_the_
     // (no drafter: the description has none, and none of its tensors is asked for)
     assert!(d.desc.mtp.is_empty() && !d.names().iter().any(|n| n.contains("dfly")));
 }
+
+/// A tensor as a test writes it: its name, type, shape and bytes.
+type Written = (String, &'static str, Vec<u64>, Vec<u8>);
+
+/// A fixed stream of numbers a tensor: its name's bytes seed it.
+fn stream(n: &str) -> impl FnMut() -> u64 {
+    let mut s = n.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |a, b| (a ^ b as u64).wrapping_mul(0x0100_0000_01B3));
+    move || {
+        s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        s >> 24
+    }
+}
+
+/// E4M3's definition in f64: a sign, four bits of exponent with bias 7, three of fraction; exponent 0 subnormal.
+fn e4m3_f64(b: u8) -> f64 {
+    let (e, m) = (((b >> 3) & 15) as i32, (b & 7) as f64);
+    let v = if e == 0 { m / 8.0 * 2f64.powi(-6) } else { (1.0 + m / 8.0) * 2f64.powi(e - 7) };
+    if b & 0x80 != 0 {
+        -v
+    } else {
+        v
+    }
+}
+
+/// `n` E4M3 codes of magnitudes below 2 (the exponent's field 0 to 7), from `next`.
+fn small_codes(next: &mut dyn FnMut() -> u64, n: usize) -> Vec<u8> {
+    (0..n).map(|_| (next() & 0xBF) as u8).collect()
+}
+
+/// A random model of `d` (every tensor it reads, at the description's shape) written twice under the temporary directory, with `cfg` as each one's
+/// config.json: `plain`, every tensor bf16; and `released`, where a matrix the description names scales for is what `store` writes for it (its name,
+/// its scales' name, its shape as the description gives it: the stored tensors, and the values they stand for, which `plain` holds as bf16 and must
+/// be bf16 exactly; None: the matrix as bf16 in both). The scales' own tensors are `store`'s to write.
+fn twins(
+    tag: &str,
+    cfg: &serde_json::Value,
+    d: &super::describe::Described,
+    store: &dyn Fn(&str, &str, &[usize], &mut dyn FnMut() -> u64) -> Option<(Vec<Written>, Vec<f32>)>,
+) -> (PathBuf, PathBuf) {
+    let bf16 = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| ((x.to_bits() >> 16) as u16).to_le_bytes()).collect() };
+    let scale_names: BTreeSet<&String> = d.scales.values().collect();
+    let (mut plain, mut released): (Vec<Written>, Vec<Written>) = (Vec::new(), Vec::new());
+    for n in d.names() {
+        if scale_names.contains(&n) {
+            continue;
+        }
+        let shape = d.shapes.get(&n).unwrap_or_else(|| panic!("{n}: no shape in the description")).clone();
+        let dims: Vec<u64> = shape.iter().map(|&x| x as u64).collect();
+        let mut next = stream(&n);
+        if let Some((tensors, values)) = d.scales.get(&n).and_then(|s| store(&n, s, &shape, &mut next)) {
+            assert_eq!(values.len(), shape.iter().product::<usize>(), "{n}");
+            assert!(values.iter().all(|x| x.is_finite() && x.to_bits() & 0xFFFF == 0), "{n}: values bf16 holds exactly");
+            plain.push((n.clone(), "BF16", dims, bf16(&values)));
+            released.extend(tensors);
+            continue;
+        }
+        // (a draw rounded down to bf16; a norm's weights near 1)
+        let near_one = (n.contains("norm") && !n.ends_with(".bias")) || n.ends_with("ssmax_scaling.b");
+        let v: Vec<f32> = (0..shape.iter().product::<usize>())
+            .map(|_| {
+                let u = (next() & 0xFF_FFFF) as f32 / (1u64 << 24) as f32 - 0.5;
+                f32::from_bits((if near_one { 1.0 + 0.2 * u } else { 0.6 * u }).to_bits() & 0xFFFF_0000)
+            })
+            .collect();
+        plain.push((n.clone(), "BF16", dims.clone(), bf16(&v)));
+        released.push((n, "BF16", dims, bf16(&v)));
+    }
+    let write = |kind: &str, t: &[Written]| {
+        let dir = std::env::temp_dir().join(format!("glyd-twins-{tag}-{kind}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), cfg.to_string()).unwrap();
+        let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = t.iter().map(|(n, dt, s, b)| (n.as_str(), *dt, s.clone(), &b[..])).collect();
+        crate::pack::write_safetensors(&dir.join("model.safetensors"), &[("format", "pt".to_string())], &refs).unwrap();
+        dir
+    };
+    (write("plain", &plain), write("released", &released))
+}
+
+/// The twins of `twins` on the CPU reference, each read through its description (`model::described_source`): every matrix the description names
+/// scales for is, in the released form, the values the plain form holds, to the bit, and so are the logits of `tokens`. The matrices so held, and
+/// those of them the checkpoint's own names do not read (`model::checkpoint_tensor`).
+fn twins_agree(d: &super::describe::Described, plain: &std::path::Path, released: &std::path::Path, tokens: &[u32]) -> (usize, usize) {
+    use super::reference::model::{checkpoint_tensor, described_source};
+    let (cp, cr) = (glyd_gpu::safetensors::Checkpoint::open(plain).unwrap(), glyd_gpu::safetensors::Checkpoint::open(released).unwrap());
+    let (sp, sr) = (described_source(&cp, d), described_source(&cr, d));
+    let (mut held, mut by_description) = (0, 0);
+    for n in d.scales.keys().filter(|n| d.shapes.contains_key(*n)) {
+        let (a, b) = (sp(n).unwrap_or_else(|| panic!("{n}: plain")), sr(n).unwrap_or_else(|| panic!("{n}: not read as released")));
+        assert_eq!(a.0, b.0, "{n}");
+        assert!(a.1.iter().zip(&b.1).all(|(x, y)| x.to_bits() == y.to_bits()), "{n}: the released form's values are the plain form's");
+        if cr.get(n).is_some_and(|(_, t)| t.dtype != "BF16") {
+            held += 1;
+            by_description += checkpoint_tensor(&cr, n).is_none() as usize;
+        }
+    }
+    let run = |src: &dyn Fn(&str) -> Option<(Vec<usize>, Vec<f32>)>| {
+        let mut m = RefModel::load(d, src).unwrap_or_else(|e| panic!("{}", e.msg));
+        m.forward(tokens, 0).unwrap_or_else(|e| panic!("{}", e.msg))
+    };
+    let (a, b) = (run(&sp), run(&sr));
+    assert!(a.iter().flatten().all(|x| x.is_finite()) && a.last().is_some_and(|r| r.iter().any(|&x| x != r[0])), "finite, not one value");
+    assert!(a.iter().flatten().zip(b.iter().flatten()).all(|(x, y)| x.to_bits() == y.to_bits()), "the released form's logits are the plain form's");
+    for dir in [plain, released] {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    (held, by_description)
+}
+
+/// An FP8 matrix with fp32 scales a block of `block` under the name `scales`, as `twins` stores one: codes below 2 and a power of two from 1/8 to 1/2
+/// a block, so each weight (its code's value times its block's scale, here in f64) is one bf16 holds.
+fn fp8_grid(n: &str, scales: &str, shape: &[usize], block: usize, next: &mut dyn FnMut() -> u64) -> (Vec<Written>, Vec<f32>) {
+    let (rows, cols) = (shape[0], shape[1]);
+    let (gr, gc) = (rows.div_ceil(block), cols.div_ceil(block));
+    let q = small_codes(next, rows * cols);
+    let s: Vec<f32> = (0..gr * gc).map(|_| 2f32.powi(-1 - (next() % 3) as i32)).collect();
+    let values = (0..rows * cols).map(|i| (e4m3_f64(q[i]) * s[i / cols / block * gc + i % cols / block] as f64) as f32).collect();
+    let stored = vec![
+        (n.to_string(), "F8_E4M3", vec![rows as u64, cols as u64], q),
+        (scales.to_string(), "F32", vec![gr as u64, gc as u64], s.iter().flat_map(|x| x.to_le_bytes()).collect()),
+    ];
+    (stored, values)
+}
+
+/// Mistral Large's stored format on the CPU reference: a random model of the small config whose FP8 products hold fp32 scales a block of 8 under
+/// Mistral's name, `X.qscale_weight` (matrices whose columns do not divide by the block among them), answers to the bit as the same weights
+/// in bf16 do; no matrix of the released form is read by the checkpoint's names alone, each by the description's.
+#[test]
+fn mistral_large_as_released_in_fp8_is_its_weights_on_the_reference() {
+    let mut cfg = mistral_tiny(serde_json::json!({}));
+    cfg["quantization_config"] = serde_json::json!({"quant_method": "fp8", "activation_scheme": "dynamic", "weight_block_size": [8, 8],
+        "modules_to_not_convert": ["model.vision_tower", "model.multi_modal_projector", "lm_head", "kv_b_proj", "indexer.wk", "indexer.weights_proj",
+            "kv_a_proj_with_mqa"]});
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!(d.fp8_block, Some(8));
+    let (plain, released) = twins("mistral", &cfg, &d, &|n, s, shape, next| {
+        assert!(s.ends_with(".qscale_weight"), "{n}: {s}");
+        Some(fp8_grid(n, s, shape, 8, next))
+    });
+    let (held, by_description) = twins_agree(&d, &plain, &released, &[5, 9, 13, 17, 21, 25, 29, 33, 37]);
+    assert_eq!((held, by_description), (d.scales.len(), d.scales.len()));
+    assert!(held > 100 && d.scales.keys().any(|n| d.shapes[n][1] % 8 != 0), "{held}");
+}
+
+/// An FP8 matrix with a byte's power-of-two scale (U8: 2^(s - 127), here 1/8 to 1/2) a run of 32 columns of a row under the name `scales`, as `twins`
+/// stores one; a row's last run short where its columns do not divide.
+fn fp8_runs(n: &str, scales: &str, shape: &[usize], next: &mut dyn FnMut() -> u64) -> (Vec<Written>, Vec<f32>) {
+    let (rows, cols) = (shape[0], shape[1]);
+    let runs = cols.div_ceil(32);
+    let q = small_codes(next, rows * cols);
+    let s: Vec<u8> = (0..rows * runs).map(|_| 124 + (next() % 3) as u8).collect();
+    let values = (0..rows * cols).map(|i| (e4m3_f64(q[i]) * 2f64.powi(s[i / cols * runs + i % cols / 32] as i32 - 127)) as f32).collect();
+    (vec![(n.to_string(), "F8_E4M3", vec![rows as u64, cols as u64], q), (scales.to_string(), "U8", vec![rows as u64, runs as u64], s)], values)
+}
+
+/// An NVFP4 matrix as `twins` stores one: 4-bit codes two a byte along a row, the even column in the low four bits (`codes`), an E4M3 scale from 1 to
+/// 7.5 a run of 16 (`scales`), and the scales' own scale, a power of two (`global`, a scalar); each weight its code's E2M1 value times its run's scale
+/// over that scale, here in f64, which bf16 holds.
+fn nvfp4_runs(codes: &str, scales: &str, global: &str, shape: &[usize], next: &mut dyn FnMut() -> u64) -> (Vec<Written>, Vec<f32>) {
+    let (rows, cols) = (shape[0], shape[1]);
+    assert_eq!(cols % 16, 0, "{codes}");
+    let packed: Vec<u8> = (0..rows * cols / 2).map(|_| next() as u8).collect();
+    let s: Vec<u8> = (0..rows * cols / 16).map(|_| ((7 + (next() % 3) as u8) << 3) | (next() & 7) as u8).collect();
+    let g = 2f32.powi(5 + (next() % 3) as i32);
+    let e2m1 = |c: u8| {
+        let (e, m) = (((c >> 1) & 3) as i32, (c & 1) as f64);
+        (if c & 8 != 0 { -1.0 } else { 1.0 }) * if e == 0 { m / 2.0 } else { (1.0 + m / 2.0) * 2f64.powi(e - 1) }
+    };
+    let values = (0..rows * cols).map(|i| (e2m1((packed[i / 2] >> (4 * (i % 2))) & 15) * e4m3_f64(s[i / 16]) / g as f64) as f32).collect();
+    let stored = vec![
+        (codes.to_string(), "U8", vec![rows as u64, cols as u64 / 2], packed),
+        (scales.to_string(), "F8_E4M3", vec![rows as u64, cols as u64 / 16], s),
+        (global.to_string(), "F32", vec![], g.to_le_bytes().to_vec()),
+    ];
+    (stored, values)
+}
+
+/// MiniMax M3 as released, on the CPU reference: a random model of the small config in the release's two stored forms, as its builder names them.
+/// Every product the quantization_config does not leave out is FP8 with a byte's power-of-two scale a run of 32 columns of a row, under
+/// `X.weight_scale_inv` (which, for all its name, is what a code is multiplied by); every routed expert's matrix is NVFP4, its codes `X.weight_packed`,
+/// its runs' scales `X.weight_scale` and the scales' own scale `X.weight_global_scale`, which the description names as the scales' scales. The model
+/// answers to the bit as the same weights in bf16 do; the FP8 matrices are read by the description's scales and not by the checkpoint's names alone.
+#[test]
+fn a_release_with_a_scale_a_run_is_its_weights_on_the_reference() {
+    let quant = serde_json::json!({"quant_method": "mxfp8", "activation_scheme": "dynamic", "weight_block_size": [1, 32], "group_size": 16,
+        "moe_quant_algo": "NVFP4", "moe_quant_format": "nvfp4-pack-quantized",
+        "ignored_layers": ["language_model.model.layers.1.block_sparse_moe.gate", "lm_head", "model.embed_tokens", "vision_tower", "model.layers.2.self_attn.o_proj"]});
+    let cfg = minimax_tiny(serde_json::json!({"top": {"quantization_config": quant}}));
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!(d.fp8_block, None);
+    let experts: Vec<&String> = d.scales.keys().filter(|n| n.ends_with(".weight_packed")).collect();
+    let fp8: Vec<&String> = d.scales.keys().filter(|n| n.ends_with(".weight")).collect();
+    assert_eq!((experts.len(), d.scales.len()), (2 * 6 * 3, fp8.len() + 2 * experts.len()));
+    let (plain, released) = twins("runs", &cfg, &d, &|n, s, shape, next| match n.strip_suffix(".weight_packed") {
+        Some(_) => Some(nvfp4_runs(n, s, &d.scales[s], shape, next)),
+        None => Some(fp8_runs(n, s, shape, next)),
+    });
+    let (held, by_description) = twins_agree(&d, &plain, &released, &[5, 9, 13, 17, 21, 25]);
+    assert_eq!((held, by_description), (fp8.len() + experts.len(), fp8.len()));
+    assert!(fp8.len() >= 20 && fp8.iter().any(|n| d.shapes[*n][1] % 32 != 0) && fp8.iter().any(|n| d.shapes[*n][1] > 32), "{}", fp8.len());
+}
+
+/// `fp8_grid` of a matrix cut in `shards` equal parts of its rows, a grid a shard, one after another: a shard's scales start at its first row.
+fn fp8_shard_grids(n: &str, scales: &str, shape: &[usize], block: usize, shards: usize, next: &mut dyn FnMut() -> u64) -> (Vec<Written>, Vec<f32>) {
+    let (each, cols) = (shape[0] / shards, shape[1]);
+    let (mut q, mut s, mut values) = (Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..shards {
+        let (t, v) = fp8_grid(n, scales, &[each, cols], block, next);
+        q.extend_from_slice(&t[0].3);
+        s.extend_from_slice(&t[1].3);
+        values.extend(v);
+    }
+    let grid = vec![(shards * each.div_ceil(block)) as u64, cols.div_ceil(block) as u64];
+    (vec![(n.to_string(), "F8_E4M3", vec![shape[0] as u64, cols as u64], q), (scales.to_string(), "F32", grid, s)], values)
+}
+
+/// MiMo V2's fused matrix as released, on the CPU reference: a random model of the small config whose products are FP8 with fp32 scales a block of 8,
+/// the fused `qkv_proj` holding a grid of scales a shard (the first layer's two shards of 28 rows: 2 x 4 rows of blocks, where one grid over its 56
+/// rows would be 7; the second's, of 40 rows, are whole blocks). The model answers to the bit as the same weights in bf16 do, the fused matrix cut
+/// into its products after it is decoded. Read with one grid over the whole matrix, as the description's shards forbid, the first layer's is not read.
+#[test]
+fn mimo_v2s_fused_matrix_as_released_in_fp8_is_its_weights_on_the_reference() {
+    let cfg = mimo_tiny(serde_json::json!({"quantization_config": {"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [8, 8],
+        "store_dtype": "mxfp4", "mxfp4_block_size": 32, "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]}}));
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let st = d.stored();
+    let fused = |l: usize| format!("model.layers.{l}.self_attn.qkv_proj.weight");
+    assert_eq!((st.shards.get(&fused(0)), st.shards.get(&fused(1)), st.shards.len(), st.block), (Some(&2), Some(&2), 2, Some(8)));
+    assert_eq!((d.shapes[&fused(0)].clone(), d.shapes[&fused(1)].clone()), (vec![56, 32], vec![80, 32]));
+    let (plain, released) = twins("mimo-fused", &cfg, &d, &|n, s, shape, next| {
+        // (the experts: bf16 in both)
+        if n.contains(".experts.") {
+            return None;
+        }
+        assert!(s.ends_with(".weight_scale_inv"), "{n}: {s}");
+        Some(fp8_shard_grids(n, s, shape, 8, st.shards.get(n).copied().unwrap_or(1), next))
+    });
+    let ck = glyd_gpu::safetensors::Checkpoint::open(&released).unwrap();
+    assert_eq!(
+        (ck.get(&format!("{}_scale_inv", fused(0))).unwrap().1.shape.clone(), ck.get(&format!("{}_scale_inv", fused(1))).unwrap().1.shape.clone()),
+        (vec![8, 4], vec![10, 4])
+    );
+    let uncut = crate::formats::Stored { shards: Default::default(), ..d.stored() };
+    assert!(uncut.tensor(&ck, &fused(0)).is_none() && uncut.tensor(&ck, &fused(1)) == st.tensor(&ck, &fused(1)) && st.tensor(&ck, &fused(0)).is_some());
+    drop(ck);
+    let (held, by_description) = twins_agree(&d, &plain, &released, &[5, 9, 13, 17, 21, 25]);
+    // (two fused matrices, the second layer's `o`, the first's dense MLP: in blocks of 8, none is read by the checkpoint's names alone)
+    assert_eq!((held, by_description), (6, 6));
+}
+
+/// An MXFP4 matrix as `twins` stores one under the names a release gives the two tensors: 4-bit codes two a byte along a row, the even column in the
+/// low four bits, and a byte's power-of-two scale (2^(s - 127), here 1/32 to 1/8) a run of 32; each weight its code's E2M1 value (a sign, two bits of
+/// exponent, one of fraction, here in f64) times its run's scale.
+fn mxfp4_runs(n: &str, scales: &str, shape: &[usize], next: &mut dyn FnMut() -> u64) -> (Vec<Written>, Vec<f32>) {
+    let (rows, cols) = (shape[0], shape[1]);
+    assert_eq!(cols % 32, 0, "{n}");
+    let packed: Vec<u8> = (0..rows * cols / 2).map(|_| next() as u8).collect();
+    let s: Vec<u8> = (0..rows * cols / 32).map(|_| 122 + (next() % 3) as u8).collect();
+    let e2m1 = |c: u8| {
+        let (e, m) = (((c >> 1) & 3) as i32, (c & 1) as f64);
+        (if c & 8 != 0 { -1.0 } else { 1.0 }) * if e == 0 { m / 2.0 } else { (1.0 + m / 2.0) * 2f64.powi(e - 1) }
+    };
+    let values = (0..rows * cols).map(|i| (e2m1((packed[i / 2] >> (4 * (i % 2))) & 15) * 2f64.powi(s[i / 32] as i32 - 127)) as f32).collect();
+    let stored = vec![(n.to_string(), "U8", vec![rows as u64, cols as u64 / 2], packed), (scales.to_string(), "U8", vec![rows as u64, cols as u64 / 32], s)];
+    (stored, values)
+}
+
+/// MiMo V2 as released, on the CPU reference: a random model of the small config in the release's three stored forms (the fused matrix FP8 with a grid
+/// of scales a shard, the other products FP8 with one grid, the experts' matrices 4-bit codes two a byte under `X.weight` with a byte's scale a run of
+/// 32 under `X.weight_scale`) answers to the bit as the same weights in bf16 do. None of its quantized matrices is read by the checkpoint's names
+/// alone: each by the description's scales.
+#[test]
+fn mimo_v2_as_released_with_packed_experts_is_its_weights_on_the_reference() {
+    let cfg = mimo_tiny(serde_json::json!({"moe_intermediate_size": 32, "quantization_config": {"quant_method": "fp8", "fmt": "e4m3",
+        "weight_block_size": [8, 8], "store_dtype": "mxfp4", "mxfp4_block_size": 32, "activation_scheme": "dynamic",
+        "ignored_layers": ["model.layers.0.self_attn.o_proj"]}}));
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let st = d.stored();
+    let experts = d.scales.keys().filter(|n| n.contains(".experts.")).count();
+    assert_eq!(experts, 6 * 3);
+    let (plain, released) = twins("mimo", &cfg, &d, &|n, s, shape, next| {
+        if n.contains(".experts.") {
+            assert_eq!(s, format!("{n}_scale"));
+            return Some(mxfp4_runs(n, s, shape, next));
+        }
+        Some(fp8_shard_grids(n, s, shape, 8, st.shards.get(n).copied().unwrap_or(1), next))
+    });
+    let (held, by_description) = twins_agree(&d, &plain, &released, &[5, 9, 13, 17, 21, 25]);
+    assert_eq!((held, by_description), (experts + 6, experts + 6));
+}
+
+/// The released checkpoints' scales are of the shapes the description's reader takes, by their recorded headers. Mistral Large: every FP8 matrix's
+/// `X.qscale_weight` is fp32, one grid of the config's blocks of 128. MiMo V2: every FP8 product's `X.weight_scale_inv` is fp32 in blocks of 128, the
+/// fused matrix's a grid a shard for the description's 4 shards, which on the 9 layers over the whole context is not the whole matrix's grid (4 x 27
+/// rows of blocks, where one grid would be 106) and on the others is; every expert's codes are U8 [rows, cols / 2] with U8 scales [rows, cols / 32].
+/// MiniMax M3: every FP8 product's `X.weight_scale_inv` is a byte a run of 32 columns of a row; every routed expert's codes are U8 [rows, cols / 2]
+/// with E4M3 scales [rows, cols / 16] and the scales' own scale one fp32 number, the tensor the description names for the scales.
+#[test]
+fn released_headers_scales_are_of_the_shapes_the_reader_takes() {
+    use crate::formats::grid_block;
+    let mut seen = Vec::new();
+    for name in ["Mistral-Large-4-1T-A52B", "MiMo-V2.6-Flash-RL", "MiniMax-M3.1-Flash"] {
+        let h = fixture(&format!("headers/{name}.json"));
+        let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+        let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        let (st, tensors) = (d.stored(), header_tensors(&h));
+        let (mut grids, mut by_shard, mut restart, mut codes, mut runs, mut nvfp4) = (0, 0, 0, 0, 0, 0);
+        let given: Vec<[usize; 2]> = st.block.map(|b| [b, b]).into_iter().collect();
+        for (w, s) in &d.scales {
+            // (the scales' own scale, named for the scales: held with its matrix below)
+            if s.ends_with(".weight_global_scale") {
+                continue;
+            }
+            let ((dt, shape, _), (sdt, sshape, _)) = (&tensors[w], &tensors[s]);
+            let (rows, cols) = (shape[0], shape[1]);
+            let grid: Vec<u64> = sshape.iter().map(|&x| x as u64).collect();
+            match (dt.as_str(), sdt.as_str()) {
+                ("F8_E4M3", "F32") => {
+                    let shards = st.shards.get(w).copied().unwrap_or(1);
+                    let (block, k) = grid_block(rows, cols, &grid, &given, shards).unwrap_or_else(|| panic!("{w}: {shape:?} {sshape:?}"));
+                    assert_eq!((block, k), ([128, 128], shards), "{w}");
+                    grids += 1;
+                    by_shard += (k > 1) as usize;
+                    restart += (k > 1 && grid[0] as usize != rows.div_ceil(128)) as usize;
+                }
+                ("U8", "U8") => {
+                    assert_eq!(sshape, &vec![rows, cols / 16], "{w}");
+                    codes += 1;
+                }
+                // (a byte's scale a run of 32 columns of a row: where a row is one run, a block of 128 columns is the same run)
+                ("F8_E4M3", "U8") => {
+                    let (block, k) = grid_block(rows, cols, &grid, &given, 1).unwrap_or_else(|| panic!("{w}: {shape:?} {sshape:?}"));
+                    assert!(k == 1 && block[0] == 1 && cols.div_ceil(block[1]) == cols.div_ceil(32) && cols > 32, "{w}: {block:?}");
+                    assert_eq!(block, [1, 32], "{w}");
+                    runs += 1;
+                }
+                // (the codes two a byte, an E4M3 scale a run of 16, and the scales' own scale, one fp32 number, named as the scales' scales)
+                ("U8", "F8_E4M3") => {
+                    assert_eq!(sshape, &vec![rows, cols / 8], "{w}");
+                    let (gdt, gshape, _) = &tensors[&d.scales[s]];
+                    assert!(gdt == "F32" && gshape.iter().product::<usize>() == 1 && d.scales[s] == s.replace(".weight_scale", ".weight_global_scale"), "{w}");
+                    nvfp4 += 1;
+                }
+                other => panic!("{w}: {other:?}"),
+            }
+        }
+        seen.push((grids, by_shard, restart, codes, runs, nvfp4));
+    }
+    assert_eq!(seen, [(27_668, 0, 0, 0, 0, 0), (63, 51, 9, 47 * 256 * 3, 0, 0), (0, 0, 0, 0, 540, 57 * 128 * 3)]);
+}
