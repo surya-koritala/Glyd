@@ -216,10 +216,14 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
 /// where it slides; a head width and a rotary of the layer's own, or no rotary) and the gated SiLU MLP, each `x + block(rmsnorm(x) w)`, or, where every block
 /// has a norm after it as well (Domyn Edge), `x + rmsnorm(block(rmsnorm(x) w)) post` (`Op::AddNorm`, the sandwich residual); the final norm on the last rows,
 /// the head the embedding's matrix where tied. Each matrix of a layer is its checkpoint tensors stacked (q, k and v; gate and up), sized by the shapes the
-/// description gives. The products are the library's at every row count, a long chunk's decoded and multiplied dense where its route says so: the products,
+/// description gives. A layer's experts are the Moe kind's block as its loader takes them (`experts::block`: a softmax router, or sigmoid scores with a
+/// choice bias, the best kept and renormalised, with or without a shared expert; MiMo's as released, packed 4-bit codes, are refused by name). The products
+/// are the library's at every row count, a long chunk's decoded and multiplied dense where its route says so: the products,
 /// norms, activation, embedding and head of the dense engine this replaces, kernel for kernel. A layer's mixer may be the gated short convolution in the
 /// attention's place (LFM's conv layers: its input product into Proj, `Op::ShortConv` over the sequence's state into Xc, its output product; a state a
-/// layer, fp32, in `states`), and an attention's gate one value a head (LFM's: its matrix stacked after q, k and v, the rows padded to rows that pack). A
+/// layer, fp32, in `states`), and an attention's gate one value a head (LFM's: its matrix stacked after q, k and v, the rows padded to rows that pack). An
+/// attention's values may be narrower than its queries and keys and times a factor, and its q, k and v one stored matrix cut in shards (MiMo's: the matrix as
+/// stored is the product's, `AttnOp::sharded`; stored in FP8 it is refused by name). A
 /// kind this lowering does not take (a bias, a rope with scaling, a norm or activation of another kind) is refused, named.
 pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
     super::split::runs(d)?;
@@ -257,7 +261,8 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         small.push(n);
         small.len() - 1
     };
-    let (mut proj_w, mut q_w, mut inter_w, mut first) = (0, 0, 0, None);
+    // (the widest first product's rows, queries, attention output (its heads the values' width) and MLP)
+    let (mut proj_w, mut q_w, mut att_w, mut inter_w, mut first) = (0, 0, 0, 0, None);
     let mut n_moe = 0usize;
     // (a short convolution's state a sequence, a layer: `Op::ShortConv`)
     let mut states: Vec<usize> = Vec::new();
@@ -320,8 +325,9 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         }
         let (norm_in, post) = (name(&mut small, one(ar, "norm_in")?), name(&mut small, one(fr, "norm_in")?));
         let w = mats.len();
-        // (the mixer's operations, from the block's normed input in H to its output in O; the width of its first product's rows, and of its queries)
-        let (mixer, stride, heads_w): (Vec<Op>, usize, usize) = if let Some(a) = a {
+        // (the mixer's operations, from the block's normed input in H to its output in O; the width of its first product's rows, of its queries, and of its
+        // attention's output)
+        let (mixer, stride, heads_w, out_w): (Vec<Op>, usize, usize, usize) = if let Some(a) = a {
             if a.q_norm.is_some_and(|n| n.eps != eps) {
                 return err(format!("{what}: layer {l}'s q and k norms have eps {:?}, where the model's is {eps}", a.q_norm.map(|n| n.eps)));
             }
@@ -363,6 +369,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
                 (Some(NormWeight::None), _) => None,
                 (Some(_), _) => Some((name(&mut small, one(ar, "q_norm")?), name(&mut small, one(ar, "k_norm")?))),
             };
+            // (the ring's heads are the keys' width: a narrower value head is held in a key head's room, zeros after its values, `AttnOp::dv`)
             let ring = rings.len();
             rings.push(Ring::kv(a.head_dim, a.kv_heads, a.window.unwrap_or(0)));
             let mut attn = match a.sinks {
@@ -372,9 +379,47 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
             // (a gate of one value a head, LFM's: its matrix's rows, one a query head, stacked after q, k and v, the product's rows then padded with zero rows to
             // rows the library packs; the attention reads its rows that far apart)
             let head_gate = a.gate.is_some_and(|g| g.from == crate::runtime::kinds::GateFrom::Head);
-            let qkv = match head_gate {
-                false => item(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?], &shape)?,
-                true => padded(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?, one(ar, "g")?], &shape, 64)?,
+            // (q, k and v cut from one stored matrix's rows, MiMo's fused one: the matrix as stored, which the attention reads by its shards)
+            let fused = match (role(ar, "q"), role(ar, "k"), role(ar, "v")) {
+                (Some(Source::RowsOf(w, q)), Some(Source::RowsOf(wk, k)), Some(Source::RowsOf(wv, v))) if w == wk && w == wv => Some((w, [q, k, v])),
+                (Some(Source::RowsOf(..)), _, _) | (_, Some(Source::RowsOf(..)), _) | (_, _, Some(Source::RowsOf(..))) => {
+                    return err(format!("{what}: layer {l}'s q, k and v are cut from rows of more than one matrix, where one fused matrix holds the three"));
+                }
+                _ => None,
+            };
+            let qkv = match (&fused, head_gate) {
+                (Some((w, cuts)), _) => {
+                    let it = item(vec![(*w).clone()], &shape)?;
+                    // (shard i: its query heads' rows, then its key heads', then its value heads'; the kernels find a head so, and in no other order)
+                    let shards = cuts[0].len();
+                    let widths = [a.heads * a.head_dim, a.kv_heads * a.head_dim, a.kv_heads * a.v_head_dim];
+                    let each = it.rows / shards.max(1);
+                    let mut at = 0;
+                    let in_shards = shards > 0
+                        && it.rows == widths.iter().sum::<usize>()
+                        && widths.iter().all(|w| w % shards == 0)
+                        && cuts.iter().zip(widths).all(|(cut, w)| {
+                            let ok = cut.len() == shards && cut.iter().enumerate().all(|(i, &r)| r == (i * each + at, i * each + at + w / shards));
+                            at += w / shards;
+                            ok
+                        });
+                    if !in_shards {
+                        return err(format!(
+                            "{what}: layer {l}'s q, k and v are rows {cuts:?} of {w} ({} rows), where the executor reads a fused matrix in shards, each its query heads' rows, then its key heads', then its value heads'",
+                            it.rows
+                        ));
+                    }
+                    // (FP8 as released: a fused matrix's block scales start again at every shard, a grid no reader of the engine's takes)
+                    if d.scales.contains_key(*w) {
+                        return err(format!(
+                            "{what}: layer {l}'s fused q, k and v matrix {w} is stored in FP8 with block scales that start again at each of its {shards} shards, which the loader does not read yet"
+                        ));
+                    }
+                    attn = attn.sharded(shards).map_err(|e| e.context(&format!("{what}: layer {l}")))?;
+                    it
+                }
+                (None, false) => item(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?], &shape)?,
+                (None, true) => padded(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?, one(ar, "g")?], &shape, 64)?,
             };
             let stride = qkv.rows;
             if head_gate && stride >= attn.stride {
@@ -390,7 +435,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
                 Op::Attn(attn),
                 Op::Linear { w: w + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
             ];
-            (ops, stride, a.heads * a.head_dim)
+            (ops, stride, a.heads * a.head_dim, a.heads * a.v_head_dim)
         } else {
             let Body::Mixer(Mixer::ShortConv(c)) = &ab.body else { unreachable!() };
             // (the kind's biases are on its two products as well as its convolution: the executor's products have none)
@@ -420,9 +465,18 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
                 Op::ShortConv { w: taps, state, d: m.hidden, taps: c.taps, row: 3 * m.hidden },
                 Op::Linear { w: w + 1, x: Slot::Xc, y: Slot::O, name: "short convolution: out product" },
             ];
-            (ops, 3 * m.hidden, 0)
+            (ops, 3 * m.hidden, 0, 0)
         };
         let inter = if experts {
+            // (experts stored as packed 4-bit codes with a byte's scale a run, MiMo's as released: the description names their scales, which are not an FP8
+            // matrix's block scales; the loader of this lowering's experts reads bf16 and FP8 matrices)
+            let packed = fr.iter().filter(|(r, _)| r.starts_with("experts_")).flat_map(|(_, s)| s.names()).find_map(|w| {
+                let s = d.scales.get(&w).filter(|s| !s.ends_with("_scale_inv"))?;
+                Some((w.clone(), s.clone()))
+            });
+            if let Some((w, s)) = packed {
+                return err(format!("{what}: layer {l}'s experts are stored as packed 4-bit codes ({w}, its scales {s}), which the loader does not read yet"));
+            }
             0
         } else {
             let gate_up = item(vec![one(fr, "gate")?, one(fr, "up")?], &shape)?;
@@ -457,7 +511,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
             layer.extend(feed(Slot::D));
             layer.push(Op::AddNorm { y: Slot::D, post: post_mlp, scalar: None, next });
             ops.push(layer);
-            (proj_w, q_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), inter_w.max(inter));
+            (proj_w, q_w, att_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), att_w.max(out_w), inter_w.max(inter));
             continue;
         }
         if let Some((alpha, beta)) = gate {
@@ -475,7 +529,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
                 layer.push(Op::RmsNorm { x: Slot::X, w, y: Slot::H, weight: NormW::Plain, eps });
             }
             ops.push(layer);
-            (proj_w, q_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), inter_w.max(inter));
+            (proj_w, q_w, att_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), att_w.max(out_w), inter_w.max(inter));
             continue;
         }
         match l {
@@ -486,7 +540,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         layer.push(Op::NormAdd { y: Slot::O, w: post, plus1: false });
         layer.extend(feed(Slot::D));
         ops.push(layer);
-        (proj_w, q_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), inter_w.max(inter));
+        (proj_w, q_w, att_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), att_w.max(out_w), inter_w.max(inter));
     }
     let final_norm = match final_at {
         Some(at) => at,
@@ -508,7 +562,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         (Slot::H, m.hidden),
         (Slot::Proj, proj_w),
         (Slot::Qo, q_w),
-        (Slot::Att, q_w),
+        (Slot::Att, att_w),
         (Slot::O, m.hidden),
         (Slot::Gu, 2 * inter_w),
         (Slot::M, inter_w),
@@ -2914,6 +2968,165 @@ mod tests {
         let kinds_of: Vec<bool> = d.layers.iter().map(|ops| ops.iter().any(|o| matches!(o, Op::ShortConv { .. }))).collect();
         assert_eq!(kinds_of, [true, true, false, true, false, true]);
         assert_eq!(crate::runtime::config::ModelConfig::parse(text).unwrap().family(), Some(crate::support::Family::Layers));
+    }
+
+    /// MiMo's small model (the logits checks' random one): the description reads every tensor of its manifest at the manifest's shape, and the dense lowering
+    /// names every one of them, a matrix's member (a layer's fused q-k-v matrix one member, as stored) or a small tensor; a ring a layer, of heads of 192, the
+    /// middle two a window of 9; three layers of experts; and it is a family the description is the whole of.
+    #[test]
+    fn the_random_mimo_lowers_with_every_tensor_named() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/mimo_tiny_manifest.json")).unwrap()).unwrap();
+        let text = manifest["config"].as_str().unwrap();
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap_or_else(|e| panic!("{}", e.msg));
+        let have: std::collections::BTreeSet<String> = manifest["tensors"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
+        kinds.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+        for t in manifest["tensors"].as_array().unwrap() {
+            let shape: Vec<usize> = t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+            assert_eq!(kinds.shapes.get(t[0].as_str().unwrap()), Some(&shape), "{}", t[0]);
+        }
+        let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        // (the experts' tensors are their blocks', read apart: `experts::of_layers`)
+        let experts: std::collections::BTreeSet<String> =
+            super::super::experts::of_layers(&kinds, (0, 4), 2).flat_map(|(_, _, roles)| roles.iter().flat_map(|(_, s)| s.names())).collect();
+        let named: std::collections::BTreeSet<String> =
+            d.mats.iter().flat_map(|it| it.members.iter()).chain(&d.small).filter(|n| !n.is_empty()).cloned().chain(experts).collect();
+        assert_eq!(named, have);
+        assert_eq!((d.layers.len(), d.states.is_empty(), d.lm == d.embed + 1, d.final_norm.is_some()), (4, true, true, true));
+        assert_eq!(d.rings.iter().map(|r| (r.d, r.nk, r.window)).collect::<Vec<_>>(), vec![(192, 2, 0), (192, 4, 9), (192, 4, 9), (192, 2, 0)]);
+        assert_eq!((d.width(Slot::Proj), d.width(Slot::Qo), d.width(Slot::Att)), (2816, 8 * 192, 8 * 128));
+        let attn: Vec<(usize, usize, usize, bool)> = d
+            .layers
+            .iter()
+            .map(|ops| ops.iter().find_map(|o| if let Op::Attn(a) = o { Some((a.dv, a.shards, a.stride, a.sinks.is_some())) } else { None }).unwrap())
+            .collect();
+        assert_eq!(attn, [(128, 2, 2176, false), (128, 2, 2816, true), (128, 2, 2816, true), (128, 2, 2176, false)]);
+        let moe: Vec<bool> = d.layers.iter().map(|ops| ops.iter().any(|o| matches!(o, Op::Moe(_)))).collect();
+        assert_eq!(moe, [false, true, true, true]);
+        assert_eq!(crate::runtime::config::ModelConfig::parse(text).unwrap().family(), Some(crate::support::Family::Layers));
+    }
+
+    /// A small config of MiMo's layout: three layers 256 wide, each a dense MLP; the first over the whole context (8 query heads over 2), the others sliding over
+    /// 8 positions and the query's own (8 over 4, a sink a head); queries and keys of 192 with their first 64 channels turned, values of 128 times 0.707; the
+    /// three products one matrix in 2 shards, or with `keys` over it.
+    fn mimo_config(keys: serde_json::Value) -> Described {
+        let mut c = serde_json::json!({
+            "architectures": ["MiMoV2ForCausalLM"], "model_type": "mimo_v2", "hidden_size": 256, "num_hidden_layers": 3, "vocab_size": 1024,
+            "layernorm_epsilon": 1e-6, "hidden_act": "silu", "max_position_embeddings": 4096, "attention_projection_layout": "fused_qkv",
+            "num_attention_heads": 8, "num_key_value_heads": 2, "head_dim": 192, "v_head_dim": 128, "rope_theta": 10000000.0,
+            "swa_num_attention_heads": 8, "swa_num_key_value_heads": 4, "swa_head_dim": 192, "swa_v_head_dim": 128, "swa_rope_theta": 10000.0,
+            "partial_rotary_factor": 0.334, "hybrid_layer_pattern": [0, 1, 1], "sliding_window_size": 8, "add_swa_attention_sink_bias": true,
+            "attention_value_scale": 0.707, "moe_layer_freq": [0, 0, 0], "intermediate_size": 512, "scoring_func": "sigmoid", "topk_method": "noaux_tc",
+        });
+        c.as_object_mut().unwrap().extend(keys.as_object().unwrap().clone());
+        crate::runtime::describe::describe(&c).unwrap_or_else(|e| panic!("{}", e.msg))
+    }
+
+    /// MiMo's attention on the dense lowering: the fused matrix as stored is the product's one member, and the attention reads its heads by the shards (2: on
+    /// the first layer each 4 query heads, a key head and a value head; on a sliding one 4, 2 and 2); values of 128 under heads of 192, so the output is 8 x 128
+    /// wide where the queries are 8 x 192 and the ring's heads 192; the values' factor; a sliding layer's window and sinks. With a matrix a product the same
+    /// operation with no shards, its three matrices stacked. The fused matrix stored in FP8, whose block scales start again at every shard, is refused by name.
+    #[test]
+    fn a_fused_product_in_shards_and_narrower_values_lower() {
+        let d = dense(&mimo_config(serde_json::json!({})), vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        let attn = |d: &ModelDesc, l: usize| d.layers[l].iter().find_map(|o| if let Op::Attn(a) = o { Some(a.clone()) } else { None }).unwrap();
+        let (full, swa) = (attn(&d, 0), attn(&d, 1));
+        assert_eq!((full.d, full.dv, full.nq, full.nk, full.v_scale, full.window, full.sinks), (192, 128, 8, 2, 0.707, 0, None));
+        assert_eq!((full.shards, full.stride, full.k_off, full.v_off), (2, 10 * 192 + 2 * 128, 4 * 192, Some(5 * 192)));
+        assert_eq!((swa.shards, swa.stride, swa.k_off, swa.v_off, swa.nk, swa.window), (2, 12 * 192 + 4 * 128, 4 * 192, Some(6 * 192), 4, 9));
+        assert!(swa.sinks.is_some() && full.warp_only() && !full.lib_decode());
+        assert_eq!((full.rope.map(|r| (r.span, r.pairs)), d.ropes.len()), (Some((64, 32)), 2));
+        let qkv = &d.mats[d.layers[0].iter().find_map(|o| if let Op::Linear { w, y: Slot::Proj, .. } = o { Some(*w) } else { None }).unwrap()];
+        assert_eq!((qkv.members.clone(), qkv.rows, qkv.cols), (vec!["model.layers.0.self_attn.qkv_proj.weight".to_string()], 2176, 256));
+        assert_eq!((d.width(Slot::Proj), d.width(Slot::Qo), d.width(Slot::Att)), (12 * 192 + 4 * 128, 8 * 192, 8 * 128));
+        assert_eq!(d.rings.iter().map(|r| (r.d, r.nk, r.window)).collect::<Vec<_>>(), vec![(192, 2, 0), (192, 4, 9), (192, 4, 9)]);
+        // (a matrix a product: q, k and v stacked, no shards)
+        let split = dense(&mimo_config(serde_json::json!({"attention_projection_layout": "split"})), vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        let s = attn(&split, 1);
+        assert_eq!((s.shards, s.stride, s.k_off, s.v_off, s.dv), (1, 12 * 192 + 4 * 128, 8 * 192, Some(12 * 192), 128));
+        assert_eq!(split.mats[0].members.len(), 3);
+        // (FP8 as released)
+        let quant = serde_json::json!({"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128], "store_dtype": "mxfp4", "mxfp4_block_size": 32,
+            "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]});
+        let Err(e) = dense(&mimo_config(serde_json::json!({"quantization_config": quant})), vec![2], 4096) else { panic!("a fused FP8 matrix, and lowered") };
+        assert!(e.msg.contains("qkv_proj.weight is stored in FP8 with block scales that start again at each of its 2 shards"), "{}", e.msg);
+    }
+
+    /// Where the preparation's kernel finds each head of a fused matrix is where the description cuts it: for every attention layer of MiMo's released config
+    /// (its recorded header's, the stored formats left out: 64 query heads over 4 key heads on the whole-context layers and over 8 on the sliding ones, 4
+    /// shards) and of the small model's, head j of q, of k and of v, as the kernel's arithmetic places it (`AttnOp::head_at`), starts at the row the
+    /// description's cuts give the role's j-th head.
+    #[test]
+    fn the_kernels_place_of_a_head_is_the_descriptions_cut() {
+        let (text, _) = header("MiMo-V2.6-Flash-RL.json");
+        let mut released: serde_json::Value = serde_json::from_str(&text).unwrap();
+        released.as_object_mut().unwrap().remove("quantization_config");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/mimo_tiny_manifest.json")).unwrap()).unwrap();
+        let small: serde_json::Value = serde_json::from_str(manifest["config"].as_str().unwrap()).unwrap();
+        for (cfg, layers, shards) in [(released, 48, 4), (small, 4, 2)] {
+            let kinds = crate::runtime::describe::describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+            let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+            assert_eq!(d.layers.len(), layers);
+            for (l, ops) in d.layers.iter().enumerate() {
+                let a = ops.iter().find_map(|o| if let Op::Attn(a) = o { Some(a) } else { None }).unwrap();
+                assert_eq!(a.shards, shards, "layer {l}");
+                // (the stored row of the role's row r: the cuts in order)
+                let stored = |r: &str, row: usize| -> usize {
+                    let Some(Source::RowsOf(_, cuts)) = role(&kinds.blocks[2 * l], r) else { panic!("layer {l}: {r} is not cut from rows") };
+                    let mut left = row;
+                    for &(from, to) in cuts {
+                        if left < to - from {
+                            return from + left;
+                        }
+                        left -= to - from;
+                    }
+                    panic!("layer {l}: {r} has no row {row}")
+                };
+                for h in 0..a.nq {
+                    assert_eq!(a.head_at(h, a.nq, 0, a.q_step), stored("q", h * a.d), "layer {l}: query head {h}");
+                }
+                for j in 0..a.nk {
+                    assert_eq!(a.head_at(j, a.nk, a.k_off, a.d), stored("k", j * a.d), "layer {l}: key head {j}");
+                    assert_eq!(a.head_at(j, a.nk, a.v_off.unwrap(), a.dv), stored("v", j * a.dv), "layer {l}: value head {j}");
+                    // (a head's rows are one run of its cut: the kernel reads them in a row)
+                    assert_eq!(stored("k", (j + 1) * a.d - 1), stored("k", j * a.d) + a.d - 1, "layer {l}: key head {j}");
+                    assert_eq!(stored("v", (j + 1) * a.dv - 1), stored("v", j * a.dv) + a.dv - 1, "layer {l}: value head {j}");
+                }
+            }
+        }
+    }
+
+    /// MiMo's experts on the dense lowering: a layer's feed-forward the Moe kind's block where the config says experts, whose shape and arithmetic the block's
+    /// loader takes from the kind (sigmoid scores, a choice bias, the best 2 of 8 renormalised, no shared expert, SwiGLU experts; no group of choices); the
+    /// first layer keeps its dense MLP. As released the experts are packed 4-bit codes, which the lowering refuses by name (the split layout here: its FP8
+    /// products are matrices the loader reads).
+    #[test]
+    fn sigmoid_routed_experts_with_a_choice_bias_lower() {
+        use crate::moe::{Act, Scoring};
+        let sparse = serde_json::json!({"moe_layer_freq": [0, 1, 1], "moe_intermediate_size": 128, "n_routed_experts": 8, "num_experts_per_tok": 2,
+            "norm_topk_prob": true, "n_group": 1, "topk_group": 1, "attention_projection_layout": "split"});
+        let kinds = mimo_config(sparse.clone());
+        let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        let moe: Vec<usize> = d.layers.iter().map(|ops| ops.iter().filter(|o| matches!(o, Op::Moe(_))).count()).collect();
+        assert_eq!(moe, [0, 1, 1]);
+        assert!(d.layers[0].iter().any(|o| matches!(o, Op::GateUpSilu { .. })) && !d.layers[1].iter().any(|o| matches!(o, Op::GateUpSilu { .. })));
+        let blocks: Vec<_> = super::super::experts::of_layers(&kinds, (0, 3), 2).collect();
+        assert_eq!(blocks.iter().map(|(ix, _, _)| (ix.layer, ix.moe)).collect::<Vec<_>>(), vec![(1, 0), (2, 1)]);
+        let (_, m, roles) = &blocks[0];
+        let c = super::super::experts::cfg(m, 256, 128).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert_eq!(
+            (c.experts, c.router.scoring, c.router.top_k, c.router.renorm, c.router.scale, c.router.bf16_logits),
+            (8, Scoring::Sigmoid, 2, true, 1.0, false)
+        );
+        assert!(matches!(c.act, Act::SwiGlu { limit: None }) && m.router.bias && m.shared.is_none());
+        assert!(matches!(role(roles, "choice_bias"), Some(Source::Tensor(n)) if n == "model.layers.1.mlp.gate.e_score_correction_bias"));
+        assert!(matches!(role(roles, "experts_gate_up"), Some(Source::Experts(e)) if e.len() == 8 && e[0].len() == 2));
+        let mut quant = sparse;
+        quant["quantization_config"] = serde_json::json!({"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128], "store_dtype": "mxfp4",
+            "mxfp4_block_size": 32, "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]});
+        let Err(e) = dense(&mimo_config(quant), vec![2], 4096) else { panic!("experts packed at 4 bits, and lowered") };
+        assert!(e.msg.contains("layer 1's experts are stored as packed 4-bit codes (model.layers.1.mlp.experts.0.gate_proj.weight"), "{}", e.msg);
     }
 
     /// A plain dense decoder's config (the model type the description builder reads it by, the attention's settings) of three layers of hidden 256, 4 query heads over 2

@@ -6407,7 +6407,9 @@ mod tests {
     /// bytes at each lower one, penguin's under bf16's), a ring a layer of that layer's own head width and window (Domyn Edge's 12 layers of 256 over the whole
     /// context and 24 of 64 in a window, where one head width for every layer would be wrong), no state, and the dense engine as its loader; Mellum 2's experts
     /// are placed. LFM's short convolutions keep a state a sequence, which the description gives and the plan counts: each of its 13 conv layers' 2,048
-    /// channels' last 6 values, fp32. The plain dense kind's own models keep their row.
+    /// channels' last 6 values, fp32. The plain dense kind's own models keep their row. MiMo as released is not planned: its fused q-k-v matrices are FP8
+    /// with block scales that start again at every shard, a stored form the loader does not read, and the sizing says so by name at every level (its
+    /// packed 4-bit experts are the next such form).
     #[test]
     fn a_described_family_is_sized_from_its_description() {
         use crate::weights::Layout;
@@ -6442,6 +6444,10 @@ mod tests {
                 .collect();
             assert!(by_level.windows(2).all(|w| w[0] > w[1]) && *by_level.last().unwrap() > 0, "{name}: {by_level:?}");
         }
+        for l in [Layout::Tiered, Layout::Int6, Layout::Int5, Layout::Int4] {
+            let Err(e) = level("MiMo-V2.6-Flash-RL", l) else { panic!("MiMo as released, sized at {l:?}") };
+            assert!(format!("{e:?}").contains("qkv_proj.weight is stored in FP8 with block scales that start again at each of its 4 shards"), "{e:?}");
+        }
         // (Mellum's experts at penguin: 64 of them in each of 28 layers, a place the two matrices' bf16 bytes at the penguin share)
         let lv = level("Mellum2.1-12B-A2.5B-Instruct", Layout::Tiered).unwrap();
         let cache = lv.experts.as_ref().unwrap().as_ref().unwrap();
@@ -6474,6 +6480,29 @@ mod tests {
                 .and_then(|c| c.load)
                 .unwrap_or_else(|| panic!("{name}: no plan"));
             assert_eq!((p.level, p.kind), (want, Kind::Qwen3), "{name}: {p:?}");
+        }
+        // (MiMo's layout in bf16, its small model's config: sized at every level, each fused q-k-v matrix counted once, as stored; bf16's bytes are its
+        // tensors', the three layers' choice biases held in fp32; its experts placed)
+        let manifest: serde_json::Value = serde_json::from_str(&fixture("mimo_tiny_manifest.json")).unwrap();
+        let text = manifest["config"].as_str().unwrap();
+        let values = |t: &serde_json::Value| t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).product::<u64>();
+        let all: u64 = manifest["tensors"].as_array().unwrap().iter().map(|t| values(t) * 2).sum();
+        let mut before = u64::MAX;
+        for l in [Layout::Tiered, Layout::Int6, Layout::Int5, Layout::Int4] {
+            let lv = sizing::level_of(&args(&["run", "m"]), "m", "mimo", l, &mc(text), None, None, Some(LOSSY_CTX)).unwrap_or_else(|e| panic!("{l:?}: {e:?}"));
+            assert_eq!((lv.kind, lv.row.name, lv.state, lv.bf16), (Kind::Qwen3, "described layers", 0, all + 3 * 8 * 2), "{l:?}");
+            let c = lv.experts.as_ref().unwrap().as_ref().unwrap_or_else(|m| panic!("its experts at {l:?}: {m}"));
+            assert_eq!((c.experts, c.top_k, c.moe.iter().filter(|x| **x).count()), (8, 2, 3), "{l:?}");
+            assert!(lv.weights < before && lv.weights < lv.bf16, "{l:?}: {} after {before}, of bf16 {}", lv.weights, lv.bf16);
+            before = lv.weights;
+        }
+        // (MiMo as released: `fit` chooses no plan, and each level says the stored form the loader does not read)
+        let (text, _) = recorded_release("MiMo-V2.6-Flash-RL");
+        let dir = model_dir("described", "MiMo-V2.6-Flash-RL", &text);
+        let plan = planned(&args(&["fit", dir.to_str().unwrap(), "--machine", "a100-80g"])).unwrap().plan;
+        assert!(plan.chosen.is_none() && plan.options.len() == 4, "{plan:?}");
+        for o in &plan.options {
+            assert!(o.load.is_none() && o.why.as_deref().is_some_and(|w| w.contains("stored in FP8 with block scales that start again")), "{o:?}");
         }
         // (and Mellum lossless where the GPU holds it whole: an A100 of 80 GB, every expert on it, none in the computer's memory)
         let (text, _) = recorded_release("Mellum2.1-12B-A2.5B-Instruct");

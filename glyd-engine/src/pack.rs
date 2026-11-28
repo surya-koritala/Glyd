@@ -102,7 +102,7 @@ impl Own {
 
 /// What a save of the model `d` (of `layers` layers, its blocks as many a layer) holds, layer by layer and then the model's own tensors (`Group`), from its
 /// description alone. The matrices: each block's products (`kinds::Body::products`: q, k and v one pack; gate and up), at the place its weight map names
-/// the first of them, and a block of experts' routed experts, expert by expert, each expert's matrices as its roles name them (its gate and up one pack
+/// the first of them (a product whose roles are cut from one stored matrix's rows is that matrix), and a block of experts' routed experts, expert by expert, each expert's matrices as its roles name them (its gate and up one pack
 /// where its roles stack them); after the last layer the embedding and the head. Every other tensor a block's roles name is kept as saved: a layer's
 /// blocks' norms (`norm_in`, `norm_out`), then the residual streams' mixing tensors (`hc_*`), then each block's other tensors in its roles' order and the
 /// parts of its matrices the library does not pack (`Pack35::packable`), each after its own block's tensors or, `parts_last`, after all of them; the
@@ -183,7 +183,9 @@ pub(crate) fn walk(
                 match product(r) {
                     // (a product at its first role's place: every role of it the block has, stacked)
                     Some(k) if !std::mem::replace(&mut made[k], true) => {
-                        let members: Vec<String> = products[k].iter().filter_map(|x| names(x)).flatten().collect();
+                        // (roles cut from one stored matrix's rows, MiMo's fused q, k and v: that matrix once, as the lowering's product is)
+                        let mut members: Vec<String> = products[k].iter().filter_map(|x| names(x)).flatten().collect();
+                        members.dedup();
                         match pack(&members)? {
                             p if p.packable() => packs.push((p, Own::Rest)),
                             p => bp.extend(parts_of(&p)),
@@ -1403,6 +1405,38 @@ mod tests {
         for n in &d.small {
             assert_eq!(ck.get(n).unwrap_or_else(|| panic!("no {n}")).1.dtype, "BF16", "{n}");
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// MiMo's small model (the logits checks' random one) packed at kestrel is a glyd-v7 save the executor's lowering reads as saved: each layer's fused q-k-v
+    /// matrix, which the description cuts into the three roles, is one pack under its own name at its stored rows (once, not a time a role), and every
+    /// other matrix of the lowered description a pack under its first member's name; each routed expert's two packs are there too.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_fused_matrix_cut_in_shards_is_saved_once_as_stored() {
+        let dir = std::env::temp_dir().join(format!("glyd-pack-mimo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (src, out) = (dir.join("src"), dir.join("out"));
+        crate::logits::mimo_random(&src).unwrap();
+        run_with(src.to_str().unwrap(), &out, 2, Layout::Int6, true).unwrap();
+        let (layout, m) = crate::weights::v7_manifest(&out).unwrap().expect("a glyd-v7 save");
+        assert_eq!(layout, Layout::Int6);
+        let d = crate::dynamic::dense::lowered(&out).unwrap();
+        let ck = Checkpoint::open(&out).unwrap();
+        let mut fused = Vec::new();
+        for it in &d.mats {
+            let key = it.members[0].trim_end_matches(".weight");
+            // (a merge of two tensors, the dense MLP's gate and up, is one pack under the first's name)
+            let p = crate::weights::read_v7(&ck, &m, Layout::Int6, &[(key, it.rows)], it.cols).unwrap_or_else(|e| panic!("{key}: {}", e.msg));
+            assert_eq!((p.rows, p.cols), (it.rows, it.cols), "{key}");
+            if key.ends_with("qkv_proj") {
+                fused.push(it.rows);
+            }
+        }
+        assert_eq!(fused, [2176, 2816, 2816, 2176]);
+        let packs = m.get("packs").and_then(|p| p.as_object()).unwrap();
+        assert_eq!(packs.iter().filter(|(k, _)| k.contains("qkv_proj")).count(), 4);
+        assert_eq!(packs.iter().filter(|(k, _)| k.contains(".mlp.experts.")).count(), 3 * 8 * 2);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

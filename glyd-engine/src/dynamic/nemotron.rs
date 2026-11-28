@@ -126,6 +126,7 @@ pub(crate) fn attention(nq: usize, nk: usize, ring: usize) -> AttnOp {
         k_off: nq * 128,
         v_off: Some((nq + nk) * 128),
         d: 128,
+        dv: 128,
         nq,
         nk,
         writes: true,
@@ -142,6 +143,8 @@ pub(crate) fn attention(nq: usize, nk: usize, ring: usize) -> AttnOp {
         sbf16: false,
         picked: false,
         sinks: None,
+        v_scale: 1.0,
+        shards: 1,
     }
 }
 

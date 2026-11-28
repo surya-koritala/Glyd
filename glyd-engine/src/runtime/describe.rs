@@ -499,7 +499,7 @@ pub const LLAMA: &[&str] = &["llama", "mistral", "qwen2", "qwen3"];
 
 /// The model types of the families whose description is the whole of them (`support::Family::Layers`): each has a builder here whose blocks the dense
 /// lowering takes, and nothing else of its own in the engine. A new family of that kind adds its builder and its model type to this list.
-pub const LAYERS: &[&str] = &["domynedge", "granite_swa", "mellum", "aion_instruct", "lfm3"];
+pub const LAYERS: &[&str] = &["domynedge", "granite_swa", "mellum", "aion_instruct", "lfm3", "mimo_v2"];
 
 /// The description of the model whose `config.json` is `cfg`.
 pub fn describe(cfg: &Value) -> Result<Described> {
