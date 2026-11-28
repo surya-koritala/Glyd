@@ -1047,6 +1047,9 @@ pub fn not_run(d: &crate::runtime::describe::Described) -> Option<&'static str> 
     }) {
         return Some(GateFrom::LATENT_NOT_RUN);
     }
+    if mixer(&|m| matches!(m, Mixer::Mla(x) if x.head_mix != 0) || matches!(m, Mixer::Compressed(c) if c.head_mix != 0)) {
+        return Some(crate::runtime::kinds::HEAD_MIX_NOT_RUN);
+    }
     None
 }
 
@@ -1350,6 +1353,11 @@ mod tests {
         let Body::Mixer(Mixer::Compressed(c)) = &mut d.desc.blocks[4].body else { panic!("block 4 is no attention") };
         c.gate = gate;
         refused(&d, GateFrom::LATENT_NOT_RUN);
+        // (the low-rank mix of the heads' outputs)
+        let mut d = base.clone();
+        let Body::Mixer(Mixer::Compressed(c)) = &mut d.desc.blocks[4].body else { panic!("block 4 is no attention") };
+        c.head_mix = 16;
+        refused(&d, crate::runtime::kinds::HEAD_MIX_NOT_RUN);
         // (and by each lowering itself, whatever chose it: the dense one's, of a plain decoder with the correction)
         let plain = serde_json::json!({"architectures": ["X"], "model_type": "llama", "hidden_size": 256, "intermediate_size": 512, "num_hidden_layers": 2,
             "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 64, "vocab_size": 1024, "rms_norm_eps": 1e-5, "rope_theta": 10000.0,

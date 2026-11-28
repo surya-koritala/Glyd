@@ -310,10 +310,17 @@ pub fn step(m: &Mla, p: &Params, c: &mut LatentCache, h: &[f32], pos: u32) -> Re
                 *ov += pj as f64 * dot(rows(nope + d), &c.lat[j][..kr]) as f64;
             }
         }
-        let mut o: Vec<f32> = o.into_iter().map(|v| v as f32).collect();
-        if let (Some(g), Some(gv)) = (m.gate, &gate) {
+        out.extend(o.into_iter().map(|v| v as f32));
+    }
+    // (the heads' outputs mixed with each other where the kind says, before the gate)
+    if m.head_mix > 0 {
+        super::head_mix(p.vec("mix_u")?, p.vec("mix_v")?, nh, m.head_mix, &mut out)?;
+    }
+    if let (Some(g), Some(gv)) = (m.gate, &gate) {
+        for (head, o) in out.chunks_mut(vd).enumerate() {
             if let Some(n) = g.norm {
-                o = norm(&n, &o, None, None);
+                let y = norm(&n, o, None, None);
+                o.copy_from_slice(&y);
             }
             if per_head {
                 let z = act(g.act, gv[head]);
@@ -322,7 +329,6 @@ pub fn step(m: &Mla, p: &Params, c: &mut LatentCache, h: &[f32], pos: u32) -> Re
                 o.iter_mut().zip(&gv[head * vd..][..vd]).for_each(|(x, &z)| *x *= act(g.act, z));
             }
         }
-        out.extend(o);
     }
     p.prod("o", &out)
 }
@@ -352,6 +358,7 @@ mod tests {
             scale: 0.25,
             absorbed: true,
             indexer: Some(ix),
+            head_mix: 0,
         };
         let mut p = Params::new();
         for (role, shape, lo, hi) in [
@@ -663,6 +670,7 @@ mod tests {
             scale: ((nope + rd) as f32).powf(-0.5),
             absorbed: true,
             indexer: None,
+            head_mix: 0,
         };
         let mut p = Params::new();
         for (role, shape) in [("q", [nh * (nope + rd), D]), ("kv_a", [kr + rd, D]), ("kv_b", [nh * (nope + vd), kr]), ("o", [D, nh * vd]), ("g", [nh, D])] {
@@ -719,6 +727,7 @@ mod tests {
             scale: (nope as f32).powf(-0.5),
             absorbed: true,
             indexer: None,
+            head_mix: 0,
         };
         let mut p = Params::new();
         for (role, shape) in [("q_a", [ql, D]), ("q_b", [nh * nope, ql]), ("kv_a", [kr, D]), ("kv_b", [nh * (nope + vd), kr]), ("g", [nh * vd, ql])] {
@@ -764,5 +773,40 @@ mod tests {
         zero.put("g", &[12, 10], vec![0.0; 120]);
         let half: Vec<Vec<f32>> = heads.iter().map(|r| r.iter().map(|x| 0.5 * x).collect()).collect();
         assert_eq!(steps(&m, &zero, 6), half);
+    }
+
+    /// The low-rank mix of the heads' outputs on a latent attention (`Mla::head_mix`, ERNIE's): the heads' outputs of the layer without it, mixed
+    /// (`head_mix`: held by hand in its own test), and where the layer gates, mixed first and gated after, which is another answer than the other
+    /// order. A V of zero is the layer without the mix, to the bit.
+    #[test]
+    fn the_heads_outputs_are_mixed_before_the_gate() {
+        use crate::runtime::reference::{head_mix, sigmoid};
+        let (gated, mut p) = latent_gated("mla.mix");
+        let (u, v) = (fill("mla.mix.u", 2 * 3, -0.6, 0.6), fill("mla.mix.v", 2 * 3, -0.6, 0.6));
+        p.put("mix_u", &[2, 3], u.clone());
+        p.put("mix_v", &[2, 3], v.clone());
+        let bare = Mla { gate: None, ..gated.clone() };
+        let heads = steps(&bare, &p, 6);
+        let mixed = steps(&Mla { head_mix: 3, ..bare.clone() }, &p, 6);
+        let both = steps(&Mla { head_mix: 3, ..gated.clone() }, &p, 6);
+        let gate_only = steps(&gated, &p, 6);
+        for (t, h) in inputs(6).iter().enumerate() {
+            let mut want = heads[t].clone();
+            head_mix(&u, &v, 2, 3, &mut want).unwrap();
+            assert_eq!(mixed[t], want, "token {t}");
+            let qr = norm(&gated.q_norm, &p.prod("q_a", h).unwrap(), p.opt("q_a_norm"), None);
+            let gv = p.prod("g", &qr).unwrap();
+            let after: Vec<f32> = want.iter().zip(&gv).map(|(o, &z)| o * sigmoid(z)).collect();
+            assert_eq!(both[t], after, "token {t}: mixed, then gated");
+            let mut other = gate_only[t].clone();
+            head_mix(&u, &v, 2, 3, &mut other).unwrap();
+            assert!(rel(&both[t], &other) > 1e-4, "token {t}: gated, then mixed is another answer");
+        }
+        let mut zero = p.clone();
+        zero.put("mix_v", &[2, 3], vec![0.0; 6]);
+        assert_eq!(steps(&Mla { head_mix: 3, ..gated.clone() }, &zero, 6), gate_only);
+        let mut c = LatentCache::default();
+        assert!(step(&Mla { head_mix: 2, ..gated.clone() }, &p, &mut c, &inputs(1)[0], 0).is_err(), "U and V of another rank");
+        assert!(!format!("{gated:?}").contains("head_mix") && format!("{:?}", Mla { head_mix: 3, ..gated }).ends_with("indexer: None, head_mix: 3 }"));
     }
 }

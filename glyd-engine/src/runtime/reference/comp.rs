@@ -219,8 +219,14 @@ pub fn attend(c: &Comp, p: &Params, qr: &[f32], q: &[f32], keys: &[&[f32]], pos:
         for (k, &a) in keys.iter().zip(&s) {
             o.iter_mut().zip(k.iter()).for_each(|(v, &kv)| *v += a * kv);
         }
-        turn(&c.rope, &mut o, pos, true);
         out.extend(o);
+    }
+    // (the heads' outputs mixed with each other where the kind says, then each rotated back)
+    if c.head_mix > 0 {
+        super::head_mix(p.vec("mix_u")?, p.vec("mix_v")?, nh, c.head_mix, &mut out)?;
+    }
+    for o in out.chunks_mut(hd) {
+        turn(&c.rope, o, pos, true);
     }
     // the grouped low-rank output: group g's heads through its rows of o_a (its input E4M3 in 32s where simulated: the groups' widths are of 32s)
     p.quantize(&mut out, fp8_sim, 32);
@@ -340,6 +346,7 @@ mod tests {
             q_head_norm: false,
             share: Some(share),
             gate: None,
+            head_mix: 0,
         }
     }
 
@@ -530,5 +537,32 @@ mod tests {
         }
         // (said in a description's text only where there is one)
         assert!(!format!("{bare:?}").contains("gate") && format!("{c:?}").ends_with("gate: OutGate { act: Sigmoid, from: Latent, norm: None } }"));
+    }
+
+    /// The low-rank mix of the heads' outputs on the compressed attention (`Comp::head_mix`, ERNIE's), before the heads are rotated back and grouped. A
+    /// mix that is the two heads exchanged (I + v u^T with v = [1, -1] and u = [-1, 1]) is, to the bit, the layer without it whose two output groups
+    /// (a head each) are exchanged: the mix is over the heads and commutes with each head's rotation. A V of zero is the layer without the mix.
+    #[test]
+    fn the_heads_outputs_are_mixed_before_they_are_grouped() {
+        let (bare, mut p) = own_grouped(32);
+        let c = Comp { head_mix: 1, ..bare.clone() };
+        p.put("mix_u", &[2, 1], vec![-1.0, 1.0]);
+        p.put("mix_v", &[2, 1], vec![1.0, -1.0]);
+        let mixed = steps(&c, &p, 7);
+        // (the layer without the mix, group 0's rows of o_a reading head 1 and group 1's head 0: its two groups' outputs are the mixed layer's, exchanged)
+        let mut swapped = p.clone();
+        let oa = p.vec("o_a").unwrap().to_vec();
+        swapped.put("o_a", &[8, HD], oa[4 * HD..].iter().chain(&oa[..4 * HD]).copied().collect());
+        let plain = steps(&bare, &swapped, 7);
+        for t in 0..7 {
+            assert_eq!((&mixed[t][..4], &mixed[t][4..8]), (&plain[t][4..8], &plain[t][..4]), "token {t}");
+        }
+        assert_ne!(mixed, steps(&bare, &p, 7));
+        let mut zero = p.clone();
+        zero.put("mix_v", &[2, 1], vec![0.0, 0.0]);
+        assert_eq!(steps(&c, &zero, 7), steps(&bare, &p, 7));
+        let mut st = CompState::default();
+        assert!(step(&Comp { head_mix: 2, ..bare.clone() }, &p, &mut st, &fill("csa2.gx0", D, -1.0, 1.0), 0).is_err(), "U and V of another rank");
+        assert!(!format!("{bare:?}").contains("head_mix") && format!("{c:?}").ends_with("head_mix: 1 }"));
     }
 }

@@ -195,6 +195,7 @@ fn glm53_latent_attention() {
         scale: 16f32.lpowf(-0.5),
         absorbed: false,
         indexer: None,
+        head_mix: 0,
     };
     let p = params(
         &f,
@@ -405,6 +406,7 @@ fn glm53_mtp_head() {
         scale: 16f32.lpowf(-0.5),
         absorbed: false,
         indexer: None,
+        head_mix: 0,
     };
     let moe_kind = Moe {
         router: Router {

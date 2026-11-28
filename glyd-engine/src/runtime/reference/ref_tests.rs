@@ -98,6 +98,7 @@ fn kimi_k3_mixers_against_kimi_ref() {
         scale: 192f32.lpowf(-0.5),
         absorbed: false,
         indexer: None,
+        head_mix: 0,
     };
     for l in [0usize, 3] {
         let a = format!("language_model.model.layers.{l}.self_attn");

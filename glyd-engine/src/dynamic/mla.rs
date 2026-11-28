@@ -233,6 +233,9 @@ impl MlaOp {
                 ))
             }
         };
+        if k.head_mix != 0 {
+            return err(format!("a latent attention: {}", kinds::HEAD_MIX_NOT_RUN));
+        }
         let gate = match (k.gate, input) {
             (None, _) => false,
             (Some(g), _) if g.from == kinds::GateFrom::Head => {
@@ -1043,6 +1046,7 @@ mod tests {
                 form: crate::runtime::kinds::IndexForm::LAYER_KEYS,
                 rope: 0,
             }),
+            head_mix: 0,
         }
     }
 

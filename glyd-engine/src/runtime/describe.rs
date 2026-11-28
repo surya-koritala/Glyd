@@ -2936,6 +2936,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
                 scale,
                 absorbed: true,
                 indexer,
+                head_mix: 0,
             })
         };
         mark(&r, &mut fp8set);
@@ -3132,6 +3133,7 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
         scale: ((nope + rd) as f32).powf(-0.5),
         absorbed: true,
         indexer: None,
+        head_mix: 0,
     };
     // Kimi-K3.1's sparse attention (`dsa_config`): on the latent attention layers it names (1-based), the sparse attention's indexer of a key a token, the
     // gated form, its keys RMS-normed at the model's eps or LayerNorm-ed with a bias (`index_k_norm_type`); the indexer's query from the q latent
@@ -3537,6 +3539,7 @@ fn ling(c: &ModelConfig) -> Result<Described> {
         scale: ((nope + rd) as f32).powf(-0.5),
         absorbed: true,
         indexer: None,
+        head_mix: 0,
     };
     // the feed-forward
     let dense =
@@ -4038,6 +4041,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
             q_head_norm: true,
             share: None,
             gate: None,
+            head_mix: 0,
         };
         comp_template = Some(c.clone());
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(c)), norm_out: None, residual: Residual::Streams(streams) });
@@ -4425,6 +4429,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
             q_head_norm: false,
             share,
             gate: None,
+            head_mix: 0,
         };
         comp_template = Some(comp.clone());
         blocks.push(Block { norm_in: rn, body: Body::Mixer(Mixer::Compressed(comp)), norm_out: None, residual: Residual::Streams(streams) });
@@ -4586,10 +4591,8 @@ fn v41_shapes(out: &Described, inter: usize) -> std::collections::BTreeMap<Strin
 }
 
 /// What an ERNIE 5.5 layer computes that no layer kind says yet, each with the checkpoint's tensors it is in (`ernie5_5`'s refusal names them all).
-pub const ERNIE_LACKS: &[&str] = &[
-    "the low-rank mix of the heads' outputs with each other (self_attn.vha_postmix_U, vha_postmix_V)",
-    "the latent attention's sinks (core_attention.softmax_offset) and its indexer's rotary in halves beside the attention's interleaved one",
-];
+pub const ERNIE_LACKS: &[&str] =
+    &["the latent attention's sinks (core_attention.softmax_offset) and its indexer's rotary in halves beside the attention's interleaved one"];
 
 /// ERNIE 5.5 (`ernie5_5_moe`, `Ernie5_5_MoeForCausalLM`; text in, text out: no tower): DeepSeek-V4's decoder (residual streams, the compressed
 /// attention with a window, grouped low-rank output) with layers of a second sort and seven parts of its own. `compress_ratios` says each layer's
