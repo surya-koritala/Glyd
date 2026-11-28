@@ -28,7 +28,7 @@ jobs:
       # (a cap on the container's memory, swap included, so that ptxas cannot take the whole machine where this runs on glyd-pc: a global out-of-memory took it down on Nov 20)
       options: --memory=28g --memory-swap=28g
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # A compile that passed is remembered by the content of the kernels (and this file): a rerun, or a push that changed none of them, skips nvcc.
