@@ -3,9 +3,8 @@
 //! model: gated residuals, the indexer on GQA, the hashed n-gram embedding), gemma-4 text, GLM-5.3 and
 //! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, DeepSeek-V4, Nemotron 3
 //! (`nemotron_h`), LFM3 (`lfm3`), Ling 3 (`bailing_hybrid`: described, not run yet), ERNIE 5.5 (`ernie5_5_moe`: described, not run yet), Hy4 Flash
-//! (`hy_v4_flash`: its config read and held, refused at the parts no kind says yet), Mistral Large (`mistral_large4_text`: described, not run
-//! yet), MiniMax M3 (`minimax_m3_vl`: described, not run yet), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3).
-//! Weight maps name the released tensors,
+//! (`hy_v4_flash`: described, not run yet), Mistral Large (`mistral_large4_text`: described, not run yet), MiniMax M3 (`minimax_m3_vl`:
+//! described, not run yet), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
 //! through the tables of their naming convention (`names`); a format detail such as Kimi-K3's MXFP4 experts (`.weight_packed` for
 //! `.weight`) is the loader's. The config comes parsed once (`config::ModelConfig`).
 //!
@@ -514,7 +513,7 @@ pub const LLAMA: &[&str] = &["llama", "mistral", "qwen2", "qwen3"];
 
 /// The model types of the families whose description is the whole of them (`support::Family::Layers`): each has a builder here whose blocks the dense
 /// lowering takes, and nothing else of its own in the engine. A new family of that kind adds its builder and its model type to this list.
-pub const LAYERS: &[&str] = &["domynedge", "granite_swa", "mellum", "aion_instruct", "lfm3"];
+pub const LAYERS: &[&str] = &["domynedge", "granite_swa", "mellum", "aion_instruct", "lfm3", "mimo_v2"];
 
 /// The description of the model whose `config.json` is `cfg`.
 pub fn describe(cfg: &Value) -> Result<Described> {
@@ -3241,6 +3240,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         Some(StreamsP {
             lagged: false,
             eps_outside: false,
+            apart: None,
             streams: k.opt_usize("hc_mult")?.unwrap_or(4),
             sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
             eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
@@ -4736,6 +4736,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     let streams = StreamsP {
         lagged: false,
         eps_outside: false,
+        apart: None,
         streams: k.usize("hc_mult")?,
         sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
         eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
@@ -5083,6 +5084,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         rounding: Rounding::Once,
         lagged: true,
         eps_outside: false,
+        apart: None,
     };
     // (the release's RMSNorm: fp32, the weight times the normed value cast to bf16 once; Engram's gate normalises in fp32 and keeps it)
     let rn = Norm { rounding: Rounding::Once, ..Norm::rms(eps) };
@@ -5645,8 +5647,16 @@ fn ernie5_5(tc: &Map<String, Value>) -> Result<Described> {
     let cv = &names::ERNIE;
     let norm = Norm::rms(eps);
     let gate = Some(OutGate { act: Act::Sigmoid, from: GateFrom::Latent, norm: None });
-    let streams =
-        StreamsP { streams: hc, sinkhorn_iters: hc_iters, eps: hc_eps as f32, norm_eps: eps, rounding: Rounding::Once, lagged: false, eps_outside: true };
+    let streams = StreamsP {
+        streams: hc,
+        sinkhorn_iters: hc_iters,
+        eps: hc_eps as f32,
+        norm_eps: eps,
+        rounding: Rounding::Once,
+        lagged: false,
+        eps_outside: true,
+        apart: None,
+    };
     let residual = Residual::Streams(streams);
     let comp = Comp {
         heads,
@@ -5872,51 +5882,78 @@ fn ernie5_5(tc: &Map<String, Value>) -> Result<Described> {
     Ok(out)
 }
 
-/// What a Hy4 Flash layer computes that no layer kind says yet, each with the checkpoint's tensors it is in (`hy4_flash`'s refusal names them all).
-pub const HY4_LACKS: &[&str] = &[
-    "the latent attention's sinks: a learned logit a head in the softmax's sum, which attends to nothing (self_attn.learnable_sink_param)",
-    "a window on the latent attention: a sliding layer's queries read the last sliding_window tokens alone, with heads and widths of their own \
-     (the layers whose self_attn.q_b_proj and kv_b_proj are of swa_num_attention_heads heads)",
-    "the compressed indexer: a normed key a token, every closed group of compressed_indexer_compress_ratio tokens one key (the softmax over its tokens, a \
-     channel at a time, of a gate product plus a learned position bias weighs a value product; normed again; turned at the group's first position), a query \
-     keeping the tokens of its best compressed_indexer_group_topk - 1 groups and of its own open group (self_attn.compressed_indexer.token_key_projection, \
-     token_key_norm, key_value_projection, key_gate_projection, intra_group_ape, key_norm, query_projection, head_weight_projection)",
-    "residual streams that do not mix with each other (independent hyper-connections): an input weight and an output weight a stream, the output's \
-     hc_magnitude times a sigmoid plus hc_eps, each stream adding its weight of the block's output (hc_attn_layer.hc_pre.hc_fn, hc_base, hc_scale and \
-     hc_mlp_layer's: 2 hc_mult rows, 2 scales)",
-    "the n-gram memory's form: the compressed vocabulary a tensor of the checkpoint (engram_layer.lookup_table), each table's row normed (lookup_per_head_norms), a \
-     key a stream and the value by products with a bias (key_projs, value_proj), the key and the stream normed with weights of their own (norm_key, norm_query), \
-     the value normed and scaled (unified_pre_gamma), a learned scale a stream added to the gate (unified_per_hc_scales), on the streams before the layer's attention",
-    "the drafter (model.dfly_layers.): a block of mask tokens after the last token, drafted in one pass by layers of one residual that read the model's own \
-     keys at dfly_target_kv_layers with its picks at dfly_target_index_layer; the model's last state joined to the first row through a learned gate \
-     (mtp_fusion.eh_proj, mtp_fusion.gate), each drafted state corrected by the token before it (hidden_correction), an acceptance estimate (confidence_head)",
-];
+/// Hy4 Flash's latent attention of one sort of layer: `heads` heads of `nope` + `rd` and values of `vd` (`w`) from the latents `q_lora` and `kv_lora`
+/// (`lora`), each latent RMS-normed, the rotary on a head's trailing `rd` channels in interleaved pairs, the score's scale (nope + rd)^-0.5, a sink a
+/// head, each channel of the heads' outputs times the sigmoid of a product of the block's input (`self_attn.linear_gate`). A sliding layer's has the
+/// `window` and no indexer; a layer with the indexer no window.
+///
+/// The sink is `Mla::sinks` as it stands: the readers hand the fp32 `learnable_sink_param` to their sparse kernel, which multiplies a head's output by
+/// exp(lse) / (exp(lse) + exp(sink)), lse over the scaled scores (vLLM models/hy_v4/nvidia/flashmla_sparse.py): one more logit in the softmax, the value
+/// as it is, which weighs nothing. The window is `Mla::window` with no indexer: both readers give a sliding layer's query the tokens
+/// p - sliding_window + 1 ..= p that are in the sequence, itself the last (vLLM models/hy_v4_flash/nvidia/swa.py `window_indices`, SGLang's
+/// `window_indices` kernel), and `window_size` is held to [sliding_window - 1, 0].
+fn hy4_mla(w: (usize, usize, usize, usize), lora: (usize, usize), rope: Rope, eps: f32, window: Option<usize>, indexer: Option<Indexer>) -> Mla {
+    let (heads, nope, rd, vd) = w;
+    Mla {
+        heads,
+        q_lora: Some(lora.0),
+        kv_lora: lora.1,
+        nope,
+        rope_dim: rd,
+        v_dim: vd,
+        rope: Some(Rope { style: RopeStyle::Interleaved, ..rope }),
+        q_norm: Norm::rms(eps),
+        kv_norm: Norm::rms(eps),
+        gate: Some(OutGate { act: Act::Sigmoid, from: GateFrom::Own, norm: None }),
+        scale: ((nope + rd) as f32).powf(-0.5),
+        absorbed: true,
+        indexer,
+        head_mix: 0,
+        sinks: true,
+        window,
+        pos_scale: false,
+        kv_from: None,
+        rope_learned: false,
+    }
+}
+
+/// The epsilon of the norms in Hy4 Flash's n-gram memory's gate (a stream's, a key's): the readers' `nn.RMSNorm` with no eps on bf16 values, which is
+/// bf16's machine epsilon, 2^-7 (SGLang names it: `torch.finfo(torch.bfloat16).eps`).
+const HY4_GATE_EPS: f32 = 0.0078125;
 
 /// The names a config gives a layer of latent attention with the indexer (`layer_types`, and the per-sort `rope_parameters`): transformers' own, and the
 /// three the family's readers fold into it.
 const HY4_SPARSE: &[&str] = &["deepseek_sparse_attention", "indexed_attention", "sparse_attention", "sparse"];
 
-/// Hy4 Flash (`hy_v4_flash`, `HYV4FlashForConditionalGeneration`; a vision tower `vit.` beside the text model, which this does not read): a decoder of
-/// latent attention on residual streams. `layer_types` says each layer's attention. `deepseek_sparse_attention`: the latent attention (`Mla`:
-/// `num_attention_heads` heads of `qk_nope_head_dim` + `qk_rope_head_dim` and values of `v_head_dim`, latents of `q_lora_rank` and `kv_lora_rank`) over
-/// the tokens its compressed indexer picks, `index_topk` at most. `sliding_attention`: the same attention with the `swa_*` heads and widths over the
-/// last `sliding_window` tokens, no indexer. Both: the rotary of their sort (`rope_parameters` by layer type: plain, in interleaved pairs, its angles
-/// by three axes for the tower's tokens), a sink a head, the heads' output times the sigmoid of a product of the block's input (`gating_type`
-/// elementwise: `Mla`'s own gate), and with `sandwich_norm` an RMS norm of each block's output before the residual. The feed-forward is a dense SiLU
-/// MLP or, where `mlp_layer_types` says sparse, `n_routed_experts` experts in a latent of `routed_expert_hidden_size` (a projection down and one up, no
-/// norm between; the router and the `n_shared_experts` shared expert on the full vector; sigmoid scores, a bias for the choice, the chosen scores
-/// over their sum times `routed_scaling_factor`; the routed experts' SwiGLU held to `swiglu_limit`). The residual is `hc_mult` streams that never mix:
-/// each block reads their weighed sum and each stream adds its own weight of the output; a hyper-head (`Collapse::Weighted`) joins them for the final
-/// norm, and the logits are fp32 (`enable_lm_head_fp32`). On the layers of `engram_layer_ids` (numbered from 1: the checkpoint's layer one less) an
-/// n-gram memory adds to the streams before the attention. A drafter of `dfly_num_hidden_layers` layers (the top level's `dfly_*` keys) follows under
-/// `model.dfly_layers.`.
+/// Hy4 Flash (`hy_v4_flash`, `HYV4FlashForConditionalGeneration`): a decoder of latent attention on residual streams that do not mix. `layer_types` says
+/// each layer's attention. `deepseek_sparse_attention`: the latent attention (`Mla`: `num_attention_heads` heads of `qk_nope_head_dim` +
+/// `qk_rope_head_dim` and values of `v_head_dim`, latents of `q_lora_rank` and `kv_lora_rank`) over the tokens its compressed indexer picks
+/// (`IndexForm::Grouped`: groups of `compressed_indexer_compress_ratio` tokens, the best `compressed_indexer_group_topk` - 1 closed groups and the
+/// query's own, `index_topk` tokens at most). `sliding_attention`: the same attention with the `swa_*` heads and widths over the last `sliding_window`
+/// tokens (`Mla::window`), no indexer. Both (`hy4_mla`): the rotary of their sort (`rope_parameters` by layer type: plain, in interleaved pairs, its
+/// angles by three axes for the tower's tokens), a sink a head, the heads' output times the sigmoid of a product of the block's input, and with
+/// `sandwich_norm` an RMS norm of each block's output before the residual. The feed-forward is a dense SiLU MLP or, where `mlp_layer_types` says
+/// sparse, `n_routed_experts` experts in a latent of `routed_expert_hidden_size` (a projection down and one up, no norm between; the router and the
+/// shared expert on the full vector; sigmoid scores, a bias for the choice, the chosen scores over their sum times `routed_scaling_factor`; the routed
+/// experts' SwiGLU held to `swiglu_limit`, the gate before its activation). The residual is `hc_mult` streams (`StreamsP::apart`, the magnitude
+/// `hc_magnitude`, each result rounded once): each block reads their weighed sum and each stream adds its own weight of the output; a hyper-head
+/// (`Collapse::Weighted`) joins them for the final norm, and the logits are fp32 (`enable_lm_head_fp32`). On the layers of `engram_layer_ids`
+/// (numbered from 1: the checkpoint's layer one less, where its tensors are) the n-gram memory (`NgramForm::EngramNormed`) adds to the streams before
+/// the layer's attention, a block of its own; its tables are read by rows on the host.
+///
+/// Two parts of the checkpoint are left, by name (`names::HUNYUAN`'s `unread`), and the text model runs without either. The drafter
+/// (`model.dfly_layers.`, the top level's `dfly_*` keys): a block of mask tokens after the last token drafted in one pass by `dfly_num_hidden_layers`
+/// layers of one residual that read the model's own keys at `dfly_target_kv_layers` with its picks at `dfly_target_index_layer`. Its keys are read and
+/// held to the readers' form, so that a release that changes one is stopped here; its tensors are not read and drafting is not described. The vision
+/// tower and its adapter (`vit.`, `vision_config`): not read.
 ///
 /// Read from the family's two readers, vLLM (models/hy_v4_flash, over models/hy_v4) and SGLang (models/hunyuan_v4_flash.py, configs/hy_v4_flash.py):
 /// the release ships no modeling code, and transformers and llama.cpp read Hy4 without Flash's parts. Every key is read. A key a reader reads is held
-/// to what the readers compute; a key neither reads is held to the released value, so that a release that changes one is stopped here; a key of the
-/// training alone (an initial value, a loss's weight) is read and not held. The builder then refuses: `HY4_LACKS` are parts of its layers, and a
-/// description without them would be of another model. What the kinds do say of it: the latent attention with its output gate, both feed-forwards
-/// with the norm after them, the hyper-head, the fp32 logits.
+/// to what the readers compute; a key neither reads is held to the released value; a key of the training alone (an initial value, a loss's weight) is
+/// read and not held. Nothing here is held to a run of the release: the CPU reference of each part is its formula as the readers compute it, in f32
+/// but for the streams (rounded once, where the readers cast their fp32 results). The readers round to bf16 in places the kinds do not say: each
+/// product's output and each norm's, the gate's sigmoid, the n-gram memory's normed rows, keys and gate, and the indexer's keys and queries, which
+/// they also turn by a Hadamard transform and quantize to FP8 before scoring.
 fn hy4_flash(c: &ModelConfig) -> Result<Described> {
     let (mt, tc) = ("hy_v4_flash", &c.text);
     let k = Keys::new(tc, mt);
@@ -5932,7 +5969,7 @@ fn hy4_flash(c: &ModelConfig) -> Result<Described> {
     let (d, layers, vocab) = (k.usize("hidden_size")?, k.usize("num_hidden_layers")?, k.usize("vocab_size")?);
     let eps = k.opt_f64("rms_norm_eps")?.unwrap_or(1e-5);
     let max_pos = k.opt_usize("max_position_embeddings")?;
-    k.bool("tie_word_embeddings", false)?;
+    let tied = k.bool("tie_word_embeddings", false)?;
     if d == 0 || layers == 0 || vocab == 0 || eps <= 0.0 {
         return err(format!("{mt}: {layers} layers of {d} over a vocabulary of {vocab}, rms_norm_eps {eps}"));
     }
@@ -6075,6 +6112,7 @@ fn hy4_flash(c: &ModelConfig) -> Result<Described> {
         return err(format!("{mt}: rope_parameters has {key} beside a rotary a sort of layer"));
     }
     let mut sections = BTreeSet::new();
+    let mut ropes: [Option<Rope>; 2] = [None, None];
     for (is_sliding, sort) in [(false, "deepseek_sparse_attention"), (true, "sliding_attention")] {
         if !sliding.contains(&is_sliding) {
             continue;
@@ -6108,12 +6146,18 @@ fn hy4_flash(c: &ModelConfig) -> Result<Described> {
             }
         }
         sections.insert(r.mrope);
+        ropes[is_sliding as usize] = Some(r);
     }
     if sections.len() > 1 {
         return err(format!("{mt}: rope_parameters' mrope_section differs between the two sorts of layer"));
     }
     // the compressed indexer: groups of `ratio` tokens, the best `group_topk` - 1 of them and the query's own, which is `index_topk` tokens at most
     let (itop, ratio) = (k.opt_usize("index_topk")?.unwrap_or(2048), k.opt_usize("compressed_indexer_compress_ratio")?.unwrap_or(4));
+    // (a key's width, which both readers fix: compressed_indexer_head_dim and index_head_dim are held to it above)
+    let idim = 128;
+    if rd > idim {
+        return err(format!("{mt}: qk_rope_head_dim = {rd} is past the indexer's keys of {idim}, whose trailing channels the rotary turns"));
+    }
     let (iheads, gtop, ctop) = (
         k.opt_usize("compressed_indexer_num_attention_heads")?.unwrap_or(16),
         k.opt_usize("compressed_indexer_group_topk")?.unwrap_or(512),
@@ -6163,9 +6207,9 @@ fn hy4_flash(c: &ModelConfig) -> Result<Described> {
     let (shared, latent) = (k.opt_usize("n_shared_experts")?.unwrap_or(1), k.opt_usize("routed_expert_hidden_size")?);
     // (the readers' classes differ where the factor is absent, 2.827 and 3.998: it is asked for)
     let scale = k.f64("routed_scaling_factor")?;
-    k.bool("norm_topk_prob", true)?;
+    let renorm = k.bool("norm_topk_prob", true)?;
     // (0 or less: no limit)
-    k.opt_f64("swiglu_limit")?;
+    let limit = k.opt_f64("swiglu_limit")?.filter(|&l| l > 0.0);
     if top_k == 0 || top_k > ne || inter == 0 || moe_inter == 0 || latent == Some(0) || scale <= 0.0 {
         return err(format!(
             "{mt}: {top_k} of {ne} experts a token, of {moe_inter} in a latent of {}, {shared} shared, routed_scaling_factor {scale}; a dense MLP of {inter}",
@@ -6173,9 +6217,8 @@ fn hy4_flash(c: &ModelConfig) -> Result<Described> {
         ));
     }
     // (with sandwich_norm each block's output is normed before the residual; dsa_skip_attn_post_norm leaves the attention's of the layers with the indexer out)
-    k.bool("sandwich_norm", true)?;
-    k.bool("dsa_skip_attn_post_norm", false)?;
-    k.bool("enable_lm_head_fp32", true)?;
+    let (sandwich, skip_post) = (k.bool("sandwich_norm", true)?, k.bool("dsa_skip_attn_post_norm", false)?);
+    let fp32_head = k.bool("enable_lm_head_fp32", true)?;
     // (draft layers after the model's, DeepSeek-V3's: the release has none, and the readers' classes differ where the key is absent, one and none)
     match k.opt_usize("num_nextn_predict_layers")? {
         Some(0) => {}
@@ -6190,11 +6233,15 @@ fn hy4_flash(c: &ModelConfig) -> Result<Described> {
         k.opt_usize("engram_n_head_per_ngram")?.unwrap_or(8),
     );
     let pad = k.opt_usize("engram_pad_id")?.unwrap_or(120_002);
-    k.opt_usize("engram_seed")?;
-    // (the tables bf16, or FP8 with a scale a row: the stored format)
-    k.bool("engram_fp8_embedding", false)?;
+    let eseed = k.opt_usize("engram_seed")?.unwrap_or(0);
+    // (the tables bf16; FP8 with a scale a row beside the table is a stored format the description does not name)
+    if k.bool("engram_fp8_embedding", false)? {
+        return err(format!("{mt}: engram_fp8_embedding = true is not supported (only false: the n-gram tables in bf16)"));
+    }
     let sizes = k.raw("engram_layer_head_vocab_sizes");
     let past = counts(&k, "engram_vocab_size")?;
+    let mut base: Option<u64> = past.as_ref().and_then(|p| p.first()).map(|&b| b as u64);
+    let mut memories: Vec<Ngram> = Vec::new();
     if !engram.is_empty() {
         let unique: BTreeSet<&usize> = engram.iter().collect();
         if let Some(l) = engram.iter().find(|&&l| l == 0 || l > layers) {
@@ -6209,7 +6256,7 @@ fn hy4_flash(c: &ModelConfig) -> Result<Described> {
         if past.as_ref().is_some_and(|p| p.len() != order - 1) {
             return err(format!("{mt}: engram_vocab_size {past:?} for {} orders", order - 1));
         }
-        for l in &engram {
+        for (place, l) in engram.iter().enumerate() {
             let tables = sizes.and_then(|s| s.get(l.to_string())).and_then(Value::as_array).filter(|o| o.len() == order - 1);
             let rows = |o: &Value| o.as_array().filter(|h| h.len() == eheads).map(|h| h.iter().map(|x| x.as_u64().unwrap_or(0) as usize).collect::<Vec<_>>());
             let Some(tables) = tables.and_then(|t| t.iter().map(rows).collect::<Option<Vec<_>>>()).filter(|t| t.iter().flatten().all(|&n| n > 0)) else {
@@ -6224,6 +6271,40 @@ fn hy4_flash(c: &ModelConfig) -> Result<Described> {
                     past.as_ref().map_or(0, |p| p[o])
                 ));
             }
+            // (the kind makes a layer's tables' sizes: the model's primes in order past the base, a layer's after the layer's before; the config's list
+            // is held to them. The multipliers are seeded by the layer's number as the config counts it, from 1)
+            let b = *base.get_or_insert(tables[0][0] as u64);
+            if order > 64 || b > 1 << 40 || (order - 1) * eheads * (place + 1) > 4096 {
+                return err(format!("{mt}: an n-gram memory of orders up to {order} with {eheads} tables an order past {b}: no model's"));
+            }
+            let n = Ngram {
+                order,
+                heads: eheads,
+                dim: (order - 1) * edim,
+                base: b,
+                vocab,
+                seed: (eseed + 10007 * l) as u64,
+                index: place,
+                eos: pad as u32,
+                streams: hc,
+                conv: 0,
+                dilation: 1,
+                norm: Norm::rms(HY4_GATE_EPS),
+                form: NgramForm::EngramNormed,
+                // (its tables read by rows on the host: the release's are about 165M rows of 96 a layer in bf16, about 30 GiB each)
+                table: TableAt::Host,
+            };
+            let want = super::reference::ngram::tables(&n).0;
+            if !tables.iter().flatten().map(|&x| x as u64).eq(want.iter().copied()) {
+                return err(format!(
+                    "{mt}: engram_layer_head_vocab_sizes: layer {l}'s tables are not the primes {} to {} past {b} in order ({} to {})",
+                    place * want.len() + 1,
+                    (place + 1) * want.len(),
+                    want[0],
+                    want[want.len() - 1]
+                ));
+            }
+            memories.push(n);
         }
     }
     // the drafter (models/hy_v4/dfly_config.py `_derive_dfly_config`, models/hy_v4_flash/dfly_config.py): absent with no dfly_num_hidden_layers
@@ -6276,17 +6357,176 @@ fn hy4_flash(c: &ModelConfig) -> Result<Described> {
     let mut left = if c.nested { unread(&top) } else { Vec::new() };
     left.extend(unread(&k));
     not_understood(mt, left.iter())?;
-    let slide = sliding.iter().filter(|&&s| s).count();
-    let dense = dense.iter().filter(|&&x| x).count();
-    err(format!(
-        "{mt}: its config is read ({} layers of latent attention with a compressed indexer and {slide} in a window of {window} tokens, {dense} dense feed-forward \
-         and {} of {ne} experts, {hc} residual streams, an n-gram memory on {} layers, a drafter of {drafts} layers), and it is not described yet. \
-         Parts of its layers have no layer kind: {}",
-        layers - slide,
-        layers - dense,
-        engram.len(),
-        HY4_LACKS.join("; ")
-    ))
+    // (what is left of the checkpoint, by name: the drafter's tensors and the tower's; `names::HUNYUAN`)
+    let (eps, cv) = (eps as f32, &names::HUNYUAN);
+    let norm = Norm::rms(eps);
+    let residual = Residual::Streams(StreamsP {
+        streams: hc,
+        sinkhorn_iters: 0,
+        eps: hc_eps as f32,
+        norm_eps: eps,
+        rounding: Rounding::Once,
+        lagged: false,
+        eps_outside: false,
+        apart: Some(hc_magnitude as f32),
+    });
+    // each sort of layer's attention. The indexer is the f32 form: the readers round its keys and queries to bf16, turn them by a Hadamard transform
+    // and quantize them to FP8 with a power-of-two scale a vector before they score (models/hy_v4_flash/nvidia/indexpool_ops.py `fwht_quantize`,
+    // SGLang's `_rope_quant_row`), which moves a score and so, near a tie, a pick
+    let indexer = Indexer {
+        heads: iheads,
+        head_dim: idim,
+        top_k: itop,
+        block: ratio,
+        shared: false,
+        form: IndexForm::Grouped { key: norm, pool: norm },
+        rope: rd,
+        rope_style: None,
+        q_in: None,
+        pos_scale: false,
+    };
+    let [sparse_rope, sliding_rope] = ropes;
+    let sparse_attn = sparse_rope.map(|r| hy4_mla((heads, nope, rd, vd), (q_lora, kv_lora), r, eps, None, Some(indexer)));
+    let sliding_attn = sliding_rope.map(|r| hy4_mla(swa, (q_lora, kv_lora), r, eps, Some(window), None));
+    let dense_mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: None };
+    let moe = Moe {
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias: true,
+            groups: None,
+            top_k,
+            renorm,
+            scale: scale as f32,
+            hash: false,
+            routers: 1,
+            expert_scale: false,
+        },
+        experts: ne,
+        expert: Mlp { clamp: limit.map(|l| Clamp::Gate(l as f32)), ..dense_mlp },
+        shared: (shared > 0).then_some(dense_mlp),
+        shared_gate: false,
+        latent: latent.map(|dim| Latent { dim, norm_in: None, expert_norm: None, norm_out: None }),
+    };
+    // each block's roles, and every tensor's shape as the checkpoint stores it (the compressed vocabulary's length is the checkpoint's own: no shape)
+    let mut shapes: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let hc_shapes = [("hc_fn", vec![2 * hc, hc * d]), ("hc_base", vec![2 * hc]), ("hc_scale", vec![2])];
+    let mla_shapes = |m: &Mla| {
+        let (h, ql) = (m.heads, q_lora);
+        vec![
+            ("norm_in", vec![d]),
+            ("q_a", vec![ql, d]),
+            ("q_a_norm", vec![ql]),
+            ("q_b", vec![h * (m.nope + m.rope_dim), ql]),
+            ("kv_a", vec![m.kv_lora + m.rope_dim, d]),
+            ("kv_a_norm", vec![m.kv_lora]),
+            ("kv_b", vec![h * (m.nope + m.v_dim), m.kv_lora]),
+            ("g", vec![h * m.v_dim, d]),
+            ("o", vec![d, h * m.v_dim]),
+            ("sinks", vec![h]),
+            ("norm_out", vec![d]),
+            ("indexer_wk", vec![idim, d]),
+            ("indexer_k_norm", vec![idim]),
+            ("indexer_pool_value", vec![idim, idim]),
+            ("indexer_pool_gate", vec![idim, idim]),
+            ("indexer_pool_ape", vec![ratio, idim]),
+            ("indexer_pool_norm", vec![idim]),
+            ("indexer_wq_b", vec![iheads * idim, ql]),
+            ("indexer_weights", vec![iheads, d]),
+        ]
+    };
+    let width = latent.unwrap_or(d);
+    let moe_shapes = [
+        ("norm_in", vec![d]),
+        ("router", vec![ne, d]),
+        ("choice_bias", vec![ne]),
+        ("latent_down", vec![width, d]),
+        ("latent_up", vec![d, width]),
+        ("shared_gate", vec![moe_inter * shared, d]),
+        ("shared_up", vec![moe_inter * shared, d]),
+        ("shared_down", vec![d, moe_inter * shared]),
+        ("experts_gate_up", vec![ne, 2 * moe_inter, width]),
+        ("experts_down", vec![ne, width, moe_inter]),
+        ("norm_out", vec![d]),
+    ];
+    let mlp_shapes = [("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter]), ("norm_out", vec![d])];
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for l in 0..layers {
+        let p = cv.layer("model.", l);
+        // (the memory of the layer the config numbers l + 1, on the streams before the layer's attention: its gate's norm of each stream is the block's)
+        if let Some(n) = engram.iter().position(|&id| id == l + 1).map(|place| memories[place]) {
+            let tables = (n.order - 1) * n.heads;
+            let r = names::hy_memory(&p, tables, hc);
+            let rows = super::reference::ngram::tables(&n).0.iter().sum::<u64>() as usize;
+            let memory_shapes = [
+                ("ngram", vec![rows, n.dim / tables]),
+                ("ngram_norm", vec![n.dim]),
+                ("kv", vec![(hc + 1) * d, n.dim]),
+                ("kv_bias", vec![(hc + 1) * d]),
+                ("norm_in", vec![hc * d]),
+                ("norm_key", vec![hc * d]),
+                ("value_gamma", vec![d]),
+                ("stream_scale", vec![hc * d]),
+            ];
+            shape_sources(&mut shapes, &r, &memory_shapes);
+            blocks.push(Block { norm_in: n.norm, body: Body::Ngram(n), norm_out: None, residual: Residual::Add });
+            roles.push(r);
+        }
+        let attn = if sliding[l] { &sliding_attn } else { &sparse_attn };
+        let Some(attn) = attn.clone() else { return err(format!("{mt}: layer {l}'s sort of attention has no rotary")) };
+        // (the norm of the attention's output, which dsa_skip_attn_post_norm leaves out of the layers with the indexer)
+        let post = sandwich && (sliding[l] || !skip_post);
+        let mut r = names::roles(part::HY_MLA, &p, 0, |x| x != "norm_out" || post);
+        if !sliding[l] {
+            r.extend(names::roles(part::HY_INDEXER, &p, 0, all));
+        }
+        r.extend(names::roles(part::HY_HC_ATTN, &p, 0, all));
+        shape_sources(&mut shapes, &r, &[mla_shapes(&attn), hc_shapes.to_vec()].concat());
+        blocks.push(Block { norm_in: norm, body: Body::Mixer(Mixer::Mla(attn)), norm_out: post.then_some(norm), residual: residual.clone() });
+        roles.push(r);
+        let (body, mut r, want) = if dense[l] {
+            (Ffn::Mlp(dense_mlp), names::roles(part::HY_MLP, &p, 0, |x| x != "norm_out" || sandwich), mlp_shapes.to_vec())
+        } else {
+            let keep = |x: &str| match x {
+                "norm_out" => sandwich,
+                "latent_down" | "latent_up" => latent.is_some(),
+                "shared_gate" | "shared_up" | "shared_down" => shared > 0,
+                _ => true,
+            };
+            (Ffn::Moe(moe.clone()), names::roles(part::HY_MOE, &p, ne, keep), moe_shapes.to_vec())
+        };
+        r.extend(names::roles(part::HY_HC_FFN, &p, 0, all));
+        shape_sources(&mut shapes, &r, &[want, hc_shapes.to_vec()].concat());
+        blocks.push(Block { norm_in: norm, body: Body::Ffn(body), norm_out: sandwich.then_some(norm), residual: residual.clone() });
+        roles.push(r);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: hc, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: norm,
+        // (the logits' product summed in fp32 from the model's bf16 state and weights; without enable_lm_head_fp32 it is the model's type's)
+        head: Head {
+            tied,
+            softcap: None,
+            scale: 1.0,
+            collapse: Collapse::Weighted { eps: hc_eps as f32, norm_eps: eps },
+            rounding: if fp32_head { Rounding::F32 } else { Rounding::Once },
+            correction: false,
+        },
+        mtp: Vec::new(),
+        vision: None,
+        rope: None,
+    };
+    let mut out = finish(&k, desc, cv, "model.", roles, 0)?;
+    shape_sources(&mut shapes, &out.extra, &[("out_hc_fn", vec![hc, hc * d]), ("out_hc_base", vec![hc]), ("out_hc_scale", vec![1])]);
+    for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
+        shapes.insert(n.clone(), vec![vocab, d]);
+    }
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    out.shapes = shapes;
+    Ok(out)
 }
 
 /// Nemotron 3 (`nemotron_h`, `NemotronHForCausalLM`): a layer is one block, `x + mixer(norm(x))`, its mixer named by the pattern:

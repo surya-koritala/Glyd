@@ -473,6 +473,7 @@ impl RefModel {
             rounding: crate::runtime::kinds::Rounding::F32,
             lagged: false,
             eps_outside: false,
+            apart: None,
         })
     }
 
@@ -492,8 +493,13 @@ impl RefModel {
                 let (f, base, sc) = (self.p.vec("out_hc_fn")?, self.p.vec("out_hc_base")?, self.p.vec("out_hc_scale")?[0]);
                 let sp = self.streams_p();
                 let r = StreamsP { norm_eps, ..sp }.norm_factor(xt);
-                let flat: Vec<f32> = xt.iter().map(|v| v * r).collect();
-                let mixes = super::matvec(f, flat.len(), &flat);
+                // (over streams that keep apart, the product first and the norm's factor after: `StreamsP::apart`)
+                let mixes: Vec<f32> = if sp.apart.is_some() {
+                    super::matvec(f, xt.len(), xt).into_iter().map(|v| v * r).collect()
+                } else {
+                    let flat: Vec<f32> = xt.iter().map(|v| v * r).collect();
+                    super::matvec(f, flat.len(), &flat)
+                };
                 let pre: Vec<f32> = (0..n).map(|j| super::sigmoid(mixes[j] * sc + base[j]) + eps).collect();
                 super::collapse(&sp, &pre, xt, d)
             }
@@ -523,7 +529,7 @@ mod tests {
     const N: usize = 4;
 
     fn streams(lagged: bool) -> StreamsP {
-        StreamsP { streams: N, sinkhorn_iters: 20, eps: 1e-6, norm_eps: 1e-6, rounding: Rounding::F32, lagged, eps_outside: false }
+        StreamsP { streams: N, sinkhorn_iters: 20, eps: 1e-6, norm_eps: 1e-6, rounding: Rounding::F32, lagged, eps_outside: false, apart: None }
     }
 
     fn mlp() -> Mlp {
@@ -716,6 +722,63 @@ mod tests {
         }
         // (said in a description's text only where it is set)
         assert!(!format!("{inside:?}").contains("eps_outside") && format!("{outside:?}").ends_with("eps_outside: true }"));
+    }
+
+    /// Streams that do not mix (`StreamsP::apart`, Hunyuan's independent hyper-connections), by hand from the definition on bf16 streams that round
+    /// once: the weights are of the product of the streams as they are times the norm's factor; the block's input is the streams weighed by pre, rounded;
+    /// each stream then adds its own post times the block's output to itself and reads no other stream (changing stream 2 moves stream 0's new value
+    /// only through the weights, which here are held); post is the magnitude times a sigmoid plus eps, so it is under magnitude + eps and above eps.
+    /// The hyper-head over them takes its product the same way. mHC's roles are another shape and are refused.
+    #[test]
+    fn streams_that_do_not_mix_each_add_their_own_weight_of_the_output() {
+        use crate::runtime::reference::{bf16, matvec, sigmoid};
+        let (eps, norm_eps, magnitude) = (1e-3f32, 1e-5f32, 2.5f32);
+        let s = StreamsP { sinkhorn_iters: 0, eps, norm_eps, rounding: Rounding::Once, apart: Some(magnitude), ..streams(false) };
+        let mut p = Params::new();
+        p.put("hc_fn", &[2 * N, N * D], fill("apart.fn", 2 * N * N * D, -0.5, 0.5));
+        p.put("hc_base", &[2 * N], fill("apart.base", 2 * N, -0.5, 0.5));
+        p.put("hc_scale", &[2], vec![0.7, 1.3]);
+        let l = RefLayer::new(Block { norm_in: Norm::rms(1e-6), body: Body::Ffn(Ffn::Mlp(mlp())), norm_out: None, residual: Residual::Streams(s) }, D, p);
+        let x: Vec<f32> = fill("apart.x", N * D, -2.0, 2.0).into_iter().map(bf16).collect();
+        let o = fill("apart.o", D, -1.0, 1.0);
+        let r = 1.0 / (x.iter().map(|v| v * v).sum::<f32>() / (N * D) as f32 + norm_eps).sqrt();
+        let w: Vec<f32> = matvec(l.p.vec("hc_fn").unwrap(), N * D, &x).into_iter().map(|v| v * r).collect();
+        let base = l.p.vec("hc_base").unwrap();
+        let pre: Vec<f32> = (0..N).map(|i| sigmoid(w[i] * 0.7 + base[i]) + eps).collect();
+        let post: Vec<f32> = (0..N).map(|i| magnitude * sigmoid(w[N + i] * 1.3 + base[N + i]) + eps).collect();
+        let (got_pre, got_post, comb) = hc_weights(&s, &l.p, &x).unwrap();
+        assert_eq!((got_pre, got_post), (pre.clone(), post.clone()));
+        assert!(
+            post.iter().all(|&v| v > eps && v < magnitude + eps) && comb.iter().enumerate().all(|(j, row)| (0..N).all(|k| row[k] == (j == k) as u8 as f32))
+        );
+        let (input, hc) = l.pre(&x).unwrap();
+        assert_eq!(input, (0..D).map(|i| bf16((0..N).map(|j| pre[j] * x[j * D + i]).sum::<f32>())).collect::<Vec<_>>());
+        let mut got = x.clone();
+        l.post(&mut got, &o, hc.clone()).unwrap();
+        for k in 0..N {
+            for i in 0..D {
+                assert_eq!(got[k * D + i], bf16(post[k] * o[i] + x[k * D + i]), "stream {k}, column {i}");
+            }
+        }
+        // (no stream reads another: with the same weights, another stream 2 leaves the others' new values as they were)
+        let mut other = x.clone();
+        other[2 * D..3 * D].iter_mut().for_each(|v| *v = bf16(*v * 0.5 + 0.25));
+        l.post(&mut other, &o, hc).unwrap();
+        assert!((0..N).all(|k| (other[k * D..][..D] == got[k * D..][..D]) == (k != 2)));
+        // (mHC on the same streams mixes them: its roles are of another shape, and these are not its)
+        assert!(hc_weights(&StreamsP { apart: None, ..s }, &l.p, &x).is_err());
+        assert!(hc_weights(&s, &block(0, s).p, &x).unwrap_err().msg.contains("that do not mix"));
+        // (the hyper-head over them: the product of the streams as they are, then the norm's factor)
+        let mut m = model(s, Collapse::Weighted { eps, norm_eps });
+        m.p.put("out_hc_fn", &[N, N * D], fill("apart.out", N * N * D, -0.5, 0.5));
+        m.p.put("out_hc_base", &[N], fill("apart.out_base", N, -0.5, 0.5));
+        m.p.put("out_hc_scale", &[1], vec![0.8]);
+        let mixes: Vec<f32> = matvec(m.p.vec("out_hc_fn").unwrap(), N * D, &x).into_iter().map(|v| v * r).collect();
+        let hw: Vec<f32> = (0..N).map(|j| sigmoid(mixes[j] * 0.8 + m.p.vec("out_hc_base").unwrap()[j]) + eps).collect();
+        let folded: Vec<f32> = (0..D).map(|i| bf16((0..N).map(|j| hw[j] * x[j * D + i]).sum::<f32>())).collect();
+        assert_eq!(m.final_h(&x, None).unwrap(), norm(&m.desc.final_norm, &folded, Some(&m.final_norm), None));
+        // (said in a description's text only where it is set)
+        assert!(!format!("{:?}", streams(false)).contains("apart") && format!("{s:?}").ends_with("rounding: Once, apart: 2.5 }"));
     }
 
     /// A matrix the checkpoint stores transposed loads turned, so that a product by the role is the stored matrix's by columns; three stored scalars load as

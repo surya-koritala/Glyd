@@ -2134,6 +2134,16 @@ pub fn lfm3_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/lfm3_tiny_manifest.json"), out, 0x2026_1127_0000_0051, true, "LFM model")
 }
 
+/// MiMo's small model (four layers 512 wide, a vocabulary of 4096, the head its own matrix; queries and keys of 192 with their first 64 channels turned,
+/// values of 128 times 0.707, the three products one matrix stored in 2 shards: the first and last layers attend over the whole context, 8 query heads over
+/// 2, the rotary's base 1e7; the middle two slide over 8 positions and the query's own, 8 over 4, a sink a head, base 1e4; the first layer's feed-forward a
+/// gated MLP of 1024, the others' 8 experts of 256, sigmoid scores with a choice bias (fp32, as released), the best 2 renormalised, no shared expert): the
+/// family's case, no release's. Every matrix is bf16: the release's FP8 fused matrices and packed 4-bit experts are forms the loader refuses by name. No draft
+/// layer: the executor does not run the family's.
+pub fn mimo_random(out: &Path) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/mimo_tiny_manifest.json"), out, 0x2026_1128_0000_0061, true, "MiMo model")
+}
+
 /// A small Qwen3.5-family text model (Qwen3_5ForCausalLM: three Gated DeltaNet layers and a gated full-attention one, 1024 wide, a vocabulary of 4096): the layout of Qwen3.8-27B and the releases of its family at 0.8B's widths.
 /// Drawn by `manifest_random`'s rules, then the final norm's (1 + w) times `QWEN35_HEAD` (`head_scaled`): its head's logits that much smaller, which every row's
 /// KL from a last-place difference goes as a power of. As first drawn, the GPU against itself (each prompt served alone against all 64 at once, its sums in another
@@ -2561,9 +2571,12 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
             (0..shape[0]).flat_map(|_| grid(shape[1] as usize, shape[2] as usize, &mut u01, &mut gauss)).collect()
         } else if on_grid && name.contains("shared_expert.") {
             grid(shape[0] as usize, shape[1] as usize, &mut u01, &mut gauss)
-        } else if name.ends_with(".sinks") {
+        } else if name.ends_with(".sinks") || name.ends_with(".attention_sink_bias") {
             // (a sink a head: a logit beside the keys' scores, about theirs in size)
             (0..n).map(|_| gauss(&mut u01) as f32).collect()
+        } else if name.ends_with("e_score_correction_bias") {
+            // (a router's choice bias an expert: beside sigmoid scores, a tenth of their range)
+            (0..n).map(|_| (gauss(&mut u01) * 0.1) as f32).collect()
         } else if name.contains("ngram_embedding") || name.contains("embed_tokens") {
             // (an embedding that is the head too, as Qwen3.5's tied one is, is as wide as a head's rows: else its logits are tens apart and the softmax a point)
             let std = if tied && name.contains("embed_tokens") { head / (cols as f64).sqrt() } else { 1.0 };
@@ -2574,6 +2587,12 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
         } else {
             return err(format!("no rule for {name} {shape:?}"));
         };
+        // (bf16; a router's choice bias fp32 where the manifest says the release holds it so. The other manifests' fp32 tensors are drawn as bf16, as they
+        // always were: their models' fixtures are of those bytes)
+        if e[1] == "F32" && name.ends_with("e_score_correction_bias") {
+            tensors.push((name, "F32", shape, vals.iter().flat_map(|&x| x.to_le_bytes()).collect()));
+            continue;
+        }
         tensors.push((name, "BF16", shape, vals.iter().flat_map(|&x| bf(x).to_le_bytes()).collect()));
     }
     io(std::fs::create_dir_all(out))?;
@@ -2752,6 +2771,16 @@ pub fn cases() -> Vec<Case> {
             id: "lfm3",
             family: "LFM (the gated short convolution and attention gated a head, each between two norms, on the executor)",
             weights: Weights::Random(lfm3_random),
+            engine: dense_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            on_choices: None,
+            also: None,
+        },
+        Case {
+            id: "mimo",
+            family: "MiMo (heads of 192 with values of 128 times a factor, a fused product in shards, sinks, sigmoid-routed experts with a choice bias)",
+            weights: Weights::Random(mimo_random),
             engine: dense_engine,
             cpu: Some(described_cpu),
             vocab: 4096,
@@ -5860,7 +5889,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
             Dyn::new(dir, &crate::runtime::config::ModelConfig::load(dir)?, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
         "qwen35" | "qwen35-wide" | "qwen35moe" => crate::dynamic::qwen35::load(dir, o)?,
-        "dense" | "domynedge" | "granite-swa" | "mellum" | "lfm3" => crate::dynamic::dense::load(dir, o)?,
+        "dense" | "domynedge" | "granite-swa" | "mellum" | "lfm3" | "mimo" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" | "kimi-dsa" => crate::dynamic::kimi::load(dir, o)?,
         "glm-dsa" | "glm-dsa-f8" => crate::dynamic::glm::load_plain(dir, o)?,
@@ -5947,6 +5976,7 @@ fn random_model_of(case: &str, dir: &Path) -> Result<()> {
         "granite-swa" => granite_swa_random(dir),
         "mellum" => mellum_random(dir),
         "lfm3" => lfm3_random(dir),
+        "mimo" => mimo_random(dir),
         "muse" => crate::muse_ref::random(dir),
         "kimi" => crate::kimi_ref::random(dir, 1, true, 8),
         "kimi-dsa" => crate::kimi_ref::random_dsa(dir),

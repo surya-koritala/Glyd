@@ -258,7 +258,7 @@ impl Stored {
     }
 }
 
-/// A checkpoint's tensor as f32, by the type it is stored in: bf16 and f32 as stored, int64 (a hash table's ids) as their values; an FP8 matrix with its
+/// A checkpoint's tensor as f32, by the type it is stored in: bf16 and f32 as stored, int64 and int32 (a hash table's ids, a token map's) as their values; an FP8 matrix with its
 /// scales (`X.scale`, a block each, or fp32 block scales `X.weight_scale_inv`: `scales_beside`); an FP4 matrix stored as I8 with its runs' scales
 /// (`X.scale`); and where `X.weight` or its codes `X.weight_packed` are asked for and the checkpoint holds the matrix as compressed-tensors packs it, that
 /// MXFP4 or NVFP4 matrix, or the table stored at 4 bits (`X.q4`) as the bf16 values it decodes to (`nf4_row`). Another type, or a quantized matrix without its
@@ -271,6 +271,7 @@ pub fn tensor(ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
         "BF16" => ck.read(name).ok()?.chunks_exact(2).map(|c| bf16(u16::from_le_bytes([c[0], c[1]]))).collect(),
         "F32" => ck.read(name).ok()?.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect(),
         "I64" => ck.read(name).ok()?.chunks_exact(8).map(|c| i64::from_le_bytes(c.try_into().unwrap_or_default()) as f32).collect(),
+        "I32" => ck.read(name).ok()?.chunks_exact(4).map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32).collect(),
         "U8" if name.ends_with(".weight_packed") => return packed_fp4(ck, name),
         "F8_E4M3" if shape.len() == 2 && scales_beside(ck, name).is_some() => {
             let s = ck.read(&scales_beside(ck, name)?).ok()?;

@@ -1023,6 +1023,9 @@ pub fn not_run(d: &crate::runtime::describe::Described) -> Option<&'static str> 
     if blocks().any(|b| matches!(b.residual, Residual::Streams(StreamsP { eps_outside: true, .. }))) {
         return Some(StreamsP::EPS_OUTSIDE_NOT_RUN);
     }
+    if blocks().any(|b| matches!(b.residual, Residual::Streams(StreamsP { apart: Some(_), .. }))) {
+        return Some(StreamsP::APART_NOT_RUN);
+    }
     let router = |f: &dyn Fn(&Router) -> bool| blocks().any(|b| matches!(&b.body, Body::Ffn(Ffn::Moe(m)) if f(&m.router)));
     if router(&|r| r.routers != 1) {
         return Some(Router::ROUTERS_NOT_RUN);
@@ -1062,6 +1065,18 @@ pub fn not_run(d: &crate::runtime::describe::Described) -> Option<&'static str> 
         _ => false,
     }) {
         return Some(Indexer::ROPE_STYLE_NOT_RUN);
+    }
+    let grouped = |ix: &Option<Indexer>| ix.as_ref().is_some_and(|ix| matches!(ix.form, crate::runtime::kinds::IndexForm::Grouped { .. }));
+    if mixer(&|m| match m {
+        Mixer::Attention(a) => grouped(&a.indexer),
+        Mixer::Mla(x) => grouped(&x.indexer),
+        Mixer::Compressed(c) => grouped(&c.indexer),
+        _ => false,
+    }) {
+        return Some(Indexer::GROUPED_NOT_RUN);
+    }
+    if blocks().any(|b| matches!(&b.body, Body::Ngram(n) if n.form == crate::runtime::kinds::NgramForm::EngramNormed)) {
+        return Some(crate::runtime::kinds::Ngram::NORMED_NOT_RUN);
     }
     if d.desc.mtp.iter().any(|h| h.dspark.as_ref().is_some_and(|x| x.after)) {
         return Some(crate::runtime::kinds::DSpark::AFTER_NOT_RUN);
@@ -1349,6 +1364,23 @@ mod tests {
             panic!("lowered")
         };
         assert_eq!(e.msg, StreamsP::EPS_OUTSIDE_NOT_RUN);
+        // (streams that do not mix with each other: one block's is enough, and the compressed layers' lowering asks each block's)
+        let mut d = base.clone();
+        let Residual::Streams(s) = &mut d.desc.blocks[5].residual else { panic!("no streams") };
+        (s.apart, s.sinkhorn_iters) = (Some(2.0), 0);
+        refused(&d, StreamsP::APART_NOT_RUN);
+        // (the n-gram memory's normed form: on DeepSeek-V4.1's released description, whose Engram blocks the executor lowers)
+        let v41 = {
+            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers/DeepSeek-V4.1-Flash-1017.json");
+            let h: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+            crate::runtime::describe::describe(&serde_json::from_str(h["config"].as_str().unwrap()).unwrap()).unwrap()
+        };
+        assert_eq!(super::not_run(&v41), None);
+        let mut d = v41.clone();
+        let memory = d.desc.blocks.iter_mut().find_map(|b| if let crate::runtime::kinds::Body::Ngram(n) = &mut b.body { Some(n) } else { None });
+        memory.expect("an Engram block").form = crate::runtime::kinds::NgramForm::EngramNormed;
+        assert_eq!(super::not_run(&d), Some(crate::runtime::kinds::Ngram::NORMED_NOT_RUN));
+        assert_eq!(super::loader(&d).map(|_| ()).unwrap_err().msg, crate::runtime::kinds::Ngram::NORMED_NOT_RUN);
         // (two routers whose scores add; a learned scale an expert: on a layer's experts, and where the experts' kind is made the executor's)
         use crate::runtime::kinds::{Body, Ffn, Router};
         let moe = |d: &mut Described, b: usize, f: &dyn Fn(&mut Router)| {
@@ -1402,7 +1434,15 @@ mod tests {
         for (edit, part) in [
             (&(|x: &mut Mla| x.sinks = true) as &dyn Fn(&mut Mla), Mla::SINKS_NOT_RUN),
             (&|x: &mut Mla| x.window = Some(128), Mla::WINDOW_NOT_RUN),
+            (&|x: &mut Mla| (x.indexer, x.window) = (None, Some(512)), Mla::WINDOW_NOT_RUN),
             (&|x: &mut Mla| x.indexer.as_mut().unwrap().rope_style = Some(RopeStyle::Half), Indexer::ROPE_STYLE_NOT_RUN),
+            (
+                &|x: &mut Mla| {
+                    let n = crate::runtime::kinds::Norm::rms(1e-5);
+                    x.indexer.as_mut().unwrap().form = crate::runtime::kinds::IndexForm::Grouped { key: n, pool: n };
+                },
+                Indexer::GROUPED_NOT_RUN,
+            ),
             (&|x: &mut Mla| x.head_mix = 16, crate::runtime::kinds::HEAD_MIX_NOT_RUN),
             (&|x: &mut Mla| x.gate = gate, GateFrom::LATENT_NOT_RUN),
         ] {

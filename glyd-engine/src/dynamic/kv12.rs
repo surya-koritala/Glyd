@@ -312,7 +312,8 @@ pub fn shapes(d: &super::ModelDesc) -> Vec<Option<KvShape>> {
             ops.iter().find_map(|op| match op {
                 // (both streams always: where a layer has no values of its own (Gemma 4's global layers) they are its keys' projection normed without
                 // a weight and with no rotary, which the cache holds apart from the keys)
-                Op::Attn(a) if a.writes && a.d % 128 == 0 && a.softcap == 0.0 => Some(KvShape {
+                // (values narrower than the head are the warp kernels' alone, `AttnOp::warp_only`: such a ring stays bf16)
+                Op::Attn(a) if a.writes && a.d % 128 == 0 && a.dv == a.d && a.softcap == 0.0 => Some(KvShape {
                     ring: a.ring,
                     heads: a.nk,
                     channels: a.d,
