@@ -652,7 +652,7 @@ pub fn collapse(s: &crate::runtime::kinds::StreamsP, w: &[f32], xt: &[f32], d: u
 
 pub fn hc_weights(s: &crate::runtime::kinds::StreamsP, p: &Params, x: &[f32]) -> Result<(Vec<f32>, Vec<f32>, Vec<Vec<f32>>)> {
     let n = s.streams;
-    let r = 1.0 / (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32 + s.norm_eps).sqrt();
+    let r = s.norm_factor(x);
     let xn: Vec<f32> = x.iter().map(|v| v * r).collect();
     let (f, base, scale) = (p.vec("hc_fn")?, p.vec("hc_base")?, p.vec("hc_scale")?);
     if f.len() != (2 + n) * n * x.len() || base.len() != (2 + n) * n || scale.len() != 3 {

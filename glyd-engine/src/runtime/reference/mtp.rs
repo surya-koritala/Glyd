@@ -222,7 +222,10 @@ impl RefDSpark {
                 Collapse::LastPre => fold(&lag[j], x),
                 Collapse::Weighted { eps, norm_eps } => {
                     let (f, base, sc) = (self.p.vec("out_hc_fn")?, self.p.vec("out_hc_base")?, self.p.vec("out_hc_scale")?[0]);
-                    let r = 1.0 / (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32 + norm_eps).sqrt();
+                    let r = match sp {
+                        Some(s) => crate::runtime::kinds::StreamsP { norm_eps, ..s }.norm_factor(x),
+                        None => 1.0 / (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32 + norm_eps).sqrt(),
+                    };
                     let mixes = matvec(f, x.len(), &x.iter().map(|v| v * r).collect::<Vec<_>>());
                     let w: Vec<f32> = (0..n).map(|k| sigmoid(mixes[k] * sc + base[k]) + eps).collect();
                     fold(&w, x)
@@ -261,7 +264,7 @@ mod tests {
     /// A DSpark head of one draft layer (the window's attention of 2 heads of 8 over a window of 4, a gated MLP) on 2 lagged mHC streams, drafting
     /// `block` tokens from main_x of 2 target layers; a Markov rank of 4, and a confidence head.
     fn head(block: usize) -> RefDSpark {
-        let s = StreamsP { streams: 2, sinkhorn_iters: 20, eps: 1e-6, norm_eps: 1e-6, rounding: Rounding::F32, lagged: true };
+        let s = StreamsP { streams: 2, sinkhorn_iters: 20, eps: 1e-6, norm_eps: 1e-6, rounding: Rounding::F32, lagged: true, eps_outside: false };
         let rope = Rope { theta: 10000.0, dim: 4, freqs: 2, freq_dim: 4, style: RopeStyle::Interleaved, scaling: RopeScaling::None, mrope: None };
         let c = Comp {
             heads: 2,

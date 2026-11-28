@@ -846,7 +846,23 @@ pub struct StreamsP {
     pub lagged: bool,
 }
 
-/// The derived form, with `lagged` said only where it is set: the other blocks' descriptions read as before the field (the digests of
+impl StreamsP {
+    /// The refusal of streams whose norm has its epsilon outside the root: the CPU reference computes it, the executor's kernels the other form.
+    pub const EPS_OUTSIDE_NOT_RUN: &'static str =
+        "residual streams whose norm has its epsilon outside the root (1 / (rms + eps)), which the executor does not run yet";
+
+    /// The factor of the streams' weightless norm for one token's flattened streams `x` (`eps_outside`).
+    pub fn norm_factor(&self, x: &[f32]) -> f32 {
+        let mean = x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32;
+        if self.eps_outside {
+            1.0 / (mean.sqrt() + self.norm_eps)
+        } else {
+            1.0 / (mean + self.norm_eps).sqrt()
+        }
+    }
+}
+
+/// The derived form, with `lagged` and `eps_outside` said only where they are set: the other blocks' descriptions read as before the fields (the digests of
 /// tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for StreamsP {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -886,6 +902,9 @@ pub struct GatedStreamsP {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Residual {
     Add,
+    /// The weightless norm's epsilon outside the root: the flattened streams times 1 / (sqrt(mean x^2) + norm_eps), where the others' is
+    /// 1 / sqrt(mean x^2 + norm_eps) (ERNIE's residual streams, in its blocks and in its hyper-head: `Collapse::Weighted` norms as the model's streams do).
+    pub eps_outside: bool,
     /// Granite's residual multiplier.
     AddScaled(f32),
     Gated(GateP),
@@ -901,6 +920,9 @@ impl Residual {
     pub fn roles(&self) -> &'static [&'static str] {
         match self {
             Residual::Add | Residual::AddScaled(_) => &[],
+        if self.eps_outside {
+            s.field("eps_outside", &self.eps_outside);
+        }
             Residual::Gated(_) => &["res_gate"],
             Residual::Streams(_) => &["hc_fn", "hc_base", "hc_scale"],
             Residual::GatedStreams(_) => &["mix_down", "mix_up", "inject"],
@@ -988,7 +1010,8 @@ pub enum Collapse {
     /// The depth mix of every source with the model's roles `out_mix_norm`, `out_mix_proj` (Kimi-K3).
     DepthMix,
     /// DeepSeek-V4's hyper-head: a weighted sum of the streams, the weights sigmoid(`out_hc_fn` rms(streams) `out_hc_scale` +
-    /// `out_hc_base`) + eps (roles [n, n hidden], [1], [n]).
+    /// `out_hc_base`) + eps (roles [n, n hidden], [1], [n]); rms the weightless norm of the flattened streams at `norm_eps`, its epsilon where the model's
+    /// streams have theirs (`StreamsP::eps_outside`).
     Weighted { eps: f32, norm_eps: f32 },
     /// Ibis's final mixer: the gated residuals' input mix (`GatedStreamsP`) with the model's roles `out_mix_down`, `out_mix_up`, each stream
     /// normed by the final norm (its weight [n hidden], a stream's each) before the mix, and no norm after it.

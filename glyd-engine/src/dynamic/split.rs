@@ -1021,6 +1021,11 @@ pub fn not_run(d: &crate::runtime::describe::Described) -> Option<&'static str> 
     if roles.any(|(r, s)| matches!(s, Source::Transposed(_)) || (r == "hc_scale" && matches!(s, Source::Rows(_)))) {
         return Some(STORED_FORM_NOT_RUN);
     }
+    use crate::runtime::kinds::{Residual, StreamsP};
+    let mut blocks = d.desc.blocks.iter().chain(d.desc.mtp.iter().flat_map(|h| h.blocks.iter()));
+    if blocks.any(|b| matches!(b.residual, Residual::Streams(StreamsP { eps_outside: true, .. }))) {
+        return Some(StreamsP::EPS_OUTSIDE_NOT_RUN);
+    }
     None
 }
 
@@ -1277,6 +1282,22 @@ mod tests {
         let mut d = base.clone();
         d.extra.push(("out_hc_fn".into(), Source::Transposed("model.mhc_contract.hc_head_fn".into())));
         refused(&d, super::STORED_FORM_NOT_RUN);
+        // (the streams' norm with its epsilon outside the root: one block's is enough)
+        use crate::runtime::kinds::{Residual, StreamsP};
+        let mut d = base.clone();
+        let Residual::Streams(s) = &mut d.desc.blocks[5].residual else { panic!("no streams") };
+        s.eps_outside = true;
+        refused(&d, StreamsP::EPS_OUTSIDE_NOT_RUN);
+        let Err(e) = crate::dynamic::lower::deepseek_v4(
+            &d,
+            vec![1],
+            4096,
+            &crate::dynamic::Stage::whole(43),
+            &crate::dynamic::deepseek_v4::V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 4096 },
+        ) else {
+            panic!("lowered")
+        };
+        assert!(e.msg.contains("block 5") && e.msg.contains(StreamsP::EPS_OUTSIDE_NOT_RUN), "{}", e.msg);
     }
 
     /// A plan of experts in the computer's memory across GPUs opens the latent block's cache across them (src/dynamic/tp_cache.rs) by the description's

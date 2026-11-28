@@ -2812,6 +2812,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     let streams = if flash && k.bool("mhc", true)? {
         Some(StreamsP {
             lagged: false,
+            eps_outside: false,
             streams: k.opt_usize("hc_mult")?.unwrap_or(4),
             sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
             eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
@@ -3877,6 +3878,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     let hash_layers = k.opt_usize("num_hash_layers")?.unwrap_or(3);
     let streams = StreamsP {
         lagged: false,
+        eps_outside: false,
         streams: k.usize("hc_mult")?,
         sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
         eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
@@ -4199,6 +4201,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         norm_eps: eps,
         rounding: Rounding::Once,
         lagged: true,
+        eps_outside: false,
     };
     // (the release's RMSNorm: fp32, the weight times the normed value cast to bf16 once; Engram's gate normalises in fp32 and keeps it)
     let rn = Norm { rounding: Rounding::Once, ..Norm::rms(eps) };
@@ -4544,7 +4547,6 @@ pub const ERNIE_LACKS: &[&str] = &[
     "the low-rank mix of the heads' outputs with each other (self_attn.vha_postmix_U, vha_postmix_V)",
     "the latent attention's sinks (core_attention.softmax_offset) and its indexer's rotary in halves beside the attention's interleaved one",
     "two routers whose sigmoid scores add, and a learned scale an expert (block_sparse_moe.gate.weight_1, gate.routed_scaling_factor_param)",
-    "the residual streams' norm with its epsilon outside the root (1 / (rms + eps)), in the blocks and in the hyper-head",
     "the logits' four-part correction (lm_head.multimax_ranges, multimax_ts)",
 ];
 
