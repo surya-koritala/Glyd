@@ -1,7 +1,7 @@
 # Verify chunks and keep_previous on an RTX 4080 SUPER, 2026-10-22
 
-Drafted tokens through range stages (docs/range-worker.md, "Drafted tokens"): `rangecheck --workers` of Qwen3.5-9B swift
-(glyd/Qwen3.5-9B-swift 073a2132) on the owner's PC (RTX 4080 SUPER, driver 595.91.07), under ~/glyd-scratch/gpu.lock.
+Drafted tokens through range stages (docs/range-worker.md, "Drafted tokens"): `rangecheck --workers` of Qwen3.5-9B linnet
+(glyd/Qwen3.5-9B-linnet 073a2132) on the owner's PC (RTX 4080 SUPER, driver 595.91.07), under ~/glyd-scratch/gpu.lock.
 Binary built from the range-rewind branch's source (glyd-engine/ and gpu/ as committed), sha256 091fdfea...0c5fa; its GPU
 library from the same tree, sha256 d60421a6...b88f. Each file here is a run's output (stdout and stderr) as it came.
 
@@ -35,4 +35,4 @@ Cost (the whole model in one process, 20 repeats; prompt 64 / prompt 1,024):
 | keeping all 8 | 0 | 0 |
 
 The tokens of a random prompt repeat (15, 15, ...); the comparison is of every logit, so that changes nothing. Not run:
-penguin, kestrel, wren (only swift is on the PC now), the 27Bs, another GPU.
+penguin, kestrel, wren (only linnet is on the PC now), the 27Bs, another GPU.

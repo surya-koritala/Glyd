@@ -1,7 +1,7 @@
-# Nemotron 3 Super at swift on one H200 (2026-10-10)
+# Nemotron 3 Super at linnet on one H200 (2026-10-10)
 
 `tools/cards/nh_run_check_job.sh` on v030 d09fa951: one NVIDIA H200 (141 GB, sm_90, 21 CPUs), 34 minutes of job (about $3). Model:
-nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16 at 2dc98e2a, packed by the engine at swift (every matrix five-bit, 5.53 bits a weight) and
+nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16 at 2dc98e2a, packed by the engine at linnet (every matrix five-bit, 5.53 bits a weight) and
 run from that directory. Linear GLY-132.
 
 | step | result |
@@ -17,7 +17,7 @@ run from that directory. Linear GLY-132.
 
 How to read it:
 - **The whole-model check** runs the bf16 checkpoint layer by layer on the same GPU (tools/nemotron_ref.py `full`) on 160 tokens of one
-  text: 64 prefilled, then 96 teacher-forced steps. It is a correctness check of the engine at swift, not the held-out quality
+  text: 64 prefilled, then 96 teacher-forced steps. It is a correctness check of the engine at linnet, not the held-out quality
   measurement of benchmarks/weights/moe-quality-2026-10-10/nemotron (other text, experts only).
 - **Answers** are coherent: `run` answers "The capital of France is Paris.", and the chat writes a working Fibonacci function with a
   docstring and explains Rayleigh scattering (run-chat.log, serve-chat.log).

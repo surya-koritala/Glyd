@@ -4241,7 +4241,7 @@ mod tests {
         assert_eq!(out, [5, 0, -1, -1]);
     }
 
-    /// The places and memory a cache is sized to: Nemotron 3 Super's experts at the swift level are 3,784,704 bytes (two matrices of 2,688 steps of 640 bytes and 172,032 of scales apiece) in 40 layers of 512.
+    /// The places and memory a cache is sized to: Nemotron 3 Super's experts at the linnet level are 3,784,704 bytes (two matrices of 2,688 steps of 640 bytes and 172,032 of scales apiece) in 40 layers of 512.
     /// The places a layer of a budget are the one expert-cache rule's (src/plan.rs `sizing::expert_cache_with`), as every route plans them.
     #[test]
     fn the_budget_is_places_a_layer() {

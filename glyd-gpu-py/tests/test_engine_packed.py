@@ -6,7 +6,7 @@ from glyd_gpu import engine
 
 def test_packed_repo():
     for model, level, repo in (
-        ("Qwen/Qwen3.5-9B", "swift", "glyd/Qwen3.5-9B-swift"),
+        ("Qwen/Qwen3.5-9B", "linnet", "glyd/Qwen3.5-9B-linnet"),
         ("Qwen/Qwen3.8-27B", "kestrel", "glyd/Qwen3.8-27B-kestrel"),
         ("Qwen/Qwen3.5-9B", "penguin", "glyd/Qwen3.5-9B-penguin"),
         ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16", "hummingbird", "glyd/nemotron-3-hummingbird"),

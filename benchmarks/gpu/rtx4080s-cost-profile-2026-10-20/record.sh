@@ -1,5 +1,5 @@
 #!/bin/bash
-# GLY-236 on the owner's PC (RTX 4080 SUPER 16 GB, Ryzen 9 7950X3D, 60 GiB): the cost profiles of Qwen3.5-9B at swift, kestrel and penguin from their
+# GLY-236 on the owner's PC (RTX 4080 SUPER 16 GB, Ryzen 9 7950X3D, 60 GiB): the cost profiles of Qwen3.5-9B at linnet, kestrel and penguin from their
 # packed directories (glyd-engine costs), this machine's memory tiers (glyd-engine rates), the predictor against the engine's own bench (glyd-engine bench,
 # the hand-written Qwen3.5 engine) and against the dynamic engine served (a streamed reply of 256 tokens after a 1,024-token prompt, timed from the client),
 # the costs object of /v1/glyd/info with the allocation, and Nemotron 3 Super's profile from the Hub's safetensors headers (no download) with the predictor
@@ -11,7 +11,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=${OUT:-$HOME/glyd-scratch/gly236/rec}
 ENGINE=${ENGINE:-$HOME/glyd-scratch/gly236/target/release/glyd-engine}
 HUB=${HUB:-$HOME/glyd-scratch/rel032/hub}
-SWIFT=${SWIFT:-$HUB/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d}
+LINNET=${LINNET:-$HUB/models--glyd--Qwen3.5-9B-linnet/snapshots/073a2132abeaa41c119678b9687092871521eb4d}
 KESTREL=${KESTREL:-$(ls -d "$HUB"/models--glyd--Qwen3.5-9B-kestrel/snapshots/* 2> /dev/null | head -1)}
 PENGUIN=${PENGUIN:-$(ls -d "$HUB"/models--glyd--Qwen3.5-9B-penguin/snapshots/* 2> /dev/null | head -1)}
 NEMOTRON=${NEMOTRON:-glyd/nemotron-3-hummingbird}
@@ -41,9 +41,9 @@ smi() {
 nvidia-smi > nvidia-smi-full-before.txt
 smi "before"
 
-# this machine's tiers: the GPU's memory (read, copy, and the engine's own products over the swift directory's first layers), the link (pinned, pageable), the computer's memory, the disk under the hub cache
-log "tiers (512 MiB, 10 passes; the disk under $SWIFT)"
-$ENGINE tiers --dir "$SWIFT" --mib 512 --reps 10 > tiers.json 2> tiers.err
+# this machine's tiers: the GPU's memory (read, copy, and the engine's own products over the linnet directory's first layers), the link (pinned, pageable), the computer's memory, the disk under the hub cache
+log "tiers (512 MiB, 10 passes; the disk under $LINNET)"
+$ENGINE tiers --dir "$LINNET" --mib 512 --reps 10 > tiers.json 2> tiers.err
 log "tiers done: $(jq -c '.rates | map_values(.gbs)' tiers.json 2> /dev/null)"
 
 # a 1,024-token prompt for the served measurement: the sentence repeated (counted by /v1/glyd/tokenize below)
@@ -68,8 +68,8 @@ served_decode() {
   log "served $level: $(cat "serve-decode-$level.json")"
 }
 
-for level in swift kestrel penguin; do
-  case $level in swift) DIR=$SWIFT ;; kestrel) DIR=$KESTREL ;; penguin) DIR=$PENGUIN ;; esac
+for level in linnet kestrel penguin; do
+  case $level in linnet) DIR=$LINNET ;; kestrel) DIR=$KESTREL ;; penguin) DIR=$PENGUIN ;; esac
   if [ -z "$DIR" ] || [ ! -d "$DIR" ]; then
     log "$level: no snapshot in the cache, skipped"
     continue

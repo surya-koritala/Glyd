@@ -454,9 +454,9 @@ pub fn level_layout(level: &str) -> Result<Option<Layout>> {
     match level {
         "penguin" => Ok(None),
         "kestrel" => Ok(Some(Layout::Int6)),
-        "swift" => Ok(Some(Layout::Int5)),
+        "linnet" => Ok(Some(Layout::Int5)),
         "wren" => Ok(Some(Layout::Int4)),
-        other => err(format!("level {other}: penguin, kestrel, swift or wren")),
+        other => err(format!("level {other}: penguin, kestrel, linnet or wren")),
     }
 }
 
@@ -3498,11 +3498,11 @@ fn layer_lines(new: &[Vec<f32>], cpu: &[Vec<f32>]) {
 /// The per-level KL thresholds of a lossy level from the lossless one (mean, max over rows), per family's random model: Qwen3.5's and
 /// Nemotron-H's are the bounds the qwen35 fixture holds for the engine against transformers in bf16 (tests/logits/qwen35.json.gz, about
 /// twice a measured run); Gemma 4's random model moved more under every rounding, kestrel too (its levels have shipped since v0.30), so
-/// its thresholds are about twice its own first measured run (RTX 4080 SUPER, 2026-11-21: mean/max KL kestrel 2.15e-2/1.03e-1, swift
+/// its thresholds are about twice its own first measured run (RTX 4080 SUPER, 2026-11-21: mean/max KL kestrel 2.15e-2/1.03e-1, linnet
 /// 3.70e-2/1.01e-1, wren 9.55e-2/2.27e-1; Nemotron-H's wren 8.5e-4/6.2e-3, its experts alone four-bit). (Measured on the draw before
 /// `gemma4_shaped_random`'s, whose scores and head are well conditioned: they hold this one as upper bounds.)
-pub const LEVEL_KL: [(&str, f64, f64); 3] = [("kestrel", 0.006, 0.015), ("swift", 0.025, 0.05), ("wren", 0.09, 0.14)];
-pub const LEVEL_KL_GEMMA4: [(&str, f64, f64); 3] = [("kestrel", 0.045, 0.21), ("swift", 0.075, 0.21), ("wren", 0.19, 0.46)];
+pub const LEVEL_KL: [(&str, f64, f64); 3] = [("kestrel", 0.006, 0.015), ("linnet", 0.025, 0.05), ("wren", 0.09, 0.14)];
+pub const LEVEL_KL_GEMMA4: [(&str, f64, f64); 3] = [("kestrel", 0.045, 0.21), ("linnet", 0.075, 0.21), ("wren", 0.19, 0.46)];
 
 /// The kind's lossless bound against the CPU reference of the layer kinds, the one every described case's fixture holds at penguin
 /// (`tests::the_kinds_bound_is_every_described_fixtures`): KL mean 1e-4, max 2.5e-4 (`BESIDE_KL`), the best token the reference's at 85% of the rows
@@ -3521,7 +3521,7 @@ pub fn level_bound(case: &str, level: &str) -> Result<Bound> {
         .iter()
         .find(|x| x.0 == level)
         .map(|&(_, mean, max)| Bound::Kl { mean, max, top1: 0.0 })
-        .ok_or_else(|| Error(format!("{level}: no bound of the level (penguin, kestrel, swift or wren)")))
+        .ok_or_else(|| Error(format!("{level}: no bound of the level (penguin, kestrel, linnet or wren)")))
 }
 
 /// A bound in words, as `logitscheck` prints it.
@@ -3568,7 +3568,7 @@ pub const LEVEL_KL_HB: [(&str, f64, f64); 4] = [("deepseek-v4", 0.19, 0.26), ("m
 /// check with its figures, to be given a threshold in `LEVEL_KL_HB` and taken out of here.
 pub const LEVEL_HB_OPEN: [(&str, &str); 0] = [];
 
-/// The families held at the block levels of every weight (kestrel, swift, wren: `LEVEL_KL`); `LEVEL_KL_HB`'s are held at hummingbird.
+/// The families held at the block levels of every weight (kestrel, linnet, wren: `LEVEL_KL`); `LEVEL_KL_HB`'s are held at hummingbird.
 const LEVEL_BLOCK_CASES: [&str; 3] = ["qwen35", "gemma4", "nemotron-h"];
 
 /// A mixture-of-experts case's model in `dir` with every matrix as `dir` holds it: the release's lossless, or a hummingbird directory's
@@ -3595,7 +3595,7 @@ fn hummingbird_dir(dir: &Path, out: &Path) -> Result<()> {
 
 /// `levelcheck [CASE...] [--level L] [--scratch DIR]`: each family on its random model at penguin and at each lossy level it runs, the
 /// same tokens as its R7 fixture, and the KL of the lossy level's rows from penguin's against the level's threshold: Qwen3.5, Gemma 4 and
-/// the state-space case at kestrel, swift and wren (`LEVEL_KL`, `LEVEL_KL_GEMMA4` for Gemma 4); DeepSeek-V4, Muse Spark, Kimi-K3 and
+/// the state-space case at kestrel, linnet and wren (`LEVEL_KL`, `LEVEL_KL_GEMMA4` for Gemma 4); DeepSeek-V4, Muse Spark, Kimi-K3 and
 /// GLM-5.3-Flash at hummingbird (`LEVEL_KL_HB`, the directory made here). Exit 1 where one is past its threshold, or does not load: a
 /// level that does not run is not one within its threshold. A family of `LEVEL_HB_OPEN` (none now) is printed as not held, with what
 /// stops it, and fails the day it runs without a threshold.
@@ -5625,7 +5625,7 @@ mod tests {
         let (moe, dense) = (Fixture::read(&dir.join("qwen35moe.json.gz")).unwrap(), Fixture::read(&dir.join("qwen35.json.gz")).unwrap());
         let levels = |f: &Fixture| f.bounds.iter().map(|b| (b.level.clone(), format!("{:?}", b.bound))).collect::<Vec<_>>();
         assert_eq!(levels(&moe), levels(&dense));
-        assert_eq!(moe.bounds.iter().map(|b| b.level.as_str()).collect::<Vec<_>>(), ["penguin", "kestrel", "swift", "wren"]);
+        assert_eq!(moe.bounds.iter().map(|b| b.level.as_str()).collect::<Vec<_>>(), ["penguin", "kestrel", "linnet", "wren"]);
     }
 
     #[test]

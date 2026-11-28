@@ -3,7 +3,7 @@
 //! activation, whether they work in a latent (with projections of the block's own where the latent has no norm) and whether each one's output is normed, and
 //! whether the shared expert is gated; the roles say where each matrix is, a tensor (or its rows) an expert or one tensor of them all stacked. The experts and
 //! the shared expert are held at the level asked: a lossless level's stacked and packed as one matrix each (the packer's check: it decodes to the weights bit
-//! for bit), a block level's (kestrel, swift, wren) an expert at a time, relu squared experts' second matrices in the level's row layout (the sparse product);
+//! for bit), a block level's (kestrel, linnet, wren) an expert at a time, relu squared experts' second matrices in the level's row layout (the sparse product);
 //! a glyd-v7 directory's packs as saved. A stage can hold them otherwise (`Held`): this GPU's slice of each expert's rows where every layer is across a group
 //! of GPUs, a hummingbird directory's codebook rows, the expert cache's places.
 
@@ -614,7 +614,7 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
     }
     let lossless = matches!(level, Layout::Tiered | Layout::Twelve);
     if !lossless && !matches!(level, Layout::Int6 | Layout::Int5 | Layout::Int4) {
-        return err(format!("the experts are held at the penguin, kestrel, swift and wren levels: {} is asked", level.name()));
+        return err(format!("the experts are held at the penguin, kestrel, linnet and wren levels: {} is asked", level.name()));
     }
     let v7 = crate::weights::v7_manifest(&ck.dir)?;
     if let Some((got, _)) = &v7 {
@@ -2019,7 +2019,7 @@ mod tests {
             assert!(said.contains("packed in"), "{said}");
         }
         let said = super::held(m, roles, hid, &ck, Layout::Int3, None).err().unwrap().msg;
-        assert!(said.contains("penguin, kestrel, swift and wren levels"), "{said}");
+        assert!(said.contains("penguin, kestrel, linnet and wren levels"), "{said}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

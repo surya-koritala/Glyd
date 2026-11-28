@@ -15,7 +15,7 @@ GLYD_ENGINE=target/release/glyd-engine GGUF_DIR=~/gguf bash scripts/consumer_ben
 
 - **The rows:** [matrix.tsv](matrix.tsv), the models of each tier (released within the last six months), the level Glyd runs each at and the llama.cpp
   quant of the same weights at about the same bits (wren 4.53 against Q4_K_M or, for Gemma 4's quantization-aware checkpoint, Q4_0 of that checkpoint;
-  swift 5.53 against Q5_K_M; kestrel 6.53 against Q6_K). The script runs the rows of the GPU's own tier (`TIER` to choose). A row is a level
+  linnet 5.53 against Q5_K_M; kestrel 6.53 against Q6_K). The script runs the rows of the GPU's own tier (`TIER` to choose). A row is a level
   `glyd fit` loads on a card of that tier; Glyd's server takes the steps its plan marks (`GLYD_DEGRADE=yes`: a mixture's experts in the computer's
   memory, as llama.cpp's `--fit on` puts experts on the CPU), and a run whose server loaded another level than the row's is not a result.
 - **The same weights:** the GGUF is `GGUF_DIR/MODELNAME-QUANT.gguf`; with `CONVERT=1` the script makes a missing one from the Hub checkpoint with

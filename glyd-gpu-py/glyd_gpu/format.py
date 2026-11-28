@@ -59,8 +59,8 @@ FORMAT = "glyd-v4"  # what a save in the tiered layout (the smallest) is
 TABLES = "glyd-v5"  # a save whose packs hold a table too (save_pretrained's tables=True; entries marked "table": decoded as they load), in either layout; glyd 0.29 and before refuse it
 OLD_FORMATS = ("glyd-v1", "glyd-v2")  # their tiered packs are packed again as they load
 COMPACT = "glyd-v6"  # a save whose tiered packs include the compact layout's (Candidate A's values: three fraction bits, lossy); glyd 0.29 and before refuse it
-INT = "glyd-v7"  # a save in the six- or five-bit block layout (entries "i6", "i5"; lossy: the levels kestrel and swift); it runs on the Glyd engine, not in vLLM yet
-LEVELS = {"i6": "kestrel", "i5": "swift"}  # the level each block layout serves (glyd.json's "level")
+INT = "glyd-v7"  # a save in the six- or five-bit block layout (entries "i6", "i5"; lossy: the levels kestrel and linnet); it runs on the Glyd engine, not in vLLM yet
+LEVELS = {"i6": "kestrel", "i5": "linnet"}  # the level each block layout serves (glyd.json's "level")
 FORMATS = (*OLD_FORMATS, "glyd-v3", FORMAT, TABLES, COMPACT, INT)
 TABLE_MIN = 1 << 20  # a table of fewer weights is saved as it is
 MANIFEST = "glyd.json"

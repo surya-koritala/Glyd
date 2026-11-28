@@ -10,7 +10,7 @@ PASS	first-token:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	42 s after th
 FAIL	plan-is-load:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	weights 13929125640 bytes against the plan's  GiB
 PASS	json-schema:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	{"city": "Tokyo", "population": 37400068, "coastal": true}
 PASS	plan:Qwen/Qwen3.8-27B	refuse: Plan: none fits
-PASS	refusal:Qwen/Qwen3.8-27B	exit 3, 2 lines: glyd: Qwen3.8-27B (Qwen3.5) runs at the kestrel, swift and wren levels in this engine, not penguin.
+PASS	refusal:Qwen/Qwen3.8-27B	exit 3, 2 lines: glyd: Qwen3.8-27B (Qwen3.5) runs at the kestrel, linnet and wren levels in this engine, not penguin.
 PASS	plan:Qwen/Qwen3.8-Flash-Next	refuse: glyd: Qwen3.8-Flash-Next (Qwen3.8-Flash-Next) does not run with glyd run yet.
 PASS	refusal:Qwen/Qwen3.8-Flash-Next	exit 3, 2 lines: glyd: Qwen3.8-Flash-Next (Qwen3.8-Flash-Next) does not run with glyd run yet.
 PASS	plan:Qwen/Qwen-AgentWorld-35B-A3B	refuse: glyd: Qwen-AgentWorld-35B-A3B is a Qwen3_5MoeForConditionalGeneration model, and this engine runs Qwen3 models so far.

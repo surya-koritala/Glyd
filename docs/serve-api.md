@@ -3,19 +3,19 @@
 Notes for a program that starts `glyd serve` (or `glyd-engine serve`) on its own machine and sends it whole requests, as
 Glyd-Compute's service adapter does. `glyd-serve/1` is what `GET /v1/glyd/info` says in `api`; a change that breaks a
 client of this page gets a new number. The numbers below are from one run on an RTX 4080 SUPER with Qwen3.5-9B at the
-swift level: [benchmarks/gpu/rtx4080s-serve-probe-2026-10-19](../benchmarks/gpu/rtx4080s-serve-probe-2026-10-19/README.md).
+linnet level: [benchmarks/gpu/rtx4080s-serve-probe-2026-10-19](../benchmarks/gpu/rtx4080s-serve-probe-2026-10-19/README.md).
 The contract tests are in glyd-engine/src/server.rs and cli.rs (the `#[test]`s named below) and glyd-gpu-py/tests/test_onboard.py.
 
 ## Start, ready, stop
 
 ```
-glyd serve Qwen/Qwen3.5-9B:swift                         # the Python front end: hands a level to the engine
-glyd-engine serve Qwen/Qwen3.5-9B:swift --ctx 4096       # the engine itself
-HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132... \
+glyd serve Qwen/Qwen3.5-9B:linnet                         # the Python front end: hands a level to the engine
+glyd-engine serve Qwen/Qwen3.5-9B:linnet --ctx 4096       # the engine itself
+HF_HUB_OFFLINE=1 GLYD_API_KEY=... glyd-engine serve /path/to/models--glyd--Qwen3.5-9B-linnet/snapshots/073a2132... \
     --ctx 4096 --port 8238 --status-file /run/glyd.status  # offline: the directory alone is read
 ```
 
-- `MODEL:level` takes penguin (lossless), kestrel, swift, wren and hummingbird (the level of a mixture of experts: Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, Muse Spark, the Nemotron-H layout). A tag that names no level is refused (exit 1). A level the engine does not run
+- `MODEL:level` takes penguin (lossless), kestrel, linnet, wren and hummingbird (the level of a mixture of experts: Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, Muse Spark, the Nemotron-H layout). A tag that names no level is refused (exit 1). A level the engine does not run
   for the model, or a model that does not fit, is refused with the reason (exit 3, on stderr and in the status file).
   The model and the level are the ones asked for, or the start does not go on without your word: where the level does not load as asked, the first lines say
   which steps would take it there and what each costs, and the start is refused (exit 3) unless `--yes` (or `GLYD_DEGRADE=yes`) takes them; a lower level, or a step that
@@ -240,12 +240,12 @@ From the record (served by its Hub name; the file list cut to two of sixteen):
 ```json
 {"object":"glyd.info","api":"glyd-serve/1",
  "build":{"version":"0.32.1","commit":"86530a29ad1096f8f116aab2578b1a911c64217d","development":true},
- "model":{"id":"Qwen/Qwen3.5-9B:swift","repo":"glyd/Qwen3.5-9B-swift","revision":"073a2132abeaa41c119678b9687092871521eb4d",
+ "model":{"id":"Qwen/Qwen3.5-9B:linnet","repo":"glyd/Qwen3.5-9B-linnet","revision":"073a2132abeaa41c119678b9687092871521eb4d",
           "source":{"repo":"Qwen/Qwen3.5-9B","revision":"c202236235762e1c871ad0ccb60c8ee5ba337b9a"},"made_by":"glyd 0.29.3",
           "files":[{"name":"glyd.json","bytes":92205,"sha256":"85b27d2d4a7d31f9c3493a3dbf5f00f00469e0c67b917e8f1374900d674cc671"},
                    {"name":"model-00001-of-00007.safetensors","bytes":1004449488,"sha256":"ea1b678c4787351b59de96915373a4a2aecc9eea49df70a64baf707b3e6f3830"}]},
- "level":{"requested":"swift","effective":"swift","lossless":false},
- "precision":{"weights":"swift level: about 5.5 bits per weight, not lossless","activations":"bf16","sums":"fp32","kv":"bf16",
+ "level":{"requested":"linnet","effective":"linnet","lossless":false},
+ "precision":{"weights":"linnet level: about 5.5 bits per weight, not lossless","activations":"bf16","sums":"fp32","kv":"bf16",
               "state":"fp32 (the delta rule's), bf16 (the convolution's)"},
  "device":{"ordinal":0,"name":"NVIDIA GeForce RTX 4080 SUPER","compute_capability":"8.9","cuda":"13.2","driver":"595.91.07"},
  "limits":{"context_tokens":4096,"concurrency":1,"max_choices":64,"max_body_bytes":16777216,"max_header_bytes":65536,

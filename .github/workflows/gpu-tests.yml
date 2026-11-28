@@ -86,7 +86,7 @@ jobs:
           done
           # (each save that holds the fixtures' tiny dense model, its packs decoded by the GPU library, on the CPU reference against its digest in glyd-engine/tests/packs)
           GLYD_GPU_LIB="$GLYD_GPU_LIB_BUILT" "$E" packcheck --gpu
-          # (the formats the engine loads a saved directory in, as the glyd/* repos are saved: glyd-v7 at penguin, kestrel, swift, wren and hummingbird, each made from a logits
+          # (the formats the engine loads a saved directory in, as the glyd/* repos are saved: glyd-v7 at penguin, kestrel, linnet, wren and hummingbird, each made from a logits
           # case's random model by the repos' packer, loaded from the directory and held to the same model packed as it loads in the same layout, bit for bit, and to the
           # case's reference in tests/logits where one bounds the level; the Hummingbird level to the digest of this GPU's kernel set in tests/packs, which fails where none is recorded)
           "$E" packcheck --engine --scratch "$RUNNER_TEMP/packcheck"
@@ -199,7 +199,7 @@ jobs:
           # (a random model of each family's layout with its layer kinds, made here: only models released in the last six months are used, and those are larger than a 16 GB card holds; a fixture's bound is the
           # reference's KL, or the same bits as the engine's own recorded output on this GPU's kernel set: compute capability, name words, SMs)
           "$E" logitscheck --fixtures glyd-engine/tests/logits
-      - name: Each lossy level's KL from penguin against its threshold (random Qwen3.5, Gemma 4 and state-space models at kestrel, swift and wren; random DeepSeek-V4, Muse Spark, Kimi-K3 and GLM-5.3-Flash at hummingbird; logits.rs levelcheck)
+      - name: Each lossy level's KL from penguin against its threshold (random Qwen3.5, Gemma 4 and state-space models at kestrel, linnet and wren; random DeepSeek-V4, Muse Spark, Kimi-K3 and GLM-5.3-Flash at hummingbird; logits.rs levelcheck)
         run: |
           "$E" levelcheck --fixtures glyd-engine/tests/logits
       - name: Several sequences at once on the description executor (random Gemma 4, Qwen3.5-layout in both its shapes, plain dense, Muse Spark, Kimi-K3, GLM-5.3-Flash and GLM-5.3 models, GLM-5.3's also in FP8 as released, each reply against the one-at-a-time reply; logits.rs usercheck)

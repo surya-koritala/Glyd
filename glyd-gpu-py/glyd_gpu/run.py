@@ -496,14 +496,14 @@ def parse(cmd, argv):
                                 epilog="MODEL is a Hugging Face name (Qwen/Qwen3.5-9B) or a folder. Memory, context and parsers are chosen from your GPU; any vLLM\nflag after a lone -- is passed on and wins:  glyd %s MODEL -- --max-model-len 4096\nglyd run asks Glyd's own engine first (before anything is downloaded) and uses it where it will certainly run the model: every family the engine runs (Gemma 4, the Qwen3.5 family, Nemotron-H, the large mixture-of-experts models) and every lossy level, and a plain dense model at the lossless level only on a GPU where the engine is measured at least as fast as vLLM; vLLM runs the rest; glyd serve uses vLLM; GLYD_ENGINE=1 uses the engine on any GPU it runs on, GLYD_ENGINE=0 runs any model with vLLM.\n" % cmd + (
                                     "The KV cache is vLLM's own in glyd run; GLYD_KV=auto glyd run MODEL uses Glyd's lossless cache on an A100, an L4, an H100 or a GH200, after a first start that makes the model's tables (minutes)." if cmd == "run" else
                                     "The KV cache is Glyd's lossless cache on an A100, an L4, an H100 or a GH200, after a first start that makes the model's tables (minutes); GLYD_KV=off keeps vLLM's own."))
-    p.add_argument("model", help="a Hugging Face name such as Qwen/Qwen3.5-9B, or a folder" + (" (add :kestrel or :swift for a lossy level on Glyd's own engine, :penguin is the lossless default)" if cmd == "run" else ""))
+    p.add_argument("model", help="a Hugging Face name such as Qwen/Qwen3.5-9B, or a folder" + (" (add :kestrel or :linnet for a lossy level on Glyd's own engine, :penguin is the lossless default)" if cmd == "run" else ""))
     p.add_argument("--context", type=int, metavar="TOKENS", help="the longest conversation, in tokens (default: the most that fits the GPU)")
     p.add_argument("--port", type=port_arg, help="the port (default 8000; glyd run takes the next free one if it is taken)")
     if cmd == "run":
         p.add_argument("-p", "--prompt", metavar="TEXT", help="answer this once on stdout and exit (a prompt on stdin works too)")
         p.add_argument("--no-think", action="store_true", help="ask the model not to think before it answers")
         p.add_argument("--lossy", action="store_true", help="the same as MODEL:kestrel: Qwen3.5, Qwen3.6 and Qwen3.8 models at about 6.5 bits per weight on Glyd's own engine, one user at a time "
-                       "(not lossless; about 27%% less GPU memory for the weights than FP8); MODEL:swift takes about 5.5 bits per weight")
+                       "(not lossless; about 27%% less GPU memory for the weights than FP8); MODEL:linnet takes about 5.5 bits per weight")
     else:
         p.add_argument("--host", default=None, help="the address to listen on (default 127.0.0.1: this computer only, and only its own page and programs). "
                        "Another address opens the server to the network: it starts only with an API key (VLLM_API_KEY=KEY glyd serve ...) or with --insecure-no-auth")

@@ -1,7 +1,7 @@
 # Two sessions a range stage on an RTX 4080 SUPER, 2026-10-22
 
-`rangeworker --sessions 2` (docs/range-worker.md, "Two sessions a stage"): `rangecheck --workers` of Qwen3.5-9B swift
-(glyd/Qwen3.5-9B-swift 073a2132) on the owner's PC (RTX 4080 SUPER, driver 595.91.07), under ~/glyd-scratch/gpu.lock.
+`rangeworker --sessions 2` (docs/range-worker.md, "Two sessions a stage"): `rangecheck --workers` of Qwen3.5-9B linnet
+(glyd/Qwen3.5-9B-linnet 073a2132) on the owner's PC (RTX 4080 SUPER, driver 595.91.07), under ~/glyd-scratch/gpu.lock.
 Binary built from the range-sessions branch's source, sha256 c22e236e...cd135; its GPU library a copy of range-rewind's
 (gpu/ is the same tree), sha256 b452dd11...1b31c. Each file here is a run's output as it came.
 
@@ -54,4 +54,4 @@ sending the passes one after another, so nothing overlaps):
 | workers, 2 stages, a verify chunk of 8 rows | 13.29 ms | 13.31 ms (both drafted: 26.62 ms a turn of two) |
 
 Not measured here: two stages on two GPUs with the passes overlapping (that is Starlings' pipeline), the 27Bs, another
-GPU, levels other than swift.
+GPU, levels other than linnet.

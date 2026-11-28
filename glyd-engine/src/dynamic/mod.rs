@@ -1801,7 +1801,7 @@ fn handed_over(d: &ModelDesc) -> Vec<(Slot, usize)> {
 }
 
 /// The most rows a verify pass takes (`Dyn::verify_rows`): a product of up to 8 rows runs the kernel a one-row step's does (the library's one m-tile product; the
-/// tiered layout's step kernel to 8 rows), so each row's sums are a step's. Checked bit for bit on swift only; the range worker refuses verify on other levels.
+/// tiered layout's step kernel to 8 rows), so each row's sums are a step's. Checked bit for bit on linnet only; the range worker refuses verify on other levels.
 pub const VERIFY_ROWS: usize = 8;
 
 /// A step of rows that decode as a graph: its rows (padded), the graph, the events in it (`--prof`), its attention's decode calls and its replays (`usercheck` counts them).

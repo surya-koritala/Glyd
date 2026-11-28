@@ -231,7 +231,7 @@ pub struct Resolved {
 }
 
 impl Resolved {
-    /// The model as the rest of the engine takes it: `Qwen/Qwen3.5-9B` or `Qwen/Qwen3.5-9B:swift`.
+    /// The model as the rest of the engine takes it: `Qwen/Qwen3.5-9B` or `Qwen/Qwen3.5-9B:linnet`.
     pub fn model(&self) -> String {
         match &self.level {
             Some(l) => format!("{}:{l}", self.repo),
@@ -524,7 +524,7 @@ pub struct Local {
     pub repo: String,
     /// The bytes its files take.
     pub bytes: u64,
-    /// The level its repo is (`glyd/Qwen3.5-9B-swift`: swift); penguin for a release's own weights (lossless: what the first run packs).
+    /// The level its repo is (`glyd/Qwen3.5-9B-linnet`: linnet); penguin for a release's own weights (lossless: what the first run packs).
     pub level: String,
     /// The short name of the manifest, where the repo is one of its.
     pub name: Option<String>,
@@ -873,11 +873,11 @@ mod tests {
         let m = manifest();
         let r = resolve("qwen3.5:27b", &m).unwrap().unwrap();
         assert_eq!((r.repo.as_str(), r.level.as_deref()), ("Qwen/Qwen3.5-27B", None));
-        let r = resolve("qwen3.5:27b:swift", &m).unwrap().unwrap();
-        assert_eq!((r.repo.as_str(), r.level.as_deref(), r.model().as_str()), ("Qwen/Qwen3.5-27B", Some("swift"), "Qwen/Qwen3.5-27B:swift"));
+        let r = resolve("qwen3.5:27b:linnet", &m).unwrap().unwrap();
+        assert_eq!((r.repo.as_str(), r.level.as_deref(), r.model().as_str()), ("Qwen/Qwen3.5-27B", Some("linnet"), "Qwen/Qwen3.5-27B:linnet"));
         // letters only after the name is a level; a size has a digit
-        let r = resolve("qwen3.5:swift", &m).unwrap().unwrap();
-        assert_eq!((r.name.as_str(), r.level.as_deref()), ("qwen3.5:9b", Some("swift")));
+        let r = resolve("qwen3.5:linnet", &m).unwrap().unwrap();
+        assert_eq!((r.name.as_str(), r.level.as_deref()), ("qwen3.5:9b", Some("linnet")));
         // a size with a dash is one size, and the part before the dash finds it where only one starts so
         assert_eq!(resolve("qwen3.5:35b-a3b", &m).unwrap().unwrap().repo, "Qwen/Qwen3.5-35B-A3B");
         assert_eq!(resolve("qwen3.5:35b", &m).unwrap().unwrap().repo, "Qwen/Qwen3.5-35B-A3B");
@@ -892,9 +892,17 @@ mod tests {
     #[test]
     fn hub_ids_paths_and_ggufs_are_not_names() {
         let m = manifest();
-        for arg in
-            ["Qwen/Qwen3.5-9B", "Qwen/Qwen3.5-9B:swift", "glyd/Qwen3.5-9B-swift", "./qwen3.5", "/models/qwen3.5", "~/m", "model.gguf", "C:\\models\\m", "dir/"]
-        {
+        for arg in [
+            "Qwen/Qwen3.5-9B",
+            "Qwen/Qwen3.5-9B:linnet",
+            "glyd/Qwen3.5-9B-linnet",
+            "./qwen3.5",
+            "/models/qwen3.5",
+            "~/m",
+            "model.gguf",
+            "C:\\models\\m",
+            "dir/",
+        ] {
             assert_eq!(resolve(arg, &m), Ok(None), "{arg}");
         }
         // an existing directory is a directory even where its name is a family's
@@ -921,9 +929,9 @@ mod tests {
     #[test]
     fn resolve_args_changes_the_model_word_of_the_commands_that_take_one() {
         let words = |v: &[&str]| Args::from(v.iter().map(|s| s.to_string()));
-        let mut a = words(&["pull", "qwen3.5:27b:swift", "--hf-token", "x"]);
+        let mut a = words(&["pull", "qwen3.5:27b:linnet", "--hf-token", "x"]);
         resolve_args(&mut a).unwrap();
-        assert_eq!(a.pos, ["pull", "Qwen/Qwen3.5-27B:swift"]);
+        assert_eq!(a.pos, ["pull", "Qwen/Qwen3.5-27B:linnet"]);
         assert_eq!(a.flag("hf-token"), Some("x"));
         let mut a = words(&["run", "Qwen/Qwen3-8B"]);
         resolve_args(&mut a).unwrap();
@@ -955,7 +963,7 @@ mod tests {
     #[test]
     fn the_cache_is_read_as_huggingface_hub_keeps_it() {
         let m = manifest();
-        let d = fake_cache("scan", &[("Qwen/Qwen3.5-9B", 3000), ("glyd/Qwen3.5-9B-swift", 1000), ("someone/else", 10), ("glyd/Qwen3.5-27B-wren", 5)]);
+        let d = fake_cache("scan", &[("Qwen/Qwen3.5-9B", 3000), ("glyd/Qwen3.5-9B-linnet", 1000), ("someone/else", 10), ("glyd/Qwen3.5-27B-wren", 5)]);
         let got = scan(&d, &m);
         let row = |r: &str| got.iter().find(|l| l.repo == r).unwrap();
         // a blob is counted once, though the snapshot links to it
@@ -963,8 +971,8 @@ mod tests {
             (row("Qwen/Qwen3.5-9B").bytes, row("Qwen/Qwen3.5-9B").level.as_str(), row("Qwen/Qwen3.5-9B").name.as_deref()),
             (3000, "penguin", Some("qwen3.5:9b"))
         );
-        let s = row("glyd/Qwen3.5-9B-swift");
-        assert_eq!((s.bytes, s.level.as_str(), s.name.as_deref()), (1000, "swift", Some("qwen3.5:9b")));
+        let s = row("glyd/Qwen3.5-9B-linnet");
+        assert_eq!((s.bytes, s.level.as_str(), s.name.as_deref()), (1000, "linnet", Some("qwen3.5:9b")));
         assert_eq!(row("someone/else").name, None);
         assert_eq!(row("glyd/Qwen3.5-27B-wren").name.as_deref(), Some("qwen3.5:27b"));
         assert_eq!(got.len(), 4, "a dataset is not a model");
@@ -977,7 +985,7 @@ mod tests {
         assert!(is_packed_of("Qwen--Qwen3-8B-0123abcd-mma", "Qwen/Qwen3-8B"));
         assert!(is_packed_of("Qwen--Qwen3-8B-0123abcd-i5", "Qwen/Qwen3-8B"));
         assert!(is_packed_of("Qwen--Qwen3-8B-a", "Qwen/Qwen3-8B"));
-        assert!(is_packed_of("glyd--Qwen3.5-9B-swift-deadbeef-i5", "glyd/Qwen3.5-9B-swift"));
+        assert!(is_packed_of("glyd--Qwen3.5-9B-linnet-deadbeef-i5", "glyd/Qwen3.5-9B-linnet"));
         // another model whose name starts with this one's
         assert!(!is_packed_of("Qwen--Qwen3-8B-FP8-0123abcd-mma", "Qwen/Qwen3-8B"));
         assert!(!is_packed_of("Qwen--Qwen3-80B-0123abcd-mma", "Qwen/Qwen3-8B"));
@@ -988,7 +996,7 @@ mod tests {
     #[test]
     fn rm_takes_out_the_model_its_levels_and_its_packed_copies_and_nothing_else() {
         let m = manifest();
-        let cache = fake_cache("rm", &[("Qwen/Qwen3-8B", 100), ("glyd/Qwen3-8B-swift", 50), ("Qwen/Qwen3-32B", 7)]);
+        let cache = fake_cache("rm", &[("Qwen/Qwen3-8B", 100), ("glyd/Qwen3-8B-linnet", 50), ("Qwen/Qwen3-32B", 7)]);
         let packed = std::env::temp_dir().join(format!("glyd-models-{}-rm-packed", std::process::id()));
         let _ = std::fs::remove_dir_all(&packed);
         for d in ["Qwen--Qwen3-8B-0123abcd-mma", "Qwen--Qwen3-8B-FP8-0123abcd-mma", "Qwen--Qwen3-32B-0123abcd-mma"] {
@@ -996,8 +1004,8 @@ mod tests {
             std::fs::write(packed.join(d).join("engine.safetensors"), [0u8; 4]).unwrap();
         }
         let rm = |v: &[&str]| rm_in(&Args::from(v.iter().map(|s| s.to_string())), &m, &cache, &packed);
-        assert_eq!(rm(&["rm", "Qwen/Qwen3-8B:swift"]), 0);
-        assert!(!cache.join("models--glyd--Qwen3-8B-swift").exists() && cache.join("models--Qwen--Qwen3-8B").exists());
+        assert_eq!(rm(&["rm", "Qwen/Qwen3-8B:linnet"]), 0);
+        assert!(!cache.join("models--glyd--Qwen3-8B-linnet").exists() && cache.join("models--Qwen--Qwen3-8B").exists());
         assert_eq!(rm(&["rm", "Qwen/Qwen3-8B"]), 0);
         assert!(!cache.join("models--Qwen--Qwen3-8B").exists());
         assert!(cache.join("models--Qwen--Qwen3-32B").exists(), "another model's files stay");

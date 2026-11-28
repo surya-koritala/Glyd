@@ -4,7 +4,7 @@
   "cut": 16,
   "engine_sha256": "78cf5315b6087e4b25b7e9baffc0cd73233465c9dc183531a3b125767fe2f117",
   "layers": 32,
-  "model": "/home/surya-koritala/glyd-baseline/hf/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d",
+  "model": "/home/surya-koritala/glyd-baseline/hf/hub/models--glyd--Qwen3.5-9B-linnet/snapshots/073a2132abeaa41c119678b9687092871521eb4d",
   "new_tokens": 32,
   "prompt_tokens": 64,
   "split_decode_ms_per_token": 12.779796129032258,

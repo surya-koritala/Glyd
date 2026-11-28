@@ -1,5 +1,5 @@
 #!/bin/bash
-# GLY-238 on the owner's PC: glyd-engine serve of Qwen3.5-9B at swift (the glyd/Qwen3.5-9B-swift snapshot, --ctx 4096): /v1/glyd/info,
+# GLY-238 on the owner's PC: glyd-engine serve of Qwen3.5-9B at linnet (the glyd/Qwen3.5-9B-linnet snapshot, --ctx 4096): /v1/glyd/info,
 # the API's answers, and nvidia-smi with the engine's own counters before, during and after a cancelled streamed request and a client
 # that goes away; then the same model served by its Hub name and level. The GPU is shared: run it under the lock,
 #   flock ~/glyd-scratch/gpu.lock ./record.sh
@@ -7,7 +7,7 @@
 set -u
 OUT=${OUT:-$HOME/glyd-scratch/gly238/rec}
 ENGINE=${ENGINE:-$HOME/glyd-scratch/gly238/target/release/glyd-engine}
-SNAP=${SNAP:-$HOME/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d}
+SNAP=${SNAP:-$HOME/glyd-scratch/rel032/hub/models--glyd--Qwen3.5-9B-linnet/snapshots/073a2132abeaa41c119678b9687092871521eb4d}
 export GLYD_GPU_LIB=${GLYD_GPU_LIB:-$HOME/glyd-scratch/reg166/lib2/libglyd_gpu_cuda13.so} HF_HUB_CACHE=$HOME/glyd-scratch/rel032/hub HF_HOME=$HOME/.config/huggingface
 PORT=8238
 B=http://127.0.0.1:$PORT
@@ -137,7 +137,7 @@ stop
 smi "after the server stopped"
 
 # the same model by its Hub name and level (the base model's config.json is read from the Hub; the pre-packed repo is the one in the cache)
-OFFLINE= serve "Qwen/Qwen3.5-9B:swift" hubname
+OFFLINE= serve "Qwen/Qwen3.5-9B:linnet" hubname
 curl -s -H @.auth $B/v1/glyd/info | jq . > info-hubname.json
 curl -s -H @.auth $B/v1/models > models-hubname.json
 smi "loaded by its Hub name"

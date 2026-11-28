@@ -17,7 +17,7 @@ const USAGE: &str = "usage:
       --layout a      Candidate A, lossy (glyd-v6): every bf16 weight rounded to three fraction bits, each matrix in
                       the compact tiered layout (6.8 bits a weight or so)
       --layout i6     six-bit block codes, lossy (glyd-v7; the level kestrel, 6.53 bits a weight); kestrel is the same
-      --layout i5     five-bit block codes, lossy (glyd-v7; the level swift, 5.53 bits a weight); swift is the same
+      --layout i5     five-bit block codes, lossy (glyd-v7; the level linnet, 5.53 bits a weight); linnet is the same
       --layout i4     four-bit block codes, lossy (glyd-v7; the level wren, 4.53 bits a weight); wren is the same
       --layout i3     three-bit block codes, lossy (glyd-v7; no level, 3.53 bits a weight: too coarse for a model alone)
       --plan PLAN     what to save, in order, as huggingface/plan.py writes it for the model transformers builds
@@ -84,11 +84,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     Some("mma12") => save::Layout::Twelve,
                     Some("a") => save::Layout::Compact,
                     Some("i6" | "kestrel") => save::Layout::Int6,
-                    Some("i5" | "swift") => save::Layout::Int5,
+                    Some("i5" | "linnet") => save::Layout::Int5,
                     Some("i4" | "wren") => save::Layout::Int4,
                     Some("i3") => save::Layout::Int3,
                     Some("penguin") => save::Layout::Tiered,
-                    _ => return Err("--layout takes mma, mma12, a, i6 (kestrel), i5 (swift), i4 (wren), i3 or penguin".into()),
+                    _ => return Err("--layout takes mma, mma12, a, i6 (kestrel), i5 (linnet), i4 (wren), i3 or penguin".into()),
                 };
                 i += 1;
             }

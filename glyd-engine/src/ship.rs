@@ -473,7 +473,7 @@ mod tests {
         card("hummingbird", "publish");
         assert!(crate::quality::publishable("hummingbird", &dir.join("repo")).is_ok());
         assert!(ship("hummingbird", &["--steps", "upload"]).is_ok(), "no --repo: nothing uploaded");
-        assert!(ship("sparrow", &["--steps", "upload"]).unwrap_err().contains("sparrow: ship packs penguin, kestrel, swift, wren, hummingbird"));
+        assert!(ship("sparrow", &["--steps", "upload"]).unwrap_err().contains("sparrow: ship packs penguin, kestrel, linnet, wren, hummingbird"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

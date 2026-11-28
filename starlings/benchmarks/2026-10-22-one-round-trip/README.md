@@ -19,7 +19,7 @@ did not show it. Now each record is one write, and generation streams set `TCP_N
 
 ## Real engine, one PC
 
-Qwen3.5-9B swift, layers 0..16 and 16..32 on one RTX 4080 SUPER, loopback TLS. Every run's tokens
+Qwen3.5-9B linnet, layers 0..16 and 16..32 on one RTX 4080 SUPER, loopback TLS. Every run's tokens
 equal the whole model's (same count and sha256 as the earlier records).
 
 | run | tokens | pipeline ms before | now | whole model ms | client ms before | now | setup ms now |

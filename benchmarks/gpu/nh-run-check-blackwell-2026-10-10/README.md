@@ -21,7 +21,7 @@ How to read it:
 - **Blackwell runs the engine as it is:** every check of the A100 run passes on sm_120, with the build for the card's own architecture.
 - **The KL is the reference's on this card:** the bf16 checkpoint is run layer by layer on the same GPU, so the reference's own
   arithmetic differs a little from card to card (0.0016 on the A100 with the same packed model).
-- **Speed:** 99.5 tokens a second greedy for one user (GDDR7, about 1.8 TB/s), against 71.1 on the A100 80 GB and 96.6 at swift on the H200.
+- **Speed:** 99.5 tokens a second greedy for one user (GDDR7, about 1.8 TB/s), against 71.1 on the A100 80 GB and 96.6 at linnet on the H200.
 
 Files: steps.txt, summary.txt, moecheck.log, logits-check.log and logits-run.log, logits/, layers-check.log, layers-run.log and
 layers-spec.json, generate.log, run-prompt.log, run-chat.log, serve-chat.log, speed.json, serve-mem.txt, pack.txt and pack.log, verify.log,

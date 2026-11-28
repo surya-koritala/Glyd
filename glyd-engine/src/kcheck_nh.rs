@@ -935,7 +935,7 @@ pub fn decode(dir: &Path, out: &Path, layers: &[usize], tokens: usize) -> Result
 mod tests {
     use super::*;
 
-    /// Some layers of a tiny glyd-v7 directory decoded to a mini checkpoint, at swift and at wren (the experts four-bit codes and the dense matrices six-bit ones, each decoded by its own tag): every tensor the reference reads of
+    /// Some layers of a tiny glyd-v7 directory decoded to a mini checkpoint, at linnet and at wren (the experts four-bit codes and the dense matrices six-bit ones, each decoded by its own tag): every tensor the reference reads of
     /// a Mamba-2, a mixture-of-experts (its experts too) and an attention layer is there, each the very weights glyd.json hashes (the packer's own decode of its pack, or the tensor as saved), and x.bin holds the decoded
     /// embeddings of the tokens tokens.json names. A bf16 directory, and a layer it does not have, are refused.
     #[test]

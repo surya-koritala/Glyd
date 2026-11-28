@@ -24,7 +24,7 @@ holds none.
 
 One machine, both stages (on GPU 0 and 1, or both on GPU 0):
 
-    starlings up --model glyd/Qwen3.8-27B-swift [--ctx 4096] [--sessions 1|2] [--drafts 7]
+    starlings up --model glyd/Qwen3.8-27B-linnet [--ctx 4096] [--sessions 1|2] [--drafts 7]
 
 `--model` is a directory (absolute, or starting with `./` or `../`) or a Hub name. A name is fetched
 by the engine into the Hugging Face cache, after the operator agrees to the download.
@@ -35,8 +35,8 @@ it (or found beside starlings) is passed on as the engine's `GLYD_GPU_LIB`.
 
 Two machines on one LAN:
 
-    first:   starlings up --model glyd/Qwen3.8-27B-swift --machines 2 [--host LAN_IP]
-    second:  starlings join --model glyd/Qwen3.8-27B-swift [--host LAN_IP]   (then paste the join code)
+    first:   starlings up --model glyd/Qwen3.8-27B-linnet --machines 2 [--host LAN_IP]
+    second:  starlings join --model glyd/Qwen3.8-27B-linnet [--host LAN_IP]   (then paste the join code)
 
 `up` enrolls a coordinator, its stage worker(s) and a client with the steps below, run as this
 binary's own commands. It prints the web UI link and the API address. Both machines need the

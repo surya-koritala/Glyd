@@ -1,7 +1,7 @@
 //! Every pre-norm dense decoder of the config types the description builder's `llama` builder reads (`runtime::describe::LLAMA`) on the
 //! executor (R3c, #139), but one with an attention bias or a scaled rope, which `lower::dense` refuses by name though `is_dense` says yes to its
 //! config: the config's layer kinds lowered to the shared operations (`lower::dense`: the attention kind, the gated SiLU MLP, the RMS norms),
-//! loaded by the executor's own loader at any level its products take (penguin's lossless packs, kestrel's, swift's and wren's), served by the scheduler with
+//! loaded by the executor's own loader at any level its products take (penguin's lossless packs, kestrel's, linnet's and wren's), served by the scheduler with
 //! paged keys and values (12-bit pages where the tables are set).
 
 use super::{Dyn, ModelDesc, Opts};

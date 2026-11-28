@@ -266,7 +266,7 @@ pub enum Layout {
     /// Six-bit block codes, lossy (glyd-v7, the level kestrel): each run of 32 values of a row as six-bit codes and a bf16 scale
     /// (pack::pack_int6_checked, tiers[0]'s tag INT6_TAG).
     Int6,
-    /// Five-bit block codes, lossy (glyd-v7, the level swift): each run of 32 values of a row as five-bit codes and a bf16 scale
+    /// Five-bit block codes, lossy (glyd-v7, the level linnet): each run of 32 values of a row as five-bit codes and a bf16 scale
     /// (pack::pack_int5_checked, tiers[0]'s tag INT5_TAG).
     Int5,
     /// Four-bit block codes, lossy (glyd-v7, the level wren): each run of 32 values of a row as four-bit codes and a bf16 scale
@@ -1461,7 +1461,7 @@ fn save_as<const EXTRAS: bool>(
         match layout {
             Layout::Tiered if penguin => Some("penguin"),
             Layout::Int6 => Some("kestrel"),
-            Layout::Int5 => Some("swift"),
+            Layout::Int5 => Some("linnet"),
             Layout::Int4 | Layout::Int4H => Some("wren"),
             Layout::Hummingbird => Some("hummingbird"),
             _ => None,
@@ -2201,7 +2201,7 @@ mod tests {
         tiny_qwen3(&src);
         let source = Source::find(src.to_str().unwrap()).unwrap();
         for (layout, name, level) in
-            [(Layout::Int5, "i5", Some("swift")), (Layout::Int6, "i6", Some("kestrel")), (Layout::Int4, "i4", Some("wren")), (Layout::Int3, "i3", None)]
+            [(Layout::Int5, "i5", Some("linnet")), (Layout::Int6, "i6", Some("kestrel")), (Layout::Int4, "i4", Some("wren")), (Layout::Int3, "i3", None)]
         {
             let out = dir.join(name);
             save(&source, &out, 2, 1 << 30, true, layout).unwrap();
@@ -2293,7 +2293,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The tiny Qwen3 saved at the swift layout with its down matrices in the five-bit row layout (a linear's "layout": "i5r"): glyd.json names each down pack "i5r", its shape the transpose of its tensor's ([in, out]
+    /// The tiny Qwen3 saved at the linnet layout with its down matrices in the five-bit row layout (a linear's "layout": "i5r"): glyd.json names each down pack "i5r", its shape the transpose of its tensor's ([in, out]
     /// against [out, in]) and its words the row layout's tag; the pack's bytes are those pack_rows makes of the weight's transpose (the packer's, here made apart from the save), and verify decodes each on the CPU, back to
     /// the tensor's orientation, to the sha256 glyd.json holds; refused: a row pack named as a block layout, as the row layout of other bits, with its shape or its buffers cut, a row layout for several
     /// weights as one or for a weight whose outputs are not runs of 32, one in a save that is not in a block layout, and a row layout as the save's own.
@@ -2343,7 +2343,7 @@ mod tests {
         save_planned(&source, &out, 2, 1 << 30, Layout::Int5, &plan("i5r", "")).unwrap();
         let m = json::parse(&std::fs::read_to_string(out.join("glyd.json")).unwrap()).unwrap();
         let s = |k: &str| m.get(k).and_then(Value::as_str);
-        assert_eq!((s("format"), s("layout"), s("level")), (Some("glyd-v7"), Some("i5"), Some("swift")));
+        assert_eq!((s("format"), s("layout"), s("level")), (Some("glyd-v7"), Some("i5"), Some("linnet")));
         let (saved, original) = (Checkpoint::open(&out).unwrap(), Checkpoint::open(&src).unwrap());
         let mut rows_packs = 0;
         for (name, e) in m.get("packs").and_then(Value::as_object).unwrap() {
@@ -2478,7 +2478,7 @@ mod tests {
                 (m.to_string(), r, c)
             })
             .collect();
-        for (layout, name, q, level) in [(Layout::Int5, "i5", 15i8, "swift"), (Layout::Int6, "i6", 31, "kestrel")] {
+        for (layout, name, q, level) in [(Layout::Int5, "i5", 15i8, "linnet"), (Layout::Int6, "i6", 31, "kestrel")] {
             let value = |c: i8, s: u16| if q == 15 { pack::int5_value((c + 16) as u8, s) } else { pack::int6_value((c + 32) as u8, s) };
             let codes = dir.join(format!("codes-{name}"));
             std::fs::create_dir_all(&codes).unwrap();

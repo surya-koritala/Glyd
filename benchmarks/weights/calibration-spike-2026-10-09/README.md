@@ -8,7 +8,7 @@ none sharing a 32-token run with the KL windows). Every variant is the engine's 
 |--:|---|--:|--:|--:|--:|
 | 6 | plain (mse scales), today's kestrel | 0.0147 | 0.959 | – | – |
 | 6 | GPTQ, act-order | **0.0057** | 0.972 | 8.874 | 0.185 |
-| 5 | plain (mse scales), today's swift | 0.0373 | 0.926 | 8.998 | 0.017 |
+| 5 | plain (mse scales), today's linnet | 0.0373 | 0.926 | 8.998 | 0.017 |
 | 5 | GPTQ, act-order | **0.0138** | 0.950 | 8.884 | 0.193 |
 | 4 | plain (mse scales) | 0.1070 | 0.856 | 9.570 | 0.016 |
 | 4 | GPTQ | 0.0594 | 0.891 | 8.978 | 0.196 |
@@ -30,7 +30,7 @@ Files: 4bit/, 3and5bit/ and 6bit/ (steps, GPU-hours, the scorer's rows, the cali
 |--:|---|--:|--:|--:|--:|
 | 6 | plain (mse), today's kestrel | 0.00477 | – | – | – |
 | 6 | GPTQ, act-order | **0.00293** | 0.975 | 7.228 | 0.596 |
-| 5 | plain (mse), today's swift | 0.01393 | – | – | – |
+| 5 | plain (mse), today's linnet | 0.01393 | – | – | – |
 | 5 | GPTQ, act-order | **0.00823** | 0.955 | 7.246 | 0.601 |
 | 4 | plain (mse) | 0.05351 | 0.888 | 7.419 | 0.042 |
 | 4 | GPTQ, act-order | **0.03124** | 0.910 | 7.344 | 0.606 |

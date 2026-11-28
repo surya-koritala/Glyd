@@ -1,7 +1,7 @@
 # Five-bit block codes (Int5) on an A100, Qwen3.8-27B's speed and KL; and v0.29.3 installed fresh (2026-10-09)
 
 Private record. One A100-SXM4-80GB (Runpod pod `qkn4obbvrknspw`, driver 580.126.16, $1.79/hour, 12:26-13:16 UTC: about $1.49), branch
-`int5-swift` (the five-bit layout: gpu/glyd_gpu.cu's `Int5`, glyd-gpu's `pack_int5`/`unpack_int5`, `glyd-engine --layout i5`), the
+`int5-linnet` (the five-bit layout: gpu/glyd_gpu.cu's `Int5`, glyd-gpu's `pack_int5`/`unpack_int5`, `glyd-engine --layout i5`), the
 library by `gpu/build_lib.sh` (CUDA 12.8, every architecture) and the engine's release build. Jobs: `job.sh` (build, examples/int5),
 `bench.sh` (after the fresh install, on its download of Qwen/Qwen3.8-27B at 1d4bf0f2), `kl.sh` (the KL study). `steps.txt`'s first
 bench lines (rc=1, 0 s) are a first attempt that found no checkpoint (the fresh install's first try had failed: PyPI's index had not

@@ -2,12 +2,12 @@
 # The planner's predictions (src/plan.rs, P2c) against runs they were NOT fitted on:   scripts/planner_heldout_check.sh OUT_DIR
 # Run from the repository's root on a Linux machine with an NVIDIA GPU, the CUDA toolkit (NVCC, or nvcc on the PATH), cargo and python3. The shipped constants
 # are an RTX 4080 SUPER's, which is the GPU this is for (GLYD_ENGINE_ARCHS=89). The models are read from the Hugging Face cache, offline.
-# The constants were fitted on bench --loads 1k:1 of gemma-4-12B at wren and kestrel and Qwen3.5-0.8B at kestrel and wren (in-sample). Held out here: the swift
+# The constants were fitted on bench --loads 1k:1 of gemma-4-12B at wren and kestrel and Qwen3.5-0.8B at kestrel and wren (in-sample). Held out here: the linnet
 # level of both, both at 4k and 8k positions, and prompts of 4k and 8k tokens. Every prediction is made and saved before any measurement (the cache is new, so no
 # run observed refines it), then each case is measured and its error printed. It is a measurement: no error is held to a bound, and it ends 0 whatever they are.
 # OUT_DIR gets every prediction, bench result and log, and heldout.tsv. The engine's cache is a new one (OUT_DIR/cache: rates/ and plans/), deleted at the end.
-# PACKS, where set, is an existing cache's engine directory, read through a link so that the models it holds are not packed again; the swift packs made are
-# deleted after each case. Needs 25 GB free where the packs are made for gemma's swift pack (the case is skipped otherwise).
+# PACKS, where set, is an existing cache's engine directory, read through a link so that the models it holds are not packed again; the linnet packs made are
+# deleted after each case. Needs 25 GB free where the packs are made for gemma's linnet pack (the case is skipped otherwise).
 set -uo pipefail
 OUT=${1:?usage: scripts/planner_heldout_check.sh OUT_DIR}
 mkdir -p "$OUT" && OUT=$(cd "$OUT" && pwd)
@@ -26,8 +26,8 @@ for i in 1 2; do s=$(date +%s%N); "$E" fit google/gemma-4-12B-it:wren --json > "
 cat "$GLYD_CACHE"/rates/*.json; echo
 
 # the held-out cases: name, model, bench load, positions a decode step reads (the prompt and half of the 128 tokens made)
-CASES="gemma-swift-1k google/gemma-4-12B-it:swift 1k:1 1088
-q08-swift-1k Qwen/Qwen3.5-0.8B:swift 1k:1 1088
+CASES="gemma-linnet-1k google/gemma-4-12B-it:linnet 1k:1 1088
+q08-linnet-1k Qwen/Qwen3.5-0.8B:linnet 1k:1 1088
 gemma-wren-4k google/gemma-4-12B-it:wren 4k:1 4160
 gemma-wren-8k google/gemma-4-12B-it:wren 8k:1 8256
 q08-kestrel-4k Qwen/Qwen3.5-0.8B:kestrel 4k:1 4160
@@ -43,7 +43,7 @@ ls -la --time-style=+%H:%M:%S "$OUT"/pred-*.json | awk '{print $6, $7}'
 echo "=== 3. each case measured (bench, 3 runs, the median), then its error $(date -u +%H:%M:%S)"
 echo "$CASES" | while read -r name model load pos; do
   touch "$OUT/$name.start"
-  case "$model" in *gemma*swift*)
+  case "$model" in *gemma*linnet*)
     avail=$(df --output=avail -BG "$PK" | tail -1 | tr -dc 0-9); echo "disk free ${avail}G"
     if [ "${avail:-0}" -lt 25 ]; then echo "$name: skipped, under 25 GB free for its pack"; continue; fi ;;
   esac

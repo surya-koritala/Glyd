@@ -11,7 +11,7 @@ glyd engine 0.33.1
   backend CPU   not built yet (ROADMAP V4): without a GPU glyd compresses files
   GPU budget    11.7 GiB free of 11.8 GiB (0.1 GiB used by other programs and the driver); the engine keeps 0.8 GiB and its work takes 1.2 GiB (2.8 GiB on the dynamic route): 9.7 GiB for the weights and the cache
   RAM           29.2 GiB available of 31.3 GiB; 6.0 GiB kept for the system: 23.2 GiB for experts held in memory
-  sample plan   google/gemma-4-12B-it: swift level, 32768 tokens of context: 7.7 GiB of weights on the GPU, 1.0 GiB of cache, 1.2 GiB for the engine's work, 0.6 GiB for the draft model, 0.8 GiB kept free; 11.3 GiB of the NVIDIA GeForce RTX 3060's 11.7 GiB free
+  sample plan   google/gemma-4-12B-it: linnet level, 32768 tokens of context: 7.7 GiB of weights on the GPU, 1.0 GiB of cache, 1.2 GiB for the engine's work, 0.6 GiB for the draft model, 0.8 GiB kept free; 11.3 GiB of the NVIDIA GeForce RTX 3060's 11.7 GiB free
   cache         /root/.cache/glyd (106.7 GB free)
   models        /root/.cache/huggingface/hub (106.7 GB free)
   cached        0 models, 0 MB in the Hub's cache, 0 models, 0 MB packed here

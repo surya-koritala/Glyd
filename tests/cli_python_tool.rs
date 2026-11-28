@@ -295,10 +295,10 @@ fn a_rust_only_install_passes_a_models_commands_to_the_engine() {
     engine(&en);
     let path = en.display().to_string();
     for args in [
-        &["fetch", "glyd/Qwen3.5-9B-swift"][..],
-        &["verify", "glyd/Qwen3.5-9B-swift"][..],
-        &["preflight", "Qwen/Qwen3.5-9B:swift"][..],
-        &["costs", "glyd/Qwen3.5-9B-swift", "--predict"][..],
+        &["fetch", "glyd/Qwen3.5-9B-linnet"][..],
+        &["verify", "glyd/Qwen3.5-9B-linnet"][..],
+        &["preflight", "Qwen/Qwen3.5-9B:linnet"][..],
+        &["costs", "glyd/Qwen3.5-9B-linnet", "--predict"][..],
         &["supports", "m"][..],
         &["prepare", "m"][..],
     ] {

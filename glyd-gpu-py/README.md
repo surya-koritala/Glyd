@@ -18,9 +18,9 @@ engine's whatever that list says. `glyd serve` of a lossless model other than Ge
 go to the engine. Where the engine does not get up (it refuses, crashes, is killed or goes silent) the command goes on with vLLM, with one line saying why. `GLYD_ENGINE=0` keeps vLLM, and
 `GLYD_ENGINE=1` asks for the engine for `glyd serve`. The engine needs only the NVIDIA driver.
 
-`glyd run MODEL:LEVEL` holds the weights in fewer bits, not lossless, on the engine only (Gemma, Qwen and Nemotron-H have `kestrel`, `swift` and `wren`; Nemotron-H, Kimi, GLM, DeepSeek and Muse also `hummingbird`): `kestrel`
-is 6.53 bits per weight (`--lossy` is the same) and `swift` 5.53; `penguin` is lossless, the default. Qwen3.8-27B's weights are 20.48 GiB
-at kestrel and 17.35 GiB at swift. A level the engine can't run on this GPU stops with a message rather than going to vLLM.
+`glyd run MODEL:LEVEL` holds the weights in fewer bits, not lossless, on the engine only (Gemma, Qwen and Nemotron-H have `kestrel`, `linnet` and `wren`; Nemotron-H, Kimi, GLM, DeepSeek and Muse also `hummingbird`): `kestrel`
+is 6.53 bits per weight (`--lossy` is the same) and `linnet` 5.53; `penguin` is lossless, the default. Qwen3.8-27B's weights are 20.48 GiB
+at kestrel and 17.35 GiB at linnet. A level the engine can't run on this GPU stops with a message rather than going to vLLM.
 
 ## C, C++, Rust
 

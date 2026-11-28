@@ -52,7 +52,7 @@
   {
     "status": "PASS",
     "step": "refusal:Qwen/Qwen3.8-27B",
-    "detail": "exit 3, 2 lines: glyd: Qwen3.8-27B (Qwen3.5) runs at the kestrel, swift and wren levels in this engine, not penguin."
+    "detail": "exit 3, 2 lines: glyd: Qwen3.8-27B (Qwen3.5) runs at the kestrel, linnet and wren levels in this engine, not penguin."
   },
   {
     "status": "PASS",
