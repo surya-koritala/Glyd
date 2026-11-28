@@ -4983,40 +4983,29 @@ fn nvfp4_runs(codes: &str, scales: &str, global: &str, shape: &[usize], next: &m
     (stored, values)
 }
 
-/// The layout a release stores with a scale a run (MiniMax M3's formats, on a small model of another family's layout whose description is given that
-/// release's names): every product of a layer FP8 with a byte's power-of-two scale a run of 32 columns of a row, under `X.weight_scale_inv` (which,
-/// for all its name, is what a code is multiplied by); every expert's matrix NVFP4, its codes `X.weight_packed`, its runs' scales `X.weight_scale` and
-/// the scales' own scale `X.weight_global_scale`, which the description names as the scales' scales. The model answers to the bit as the same weights
-/// in bf16 do; the FP8 matrices are read by the description's scales and not by the checkpoint's names alone.
+/// MiniMax M3 as released, on the CPU reference: a random model of the small config in the release's two stored forms, as its builder names them.
+/// Every product the quantization_config does not leave out is FP8 with a byte's power-of-two scale a run of 32 columns of a row, under
+/// `X.weight_scale_inv` (which, for all its name, is what a code is multiplied by); every routed expert's matrix is NVFP4, its codes `X.weight_packed`,
+/// its runs' scales `X.weight_scale` and the scales' own scale `X.weight_global_scale`, which the description names as the scales' scales. The model
+/// answers to the bit as the same weights in bf16 do; the FP8 matrices are read by the description's scales and not by the checkpoint's names alone.
 #[test]
 fn a_release_with_a_scale_a_run_is_its_weights_on_the_reference() {
-    use super::describe::Source;
-    let cfg = mimo_tiny(serde_json::json!({"attention_projection_layout": "split"}));
-    let mut d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
-    let products = ["q", "k", "v", "o", "gate", "up", "down"];
-    let fp8: Vec<String> = d.blocks.iter().flatten().filter(|(r, _)| products.contains(&r.as_str())).flat_map(|(_, s)| s.names()).collect();
-    d.scales = fp8.iter().map(|w| (w.clone(), format!("{w}_scale_inv"))).collect();
-    let mut experts = 0;
-    for (_, src) in d.blocks.iter_mut().flatten() {
-        let Source::Experts(e) = src else { continue };
-        for w in e.iter_mut().flatten() {
-            let at = w.strip_suffix(".weight").unwrap().to_string();
-            let shape = d.shapes.remove(w).unwrap();
-            *w = format!("{at}.weight_packed");
-            d.shapes.insert(w.clone(), shape);
-            d.scales.insert(w.clone(), format!("{at}.weight_scale"));
-            d.scales.insert(format!("{at}.weight_scale"), format!("{at}.weight_global_scale"));
-            experts += 1;
-        }
-    }
-    assert_eq!(experts, 6 * 3);
+    let quant = serde_json::json!({"quant_method": "mxfp8", "activation_scheme": "dynamic", "weight_block_size": [1, 32], "group_size": 16,
+        "moe_quant_algo": "NVFP4", "moe_quant_format": "nvfp4-pack-quantized",
+        "ignored_layers": ["language_model.model.layers.1.block_sparse_moe.gate", "lm_head", "model.embed_tokens", "vision_tower", "model.layers.2.self_attn.o_proj"]});
+    let cfg = minimax_tiny(serde_json::json!({"top": {"quantization_config": quant}}));
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!(d.fp8_block, None);
+    let experts: Vec<&String> = d.scales.keys().filter(|n| n.ends_with(".weight_packed")).collect();
+    let fp8: Vec<&String> = d.scales.keys().filter(|n| n.ends_with(".weight")).collect();
+    assert_eq!((experts.len(), d.scales.len()), (2 * 6 * 3, fp8.len() + 2 * experts.len()));
     let (plain, released) = twins("runs", &cfg, &d, &|n, s, shape, next| match n.strip_suffix(".weight_packed") {
         Some(_) => Some(nvfp4_runs(n, s, &d.scales[s], shape, next)),
         None => Some(fp8_runs(n, s, shape, next)),
     });
     let (held, by_description) = twins_agree(&d, &plain, &released, &[5, 9, 13, 17, 21, 25]);
-    assert_eq!((held, by_description), (fp8.len() + experts, fp8.len()));
-    assert!(fp8.len() >= 11 && fp8.iter().any(|n| d.shapes[n][1] % 32 != 0) && fp8.iter().any(|n| d.shapes[n][1] > 32), "{held}");
+    assert_eq!((held, by_description), (fp8.len() + experts.len(), fp8.len()));
+    assert!(fp8.len() >= 20 && fp8.iter().any(|n| d.shapes[*n][1] % 32 != 0) && fp8.iter().any(|n| d.shapes[*n][1] > 32), "{}", fp8.len());
 }
 
 /// `fp8_grid` of a matrix cut in `shards` equal parts of its rows, a grid a shard, one after another: a shard's scales start at its first row.
@@ -5112,24 +5101,31 @@ fn mimo_v2_as_released_with_packed_experts_is_its_weights_on_the_reference() {
 /// `X.qscale_weight` is fp32, one grid of the config's blocks of 128. MiMo V2: every FP8 product's `X.weight_scale_inv` is fp32 in blocks of 128, the
 /// fused matrix's a grid a shard for the description's 4 shards, which on the 9 layers over the whole context is not the whole matrix's grid (4 x 27
 /// rows of blocks, where one grid would be 106) and on the others is; every expert's codes are U8 [rows, cols / 2] with U8 scales [rows, cols / 32].
+/// MiniMax M3: every FP8 product's `X.weight_scale_inv` is a byte a run of 32 columns of a row; every routed expert's codes are U8 [rows, cols / 2]
+/// with E4M3 scales [rows, cols / 16] and the scales' own scale one fp32 number, the tensor the description names for the scales.
 #[test]
 fn released_headers_scales_are_of_the_shapes_the_reader_takes() {
     use crate::formats::grid_block;
     let mut seen = Vec::new();
-    for name in ["Mistral-Large-4-1T-A52B", "MiMo-V2.6-Flash-RL"] {
+    for name in ["Mistral-Large-4-1T-A52B", "MiMo-V2.6-Flash-RL", "MiniMax-M3.1-Flash"] {
         let h = fixture(&format!("headers/{name}.json"));
         let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
         let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
         let (st, tensors) = (d.stored(), header_tensors(&h));
-        let (mut grids, mut by_shard, mut restart, mut codes) = (0, 0, 0, 0);
+        let (mut grids, mut by_shard, mut restart, mut codes, mut runs, mut nvfp4) = (0, 0, 0, 0, 0, 0);
+        let given: Vec<[usize; 2]> = st.block.map(|b| [b, b]).into_iter().collect();
         for (w, s) in &d.scales {
+            // (the scales' own scale, named for the scales: held with its matrix below)
+            if s.ends_with(".weight_global_scale") {
+                continue;
+            }
             let ((dt, shape, _), (sdt, sshape, _)) = (&tensors[w], &tensors[s]);
             let (rows, cols) = (shape[0], shape[1]);
             let grid: Vec<u64> = sshape.iter().map(|&x| x as u64).collect();
             match (dt.as_str(), sdt.as_str()) {
                 ("F8_E4M3", "F32") => {
                     let shards = st.shards.get(w).copied().unwrap_or(1);
-                    let (block, k) = grid_block(rows, cols, &grid, &[[st.block.unwrap(); 2]], shards).unwrap_or_else(|| panic!("{w}: {shape:?} {sshape:?}"));
+                    let (block, k) = grid_block(rows, cols, &grid, &given, shards).unwrap_or_else(|| panic!("{w}: {shape:?} {sshape:?}"));
                     assert_eq!((block, k), ([128, 128], shards), "{w}");
                     grids += 1;
                     by_shard += (k > 1) as usize;
@@ -5139,10 +5135,24 @@ fn released_headers_scales_are_of_the_shapes_the_reader_takes() {
                     assert_eq!(sshape, &vec![rows, cols / 16], "{w}");
                     codes += 1;
                 }
+                // (a byte's scale a run of 32 columns of a row: where a row is one run, a block of 128 columns is the same run)
+                ("F8_E4M3", "U8") => {
+                    let (block, k) = grid_block(rows, cols, &grid, &given, 1).unwrap_or_else(|| panic!("{w}: {shape:?} {sshape:?}"));
+                    assert!(k == 1 && block[0] == 1 && cols.div_ceil(block[1]) == cols.div_ceil(32) && cols > 32, "{w}: {block:?}");
+                    assert_eq!(block, [1, 32], "{w}");
+                    runs += 1;
+                }
+                // (the codes two a byte, an E4M3 scale a run of 16, and the scales' own scale, one fp32 number, named as the scales' scales)
+                ("U8", "F8_E4M3") => {
+                    assert_eq!(sshape, &vec![rows, cols / 8], "{w}");
+                    let (gdt, gshape, _) = &tensors[&d.scales[s]];
+                    assert!(gdt == "F32" && gshape.iter().product::<usize>() == 1 && d.scales[s] == s.replace(".weight_scale", ".weight_global_scale"), "{w}");
+                    nvfp4 += 1;
+                }
                 other => panic!("{w}: {other:?}"),
             }
         }
-        seen.push((grids, by_shard, restart, codes));
+        seen.push((grids, by_shard, restart, codes, runs, nvfp4));
     }
-    assert_eq!(seen, [(27_668, 0, 0, 0), (63, 51, 9, 47 * 256 * 3)]);
+    assert_eq!(seen, [(27_668, 0, 0, 0, 0, 0), (63, 51, 9, 47 * 256 * 3, 0, 0), (0, 0, 0, 0, 540, 57 * 128 * 3)]);
 }

@@ -1847,8 +1847,9 @@ fn minimax_quant(q: &Value, mt: &str) -> Result<MinimaxQuant> {
 ///    build one whatever the count says, vLLM of `intermediate_size`: at the releases' one shared expert of that width the four agree).
 /// Stored formats (`quantization_config`, `minimax_quant`): the attention's and the indexer's products, the dense MLPs and the shared expert FP8 with a
 /// scale a run of 32 (`X.weight_scale_inv`); the routed experts NVFP4, `X.weight_packed` the codes, `X.weight_scale` their runs' scales and, the scales' own
-/// scale, `X.weight_global_scale`; the routers fp32, the norms, the embedding and the head bf16. No loader of the engine reads either format yet: the
-/// description names the tensors. The blocks are not square, so `fp8_block` says none.
+/// scale, `X.weight_global_scale`; the routers fp32, the norms, the embedding and the head bf16. The CPU reference reads both formats by the
+/// tensors the description names (`Described::stored`, `formats::Stored`: the block [1, 32] from the scales' shape, `formats::nvfp4`); the executor's
+/// loaders read neither. The blocks are not square, so `fp8_block` says none.
 /// Left unread, by name: the vision tower, its projector and the patch merger (`vision_config` and the wrapper's keys of the image's path;
 /// `names::MINIMAX`), and the release's draft model, which is a checkpoint of its own beside this one (`dspark/`).
 fn minimax_m3(c: &ModelConfig) -> Result<Described> {
