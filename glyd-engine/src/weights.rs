@@ -683,6 +683,7 @@ pub(crate) fn saved_parts<'a>(ck: &Checkpoint, pk: &'a Pack35) -> Vec<(&'a str, 
 
 /// The pack `pk` in `level`, ready to upload: read from a glyd-v7 directory (`v7`: its level and glyd.json) where it holds the pack saved (in the layout its entry names, else `level`), else packed from the bf16 tensors
 /// in `level`.
+#[cfg(any(test, feature = "dev"))]
 pub(crate) fn read_pack(ck: &Checkpoint, v7: Option<&(Layout, Value)>, pk: &Pack35, level: Layout) -> Result<Packed> {
     read_pack_as(ck, v7, pk, level, &crate::formats::Stored::default())
 }

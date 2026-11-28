@@ -2144,6 +2144,72 @@ pub fn mimo_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/mimo_tiny_manifest.json"), out, 0x2026_1128_0000_0061, true, "MiMo model")
 }
 
+/// MiMo's small model as the family releases it (the `mimo-released` case): `mimo_random`'s manifest drawn by the same rules from a seed of its own,
+/// each matrix its description names scales for then written in the release's stored form, in the release's blocks. Its config has the release's
+/// quantization_config (fp8, e4m3, blocks of 128 x 128, the experts stored as MXFP4 in runs of 32, the first layer's `o` left out). The products are
+/// FP8 with fp32 scales a block under `X.weight_scale_inv` (`formats::fp8_encode`), the fused q-k-v matrix a grid of scales a shard, one after
+/// another: the whole-context layers' 2 shards of 1,088 rows hold 2 x 9 rows of scales where one grid over the matrix would be 17, and the sliding
+/// layers' 2 of 1,408 hold the whole matrix's 22. Every expert's matrix is 4-bit codes two a byte under `X.weight` (U8) with a byte's scale a run of
+/// 32 under `X.weight_scale` (`formats::mxfp4_encode`). The weights are so the nearest codes to the draw's, not its bits: the case's reference reads
+/// the stored forms by the description (`model::described_source`), as its loader does. The seed is one whose routers have no near tie on the
+/// case's tokens (`every_case_held_to_a_reference_is_well_conditioned`: KL mean 6.6e-7; `mimo_random`'s seed written so has four choices that a
+/// norm's rounding takes the other way, one on a row the fixture holds, a floor of 5.2e-4).
+pub fn mimo_released_random(out: &Path) -> Result<()> {
+    mimo_released_draw(out, MIMO_RELEASED_SEED)
+}
+
+/// The seed of `mimo_released_random`'s draw.
+pub const MIMO_RELEASED_SEED: u64 = 0x2026_1128_0000_0062;
+
+/// `mimo_released_random` drawn from `seed` (not 0).
+pub fn mimo_released_draw(out: &Path, seed: u64) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/mimo_tiny_manifest.json"), out, seed, true, "MiMo model")?;
+    let path = out.join("config.json");
+    let mut cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(&path))?).map_err(|e| Error(e.to_string()))?;
+    cfg["quantization_config"] = json!({"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128], "store_dtype": "mxfp4",
+        "mxfp4_block_size": 32, "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]});
+    let d = crate::runtime::describe::describe(&cfg)?;
+    let st = d.stored();
+    let ck = glyd_gpu::safetensors::Checkpoint::open(out).map_err(|e| Error(e.to_string()))?;
+    let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
+    for name in ck.names() {
+        let (t, bytes) = (ck.get(name).map(|x| x.1.clone()).ok_or_else(|| Error(format!("no tensor {name}")))?, io(ck.read(name))?);
+        let dtype = match t.dtype.as_str() {
+            "BF16" => "BF16",
+            "F32" => "F32",
+            other => return err(format!("{name}: {other}, where MiMo's small model holds bf16 and fp32")),
+        };
+        let (Some(scales), "BF16", &[rows, cols]) = (st.scales.get(name), dtype, &t.shape[..]) else {
+            tensors.push((name.to_string(), dtype, t.shape.clone(), bytes));
+            continue;
+        };
+        let v: Vec<f32> = bytes.chunks_exact(2).map(|b| f32::from_bits((u16::from_le_bytes([b[0], b[1]]) as u32) << 16)).collect();
+        let (r, c) = (rows as usize, cols as usize);
+        if scales.ends_with("_scale_inv") {
+            let shards = st.shards.get(name).copied().unwrap_or(1);
+            let each = r / shards;
+            let (mut q, mut grids) = (Vec::with_capacity(r * c), Vec::new());
+            for part in v.chunks_exact(each * c) {
+                let (codes, s) = crate::formats::fp8_encode(part, each, c, [128, 128]);
+                q.extend(codes);
+                grids.extend(s.iter().flat_map(|x| x.to_le_bytes()));
+            }
+            tensors.push((name.to_string(), "F8_E4M3", t.shape.clone(), q));
+            tensors.push((scales.clone(), "F32", vec![(shards * each.div_ceil(128)) as u64, cols.div_ceil(128)], grids));
+        } else {
+            let (codes, s) = crate::formats::mxfp4_encode(&v, r, c)?;
+            tensors.push((name.to_string(), "U8", vec![rows, cols / 2], codes));
+            tensors.push((scales.clone(), "U8", vec![rows, cols / 32], s));
+        }
+    }
+    drop(ck);
+    io(std::fs::write(&path, cfg.to_string()))?;
+    let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = tensors.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), &b[..])).collect();
+    crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
+    println!("{}: as released, {} tensors, {:.0} MB", out.display(), tensors.len(), tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6);
+    Ok(())
+}
+
 /// A small Qwen3.5-family text model (Qwen3_5ForCausalLM: three Gated DeltaNet layers and a gated full-attention one, 1024 wide, a vocabulary of 4096): the layout of Qwen3.8-27B and the releases of its family at 0.8B's widths.
 /// Drawn by `manifest_random`'s rules, then the final norm's (1 + w) times `QWEN35_HEAD` (`head_scaled`): its head's logits that much smaller, which every row's
 /// KL from a last-place difference goes as a power of. As first drawn, the GPU against itself (each prompt served alone against all 64 at once, its sums in another
@@ -2781,6 +2847,16 @@ pub fn cases() -> Vec<Case> {
             id: "mimo",
             family: "MiMo (heads of 192 with values of 128 times a factor, a fused product in shards, sinks, sigmoid-routed experts with a choice bias)",
             weights: Weights::Random(mimo_random),
+            engine: dense_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            on_choices: None,
+            also: None,
+        },
+        Case {
+            id: "mimo-released",
+            family: "MiMo as released (fused products FP8 with a grid of scales a shard, experts packed 4-bit codes: read by the description's scales)",
+            weights: Weights::Random(mimo_released_random),
             engine: dense_engine,
             cpu: Some(described_cpu),
             vocab: 4096,
@@ -5889,7 +5965,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
             Dyn::new(dir, &crate::runtime::config::ModelConfig::load(dir)?, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
         "qwen35" | "qwen35-wide" | "qwen35moe" => crate::dynamic::qwen35::load(dir, o)?,
-        "dense" | "domynedge" | "granite-swa" | "mellum" | "lfm3" | "mimo" => crate::dynamic::dense::load(dir, o)?,
+        "dense" | "domynedge" | "granite-swa" | "mellum" | "lfm3" | "mimo" | "mimo-released" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" | "kimi-dsa" => crate::dynamic::kimi::load(dir, o)?,
         "glm-dsa" | "glm-dsa-f8" => crate::dynamic::glm::load_plain(dir, o)?,
@@ -5977,6 +6053,7 @@ fn random_model_of(case: &str, dir: &Path) -> Result<()> {
         "mellum" => mellum_random(dir),
         "lfm3" => lfm3_random(dir),
         "mimo" => mimo_random(dir),
+        "mimo-released" => mimo_released_random(dir),
         "muse" => crate::muse_ref::random(dir),
         "kimi" => crate::kimi_ref::random(dir, 1, true, 8),
         "kimi-dsa" => crate::kimi_ref::random_dsa(dir),
