@@ -2,8 +2,8 @@
 //! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), Qwen3.8-Flash-Next (Ibis's
 //! model: gated residuals, the indexer on GQA, the hashed n-gram embedding), gemma-4 text, GLM-5.3 and
 //! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, DeepSeek-V4, Nemotron 3
-//! (`nemotron_h`), LFM3 (`lfm3`: described, not run yet), Ling 3 (`bailing_hybrid`: described, not run yet), and the Llama-style standard
-//! architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
+//! (`nemotron_h`), LFM3 (`lfm3`: described, not run yet), Ling 3 (`bailing_hybrid`: described, not run yet), ERNIE 5.5 (`ernie5_5_moe`: its
+//! config read and held, refused at the parts no kind says yet), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
 //! through the tables of their naming convention (`names`); a format detail such as Kimi-K3's MXFP4 experts (`.weight_packed` for
 //! `.weight`) is the loader's. The config comes parsed once (`config::ModelConfig`).
 //!
@@ -577,6 +577,7 @@ pub fn describe_config_in(c: &ModelConfig, have: Option<&BTreeSet<String>>) -> R
         "deepseek_v4" => return deepseek_v4(tc),
         "deepseek_v41" => return deepseek_v41(c),
         "nemotron_h" => return nemotron_h(tc),
+        "ernie5_5_moe" => return ernie5_5(tc),
         _ => {}
     }
     let mt = c.text_type.as_str();
@@ -4530,6 +4531,207 @@ fn v41_shapes(out: &Described, inter: usize) -> std::collections::BTreeMap<Strin
     }
     sh.insert(out.final_norm.clone(), vec![d]);
     sh
+}
+
+/// What an ERNIE 5.5 layer computes that no layer kind says yet, each with the checkpoint's tensors it is in (`ernie5_5`'s refusal names them all).
+pub const ERNIE_LACKS: &[&str] = &[
+    "the attention's output gate from the query latent (sigmoid of self_attn.gate_proj of the normed latent: on the grouped low-rank output of a compressing layer, \
+     on the heads' output of a latent one)",
+    "the low-rank mix of the heads' outputs with each other (self_attn.vha_postmix_U, vha_postmix_V)",
+    "the latent attention's sinks (core_attention.softmax_offset) and its indexer's rotary in halves beside the attention's interleaved one",
+    "two routers whose sigmoid scores add, and a learned scale an expert (block_sparse_moe.gate.weight_1, gate.routed_scaling_factor_param)",
+    "the residual streams' norm with its epsilon outside the root (1 / (rms + eps)), in the blocks and in the hyper-head",
+    "the logits' four-part correction (lm_head.multimax_ranges, multimax_ts)",
+    "matrices stored transposed (the hyper-connections' mapping_proj.weight, mhc_contract.hc_head_fn, the draft's markov_w1)",
+];
+
+/// ERNIE 5.5 (`ernie5_5_moe`, `Ernie5_5_MoeForCausalLM`; text in, text out: no tower): DeepSeek-V4's decoder (residual streams, the compressed
+/// attention with a window, grouped low-rank output) with layers of a second sort and seven parts of its own. `compress_ratios` says each layer's
+/// attention: 128, the compressed attention (`Comp`: one key-value head of `head_dim`, the window of `sliding_window` tokens and every closed window of
+/// 128 as one entry, sinks, no indexer; the YaRN rotary of `compress_rope_theta`); -2, a latent attention over the whole context (`Mla` of the
+/// `hybrid_mla_*` widths, the plain rotary of `rope_theta` in interleaved pairs) whose indexer keeps `index_topk` tokens a query (a key a token,
+/// LayerNorm-ed with a bias; DeepSeek-V3.2's form). The feed-forward is a dense SiTU MLP on the first `first_k_dense_replace` layers and experts after
+/// them: `n_routed_experts` in a latent of `moe_latent_size` (a projection down, the weighed sum normed, a projection up), a shared expert on the
+/// full vector. A DSpark drafter of `dspark_target_layer_ids`' length follows under `model.mtp.`.
+///
+/// Read from SGLang's implementation (models/ernie55.py, configs/ernie55.py, models/ernie55_dspark.py), the one reader of the family: the release
+/// ships no modeling code. Every key is read and held to what that reader computes; a key it does not read is held to the released value, so that
+/// a release that changes one is stopped here. The builder then refuses: `ERNIE_LACKS` are parts of every layer, and a description without them
+/// would be of another model.
+fn ernie5_5(tc: &Map<String, Value>) -> Result<Described> {
+    let mt = "ernie5_5_moe";
+    let k = Keys::new(tc, mt);
+    let (d, layers, _vocab, _eps, tied) = common(&k, None)?;
+    if tied {
+        return err(format!("{mt}: tie_word_embeddings = true is not supported (the release has a head of its own)"));
+    }
+    k.opt_usize("max_position_embeddings")?;
+    // (the settings the reader's config class asks for by value: configs/ernie55.py `_REQUIRED_CHECKPOINT_VALUES`)
+    for (key, want) in [
+        ("hidden_act", Value::from("situ")),
+        ("latent_moe_use_norm", Value::Bool(true)),
+        ("moe_split_feature_routing", Value::Bool(true)),
+        ("multimax", Value::from("lm_head")),
+        ("n_group", Value::from(1)),
+        ("topk_group", Value::from(1)),
+        ("routed_scaling_factor_learnable", Value::Bool(true)),
+    ] {
+        k.expect(key, &want)?;
+    }
+    // (the settings no reader reads: the release's values say the form its reader computes, each named for what it turns on where the name says so.
+    // gated_linear_unit: the MLPs are gated pairs. use_qk_norm, qk_norm_type: the weightless RMS norm of each query head. use_gated_attn,
+    // gated_attn_act, gated_attn_use_q_lora: the output gate, a sigmoid, from the query latent. use_vha_attention: the heads' mix.
+    // add_full_attention_sink_bias: the latent layers' sinks. enable_hyper_connections: the residual streams. scoring_func, topk_method,
+    // norm_topk_prob: sigmoid scores, a bias for the choice, the chosen scores divided by their sum. rope_interleave: pairs (2i, 2i + 1))
+    for (key, want) in [
+        ("attention_bias", Value::Bool(false)),
+        ("use_bias", Value::Bool(false)),
+        ("gated_linear_unit", Value::Bool(true)),
+        ("num_key_value_heads", Value::from(1)),
+        ("use_mla", Value::Bool(false)),
+        ("experimental_attention_variant", Value::from("dsv4_hybrid")),
+        ("hybrid_mla_attention", Value::from("mqa_dsa")),
+        ("csa_dense_mode", Value::Bool(true)),
+        ("mqa_split_kv_b_proj", Value::Bool(true)),
+        ("use_attn_merger", Value::Bool(true)),
+        ("use_fast_hadamard", Value::Bool(true)),
+        ("use_qk_norm", Value::Bool(true)),
+        ("qk_norm_type", Value::from("per_head")),
+        ("use_gated_attn", Value::Bool(true)),
+        ("gated_attn_act", Value::from("sigmoid")),
+        ("gated_attn_use_q_lora", Value::Bool(true)),
+        ("use_vha_attention", Value::Bool(true)),
+        ("add_full_attention_sink_bias", Value::Bool(true)),
+        ("enable_hyper_connections", Value::Bool(true)),
+        ("scoring_func", Value::from("sigmoid")),
+        ("topk_method", Value::from("noaux_tc")),
+        ("norm_topk_prob", Value::Bool(true)),
+        ("moe_group_experts", Value::Bool(false)),
+        ("moe_shared_expert_gate", Value::Bool(false)),
+        ("moe_layer_freq", Value::from(1)),
+        ("n_shared_experts", Value::from(1)),
+        ("rope_interleave", Value::Bool(true)),
+        ("rope_type", Value::from("rope")),
+        ("hca_rope_type", Value::from("yarn")),
+        ("use_dense_mtp", Value::Bool(false)),
+        ("mtp_shared_last_layer", Value::Bool(true)),
+    ] {
+        k.expect(key, &want)?;
+    }
+    // (how the experts' tokens travel between GPUs in the reader: no part of what a layer computes)
+    k.str("moe_token_dispatcher_type")?;
+    let (beta, linear) = (k.f64("activation_situ_beta")?, k.f64("activation_situ_linear_beta")?);
+    if beta <= 0.0 || linear <= 0.0 {
+        return err(format!("{mt}: activation_situ_beta = {beta}, activation_situ_linear_beta = {linear}: both divide, and are above 0"));
+    }
+    // the compressed attention: one key-value head whose keys are its values, the rotary on the trailing channels of a head
+    let (heads, hd, rd) = (k.usize("num_attention_heads")?, k.usize("head_dim")?, k.usize("qk_rope_head_dim")?);
+    let (q_lora, o_lora, o_groups) = (k.usize("q_lora_rank")?, k.usize("o_lora_rank")?, k.usize("o_groups")?);
+    let window = k.opt_usize("sliding_window")?.unwrap_or(128);
+    for (key, want, why) in [
+        ("qk_nope_head_dim", hd.saturating_sub(rd), "head_dim less qk_rope_head_dim: the channels of a head the rotary leaves"),
+        ("v_head_dim", hd, "head_dim: the keys are the values"),
+        ("kv_lora_rank", hd, "head_dim: the one key-value head's width"),
+        ("qk_pos_emb_head_dim", rd, "qk_rope_head_dim: the channels the rotary turns"),
+    ] {
+        match k.opt_usize(key)? {
+            Some(v) if v != want => return err(format!("{mt}: {key} = {v} is not supported (only {want}, {why})")),
+            _ => {}
+        }
+    }
+    if rd > hd || rd % 2 != 0 || o_groups == 0 || heads % o_groups != 0 {
+        return err(format!("{mt}: {heads} heads of {hd} with a rotary of {rd} channels in {o_groups} output groups"));
+    }
+    // the rotaries: the latent layers' plain one, the compressing layers' YaRN (the frequencies stretched, no factor on cos and sin: DeepSeek-V4's)
+    let theta = k.opt_f64("rope_theta")?.unwrap_or(10_000.0);
+    if k.opt_f64("rotary_base")?.is_some_and(|b| b != theta) {
+        return err(format!("{mt}: rotary_base is not rope_theta ({theta}): one rotary's base under two names"));
+    }
+    if k.opt_f64("rotary_percent")?.is_some_and(|p| p != 1.0) {
+        return err(format!("{mt}: rotary_percent is not supported (only 1.0)"));
+    }
+    let mut comp_m = match k.raw("rope_scaling") {
+        Some(Value::Object(o)) => o.clone(),
+        _ => return err(format!("{mt}: no rope_scaling (the compressing layers' YaRN)")),
+    };
+    let ty = comp_m.get("rope_type").or(comp_m.get("type")).and_then(Value::as_str).unwrap_or("default").to_string();
+    if ty != "yarn" {
+        return err(format!("{mt}: rope_scaling of type {ty} is not supported (only yarn)"));
+    }
+    comp_m.insert("rope_theta".into(), Value::from(k.opt_f64("compress_rope_theta")?.unwrap_or(160_000.0)));
+    comp_m.entry("attention_factor").or_insert(Value::from(1.0));
+    rope(&comp_m, rd, k.opt_usize("max_position_embeddings")?, &format!("{mt} rope_scaling"))?;
+    // the latent attention and its indexer
+    let (mh, mnope, mrd, mvd) = (
+        k.usize("hybrid_mla_num_attention_heads")?,
+        k.usize("hybrid_mla_qk_nope_head_dim")?,
+        k.usize("hybrid_mla_qk_rope_head_dim")?,
+        k.usize("hybrid_mla_v_head_dim")?,
+    );
+    let (mq, mkv) = (k.usize("hybrid_mla_q_lora_rank")?, k.usize("hybrid_mla_kv_lora_rank")?);
+    // (a latent attention's keys and values are a head's each, made from the one shared latent: the count of them is the heads')
+    if k.opt_usize("hybrid_mla_num_key_value_heads")?.is_some_and(|v| v != mh) {
+        return err(format!("{mt}: hybrid_mla_num_key_value_heads is not supported (only hybrid_mla_num_attention_heads, {mh})"));
+    }
+    let (ih, idim, itop) = (k.usize("index_n_heads")?, k.usize("index_head_dim")?, k.usize("index_topk")?);
+    // (the indexer turns the first channels of its heads by the latent attention's rotary: as many as that turns)
+    if mrd % 2 != 0 || mrd > idim || mh == 0 || mvd == 0 || itop == 0 || mq == 0 || mkv == 0 || mnope + mrd == 0 || ih == 0 {
+        return err(format!("{mt}: a latent attention of {mh} heads ({mnope} + {mrd}, values of {mvd}) with an indexer of {ih} heads of {idim}"));
+    }
+    // each layer's sort
+    let ratios: Vec<i64> = match k.raw("compress_ratios") {
+        Some(Value::Array(a)) => a.iter().map(|x| x.as_i64().unwrap_or(i64::MIN)).collect(),
+        _ => return err(format!("{mt}: no compress_ratios (each layer's attention: 128 or -2)")),
+    };
+    // (the reader's class has one draft layer where the key is absent, and its ratio after the layers'; the release has none)
+    let nextn = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(1);
+    if nextn != 0 {
+        return err(format!("{mt}: num_nextn_predict_layers = {nextn} is not supported (only 0: a draft layer after the model's is not read)"));
+    }
+    if ratios.len() != layers {
+        return err(format!("{mt}: {} compress_ratios for {layers} layers", ratios.len()));
+    }
+    if let Some((l, r)) = ratios.iter().enumerate().find(|(_, &r)| r != 128 && r != -2) {
+        return err(format!("{mt}: layer {l} has compress ratio {r} (only 128, the compressed attention, and -2, the latent one)"));
+    }
+    let latent_layers = ratios.iter().filter(|&&r| r == -2).count();
+    // the residual streams
+    let (hc, hc_iters, hc_eps) = (k.usize("hc_mult")?, k.usize("hc_sinkhorn_iters")?, k.f64("hc_eps")?);
+    if hc == 0 || hc_iters == 0 || hc_eps <= 0.0 {
+        return err(format!("{mt}: {hc} residual streams, {hc_iters} Sinkhorn passes, hc_eps {hc_eps}"));
+    }
+    // the feed-forward
+    let dense = k.opt_usize("first_k_dense_replace")?.unwrap_or(0).min(layers);
+    let (inter, moe_inter, latent) = (k.usize("intermediate_size")?, k.usize("moe_intermediate_size")?, k.usize("moe_latent_size")?);
+    let (ne, top_k) = (k.usize("n_routed_experts")?, k.usize("num_experts_per_tok")?);
+    // (the routed weights' factor where it is not learned; the release learns one an expert, `gate.routed_scaling_factor_param`, and its reader does not read this)
+    k.opt_f64("routed_scaling_factor")?;
+    if top_k == 0 || top_k > ne || inter == 0 || moe_inter == 0 || latent == 0 {
+        return err(format!("{mt}: {top_k} of {ne} experts a token, of {moe_inter} in a latent of {latent}; a dense MLP of {inter}"));
+    }
+    // the drafter
+    let targets: Vec<usize> = match k.raw("dspark_target_layer_ids") {
+        Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect(),
+        Some(v) => return err(format!("{mt}: dspark_target_layer_ids {v}: a list of layers")),
+        None => Vec::new(),
+    };
+    let draft = (k.opt_usize("dspark_block_size")?, k.opt_usize("dspark_markov_rank")?, k.opt_usize("dspark_noise_token_id")?);
+    if let Some(l) = targets.iter().find(|&&l| l >= layers) {
+        return err(format!("{mt}: dspark_target_layer_ids names layer {l} of {layers}"));
+    }
+    if !targets.is_empty() && !matches!(draft, (Some(b), Some(r), Some(_)) if b > 0 && r > 0) {
+        return err(format!("{mt}: a DSpark drafter without its dspark_block_size, dspark_markov_rank (its Markov head) or dspark_noise_token_id"));
+    }
+    k.finish()?;
+    let _ = (d, window, q_lora, o_lora);
+    err(format!(
+        "{mt}: its config is read ({} layers of compressed attention and {latent_layers} of latent attention, {dense} dense feed-forward and {} of {ne} experts, \
+         {hc} residual streams, a drafter of {} layers), and it is not described yet. Parts of every layer have no layer kind: {}",
+        layers - latent_layers,
+        layers - dense,
+        targets.len(),
+        ERNIE_LACKS.join("; ")
+    ))
 }
 
 /// Nemotron 3 (`nemotron_h`, `NemotronHForCausalLM`): a layer is one block, `x + mixer(norm(x))`, its mixer named by the pattern:

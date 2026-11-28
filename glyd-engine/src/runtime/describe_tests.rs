@@ -3314,3 +3314,138 @@ fn ling_on_the_reference_steps_as_it_prompts_gates_a_head_and_limits_the_activat
     // the decay's two forms
     assert_ne!(rows[6], run(&ling_tiny(serde_json::json!({"kda_safe_gate": false})), &a)[6]);
 }
+
+/// ERNIE 5.5's config as released (its text model's keys: the release is text in, text out), with `keys` over them.
+fn ernie_config(keys: serde_json::Value) -> serde_json::Value {
+    let mut ratios = vec![128; 43];
+    for l in [7, 14, 21, 28, 35, 42] {
+        ratios[l] = -2;
+    }
+    let mut c = serde_json::Map::new();
+    for part in [
+        serde_json::json!({
+            "architectures": ["Ernie5_5_MoeForCausalLM"], "model_type": "ernie5_5_moe", "torch_dtype": "bfloat16", "transformers_version": "4.46.1",
+            "use_cache": true, "bos_token_id": 1, "eos_token_id": 2, "pad_token_id": 0, "max_position_embeddings": 1048576,
+            "hidden_size": 4096, "num_hidden_layers": 43, "vocab_size": 201216, "rms_norm_eps": 1e-6, "tie_word_embeddings": false,
+            "hidden_act": "situ", "activation_situ_beta": 4.0, "activation_situ_linear_beta": 25.0, "gated_linear_unit": true, "attention_bias": false,
+            "use_bias": false, "compress_ratios": ratios, "sliding_window": 128, "compress_rope_theta": 160000.0, "csa_dense_mode": true,
+            "experimental_attention_variant": "dsv4_hybrid", "use_mla": false, "num_attention_heads": 64, "num_key_value_heads": 1, "head_dim": 512,
+            "qk_nope_head_dim": 448, "qk_rope_head_dim": 64, "qk_pos_emb_head_dim": 64, "v_head_dim": 512, "kv_lora_rank": 512, "q_lora_rank": 1024,
+        }),
+        serde_json::json!({
+            "o_lora_rank": 1024, "o_groups": 8, "use_qk_norm": true, "qk_norm_type": "per_head", "use_attn_merger": true, "use_vha_attention": true,
+            "use_gated_attn": true, "gated_attn_act": "sigmoid", "gated_attn_use_q_lora": true, "add_full_attention_sink_bias": true,
+            "hybrid_mla_attention": "mqa_dsa", "hybrid_mla_num_attention_heads": 64, "hybrid_mla_num_key_value_heads": 64, "hybrid_mla_q_lora_rank": 1024,
+            "hybrid_mla_kv_lora_rank": 512, "hybrid_mla_qk_nope_head_dim": 192, "hybrid_mla_qk_rope_head_dim": 64, "hybrid_mla_v_head_dim": 256,
+            "mqa_split_kv_b_proj": true, "index_n_heads": 64, "index_head_dim": 128, "index_topk": 2048, "use_fast_hadamard": true,
+            "rope_theta": 8000000, "rotary_base": 8000000, "rotary_percent": 1.0, "rope_type": "rope", "rope_interleave": true, "hca_rope_type": "yarn",
+            "rope_scaling": {"beta_fast": 32, "beta_slow": 1, "factor": 16, "original_max_position_embeddings": 65536, "type": "yarn"},
+        }),
+        serde_json::json!({
+            "enable_hyper_connections": true, "hc_mult": 4, "hc_eps": 1e-6, "hc_sinkhorn_iters": 20,
+            "first_k_dense_replace": 1, "intermediate_size": 14336, "moe_intermediate_size": 2048, "moe_latent_size": 2048, "latent_moe_use_norm": true,
+            "moe_layer_freq": 1, "moe_group_experts": false, "moe_shared_expert_gate": false, "moe_split_feature_routing": true,
+            "moe_token_dispatcher_type": "deepep", "n_routed_experts": 512, "n_shared_experts": 1, "num_experts_per_tok": 10, "n_group": 1, "topk_group": 1,
+            "norm_topk_prob": true, "scoring_func": "sigmoid", "topk_method": "noaux_tc", "routed_scaling_factor": 3.0,
+            "routed_scaling_factor_learnable": true, "multimax": "lm_head", "num_nextn_predict_layers": 0, "use_dense_mtp": false,
+            "mtp_shared_last_layer": true, "dspark_block_size": 7, "dspark_markov_rank": 256, "dspark_noise_token_id": 1024,
+            "dspark_target_layer_ids": [40, 41, 42],
+        }),
+        keys,
+    ] {
+        c.extend(part.as_object().unwrap().clone());
+    }
+    serde_json::Value::Object(c)
+}
+
+/// ERNIE 5.5's released config has a builder that reads every key of it and says what it found: 37 layers of the compressed attention and 6 of the
+/// latent one, a dense feed-forward on the first layer and experts on the rest, four residual streams, a drafter of three layers. It is then
+/// refused: each part of a layer that no layer kind says is named with its tensors, and no key is left unread.
+#[test]
+fn ernie_5_5s_released_config_is_read_and_refused_at_the_parts_no_kind_says() {
+    use super::describe::{keys_named, ERNIE_LACKS};
+    let c = ernie_config(serde_json::json!({}));
+    assert_eq!(c.as_object().unwrap().len(), 97, "every key of the release's config.json");
+    let e = describe(&c).expect_err("refused").msg;
+    let read = "ernie5_5_moe: its config is read (37 layers of compressed attention and 6 of latent attention, 1 dense feed-forward and 42 of 512 experts, \
+                4 residual streams, a drafter of 3 layers), and it is not described yet.";
+    assert!(e.starts_with(read), "{e}");
+    assert_eq!(ERNIE_LACKS.len(), 7);
+    for part in ERNIE_LACKS {
+        assert!(e.contains(part), "{part}: {e}");
+    }
+    for tensor in
+        ["gate_proj", "vha_postmix_U", "softmax_offset", "gate.weight_1", "routed_scaling_factor_param", "multimax_ranges", "mapping_proj.weight", "hc_head_fn"]
+    {
+        assert!(e.contains(tensor), "{tensor}: {e}");
+    }
+    assert!(keys_named(&e).is_empty() && !e.contains("has no description builder yet"), "{e}");
+    // (the counts are the config's: a model of other layers says its own)
+    let small = ernie_config(serde_json::json!({
+        "num_hidden_layers": 3, "compress_ratios": [128, -2, -2], "first_k_dense_replace": 2, "dspark_target_layer_ids": [2], "n_routed_experts": 16,
+    }));
+    let e = describe(&small).expect_err("refused").msg;
+    assert!(
+        e.contains(
+            "(1 layers of compressed attention and 2 of latent attention, 2 dense feed-forward and 1 of 16 experts, 4 residual streams, a drafter of 1 layers)"
+        ),
+        "{e}"
+    );
+    // (no drafter: the keys of one are not asked for)
+    let mut bare = ernie_config(serde_json::json!({}));
+    for key in ["dspark_block_size", "dspark_markov_rank", "dspark_noise_token_id", "dspark_target_layer_ids"] {
+        bare.as_object_mut().unwrap().remove(key);
+    }
+    assert!(describe(&bare).expect_err("refused").msg.contains("a drafter of 0 layers"));
+}
+
+/// The ERNIE builder holds each key to what its reader computes: a setting of another form is refused by its key before the parts are, a key nobody
+/// knows by its name, and a list of ratios that is not the layers', a ratio that is no sort of layer, or a width that is not the form's in words.
+#[test]
+fn ernie_5_5_holds_every_key_to_the_form_its_reader_computes() {
+    use super::describe::keys_named;
+    let refusal = |keys: serde_json::Value| describe(&ernie_config(keys)).expect_err("refused").msg;
+    for (keys, want) in [
+        (serde_json::json!({"hidden_act": "silu"}), "hidden_act = \"silu\" is not supported (only \"situ\")"),
+        (serde_json::json!({"multimax": "none"}), "multimax = \"none\" is not supported"),
+        (serde_json::json!({"moe_split_feature_routing": false}), "moe_split_feature_routing = false is not supported"),
+        (serde_json::json!({"routed_scaling_factor_learnable": false}), "routed_scaling_factor_learnable = false is not supported"),
+        (serde_json::json!({"latent_moe_use_norm": false}), "latent_moe_use_norm = false is not supported"),
+        (serde_json::json!({"n_group": 2}), "n_group = 2 is not supported"),
+        (serde_json::json!({"use_gated_attn": false}), "use_gated_attn = false is not supported"),
+        (serde_json::json!({"gated_attn_act": "silu"}), "gated_attn_act = \"silu\" is not supported"),
+        (serde_json::json!({"use_vha_attention": false}), "use_vha_attention = false is not supported"),
+        (serde_json::json!({"add_full_attention_sink_bias": false}), "add_full_attention_sink_bias = false is not supported"),
+        (serde_json::json!({"enable_hyper_connections": false}), "enable_hyper_connections = false is not supported"),
+        (serde_json::json!({"scoring_func": "softmax"}), "scoring_func = \"softmax\" is not supported"),
+        (serde_json::json!({"rope_interleave": false}), "rope_interleave = false is not supported"),
+        (serde_json::json!({"use_mla": true}), "use_mla = true is not supported"),
+        (serde_json::json!({"csa_dense_mode": false}), "csa_dense_mode = false is not supported"),
+        (serde_json::json!({"num_key_value_heads": 8}), "num_key_value_heads = 8 is not supported (only 1)"),
+        (serde_json::json!({"tie_word_embeddings": true}), "tie_word_embeddings = true is not supported"),
+        (serde_json::json!({"qk_nope_head_dim": 400}), "qk_nope_head_dim = 400 is not supported (only 448, head_dim less qk_rope_head_dim"),
+        (serde_json::json!({"v_head_dim": 256}), "v_head_dim = 256 is not supported (only 512, head_dim: the keys are the values)"),
+        (serde_json::json!({"kv_lora_rank": 256}), "kv_lora_rank = 256 is not supported (only 512"),
+        (serde_json::json!({"rotary_base": 10000}), "rotary_base is not rope_theta (8000000)"),
+        (serde_json::json!({"rotary_percent": 0.5}), "rotary_percent is not supported (only 1.0)"),
+        (serde_json::json!({"rope_scaling": {"type": "linear", "factor": 2.0}}), "rope_scaling of type linear is not supported (only yarn)"),
+        (serde_json::json!({"hybrid_mla_num_key_value_heads": 1}), "hybrid_mla_num_key_value_heads is not supported (only hybrid_mla_num_attention_heads, 64)"),
+        (serde_json::json!({"compress_ratios": [128, -2]}), "2 compress_ratios for 43 layers"),
+        (serde_json::json!({"num_hidden_layers": 2, "compress_ratios": [128, 4], "dspark_target_layer_ids": [1]}), "layer 1 has compress ratio 4 (only 128"),
+        (serde_json::json!({"num_nextn_predict_layers": 1}), "num_nextn_predict_layers = 1 is not supported (only 0"),
+        (serde_json::json!({"num_nextn_predict_layers": null}), "num_nextn_predict_layers = 1 is not supported (only 0"),
+        (serde_json::json!({"num_experts_per_tok": 600}), "600 of 512 experts a token"),
+        (serde_json::json!({"activation_situ_beta": 0.0}), "activation_situ_beta = 0"),
+        (serde_json::json!({"dspark_target_layer_ids": [40, 41, 43]}), "dspark_target_layer_ids names layer 43 of 43"),
+        (serde_json::json!({"dspark_markov_rank": null}), "a DSpark drafter without its dspark_block_size, dspark_markov_rank"),
+        (serde_json::json!({"hc_sinkhorn_iters": null}), "no hc_sinkhorn_iters"),
+        (serde_json::json!({"index_topk": null}), "no index_topk"),
+    ] {
+        let e = refusal(keys.clone());
+        assert!(e.starts_with("ernie5_5_moe: ") && e.contains(want), "{keys}: {e}");
+        assert!(!e.contains("its config is read"), "{keys}: refused at the key, before the parts: {e}");
+    }
+    // (a key no builder knows is named, with every other one, before the parts are)
+    let e = refusal(serde_json::json!({"attn_merger_rank": 16, "vha_rank": 16}));
+    assert_eq!(keys_named(&e), ["attn_merger_rank", "vha_rank"], "{e}");
+}
