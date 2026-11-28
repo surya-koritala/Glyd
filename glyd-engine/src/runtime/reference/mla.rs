@@ -247,9 +247,14 @@ pub fn step(m: &Mla, p: &Params, c: &mut LatentCache, h: &[f32], pos: u32) -> Re
     }
     // (the gate's product: a value a channel of each head's output, or one a head, `GateFrom::Head`)
     let per_head = m.gate.is_some_and(|g| g.from == crate::runtime::kinds::GateFrom::Head);
-    let gate = match m.gate {
-        Some(_) => Some(p.prod("g", h)?),
-        None => None,
+    let gate = match (m.gate, &qr) {
+        // (of the normed query latent, a value a channel of the heads' outputs: `GateFrom::Latent`)
+        (Some(g), Some(qr)) if g.from == crate::runtime::kinds::GateFrom::Latent => Some(p.prod("g", qr)?),
+        (Some(g), None) if g.from == crate::runtime::kinds::GateFrom::Latent => {
+            return err("MLA: an output gate from the query latent, and this layer's queries are one product (no latent)")
+        }
+        (Some(_), _) => Some(p.prod("g", h)?),
+        (None, _) => None,
     };
     if let Some(gv) = gate.as_ref().filter(|gv| gv.len() != if per_head { nh } else { nh * vd }) {
         return err(format!("MLA: a gate of {} values for {nh} heads{}", gv.len(), if per_head { "" } else { " of their values' width" }));
@@ -693,5 +698,71 @@ mod tests {
         one.put("g", &[nh, D], (0..nh * D).map(|i| if i < D { 0.0 } else { g[i] }).collect());
         let half: Vec<Vec<f32>> = run(&Mla { gate: None, ..m.clone() }, &one).into_iter().map(|row| row.into_iter().map(|x| 0.5 * x).collect()).collect();
         assert_eq!(run(&m, &one), half, "a head's gate of a half halves its output");
+    }
+
+    /// A latent attention of 2 heads (queries in a low rank of 10, no rotary), its weights drawn under `tag`, its output product the identity: a step's
+    /// output is then the heads' outputs after the kind's mix and gate. `g` reads the query latent.
+    fn latent_gated(tag: &str) -> (Mla, Params) {
+        use crate::runtime::kinds::{Act, GateFrom, OutGate};
+        let (nh, nope, vd, kr, ql) = (2usize, 8usize, 6usize, 12usize, 10usize);
+        let m = Mla {
+            heads: nh,
+            q_lora: Some(ql),
+            kv_lora: kr,
+            nope,
+            rope_dim: 0,
+            v_dim: vd,
+            rope: None,
+            q_norm: Norm::rms(1e-6),
+            kv_norm: Norm::rms(1e-6),
+            gate: Some(OutGate { act: Act::Sigmoid, from: GateFrom::Latent, norm: None }),
+            scale: (nope as f32).powf(-0.5),
+            absorbed: true,
+            indexer: None,
+        };
+        let mut p = Params::new();
+        for (role, shape) in [("q_a", [ql, D]), ("q_b", [nh * nope, ql]), ("kv_a", [kr, D]), ("kv_b", [nh * (nope + vd), kr]), ("g", [nh * vd, ql])] {
+            p.put(role, &shape, fill(&format!("{tag}.{role}"), shape[0] * shape[1], -0.4, 0.4));
+        }
+        p.put("q_a_norm", &[ql], fill(&format!("{tag}.q_a_norm"), ql, 0.5, 1.5));
+        p.put("kv_a_norm", &[kr], fill(&format!("{tag}.kv_a_norm"), kr, 0.5, 1.5));
+        let w = nh * vd;
+        p.put("o", &[w, w], (0..w * w).map(|i| (i / w == i % w) as u32 as f32).collect());
+        (m, p)
+    }
+
+    fn steps(m: &Mla, p: &Params, n: usize) -> Vec<Vec<f32>> {
+        let mut c = LatentCache::default();
+        inputs(n).iter().enumerate().map(|(t, h)| step(m, p, &mut c, h, t as u32).unwrap()).collect()
+    }
+
+    /// A gate from the query latent (`GateFrom::Latent`, ERNIE's `gate_proj`): each channel of the heads' outputs times sigmoid of `g`'s product of the
+    /// normed query latent, by hand from the gate-less layer's heads. It reads the latent, not the block's input: the same `g` under a gate of the
+    /// block's input is refused by its width, and a layer whose queries are one product has no latent to gate by. A `g` of zero halves, to the bit.
+    #[test]
+    fn a_gate_from_the_query_latent_by_hand() {
+        use crate::runtime::kinds::{GateFrom, OutGate};
+        use crate::runtime::reference::sigmoid;
+        let (m, p) = latent_gated("mla.latent");
+        let bare = Mla { gate: None, ..m.clone() };
+        let (heads, gated) = (steps(&bare, &p, 6), steps(&m, &p, 6));
+        for (t, h) in inputs(6).iter().enumerate() {
+            let qr = norm(&m.q_norm, &p.prod("q_a", h).unwrap(), p.opt("q_a_norm"), None);
+            let gv = p.prod("g", &qr).unwrap();
+            let want: Vec<f32> = heads[t].iter().zip(&gv).map(|(o, &z)| o * sigmoid(z)).collect();
+            assert_eq!(gated[t], want, "token {t}");
+        }
+        assert!(rel(&gated[5], &heads[5]) > 1e-3, "the gate changes the answer");
+        let mut c = LatentCache::default();
+        let own = Mla { gate: m.gate.map(|g| OutGate { from: GateFrom::Own, ..g }), ..m.clone() };
+        assert!(step(&own, &p, &mut c, &inputs(1)[0], 0).unwrap_err().msg.contains("g: shape"));
+        let mut one = p.clone();
+        one.put("q", &[16, D], fill("mla.latent.q", 16 * D, -0.4, 0.4));
+        let mut c = LatentCache::default();
+        assert!(step(&Mla { q_lora: None, ..m.clone() }, &one, &mut c, &inputs(1)[0], 0).unwrap_err().msg.contains("no latent"));
+        let mut zero = p.clone();
+        zero.put("g", &[12, 10], vec![0.0; 120]);
+        let half: Vec<Vec<f32>> = heads.iter().map(|r| r.iter().map(|x| 0.5 * x).collect()).collect();
+        assert_eq!(steps(&m, &zero, 6), half);
     }
 }

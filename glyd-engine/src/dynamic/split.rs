@@ -1036,6 +1036,17 @@ pub fn not_run(d: &crate::runtime::describe::Described) -> Option<&'static str> 
     if d.desc.head.correction {
         return Some(crate::runtime::kinds::Head::CORRECTION_NOT_RUN);
     }
+    use crate::runtime::kinds::{GateFrom, Mixer, OutGate};
+    let mixer = |f: &dyn Fn(&Mixer) -> bool| blocks().any(|b| matches!(&b.body, Body::Mixer(m) if f(m)));
+    let latent = |g: &Option<OutGate>| g.is_some_and(|g| g.from == GateFrom::Latent);
+    if mixer(&|m| match m {
+        Mixer::Attention(a) => latent(&a.gate),
+        Mixer::Mla(x) => latent(&x.gate),
+        Mixer::Compressed(c) => c.gate.is_some(),
+        _ => false,
+    }) {
+        return Some(GateFrom::LATENT_NOT_RUN);
+    }
     None
 }
 
@@ -1332,6 +1343,13 @@ mod tests {
         let mut d = base.clone();
         d.desc.head.correction = true;
         refused(&d, crate::runtime::kinds::Head::CORRECTION_NOT_RUN);
+        // (an output gate from the query latent: on a compressed attention, and on a latent one where its kind is made the executor's)
+        use crate::runtime::kinds::{Act, GateFrom, Mixer, OutGate};
+        let gate = Some(OutGate { act: Act::Sigmoid, from: GateFrom::Latent, norm: None });
+        let mut d = base.clone();
+        let Body::Mixer(Mixer::Compressed(c)) = &mut d.desc.blocks[4].body else { panic!("block 4 is no attention") };
+        c.gate = gate;
+        refused(&d, GateFrom::LATENT_NOT_RUN);
         // (and by each lowering itself, whatever chose it: the dense one's, of a plain decoder with the correction)
         let plain = serde_json::json!({"architectures": ["X"], "model_type": "llama", "hidden_size": 256, "intermediate_size": 512, "num_hidden_layers": 2,
             "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 64, "vocab_size": 1024, "rms_norm_eps": 1e-5, "rope_theta": 10000.0,

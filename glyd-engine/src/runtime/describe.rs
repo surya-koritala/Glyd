@@ -4037,6 +4037,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
             ape: true,
             q_head_norm: true,
             share: None,
+            gate: None,
         };
         comp_template = Some(c.clone());
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(c)), norm_out: None, residual: Residual::Streams(streams) });
@@ -4423,6 +4424,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
             ape: false,
             q_head_norm: false,
             share,
+            gate: None,
         };
         comp_template = Some(comp.clone());
         blocks.push(Block { norm_in: rn, body: Body::Mixer(Mixer::Compressed(comp)), norm_out: None, residual: Residual::Streams(streams) });
@@ -4585,8 +4587,6 @@ fn v41_shapes(out: &Described, inter: usize) -> std::collections::BTreeMap<Strin
 
 /// What an ERNIE 5.5 layer computes that no layer kind says yet, each with the checkpoint's tensors it is in (`ernie5_5`'s refusal names them all).
 pub const ERNIE_LACKS: &[&str] = &[
-    "the attention's output gate from the query latent (sigmoid of self_attn.gate_proj of the normed latent: on the grouped low-rank output of a compressing layer, \
-     on the heads' output of a latent one)",
     "the low-rank mix of the heads' outputs with each other (self_attn.vha_postmix_U, vha_postmix_V)",
     "the latent attention's sinks (core_attention.softmax_offset) and its indexer's rotary in halves beside the attention's interleaved one",
 ];

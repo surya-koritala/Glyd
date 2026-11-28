@@ -222,6 +222,16 @@ pub enum GateFrom {
     /// Its own product of one value a head, role `g` [heads, hidden]: every channel of a head's output times the head's one gate (LFM's
     /// `self_attn.gate_proj` on plain attention, Ling's `attention.g_proj` on the latent attention: its "head_wise" gate).
     Head,
+    /// Its own product of the attention's normed query latent (the low rank the queries are made from), not of the block's input, role `g` (ERNIE's
+    /// `self_attn.gate_proj`). On a latent attention [heads v_dim, q_lora]: each channel of the heads' outputs times the activation of its value,
+    /// before the output product. On a compressed attention [o_groups o_lora, q_lora]: the grouped low-rank output (after `o_a`) times it, before
+    /// `o_b`. An attention with no query latent has no such gate.
+    Latent,
+}
+
+impl GateFrom {
+    /// The refusal of an output gate from the query latent: the CPU reference computes it, the executor's gates are products of the block's input.
+    pub const LATENT_NOT_RUN: &'static str = "an attention's output gate from the query latent, which the executor does not run yet";
 }
 
 /// An attention output gate: `o = norm(o_head) * act(gate)` per head before the output product.
@@ -373,7 +383,7 @@ impl std::fmt::Debug for Attn {
 ///
 /// Roles: `q` [heads * (nope + rope_dim), hidden] or with `q_lora` `q_a` [q_lora, hidden], `q_a_norm` [q_lora], `q_b` [heads * (nope +
 /// rope_dim), q_lora]; `kv_a` [kv_lora + rope_dim, hidden], `kv_a_norm` [kv_lora], `kv_b` [heads * (nope + v_dim), kv_lora], `o` [hidden,
-/// heads * v_dim]; `g` [heads * v_dim, hidden] with a gate ([heads, hidden] with a `Head` one). The cache holds per token the normed latent and the
+/// heads * v_dim]; `g` [heads * v_dim, hidden] with a gate ([heads, hidden] with a `Head` one, [heads * v_dim, q_lora] with a `Latent` one). The cache holds per token the normed latent and the
 /// shared key part (kv_lora + rope_dim values); `absorbed` names how a backend computes it (the same function).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mla {
@@ -404,7 +414,7 @@ pub struct Mla {
 /// `o_a` [o_groups o_lora, heads head_dim / o_groups], `o_b` [hidden, o_groups o_lora], `sinks` [heads]; with a ratio `comp_kv`,
 /// `comp_gate` [(1 + overlap) head_dim, hidden], `comp_ape` [ratio, (1 + overlap) head_dim], `comp_norm` [head_dim]; with an indexer
 /// the same four as `idx_kv`, `idx_gate`, `idx_ape`, `idx_norm` at the indexer's head dim, `idx_q_b` [heads head_dim, q_lora] and
-/// `idx_weights` [heads, hidden]. The query's per-head norm has no weight.
+/// `idx_weights` [heads, hidden]. The query's per-head norm has no weight. With a `gate` (`GateFrom::Latent`), `g` [o_groups o_lora, q_lora].
 ///
 /// DeepSeek-V4.1's form of it (CSA2): ratio 1 (each token its own entry, no gate) or 2 (windows of 2, no overlap), no position bias (`ape`
 /// false: no `comp_ape`), no per-head query norm (`q_head_norm` false), and the entries, the indexer's keys and its picks shared across
@@ -431,6 +441,9 @@ pub struct Comp {
     pub q_head_norm: bool,
     /// V4.1's sharing across layers; None: every part the layer's own (V4).
     pub share: Option<CompShare>,
+    /// An output gate from the query latent (`GateFrom::Latent`, the one source this attention has; no norm): the grouped low-rank output times the
+    /// activation of `g`'s product of the normed query latent, between `o_a` and `o_b` (ERNIE's); None: DeepSeek-V4's and V4.1's.
+    pub gate: Option<OutGate>,
 }
 
 /// Where a V4.1 compressed attention's parts come from: None, the layer's own; Some(b), block b's of the description (the most recent source
@@ -453,8 +466,8 @@ pub struct CompShare {
     pub publish: Option<(usize, usize)>,
 }
 
-/// The derived form, with V4.1's fields said only where they differ from DeepSeek-V4's: V4's descriptions read as they did before them (the
-/// digests of tests/fixtures/descriptions.json are of this text).
+/// The derived form, with V4.1's fields said only where they differ from DeepSeek-V4's and `gate` only where there is one: V4's descriptions
+/// read as they did before them (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Comp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Comp");
@@ -471,6 +484,9 @@ impl std::fmt::Debug for Comp {
             .field("norm_eps", &self.norm_eps);
         if !self.ape || !self.q_head_norm || self.share.is_some() {
             s.field("ape", &self.ape).field("q_head_norm", &self.q_head_norm).field("share", &self.share);
+        }
+        if let Some(g) = &self.gate {
+            s.field("gate", g);
         }
         s.finish()
     }

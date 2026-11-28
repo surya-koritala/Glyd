@@ -106,6 +106,9 @@ pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>,
         (matches!(a.rounding, Eager | Sdpa), a.rounding == Eager, matches!(a.rounding, Flash | Eager), a.rounding == Sdpa);
     let prod = |role: &str| -> Result<Vec<f32>> { Ok(p.prod(role, h)?.into_iter().map(r16).collect()) };
     let raw_q = prod("q")?;
+    if a.gate.is_some_and(|g| g.from == GateFrom::Latent) {
+        return err("attention: an output gate from the query latent, where the queries are one product of the block's input (no latent)");
+    }
     let in_q = a.gate.is_some_and(|g| g.from == GateFrom::InQuery);
     let (mut q, gate) = if in_q {
         let (mut q, mut g) = (Vec::with_capacity(nh * hd), Vec::with_capacity(nh * hd));

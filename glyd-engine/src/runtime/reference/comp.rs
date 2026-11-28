@@ -8,7 +8,7 @@ use super::Libm;
 use super::{dot, norm::norm, rope, softmax, Params};
 use crate::cpu_fp4::{fp4_e4m3_sim, fp4_sim, fp8_sim};
 use crate::ffi::{err, Result};
-use crate::runtime::kinds::{Comp, CompShare, IndexForm, Indexer, Norm, Rope};
+use crate::runtime::kinds::{Comp, CompShare, GateFrom, IndexForm, Indexer, Norm, Rope};
 use std::collections::BTreeMap;
 
 /// One compressor's tokens (each its projection and its gate plus the position bias) and the entries of its closed windows, normed and
@@ -205,8 +205,8 @@ pub fn key(c: &Comp, p: &Params, x: &[f32], pos: u32) -> Result<Vec<f32>> {
 }
 
 /// The queries `q` at `pos` over `keys` (each its value too) with the sinks: each head's output rotated back at `pos`, then the grouped low-rank
-/// products.
-pub fn attend(c: &Comp, p: &Params, q: &[f32], keys: &[&[f32]], pos: u32) -> Result<Vec<f32>> {
+/// products, the first's output gated where the kind has a gate (`Comp::gate`: by `g`'s product of the normed query latent `qr`).
+pub fn attend(c: &Comp, p: &Params, qr: &[f32], q: &[f32], keys: &[&[f32]], pos: u32) -> Result<Vec<f32>> {
     let (nh, hd) = (c.heads, c.head_dim);
     let sinks = p.vec("sinks")?;
     let mut out = Vec::with_capacity(nh * hd);
@@ -232,6 +232,16 @@ pub fn attend(c: &Comp, p: &Params, q: &[f32], keys: &[&[f32]], pos: u32) -> Res
     for g in 0..c.o_groups {
         let xg = &out[g * gs..][..gs];
         y.extend((0..c.o_lora).map(|r| dot(&oa[(g * c.o_lora + r) * gs..][..gs], xg)));
+    }
+    if let Some(g) = c.gate {
+        if g.from != GateFrom::Latent || g.norm.is_some() {
+            return err(format!("a compressed attention's gate of {g:?}: its gate is of the query latent, on the grouped output, with no norm"));
+        }
+        let gv = p.prod("g", qr)?;
+        if gv.len() != y.len() {
+            return err(format!("a compressed attention's gate of {} values on a grouped output of {}", gv.len(), y.len()));
+        }
+        y.iter_mut().zip(&gv).for_each(|(v, &z)| *v *= super::act(g.act, z));
     }
     p.prod("o_b", &y)
 }
@@ -287,7 +297,7 @@ pub fn step(c: &Comp, p: &Params, st: &mut CompState, x: &[f32], pos: u32) -> Re
     }
     let mut keys: Vec<&[f32]> = st.win.iter().filter(|(pj, _)| *pj <= pos && pos - pj < c.window as u32).map(|(_, k)| &k[..]).collect();
     keys.extend(chosen.iter().map(|&e| &st.comp.entries[e][..]));
-    attend(c, p, &q, &keys, pos)
+    attend(c, p, &qr, &q, &keys, pos)
 }
 
 #[cfg(test)]
@@ -329,6 +339,7 @@ mod tests {
             ape: false,
             q_head_norm: false,
             share: Some(share),
+            gate: None,
         }
     }
 
@@ -471,5 +482,53 @@ mod tests {
         assert_eq!(st(1).comp.entries, st(0).comp.entries);
         let mut alone = RefLayer::new(block(kind(2, true, shares[1])), D, params(1, &kind(2, true, shares[1]), false));
         assert!(alone.body(0, 3, 0, &fill("csa2.h", D, -1.0, 1.0)).is_err(), "picks of another block, which a layer alone has not");
+    }
+
+    /// A compressed attention whose every part is its own (ratio 2, no indexer), its second output product the identity on the grouped output's 8 values:
+    /// a step's first 8 outputs are the grouped low-rank output after the kind's gate.
+    fn own_grouped(tag: usize) -> (Comp, Params) {
+        let c = kind(2, false, CompShare { entries: None, picks: None, candidates: None, publish: None });
+        let mut p = params(tag, &c, false);
+        p.put("o_b", &[D, 8], (0..D * 8).map(|i| (i / 8 == i % 8) as u32 as f32).collect());
+        p.put("g", &[8, 12], fill(&format!("csa2.{tag}.g"), 8 * 12, -0.6, 0.6));
+        (c, p)
+    }
+
+    fn steps(c: &Comp, p: &Params, n: usize) -> Vec<Vec<f32>> {
+        let mut st = CompState::default();
+        (0..n).map(|t| step(c, p, &mut st, &fill(&format!("csa2.gx{t}"), D, -1.0, 1.0), t as u32).unwrap()).collect()
+    }
+
+    /// An output gate from the query latent on the compressed attention (`Comp::gate`, ERNIE's): the grouped low-rank output, after `o_a`, times
+    /// sigmoid of `g`'s product of the normed query latent, then `o_b`; by hand from the gate-less layer's grouped output. A `g` of zero halves, to the
+    /// bit; a gate of another source or with a norm is no gate of this attention.
+    #[test]
+    fn a_gate_from_the_query_latent_between_the_two_output_products() {
+        use crate::runtime::kinds::{Act, OutGate};
+        use crate::runtime::reference::sigmoid;
+        let (bare, p) = own_grouped(31);
+        let gate = OutGate { act: Act::Sigmoid, from: GateFrom::Latent, norm: None };
+        let c = Comp { gate: Some(gate), ..bare.clone() };
+        let (grouped, gated) = (steps(&bare, &p, 7), steps(&c, &p, 7));
+        for t in 0..7 {
+            let (qr, _) = queries(&c, &p, &fill(&format!("csa2.gx{t}"), D, -1.0, 1.0), t as u32).unwrap();
+            let gv = p.prod("g", &qr).unwrap();
+            for i in 0..8 {
+                assert_eq!(gated[t][i], grouped[t][i] * sigmoid(gv[i]), "token {t}, value {i}");
+            }
+            assert!(gated[t][8..].iter().all(|&v| v == 0.0));
+        }
+        assert_ne!(gated[6], grouped[6]);
+        let mut zero = p.clone();
+        zero.put("g", &[8, 12], vec![0.0; 96]);
+        let half: Vec<Vec<f32>> = grouped.iter().map(|r| r.iter().map(|x| 0.5 * x).collect()).collect();
+        assert_eq!(steps(&c, &zero, 7), half);
+        let mut st = CompState::default();
+        let x = fill("csa2.gx0", D, -1.0, 1.0);
+        for other in [OutGate { from: GateFrom::Own, ..gate }, OutGate { norm: Some(Norm::rms_bare(1e-6)), ..gate }] {
+            assert!(step(&Comp { gate: Some(other), ..bare.clone() }, &p, &mut st, &x, 0).unwrap_err().msg.contains("is of the query latent"));
+        }
+        // (said in a description's text only where there is one)
+        assert!(!format!("{bare:?}").contains("gate") && format!("{c:?}").ends_with("gate: OutGate { act: Sigmoid, from: Latent, norm: None } }"));
     }
 }

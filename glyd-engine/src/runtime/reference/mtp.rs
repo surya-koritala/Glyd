@@ -199,10 +199,10 @@ impl RefDSpark {
                     (0..hs.len())
                         .map(|j| {
                             let pos = p0 + j as u32;
-                            let (_, q) = comp::queries(c, &l.p, &hs[j], pos)?;
+                            let (qr, q) = comp::queries(c, &l.p, &hs[j], pos)?;
                             let from = (pos + 1).saturating_sub(c.window as u32) as usize;
                             let keys: Vec<&[f32]> = ctx_keys[from.min(ctx_keys.len())..].iter().chain(&blk).map(|k| &k[..]).collect();
-                            comp::attend(c, &l.p, &q, &keys, pos)
+                            comp::attend(c, &l.p, &qr, &q, &keys, pos)
                         })
                         .collect::<Result<_>>()?
                 }
@@ -289,6 +289,7 @@ mod tests {
             ape: false,
             q_head_norm: false,
             share: None,
+            gate: None,
         };
         let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: Some(crate::runtime::kinds::Clamp::Gate(10.0)) };
         let blk = |body: Body| Block { norm_in: Norm::rms(1e-6), body, norm_out: None, residual: Residual::Streams(s) };

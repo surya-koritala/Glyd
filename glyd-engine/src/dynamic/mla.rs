@@ -238,6 +238,7 @@ impl MlaOp {
             (Some(g), _) if g.from == kinds::GateFrom::Head => {
                 return err("a latent attention with an output gate of one value a head, which the executor does not run yet")
             }
+            (Some(g), _) if g.from == kinds::GateFrom::Latent => return err(format!("a latent attention: {}", kinds::GateFrom::LATENT_NOT_RUN)),
             (Some(g), MlaIn::Fused { .. }) if g.act == kinds::Act::Sigmoid && g.norm.is_none() => true,
             (Some(g), _) => return err(format!("a latent attention's gate of {g:?}: the kernels take a sigmoid gate in a fused input product")),
         };

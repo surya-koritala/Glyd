@@ -188,6 +188,9 @@ impl AttnOp {
         if a.gate.is_some_and(|g| g.from == kinds::GateFrom::Head) {
             return err("attention with an output gate of one value a head, which the executor does not run yet");
         }
+        if a.gate.is_some_and(|g| g.from == kinds::GateFrom::Latent) {
+            return err(format!("attention: {}", kinds::GateFrom::LATENT_NOT_RUN));
+        }
         let in_query = a.gate.is_some_and(|g| g.from == kinds::GateFrom::InQuery);
         let q_step = if in_query { 2 * d } else { d };
         let k_off = nq * q_step;
