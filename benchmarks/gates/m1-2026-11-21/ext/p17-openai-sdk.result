@@ -1,0 +1,1 @@
+PASS	p17-openai-sdk	the client matrix (OpenAI SDK chat, stream, usage, JSON schema, forced tools, Responses) passed against google/gemma-4-12B-it:kestrel served on the RTX 4080 SUPER: https://github.com/surya-koritala/Glyd/actions/runs/44936778841

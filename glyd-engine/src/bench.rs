@@ -1,6 +1,6 @@
 //! `glyd bench`: one benchmark harness (R8). It puts fixed prompts at fixed concurrencies on an OpenAI-compatible server over HTTP and writes the speed as JSON, `glyd-bench/1` (docs/bench.md).
 //!
-//!   glyd-engine bench MODEL[:LEVEL] [--suite gate|bar|full | --loads short:1,4k:8,...] [--runs 5] [--warmup 1] [--max-tokens 128] [--ctx N] [--out FILE] [--label TEXT]
+//!   glyd-engine bench MODEL[:LEVEL] [--suite gate|bar|full|arrive|chat|shared | --loads short:1,4k:8,4k+250ms:8,1k*4:8,same4k+250ms:8,...] [--runs 5] [--warmup 1] [--max-tokens 128] [--ctx N] [--out FILE] [--label TEXT]
 //!                     [--against URL] [--weights-gib G] [--bandwidth-gbs B] [--port P] [--no-draft] [--eval gsm8k[:N]] [--quality [--quality-ref RESULT.json]]
 //!       starts `serve MODEL` of this program (or measures the server at --against, whatever program it is: vLLM, llama.cpp, SGLang) and measures each load: per load, one warm-up round and `runs` rounds
 //!       of N simultaneous requests, every prompt different from its first token on (no prefix to share). Time to first token, inter-token latency, decode tokens/s a user and in all, prefill tokens/s,
@@ -26,7 +26,7 @@ pub const SCHEMA: &str = "glyd-bench/1";
 
 // ---- the fixed workload
 
-const WORDS: &str = "river stone market letter garden window engine paper silver winter harbor signal ladder copper meadow lantern bridge orchard compass thunder village canvas anchor forest \
+pub(crate) const WORDS: &str = "river stone market letter garden window engine paper silver winter harbor signal ladder copper meadow lantern bridge orchard compass thunder village canvas anchor forest \
 ribbon quartz pepper violet cabin marble kettle falcon summit harvest tunnel mirror saddle velvet crystal ember plains lagoon pigeon ceiling puzzle bottle shadow carpet planet button candle valley hammer \
 island jacket cotton rocket temple orange basket";
 
@@ -41,10 +41,10 @@ const TOPICS: [&str; 8] = [
     "how a bicycle stays upright",
 ];
 
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
@@ -52,9 +52,9 @@ impl Rng {
     }
 }
 
-/// The tokens a prompt kind is about (None: a short question).
-fn kind_tokens(kind: &str) -> Result<Option<usize>> {
-    Ok(match kind {
+/// The tokens a prompt kind is about (None: a short question). `same4k` is the 4k prompt whose notes are the same in every request (`prompt`).
+pub(crate) fn kind_tokens(kind: &str) -> Result<Option<usize>> {
+    Ok(match kind.strip_prefix("same").filter(|k| *k != "short").unwrap_or(kind) {
         "short" => None,
         "1k" => Some(1024),
         "2k" => Some(2048),
@@ -62,19 +62,54 @@ fn kind_tokens(kind: &str) -> Result<Option<usize>> {
         "8k" => Some(8192),
         "16k" => Some(16384),
         "32k" => Some(32768),
-        k => return err(format!("prompt {k}: short, 1k, 2k, 4k, 8k, 16k or 32k")),
+        // (a prompt of N tokens, as `plancheck` fills the context a plan allows: 27852t)
+        t if t.strip_suffix('t').and_then(|n| n.parse::<usize>().ok()).is_some_and(|n| n >= 64) => t.strip_suffix('t').and_then(|n| n.parse().ok()),
+        _ => return err(format!("prompt {kind}: short, 1k, 2k, 4k, 8k, 16k or 32k, same1k to same32k, or NNNt (NNN tokens, 64 or more)")),
     })
 }
 
+/// A load's kind: its prompt, the time between the starts of its requests, and the turns of a conversation. `4k+250ms` is 4k prompts, each request begun 250 ms after the one before, so
+/// that the later prompts come in while the earlier replies are being written (what a server's round does with both is in the first-token times and the gaps' 99th percentile). `1k*4` is a
+/// conversation of 4 turns that begins with the 1k prompt: each later turn sends the conversation so far (the prompts and the replies) and a short question more, as a chat does, so what a
+/// server keeps of a prompt it has seen shows in the later turns' first token (`ttft_later_s`) and in the share of prompt tokens found in its cache (`prefix_hit_rate`, a glyd server's).
+/// `1k*4+250ms` is both; `4k` alone is one request each, all of them at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Kind<'a> {
+    prompt: &'a str,
+    gap: Duration,
+    turns: usize,
+}
+
+fn kind_parts(kind: &str) -> Result<Kind<'_>> {
+    let bad = || Error(format!("prompt {kind}: KIND, KIND+GAPms (as 4k+250ms), KIND*TURNS (as 1k*4) or KIND*TURNS+GAPms"));
+    let (rest, gap) = match kind.split_once('+') {
+        None => (kind, Duration::ZERO),
+        Some((k, gap)) => (k, Duration::from_millis(gap.strip_suffix("ms").and_then(|g| g.parse::<u64>().ok()).filter(|&g| g > 0).ok_or_else(bad)?)),
+    };
+    let (prompt, turns) = match rest.split_once('*') {
+        None => (rest, 1),
+        Some((k, t)) => (k, t.parse::<usize>().ok().filter(|&t| (2..=64).contains(&t)).ok_or_else(bad)?),
+    };
+    Ok(Kind { prompt, gap, turns })
+}
+
 /// A prompt of the kind, different from every other seed's from the first token on. The long ones are random words (about 1.09 tokens a word) and a question that ignores them.
+/// A `same` kind (`same4k`): the notes are the same in every request and the question, which is last, is the seed's own: requests that begin alike and end apart, as those
+/// of an application with one long system prompt do (what a server shares of a start it has run shows in their first token).
 pub fn prompt(kind: &str, seed: u64) -> Result<String> {
+    let same = kind.starts_with("same");
     Ok(match kind_tokens(kind)? {
         None => format!("[{seed}] Explain {}, in detail, in about 300 words.", TOPICS[seed as usize % TOPICS.len()]),
         Some(n) => {
             let words: Vec<&str> = WORDS.split_whitespace().collect();
-            let mut r = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x2545_F491_4F6C_DD1D) | 1);
+            let mut r = Rng(0x9E37_79B9_7F4A_7C15 ^ (if same { n as u64 } else { seed }).wrapping_mul(0x2545_F491_4F6C_DD1D) | 1);
             let body: Vec<&str> = (0..((n.saturating_sub(50)) as f64 / 1.09) as usize).map(|_| words[(r.next() % words.len() as u64) as usize]).collect();
-            format!("[{seed}] Here are some notes:\n{}\n\nIgnoring the notes, write a long, detailed essay about the history of bridges.", body.join(" "))
+            if same {
+                let topic = TOPICS[seed as usize % TOPICS.len()];
+                format!("Here are some notes:\n{}\n\n[{seed}] Ignoring the notes, explain {topic}, in detail, in about 300 words.", body.join(" "))
+            } else {
+                format!("[{seed}] Here are some notes:\n{}\n\nIgnoring the notes, write a long, detailed essay about the history of bridges.", body.join(" "))
+            }
         }
     })
 }
@@ -89,15 +124,26 @@ pub fn suite(name: &str) -> Result<Vec<(String, usize)>> {
         "bar" => mk(&["short", "2k", "4k"], &[1, 4, 8]),
         // everything the issue lists: decode at 1, 8, 64 and 256 at once, prefill at 1K, 4K and 32K
         "full" => [mk(&["short"], &[1, 8, 64, 256]), mk(&["1k", "4k", "32k"], &[1])].concat(),
-        s => return err(format!("--suite {s}: gate, bar or full")),
+        // prompts that come in while other replies are being written: 8 requests, each begun a while after the one before
+        "arrive" => mk(&["short+100ms", "1k+250ms", "4k+500ms"], &[8]),
+        // conversations: 4 turns each, alone and 8 at once (a prompt cache's work: the later turns resend what the server has seen)
+        "chat" => mk(&["1k*4", "4k*4"], &[1, 8]),
+        // requests that begin alike (one long start, each its own question), 8 of them 250 ms apart, and 8 conversations of 4 turns that begin so: what a server shares of
+        // a start it has run, and whether it holds eight conversations that have 4k tokens in common where it does not hold eight of 4k apart
+        "shared" => mk(&["same1k+250ms", "same4k+250ms", "same4k*4"], &[8]),
+        // P20's occupancy check (a datacenter GPU's, 1x H100): one-token decode and batched decode, each load's decode as a share of the ceiling (`pct_of_ceiling`)
+        "occupancy" => mk(&["short"], &[1, 8, 32, 64]),
+        s => return err(format!("--suite {s}: gate, bar, full, arrive, chat, shared or occupancy")),
     })
 }
 
 fn parse_loads(s: &str) -> Result<Vec<(String, usize)>> {
     s.split(',')
         .map(|l| {
-            let (k, c) = l.split_once(':').ok_or_else(|| Error(format!("--loads {l}: PROMPT:CONCURRENCY, as short:8")))?;
-            kind_tokens(k)?;
+            let (k, c) = l
+                .split_once(':')
+                .ok_or_else(|| Error(format!("--loads {l}: PROMPT:CONCURRENCY, as short:8 (or 4k+250ms:8, each request 250 ms after the one before)")))?;
+            kind_tokens(kind_parts(k)?.prompt)?;
             Ok((k.to_string(), c.parse::<usize>().ok().filter(|&c| c > 0).ok_or_else(|| Error(format!("--loads {l}: {c} is not a number of requests")))?))
         })
         .collect()
@@ -107,6 +153,8 @@ fn parse_loads(s: &str) -> Result<Vec<(String, usize)>> {
 
 #[derive(Default)]
 struct Req {
+    /// Its turn in its conversation (0: the first, or the only one).
+    turn: usize,
     ttft: Option<f64>,
     tokens: u64,
     prompt_tokens: Option<u64>,
@@ -116,28 +164,55 @@ struct Req {
     error: Option<String>,
 }
 
-fn agent() -> ureq::Agent {
+pub(crate) fn agent() -> ureq::Agent {
     ureq::Agent::new_with_config(ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(1800))).build())
 }
 
-/// One streamed chat completion: the time to the first content, each gap between chunks, the tokens (the server's usage, else the chunks).
+/// One streamed chat completion of a prompt of the kind (`send`).
 fn one(agent: &ureq::Agent, url: &str, model: &str, kind: &str, seed: u64, max_tokens: usize) -> Req {
-    let mut out = Req::default();
+    match prompt(kind, seed) {
+        Ok(content) => send(agent, url, model, &json!([{"role": "user", "content": content}]), max_tokens).0,
+        Err(e) => Req { error: Some(e.msg), ..Req::default() },
+    }
+}
+
+/// A conversation of `turns` turns that begins with a prompt of the kind: each turn sends the messages so far and gets a reply, and the next adds that reply and a short question of its
+/// own (different for every seed and turn). The turns' requests in order; a turn that fails ends the conversation there.
+fn converse(agent: &ureq::Agent, url: &str, model: &str, kind: &str, seed: u64, turns: usize, max_tokens: usize) -> Vec<Req> {
     let content = match prompt(kind, seed) {
         Ok(c) => c,
-        Err(e) => {
-            out.error = Some(e.0);
-            return out;
-        }
+        Err(e) => return vec![Req { error: Some(e.msg), ..Req::default() }],
     };
-    let body = json!({"model": model, "messages": [{"role": "user", "content": content}], "max_tokens": max_tokens, "temperature": 0, "stream": true,
+    let mut messages = vec![json!({"role": "user", "content": content})];
+    let mut out = Vec::new();
+    for turn in 0..turns {
+        let (mut r, reply) = send(agent, url, model, &Value::Array(messages.clone()), max_tokens);
+        r.turn = turn;
+        let failed = r.error.is_some();
+        out.push(r);
+        if failed {
+            break;
+        }
+        messages.push(json!({"role": "assistant", "content": reply}));
+        messages.push(
+            json!({"role": "user", "content": format!("[{seed}.{}] Say more about the part of that which is least obvious, in about 100 words.", turn + 1)}),
+        );
+    }
+    out
+}
+
+/// One streamed chat completion of `messages`: the time to the first content, each gap between chunks, the tokens (the server's usage, else the chunks); and the reply's text.
+fn send(agent: &ureq::Agent, url: &str, model: &str, messages: &Value, max_tokens: usize) -> (Req, String) {
+    let mut out = Req::default();
+    let mut text = String::new();
+    let body = json!({"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0, "stream": true,
         "stream_options": {"include_usage": true}, "chat_template_kwargs": {"enable_thinking": false}});
     let t0 = Instant::now();
     let mut resp = match agent.post(&format!("{url}/v1/chat/completions")).header("Content-Type", "application/json").send(body.to_string()) {
         Ok(r) => r,
         Err(e) => {
             out.error = Some(e.to_string());
-            return out;
+            return (out, text);
         }
     };
     let (mut chunks, mut usage_tokens) = (0u64, None);
@@ -157,6 +232,7 @@ fn one(agent: &ureq::Agent, url: &str, model: &str, kind: &str, seed: u64, max_t
             out.prompt_tokens = u["prompt_tokens"].as_u64();
         }
         let delta = &d["choices"][0]["delta"];
+        text.push_str(delta["content"].as_str().unwrap_or(""));
         if ["content", "reasoning_content", "reasoning"].iter().any(|k| delta[*k].as_str().is_some_and(|s| !s.is_empty())) {
             let now = Instant::now();
             if let Some(l) = out.last {
@@ -172,7 +248,12 @@ fn one(agent: &ureq::Agent, url: &str, model: &str, kind: &str, seed: u64, max_t
     if out.first.is_none() && out.error.is_none() {
         out.error = Some("no content came".into());
     }
-    out
+    (out, text)
+}
+
+/// A figure of each round that has it.
+fn col_of(rs: &[Round], f: &dyn Fn(&Round) -> Option<f64>) -> Vec<f64> {
+    rs.iter().filter_map(f).collect()
 }
 
 fn median(xs: &[f64]) -> Option<f64> {
@@ -204,9 +285,11 @@ pub fn stats(runs: &[f64]) -> Value {
         "runs": runs.iter().map(|&x| round(x)).collect::<Vec<_>>()})
 }
 
-/// One round of `n` simultaneous requests: (time to first token, decode tokens/s, mean gap in ms, the gaps' 99th percentile in ms, all users' tokens after the first over the span, prompt tokens/s, requests that failed, prompt tokens).
+/// One round of `n` requests (at once, or one after another: `kind_parts`): (time to first token, decode tokens/s, mean gap in ms, the gaps' 99th percentile in ms, all users' tokens after the first over the span, prompt tokens/s, requests that failed, prompt tokens).
 struct Round {
+    /// The first token of the requests that are a first turn (or the only one), and of the later turns of a conversation (None where the load has none).
     ttft: Option<f64>,
+    ttft_later: Option<f64>,
     decode: Option<f64>,
     itl: Option<f64>,
     itl_p99: Option<f64>,
@@ -216,17 +299,38 @@ struct Round {
     prompt_tokens: Option<f64>,
 }
 
-fn round(agent: &ureq::Agent, url: &str, model: &str, kind: &str, n: usize, seed: &mut u64, max_tokens: usize) -> Round {
+/// The `n` requests of a round, in the order they are begun: at once, or each `gap` after the one before (`kind_parts`).
+fn requests(agent: &ureq::Agent, url: &str, model: &str, kind: &str, n: usize, seed: &mut u64, max_tokens: usize) -> Vec<Req> {
     let seeds: Vec<u64> = (0..n)
         .map(|_| {
             *seed += 1;
             *seed
         })
         .collect();
-    let reqs: Vec<Req> = std::thread::scope(|s| {
-        let hs: Vec<_> = seeds.iter().map(|&sd| s.spawn(move || one(agent, url, model, kind, sd, max_tokens))).collect();
-        hs.into_iter().map(|h| h.join().unwrap_or_default()).collect()
-    });
+    let k = kind_parts(kind).unwrap_or(Kind { prompt: kind, gap: Duration::ZERO, turns: 1 });
+    std::thread::scope(|s| {
+        let hs: Vec<_> = seeds
+            .iter()
+            .enumerate()
+            .map(|(i, &sd)| {
+                s.spawn(move || {
+                    std::thread::sleep(k.gap * i as u32);
+                    if k.turns > 1 {
+                        converse(agent, url, model, k.prompt, sd, k.turns, max_tokens)
+                    } else {
+                        vec![one(agent, url, model, k.prompt, sd, max_tokens)]
+                    }
+                })
+            })
+            .collect();
+        hs.into_iter().flat_map(|h| h.join().unwrap_or_else(|_| vec![Req { error: Some("the client's thread failed".into()), ..Req::default() }])).collect()
+    })
+}
+
+fn round(agent: &ureq::Agent, url: &str, model: &str, kind: &str, n: usize, seed: &mut u64, max_tokens: usize) -> Round {
+    let reqs = requests(agent, url, model, kind, n, seed, max_tokens);
+    // (requests begun one after another: their prompts are not one pass, and prompt tokens over the slowest first token is no rate)
+    let at_once = kind_parts(kind).is_ok_and(|k| k.gap.is_zero() && k.turns == 1);
     let ok: Vec<&Req> = reqs.iter().filter(|r| r.error.is_none() && r.ttft.is_some()).collect();
     let tps = |r: &Req| match (r.first, r.last) {
         (Some(f), Some(l)) if l > f && r.tokens > 1 => Some((r.tokens - 1) as f64 / l.duration_since(f).as_secs_f64()),
@@ -242,12 +346,13 @@ fn round(agent: &ureq::Agent, url: &str, model: &str, kind: &str, n: usize, seed
     let prompt_total: Option<u64> = ok.iter().map(|r| r.prompt_tokens).sum();
     let slowest_first = ok.iter().filter_map(|r| r.ttft).fold(f64::NEG_INFINITY, f64::max);
     Round {
-        ttft: median(&ok.iter().filter_map(|r| r.ttft).collect::<Vec<_>>()),
+        ttft: median(&ok.iter().filter(|r| r.turn == 0).filter_map(|r| r.ttft).collect::<Vec<_>>()),
+        ttft_later: median(&ok.iter().filter(|r| r.turn > 0).filter_map(|r| r.ttft).collect::<Vec<_>>()),
         decode: median(&decode),
         itl: median(&decode).map(|t| 1000.0 / t),
         itl_p99: percentile(&gaps, 0.99).map(|g| g * 1000.0),
         agg: span.map(|s| after_first as f64 / s),
-        prefill: prompt_total.filter(|_| slowest_first.is_finite() && slowest_first > 0.0).map(|p| p as f64 / slowest_first),
+        prefill: prompt_total.filter(|_| at_once && slowest_first.is_finite() && slowest_first > 0.0).map(|p| p as f64 / slowest_first),
         errors: reqs.len() - ok.len(),
         prompt_tokens: median(&ok.iter().filter_map(|r| r.prompt_tokens.map(|p| p as f64)).collect::<Vec<_>>()),
     }
@@ -278,7 +383,51 @@ pub fn spec_bandwidth(name: &str, memory_mib: f64) -> Option<f64> {
     } else if has("5090") {
         1792.0
     } else if has("3090") {
-        936.0
+        if has("TI") {
+            1008.0
+        } else {
+            936.0
+        }
+    // (the consumer cards of P20's tiers, 8 to 32 GB: a name's more specific words first)
+    } else if pair("4070", "TI") && has("SUPER") {
+        672.0
+    } else if has("4070") {
+        504.2
+    } else if has("4060") {
+        if has("TI") {
+            288.0
+        } else {
+            272.0
+        }
+    } else if has("5080") {
+        960.0
+    } else if has("5070") {
+        if has("TI") {
+            896.0
+        } else {
+            672.0
+        }
+    } else if pair("5060", "TI") || pair("3060", "TI") || has("3070") || has("A4000") {
+        448.0
+    } else if has("3060") {
+        360.0
+    } else if has("3080") {
+        if memory_mib > 11_000.0 {
+            912.0
+        } else {
+            760.0
+        }
+    // (the datacenter cards of the occupancy check: H100 SXM's HBM3, PCIe's HBM2e, NVL's 94 GB; H200's HBM3e)
+    } else if has("H200") {
+        4800.0
+    } else if has("H100") {
+        if has("PCIE") {
+            2039.0
+        } else if has("NVL") {
+            3938.0
+        } else {
+            3352.0
+        }
     } else if has("L40S") {
         864.0
     } else if has("L4") {
@@ -296,7 +445,7 @@ pub fn spec_bandwidth(name: &str, memory_mib: f64) -> Option<f64> {
     })
 }
 
-fn machine() -> Value {
+pub(crate) fn machine() -> Value {
     let q = smi("name,driver_version,memory.total,clocks.max.sm,clocks.max.memory,power.limit,compute_cap").unwrap_or_default();
     let f: Vec<&str> = q.split(',').map(str::trim).collect();
     let get = |i: usize| f.get(i).copied().unwrap_or("");
@@ -350,9 +499,9 @@ impl Peak {
 
 // ---- the server
 
-struct Server {
+pub(crate) struct Server {
     child: Child,
-    url: String,
+    pub(crate) url: String,
     /// The directory of this run's server log (private to this run, removed with the server).
     dir: std::path::PathBuf,
 }
@@ -360,8 +509,70 @@ struct Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.child.kill().ok();
+        #[cfg(unix)]
+        tie::watch(0);
         self.child.wait().ok();
         std::fs::remove_dir_all(&self.dir).ok();
+    }
+}
+
+/// The server ends with the bench, however the bench ends: a return or an error drops it (`Drop`); SIGINT, SIGTERM or SIGHUP (Ctrl-C, `timeout`, a closed terminal) kill it before the
+/// bench leaves; and on Linux the kernel kills it once the bench's thread that started it is gone, a SIGKILL of the bench too. (Benches ended by `timeout` left their servers running,
+/// holding the GPU's memory.)
+#[cfg(unix)]
+mod tie {
+    use std::sync::atomic::{AtomicI32, Ordering};
+    static SERVER: AtomicI32 = AtomicI32::new(0);
+    extern "C" {
+        fn signal(sig: i32, handler: usize) -> usize;
+        fn kill(pid: i32, sig: i32) -> i32;
+        fn _exit(code: i32) -> !;
+    }
+    extern "C" fn on_signal(sig: i32) {
+        let pid = SERVER.load(Ordering::Relaxed);
+        // SAFETY: async-signal-safe calls only (kill and _exit).
+        unsafe {
+            if pid > 0 {
+                kill(pid, 9);
+            }
+            _exit(128 + sig)
+        }
+    }
+
+    /// The child `cmd` starts is killed when the thread that starts it ends (Linux: its parent-death signal, SIGKILL, set before it runs the program).
+    pub fn on_exit(cmd: &mut std::process::Command) {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            extern "C" {
+                fn prctl(option: i32, ...) -> i32;
+                fn getppid() -> i32;
+            }
+            let parent = std::process::id() as i32;
+            // SAFETY: between the fork and the exec only async-signal-safe calls: prctl, getppid, _exit.
+            unsafe {
+                cmd.pre_exec(move || {
+                    // (PR_SET_PDEATHSIG; a parent gone before it took hold: the child ends now)
+                    if prctl(1, 9u64, 0u64, 0u64, 0u64) != 0 || getppid() != parent {
+                        _exit(1);
+                    }
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = cmd;
+    }
+
+    /// The server's process, killed on SIGINT, SIGTERM or SIGHUP of the bench (0: none now).
+    pub fn watch(pid: u32) {
+        SERVER.store(pid as i32, Ordering::Relaxed);
+        if pid > 0 {
+            for sig in [1, 2, 15] {
+                // SAFETY: the handler makes async-signal-safe calls only.
+                unsafe { signal(sig, on_signal as *const () as usize) };
+            }
+        }
     }
 }
 
@@ -383,8 +594,15 @@ fn free_port() -> Result<u16> {
     l.local_addr().map(|a| a.port()).map_err(|e| Error(e.to_string()))
 }
 
+/// Whether another process was on the GPU before a run: its median utilization past 10%, or more memory in use than a desktop takes
+/// (`used_mib` past 2,500). Where the server measured is one that was already running (`outside`: --against), the memory in use is that
+/// server's own model and says nothing: only the utilization counts.
+fn busy_before(utilization_pct: Option<f64>, used_mib: f64, outside: bool) -> bool {
+    utilization_pct.is_some_and(|u| u > 10.0) || (!outside && used_mib > 2500.0)
+}
+
 /// `serve MODEL` of this program on a port of its own, up when /v1/models answers (the first start downloads and packs the model).
-fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
+pub(crate) fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
     let port = match a.flag("port") {
         Some(p) => p.parse::<u16>().map_err(|_| Error(format!("--port {p}: not a port")))?,
         None => free_port()?,
@@ -394,8 +612,10 @@ fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
     let log = dir.join("server.log");
     let out = std::fs::OpenOptions::new().write(true).create_new(true).open(&log).map_err(|e| Error(format!("{}: {e}", log.display())))?;
     let mut cmd = Command::new(exe);
+    // (the bench is its server's one caller: the server may tell what its prompts found in the cache, for `prefix_hit_rate`)
+    cmd.env("GLYD_ENGINE_CACHED_USAGE", "1");
     cmd.args(["serve", model, "--host", "127.0.0.1", "--port", &port.to_string()]);
-    for f in ["ctx", "layout", "chunk"] {
+    for f in ["ctx", "layout", "chunk", "expert-cache", "host-memory"] {
         if let Some(v) = a.flag(f) {
             cmd.args([format!("--{f}"), v.to_string()]);
         }
@@ -406,11 +626,15 @@ fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
         // (the draft model's speculative decoding off: the decode rate is then the weights' bytes over the bandwidth, which the ceiling is)
         cmd.arg("--no-draft");
     }
+    #[cfg(unix)]
+    tie::on_exit(&mut cmd);
     let child = cmd
         .stdout(Stdio::from(out.try_clone().map_err(|e| Error(e.to_string()))?))
         .stderr(Stdio::from(out))
         .spawn()
         .map_err(|e| Error(format!("serve: {e}")))?;
+    #[cfg(unix)]
+    tie::watch(child.id());
     let mut server = Server { child, url: format!("http://127.0.0.1:{port}"), dir };
     let up = Instant::now();
     loop {
@@ -429,14 +653,14 @@ fn start_server(model: &str, a: &Args, users: usize) -> Result<Server> {
     }
 }
 
-fn get_json(url: &str) -> Option<Value> {
+pub(crate) fn get_json(url: &str) -> Option<Value> {
     let mut r = ureq::get(url).call().ok()?;
     serde_json::from_str(&r.body_mut().read_to_string().ok()?).ok()
 }
 
 // ---- the measurement
 
-fn git_sha() -> Option<String> {
+pub(crate) fn git_sha() -> Option<String> {
     std::env::var("GITHUB_SHA").ok().map(|s| s.chars().take(10).collect()).or_else(|| {
         Command::new("git")
             .args(["rev-parse", "--short=10", "HEAD"])
@@ -445,6 +669,24 @@ fn git_sha() -> Option<String> {
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    })
+}
+
+/// The users the server this program starts is asked to take: `--users N`, else the most a load sends at once, up to the scheduler's own limit (`sched::MAX_USERS`,
+/// which `serve` refuses past). What its plan holds of them is the server's to say (/v1/glyd/info `limits.concurrency`: `held_note`). (It was the most a load sends
+/// up to 8, the old limit of a step's rows: 64 at once ran 8 and queued the rest.)
+fn users_asked(a: &Args, loads: &[(String, usize)]) -> Result<usize> {
+    let most = loads.iter().map(|l| l.1).max().unwrap_or(1).min(crate::sched::MAX_USERS);
+    match a.flag("users") {
+        Some(u) => u.parse::<usize>().ok().filter(|&u| u > 0).ok_or_else(|| Error(format!("--users {u}: a number of sequences at once"))),
+        None => Ok(most),
+    }
+}
+
+/// Where the server runs fewer at once than a load sends (`concurrency`, its /v1/glyd/info `limits.concurrency`): what to say, as the rest wait in its queue.
+fn held_note(most: usize, concurrency: Option<usize>) -> Option<String> {
+    concurrency.filter(|&c| c < most).map(|c| {
+        format!("the server runs {c} requests at once (what its plan holds), and a load sends up to {most}: the others wait in its queue, and their first token with them")
     })
 }
 
@@ -464,7 +706,8 @@ pub fn measure(a: &Args) -> Result<()> {
         return err("--runs 0");
     }
     let machine = machine();
-    // (the GPU as it is before the server starts, five looks 0.3 s apart: busy where its median utilization is past 10%, or more than a desktop's memory is used: another process on it)
+    // (the GPU as it is before the server starts, five looks 0.3 s apart: busy where its median utilization is past 10%, or more than a desktop's memory is used: another process on it.
+    // With --against the server is already up and the memory in use is its own, so only the utilization can say the GPU is busy: `busy_before`)
     let mut looks: Vec<Value> = Vec::new();
     for i in 0..5 {
         if i > 0 {
@@ -475,11 +718,12 @@ pub fn measure(a: &Args) -> Result<()> {
     let util = median(&looks.iter().filter_map(|l| l["utilization_pct"].as_f64()).collect::<Vec<_>>());
     let before = looks.last().cloned().unwrap_or(Value::Null);
     let idle = before["memory_used_mib"].as_f64().unwrap_or(0.0);
-    let busy = util.is_some_and(|u| u > 10.0) || idle > 2500.0;
+    let busy = busy_before(util, idle, against.is_some());
     let peak = Peak::start();
+    let users = users_asked(a, &loads)?;
     let server = match &against {
         Some(_) => None,
-        None => Some(start_server(model_arg.unwrap_or(""), a, loads.iter().map(|l| l.1).max().unwrap_or(1).min(8))?),
+        None => Some(start_server(model_arg.unwrap_or(""), a, users)?),
     };
     let url = against.clone().unwrap_or_else(|| server.as_ref().map(|s| s.url.clone()).unwrap_or_default());
     let models = get_json(&format!("{url}/v1/models")).ok_or_else(|| Error(format!("{url}/v1/models: no answer")))?;
@@ -502,6 +746,11 @@ pub fn measure(a: &Args) -> Result<()> {
     let ceiling = weights.zip(bandwidth).map(|(w, b)| b * 1e9 / w);
     let agent = agent();
     let quiet = a.has("quiet");
+    // (what the server runs at once, as its plan holds it: fewer than a load sends, and the rest wait in its queue)
+    let concurrency = info.as_ref().and_then(|i| i["limits"]["concurrency"].as_u64()).map(|c| c as usize);
+    if let Some(n) = held_note(loads.iter().map(|l| l.1).max().unwrap_or(1), concurrency) {
+        eprintln!("bench: {n}");
+    }
     let mut seed = 1000u64;
     // (a warm-up that is not a load of the matrix: kernels, graphs and the server's own caches)
     let _ = one(&agent, &url, &model, "short", 0, 16);
@@ -517,7 +766,16 @@ pub fn measure(a: &Args) -> Result<()> {
         for _ in 0..warmup {
             round(&agent, &url, &model, kind, *n, &mut seed, max_tokens);
         }
+        // (a glyd server's count of prompt tokens run and of those found in its cache, around the measured rounds)
+        let counts = || get_json(&format!("{url}/stats")).and_then(|v| Some((v["prompt_tokens"].as_f64()?, v["prefix_hit_tokens"].as_f64()?)));
+        let before = counts();
+        // (GLYD_PROF=1, a development build's: the server's GPU profile of the measured rounds alone, src/dynamic/prof.rs; its server's, which has the variable too)
+        let prof = || crate::dynamic::prof::on().then(|| get_json(&format!("{url}/v1/glyd/prof?reset=1"))).flatten();
+        prof();
         let rs: Vec<Round> = (0..runs).map(|_| round(&agent, &url, &model, kind, *n, &mut seed, max_tokens)).collect();
+        let profile = prof();
+        let hit_rate = before.zip(counts()).filter(|(b, a)| a.0 > b.0).map(|(b, a)| (a.1 - b.1) / (a.0 - b.0));
+        let later = col_of(&rs, &|r| r.ttft_later);
         let col = |f: &dyn Fn(&Round) -> Option<f64>| rs.iter().filter_map(f).collect::<Vec<f64>>();
         let (ttft, decode, itl, itl99, agg, prefill) =
             (col(&|r| r.ttft), col(&|r| r.decode), col(&|r| r.itl), col(&|r| r.itl_p99), col(&|r| r.agg), col(&|r| r.prefill));
@@ -542,9 +800,30 @@ pub fn measure(a: &Args) -> Result<()> {
         }
         let mut cell = json!({"prompt": kind, "conc": n, "prompt_tokens": pt, "errors": errors,
             "ttft_s": stats(&ttft), "decode_tps_per_user": stats(&decode), "itl_ms": stats(&itl), "itl_p99_ms": stats(&itl99), "agg_tps": stats(&agg), "prefill_tps": stats(&prefill)});
+        if !later.is_empty() {
+            // (a conversation's later turns, and the share of the prompt tokens the server found in its cache: 0 where every turn is run from its first token)
+            cell["ttft_later_s"] = stats(&later);
+        }
+        if !later.is_empty() || kind.starts_with("same") {
+            cell["prefix_hit_rate"] = json!(hit_rate.map(|h| (h * 10000.0).round() / 10000.0));
+            if !quiet {
+                let found = hit_rate.map_or(String::new(), |h| format!("{:.0}% of the prompt tokens found in the cache", h * 100.0));
+                match median(&later) {
+                    Some(v) => eprintln!("{:<12} later turns: first token {v:.3} s{}{found}", "", if found.is_empty() { "" } else { "; " }),
+                    None if !found.is_empty() => eprintln!("{:<12} {found}", ""),
+                    None => {}
+                }
+            }
+        }
         if let (Some(c), Some(p)) = (cell_ceiling, pct(&decode)) {
             cell["ceiling_tps_per_user"] = json!((c * 100.0).round() / 100.0);
             cell["pct_of_ceiling"] = json!((p * 10000.0).round() / 10000.0);
+        }
+        if let Some(p) = profile {
+            if !quiet {
+                eprintln!("{}", crate::dynamic::prof::text(&p).lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n"));
+            }
+            cell["gpu_profile"] = p;
         }
         cells.push(cell);
     }
@@ -585,16 +864,22 @@ pub fn measure(a: &Args) -> Result<()> {
     }
     let peak_mib = peak.finish();
     let after = gpu_now();
+    let level = info.as_ref().and_then(|i| i["level"]["effective"].as_str());
     let result = json!({
         "schema": SCHEMA,
         "label": a.flag("label").unwrap_or(""),
         "recorded_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()),
         "machine": machine,
-        "model": {"id": model, "argument": model_arg, "level": info.as_ref().and_then(|i| i["level"]["effective"].as_str()), "weights_bytes": weights,
-            "weights_source": if a.flag("weights-gib").is_some() { "flag" } else if weights.is_some() { "/v1/glyd/info" } else { "unknown" }},
+        "model": {"id": model, "argument": model_arg, "level": level, "weights_bytes": weights,
+            "weights_source": if a.flag("weights-gib").is_some() { "flag" } else if weights.is_some() { "/v1/glyd/info" } else { "unknown" },
+            // (what a comparison of engines groups and orders by: the Hub repo whose weights the server runs, its bits a weight and its parameters, as the caller says or the level gives)
+            "source": a.flag("source").map(str::to_string).or_else(|| model_arg.map(|m| crate::levels::split_tag(m).0.to_string())),
+            "bits": a.flag("bits").and_then(num_of).or_else(|| level.and_then(crate::levels::layout_of).map(crate::plan::sizing::bits)),
+            "params_b": a.flag("params").and_then(num_of)},
         "bandwidth": {"gbs": bandwidth, "source": if a.flag("bandwidth-gbs").is_some() { "flag" } else if bandwidth.is_some() { "spec sheet" } else { "unknown" }},
         "versions": {"glyd_engine": env!("CARGO_PKG_VERSION"), "git": git_sha(), "server": info.as_ref().and_then(|i| i["build"]["version"].as_str())},
-        "server": {"against": against, "started_by_bench": server.is_some(), "users": server.as_ref().map(|_| a.flag("users").and_then(|u| u.parse::<usize>().ok()).unwrap_or_else(|| loads.iter().map(|l| l.1).max().unwrap_or(1).min(8)))},
+        "server": {"against": against, "engine": a.flag("engine").unwrap_or(if server.is_some() { "glyd" } else { "" }), "started_by_bench": server.is_some(), "users": server.as_ref().map(|_| users),
+            "concurrency": concurrency},
         "config": {"suite": a.flag("suite").unwrap_or(if a.flag("loads").is_some() { "loads" } else { "gate" }), "loads": loads.iter().map(|(k, n)| format!("{k}:{n}")).collect::<Vec<_>>(),
             "runs": runs, "warmup": warmup, "max_tokens": max_tokens},
         "contention": {"busy_before": busy, "utilization_median_pct": util, "before": before, "after": after},
@@ -643,7 +928,7 @@ pub fn last_number(text: &str) -> Option<String> {
     best
 }
 
-fn same_number(a: &str, b: &str) -> bool {
+pub(crate) fn same_number(a: &str, b: &str) -> bool {
     match (a.parse::<f64>(), b.parse::<f64>()) {
         (Ok(x), Ok(y)) => (x - y).abs() < 1e-6,
         _ => a == b,
@@ -673,16 +958,8 @@ fn gsm8k(agent: &ureq::Agent, url: &str, model: &str, n: usize) -> Value {
             s.spawn(|| loop {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some((q, want)) = problems.get(i) else { break };
-                let body = json!({"model": model, "messages": [{"role": "user", "content": format!("{q}\nThink step by step, then end with the final answer as a number alone on the last line.")}],
-                    "max_tokens": 768, "temperature": 0, "stream": false, "chat_template_kwargs": {"enable_thinking": false}});
-                let reply = agent
-                    .post(&format!("{url}/v1/chat/completions"))
-                    .header("Content-Type", "application/json")
-                    .send(body.to_string())
-                    .ok()
-                    .and_then(|mut r| r.body_mut().read_to_string().ok())
-                    .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-                    .and_then(|v| v["choices"][0]["message"]["content"].as_str().map(str::to_string));
+                let reply =
+                    ask(agent, url, model, &format!("{q}\nThink step by step, then end with the final answer as a number alone on the last line."), 768);
                 done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if reply.and_then(|t| last_number(&t)).is_some_and(|got| same_number(&got, want)) {
                     correct.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -694,10 +971,24 @@ fn gsm8k(agent: &ureq::Agent, url: &str, model: &str, n: usize) -> Value {
     json!({"source": "openai/gsm8k test, first problems", "problems": d, "correct": c, "accuracy": if d > 0 { c as f64 / d as f64 } else { f64::NAN }})
 }
 
+/// One chat completion at temperature 0, thinking off, not streamed: the reply's text (None where the request failed).
+pub(crate) fn ask(agent: &ureq::Agent, url: &str, model: &str, content: &str, max_tokens: usize) -> Option<String> {
+    let body = json!({"model": model, "messages": [{"role": "user", "content": content}], "max_tokens": max_tokens, "temperature": 0, "stream": false,
+        "chat_template_kwargs": {"enable_thinking": false}});
+    agent
+        .post(&format!("{url}/v1/chat/completions"))
+        .header("Content-Type", "application/json")
+        .send(body.to_string())
+        .ok()
+        .and_then(|mut r| r.body_mut().read_to_string().ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["choices"][0]["message"]["content"].as_str().map(str::to_string))
+}
+
 // ---- quality: the next token after fixed prefixes of one text
 
 /// A text of about 330 words; its prefixes are the contexts the next-token distributions are taken at.
-const PASSAGE: &str = "The lighthouse keeper climbed the spiral stairs every evening at dusk, a lantern swinging from one hand and a notebook tucked under the other arm. \
+pub(crate) const PASSAGE: &str = "The lighthouse keeper climbed the spiral stairs every evening at dusk, a lantern swinging from one hand and a notebook tucked under the other arm. \
 From the gallery he could see the whole harbour: the fishing boats nosing back to their moorings, the ferry drawing a long white line across the grey water, \
 and beyond the breakwater the open sea, which that night was calm enough to hold the first stars like coins in a dish. He wrote down the wind, the swell and the \
 visibility in a small neat hand, then trimmed the wick, wound the clockwork and listened for the soft click that told him the great lens had begun to turn. \
@@ -715,25 +1006,53 @@ const TOP: usize = 20;
 
 /// Each prefix of PASSAGE as a raw completion of one token at temperature 0, its top 20 log-probabilities: rows of [token, logprob] pairs. A prefix that fails is an empty row.
 fn next_token_rows(agent: &ureq::Agent, url: &str, model: &str) -> Value {
-    let words: Vec<&str> = PASSAGE.split_whitespace().collect();
-    let first = 24usize.min(words.len());
-    let step = (words.len() - first) / (PREFIXES - 1);
-    let mut rows = Vec::new();
-    for i in 0..PREFIXES {
-        let n = (first + i * step).min(words.len());
-        let body = json!({"model": model, "prompt": words[..n].join(" "), "max_tokens": 1, "temperature": 0, "logprobs": TOP});
-        let pairs: Vec<Value> = agent
-            .post(&format!("{url}/v1/completions"))
-            .header("Content-Type", "application/json")
-            .send(body.to_string())
-            .ok()
-            .and_then(|mut r| r.body_mut().read_to_string().ok())
-            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-            .and_then(|v| v["choices"][0]["logprobs"]["top_logprobs"][0].as_object().map(|o| o.iter().map(|(k, x)| json!([k, x])).collect()))
-            .unwrap_or_default();
-        rows.push(Value::Array(pairs));
+    next_token_rows_of(agent, url, model, PASSAGE, PREFIXES)
+}
+
+/// The `count` prefixes of `text` the next-token rows are taken after: the first 24 words, then growing by the same number of words to (about) the whole
+/// text, each cut where a word ends, so that the text's own spaces and line breaks are kept (a program's lines stay lines). The first prefix's words and the step.
+pub(crate) fn prefixes(text: &str, count: usize) -> (Vec<&str>, usize, usize) {
+    let ends: Vec<usize> = text
+        .char_indices()
+        .filter(|&(i, c)| !c.is_whitespace() && text[i + c.len_utf8()..].chars().next().is_none_or(char::is_whitespace))
+        .map(|(i, c)| i + c.len_utf8())
+        .collect();
+    let first = 24usize.min(ends.len());
+    let step = (ends.len() - first) / count.saturating_sub(1).max(1);
+    let cuts = (0..count).map(|i| (first + i * step).min(ends.len())).filter(|&n| n > 0).map(|n| &text[..ends[n - 1]]).collect();
+    (cuts, first, step)
+}
+
+/// The likeliest tokens of a completion's first token, as [token, logprob] pairs, in either shape servers give them: the legacy completions API's object of text to log-probability (vLLM, SGLang,
+/// this engine: `logprobs.top_logprobs[0]`), or the chat API's list (llama.cpp's `logprobs.content[0].top_logprobs`, `[{token, logprob}]`).
+pub(crate) fn first_top(v: &Value) -> Option<Vec<Value>> {
+    let lp = &v["choices"][0]["logprobs"];
+    if let Some(o) = lp["top_logprobs"][0].as_object() {
+        return Some(o.iter().map(|(k, x)| json!([k, x])).collect());
     }
-    json!({"prefixes": PREFIXES, "top": TOP, "words_first": first, "words_step": step, "rows": rows})
+    lp["content"][0]["top_logprobs"].as_array().map(|a| a.iter().filter_map(|e| Some(json!([e["token"].as_str()?, e["logprob"].as_f64()?]))).collect())
+}
+
+/// Each of `count` prefixes of `text` (`prefixes`) as a raw completion of one token at temperature 0, its top 20 log-probabilities: rows of [token, logprob] pairs. A prefix that fails is an empty row.
+pub(crate) fn next_token_rows_of(agent: &ureq::Agent, url: &str, model: &str, text: &str, count: usize) -> Value {
+    let (cuts, first, step) = prefixes(text, count);
+    let rows: Vec<Value> = cuts
+        .iter()
+        .map(|p| {
+            let body = json!({"model": model, "prompt": p, "max_tokens": 1, "temperature": 0, "logprobs": TOP});
+            let pairs = agent
+                .post(&format!("{url}/v1/completions"))
+                .header("Content-Type", "application/json")
+                .send(body.to_string())
+                .ok()
+                .and_then(|mut r| r.body_mut().read_to_string().ok())
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .and_then(|v| first_top(&v))
+                .unwrap_or_default();
+            Value::Array(pairs)
+        })
+        .collect();
+    json!({"prefixes": rows.len(), "top": TOP, "words_first": first, "words_step": step, "rows": rows})
 }
 
 /// KL(reference || candidate) over the reference's top tokens and the rest as one bin, for one prefix; the candidate's probability of a token it did not list is its smallest listed one.
@@ -823,6 +1142,21 @@ fn f(v: &Value, k: &str) -> Option<f64> {
 /// One metric's change and the band it is held to. Returns (base median, candidate median, change that is worse as a fraction, band as a fraction, the band's source).
 pub fn judge(base: &Value, cand: &Value, hist: &[f64], z: f64, floor: f64, higher: bool) -> Option<(f64, f64, f64, f64, &'static str)> {
     let (mb, mc) = (f(base, "median")?, f(cand, "median")?);
+    // (the base is main's usual result: the median of its stored results where there are three or more, else its last. One odd run of main is not
+    // what every change after it is held to: PR #539's first token at 8 users was held to a run of 0.067 s, where main's others and every run since
+    // were 0.096 to 0.105)
+    let mb = if hist.len() >= 3 {
+        let mut h = hist.to_vec();
+        h.sort_by(f64::total_cmp);
+        let k = h.len() / 2;
+        if h.len() % 2 == 1 {
+            h[k]
+        } else {
+            (h[k - 1] + h[k]) / 2.0
+        }
+    } else {
+        mb
+    };
     let n = |v: &Value| v["runs"].as_array().map_or(1, |r| r.len().max(1)) as f64;
     let rel_sd = |v: &Value| match (f(v, "sd"), f(v, "mean")) {
         (Some(s), Some(m)) if m != 0.0 => s / m,
@@ -1086,12 +1420,166 @@ pub fn bar(a: &Args) -> Result<i32> {
     Ok(0)
 }
 
+// ---- the comparison page (P20)
+
+/// The decode rate a user, one at a time on a short prompt, that a model must reach on a tier to count as run there.
+pub const TIER_FLOOR_TPS: f64 = 20.0;
+
+/// The consumer tier of a GPU's memory: 8, 12, 16, 24 or 32 GB (a card's MiB are a little under its GB), 0 under 8 and the GB above 32.
+pub fn tier(memory_mib: f64) -> u64 {
+    let gb = memory_mib / 1024.0 + 0.5;
+    if gb >= 40.0 {
+        return gb as u64;
+    }
+    [8u64, 12, 16, 24, 32].into_iter().rev().find(|&t| gb >= t as f64).unwrap_or(0)
+}
+
+/// Every `glyd-bench/1` file under `dir` (folders whose names begin with '.' left out), with its path.
+fn results_under(dir: &std::path::Path) -> Vec<(std::path::PathBuf, Value)> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if e.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        if p.is_dir() {
+            out.extend(results_under(&p));
+        } else if p.extension().is_some_and(|x| x == "json") {
+            if let Some(v) = std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).filter(|v| v["schema"] == SCHEMA) {
+                out.push((p, v));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// `bench --report DIR`: the comparison page of every result under DIR, as Markdown. By GPU (and its tier): for each engine the largest model whose decode one
+/// user at a time on a short prompt reached `TIER_FLOOR_TPS`, then each model's runs side by side, engines and levels or quants, with the files that hold their
+/// command lines (NAME.cmd) and logs (NAME.log), and the sides that could not run (NAME.skip, its reason). Only what the files measured is on the page.
+pub fn report(dir: &std::path::Path, title: &str) -> Result<String> {
+    let all = results_under(dir);
+    if all.is_empty() {
+        return err(format!("{}: no {SCHEMA} result under it", dir.display()));
+    }
+    // (a file under DIR by its parts joined with '/', on every system: the page's text is the same on Windows)
+    let rel = |p: &std::path::Path| {
+        p.strip_prefix(dir).map_or_else(|_| p.display().to_string(), |r| r.iter().map(|c| c.to_string_lossy()).collect::<Vec<_>>().join("/"))
+    };
+    let med = |v: &Value, prompt: &str, conc: u64, m: &str| cell(v, prompt, conc).and_then(|c| f(&c[m], "median"));
+    let engine = |v: &Value| {
+        v["server"]["engine"].as_str().filter(|e| !e.is_empty()).unwrap_or(if v["server"]["started_by_bench"] == true { "glyd" } else { "?" }).to_string()
+    };
+    let what = |v: &Value| {
+        v["model"]["level"]
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| v["label"].as_str().map(|l| l.rsplit(' ').next().unwrap_or(l).to_string()))
+            .unwrap_or_default()
+    };
+    let mut s = format!("# {title}\n\nEvery figure is the median of the runs of `glyd-engine bench` ([docs/bench.md](https://github.com/surya-koritala/Glyd/blob/main/docs/bench.md)) against each engine's server on the same GPU, greedy, thinking off, no draft model; the command lines, versions and server logs are in the files named beside each row. Nothing here is estimated.\n");
+    let mut gpus: Vec<String> = all.iter().map(|(_, v)| v["machine"]["gpu"].as_str().unwrap_or("?").to_string()).collect();
+    gpus.dedup();
+    gpus.sort();
+    gpus.dedup();
+    for gpu in gpus {
+        let rs: Vec<&(std::path::PathBuf, Value)> = all.iter().filter(|(_, v)| v["machine"]["gpu"] == gpu.as_str()).collect();
+        let m = &rs[0].1;
+        let t = tier(m["machine"]["memory_mib"].as_f64().unwrap_or(0.0));
+        s += &format!(
+            "\n## {gpu} ({t} GB tier)\n\nDriver {}, {} threads of {}; loads {}, {} runs each, at most {} tokens a reply.\n",
+            m["machine"]["driver"].as_str().unwrap_or("?"),
+            m["machine"]["cpu_threads"],
+            m["machine"]["cpu"].as_str().unwrap_or("?"),
+            m["config"]["loads"].as_array().map_or("?".into(), |l| l.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")),
+            m["config"]["runs"],
+            m["config"]["max_tokens"]
+        );
+        let mut engines: Vec<String> = rs.iter().map(|(_, v)| engine(v)).collect();
+        engines.sort();
+        engines.dedup();
+        s += &format!("\n### The largest model at {TIER_FLOOR_TPS:.0} tokens/s or more (one user, short prompt)\n\n| engine | model | parameters | level or quant | decode tokens/s |\n| :-- | :-- | --: | :-- | --: |\n");
+        for e in &engines {
+            let best = rs
+                .iter()
+                .filter(|(_, v)| engine(v) == *e && v["cells"].as_array().into_iter().flatten().all(|c| c["errors"].as_u64().unwrap_or(0) == 0))
+                .filter_map(|(_, v)| med(v, "short", 1, "decode_tps_per_user").filter(|&d| d >= TIER_FLOOR_TPS).map(|d| (v, d)))
+                .max_by(|a, b| {
+                    a.0["model"]["params_b"].as_f64().unwrap_or(0.0).total_cmp(&b.0["model"]["params_b"].as_f64().unwrap_or(0.0)).then(a.1.total_cmp(&b.1))
+                });
+            s += &match best {
+                Some((v, d)) => format!(
+                    "| {e} | {} | {} | {} | {d:.1} |\n",
+                    v["model"]["source"].as_str().or(v["model"]["id"].as_str()).unwrap_or("?"),
+                    v["model"]["params_b"].as_f64().map_or("?".into(), |p| format!("{p}B")),
+                    what(v)
+                ),
+                None => format!("| {e} | none measured reached it | | | |\n"),
+            };
+        }
+        let mut models: Vec<String> = rs.iter().map(|(_, v)| v["model"]["source"].as_str().or(v["model"]["id"].as_str()).unwrap_or("?").to_string()).collect();
+        models.sort();
+        models.dedup();
+        for model in models {
+            s += &format!("\n### {model}\n\n| engine | level or quant | bits a weight | decode tokens/s, one user | in all, most at once | first token, 4K prompt (s) | peak GPU memory (MiB) | failed requests | files |\n| :-- | :-- | --: | --: | --: | --: | --: | --: | :-- |\n");
+            let mut rows: Vec<&&(std::path::PathBuf, Value)> =
+                rs.iter().filter(|(_, v)| v["model"]["source"].as_str().or(v["model"]["id"].as_str()) == Some(model.as_str())).collect();
+            rows.sort_by(|a, b| {
+                b.1["model"]["bits"].as_f64().unwrap_or(0.0).total_cmp(&a.1["model"]["bits"].as_f64().unwrap_or(0.0)).then(engine(&a.1).cmp(&engine(&b.1)))
+            });
+            for (p, v) in rows {
+                let most = v["cells"].as_array().into_iter().flatten().filter(|c| c["prompt"] == "short").filter_map(|c| c["conc"].as_u64()).max().unwrap_or(1);
+                let fmt = |x: Option<f64>, d: usize| x.map_or("-".into(), |x| format!("{x:.d$}"));
+                let errors: u64 = v["cells"].as_array().into_iter().flatten().map(|c| c["errors"].as_u64().unwrap_or(0)).sum();
+                // (NAME.cmd and NAME.log beside NAME.json: a name has dots of its own, llama.cpp-...)
+                let side: Vec<String> = ["cmd", "log"].iter().map(|x| p.with_extension(x)).filter(|q| q.exists()).map(|q| rel(&q)).collect();
+                s += &format!(
+                    "| {} | {} | {} | {} | {} (x{most}) | {} | {} | {errors} | {} |\n",
+                    engine(v),
+                    what(v),
+                    fmt(v["model"]["bits"].as_f64(), 2),
+                    fmt(med(v, "short", 1, "decode_tps_per_user"), 1),
+                    fmt(med(v, "short", most, "agg_tps"), 1),
+                    fmt(med(v, "4k", 1, "ttft_s"), 3),
+                    v["peak_mib"].as_u64().map_or("-".into(), |m| m.to_string()),
+                    [vec![rel(p)], side].concat().join(", ")
+                );
+            }
+        }
+    }
+    let mut skips: Vec<std::path::PathBuf> = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() && !e.file_name().to_string_lossy().starts_with('.') {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "skip") {
+                skips.push(p);
+            }
+        }
+    }
+    skips.sort();
+    if !skips.is_empty() {
+        s += "\n## Not run\n\n";
+        for p in skips {
+            s += &format!("- {}: {}\n", rel(&p.with_extension("")), std::fs::read_to_string(&p).unwrap_or_default().trim());
+        }
+    }
+    Ok(s)
+}
+
 /// The command: `bench MODEL`, `bench --compare`, `bench --bar`.
 pub fn cmd(a: &Args) -> i32 {
     let r = if a.has("compare") {
         compare(a)
     } else if a.has("bar") {
         bar(a)
+    } else if let Some(dir) = a.flag("report") {
+        report(std::path::Path::new(dir), a.flag("title").unwrap_or("Consumer benchmarks")).map(|t| {
+            print!("{t}");
+            0
+        })
     } else {
         measure(a).map(|_| 0)
     };
@@ -1112,6 +1600,18 @@ mod tests {
         // (a spread of rel_sd around base, alternating: the sample sd is about rel_sd * base)
         let r: Vec<f64> = (0..n).map(|i| base * (1.0 + if i % 2 == 0 { rel_sd } else { -rel_sd })).collect();
         stats(&r)
+    }
+
+    /// A server this program starts finds the GPU as others left it: memory in use past a desktop's is another process. A server that was
+    /// already running (--against) holds its own model there (llama.cpp's 14,915 MiB marked its own result contended): only utilization counts.
+    #[test]
+    fn an_outside_servers_own_memory_is_not_another_process() {
+        assert!(busy_before(Some(0.0), 14915.0, false));
+        assert!(!busy_before(Some(0.0), 14915.0, true));
+        assert!(!busy_before(Some(0.0), 305.0, false));
+        assert!(busy_before(Some(35.0), 305.0, false));
+        assert!(busy_before(Some(35.0), 14915.0, true));
+        assert!(!busy_before(None, 305.0, true));
     }
 
     #[test]
@@ -1194,12 +1694,204 @@ mod tests {
         assert!(same_number("18.0", "18") && !same_number("19", "18"));
     }
 
+    /// A load whose requests begin one after another, against the real handler and scheduler over a made-up model: no request is begun before its turn (the i-th at
+    /// least i times the time between them after the round began: when it was sent is its first token's instant less its time to the first token, which holds however
+    /// loaded the machine is, where the gap between two first tokens does not), every reply is whole, and the round has no prefill rate (the prompts were not one pass).
+    #[test]
+    fn requests_one_after_another_begin_in_order() {
+        let mut f = crate::sched::tests::Fake::new(512, 64);
+        f.decode_delay = Duration::from_millis(2);
+        let addr = crate::server::tests::serve_fake(f, None, 8);
+        let url = format!("http://{addr}");
+        let mut seed = 0;
+        let began = Instant::now();
+        let reqs = requests(&agent(), &url, "fake", "short+150ms", 3, &mut seed, 12);
+        assert!(reqs.iter().all(|r| r.error.is_none() && r.tokens > 0), "{:?}", reqs.iter().map(|r| r.error.clone()).collect::<Vec<_>>());
+        for (i, r) in reqs.iter().enumerate() {
+            let sent = r.first.expect("a first token") - Duration::from_secs_f64(r.ttft.expect("a time to the first token"));
+            // (a millisecond for the seconds' rounding)
+            assert!(
+                sent + Duration::from_millis(1) >= began + Duration::from_millis(150) * i as u32,
+                "request {i} of a load begun 150 ms apart was sent {:?} after the round began",
+                sent.duration_since(began)
+            );
+        }
+        let r = round(&agent(), &url, "fake", "short+20ms", 3, &mut seed, 12);
+        assert!(r.errors == 0 && r.ttft.is_some() && r.prefill.is_none());
+        let r = round(&agent(), &url, "fake", "short", 3, &mut seed, 12);
+        assert!(r.errors == 0 && r.ttft.is_some());
+    }
+
+    /// R11: 256 requests in flight at once through the server's front end (which has no cap on connections) to a scheduler of 8 sequences over the made-up model: every one of them is
+    /// answered whole, the rest waiting their turn in the scheduler's queue, and none is refused. Each begins 2 ms after the one before and the model takes 4 ms a step, so the last has
+    /// begun long before the first hundred are done. (All of them in the same instant is the `full` suite's `short:256`, which a Linux server takes; a Mac's accept queue is 128 connections,
+    /// kern.ipc.somaxconn, and it resets the ones past it, so a test that must pass there cannot open them all at once.)
+    #[test]
+    fn two_hundred_and_fifty_six_requests_in_flight_are_all_answered() {
+        assert!(suite("full").unwrap().contains(&("short".to_string(), 256)));
+        crate::server::tests::raise_fd_limit(4096);
+        let mut f = crate::sched::tests::Fake::new(1024, 64);
+        (f.batch, f.decode_delay) = (8, Duration::from_millis(4));
+        let addr = crate::server::tests::serve_fake(f, None, 8);
+        let url = format!("http://{addr}");
+        let mut seed = 1000;
+        let reqs = requests(&agent(), &url, "fake", "short+2ms", 256, &mut seed, 6);
+        let failed: Vec<_> = reqs.iter().filter_map(|r| r.error.clone()).collect();
+        assert!(failed.is_empty(), "{} of 256 failed: {:?}", failed.len(), &failed[..failed.len().min(3)]);
+        assert!(reqs.iter().all(|r| r.tokens > 0 && r.ttft.is_some()));
+        // (they were in flight together: the last began before most had their last token)
+        let last_begun = reqs.iter().filter_map(|r| r.first).max().unwrap();
+        let done_before = reqs.iter().filter(|r| r.last.is_some_and(|l| l < last_begun)).count();
+        assert!(done_before < 256, "{done_before} were done before the last had its first token");
+    }
+
+    /// A conversation (`short*3`) against the real handler and scheduler over the made-up model, whose cache keeps a prompt's full pages: each turn is answered, the later turns send what
+    /// came before (their prompts are longer each time), and the server finds the earlier turns' pages in its cache. The round has the first turns' first token and the later turns' apart.
+    #[test]
+    fn a_conversations_later_turns_send_what_came_before_and_find_it_in_the_cache() {
+        let mut f = crate::sched::tests::Fake::new(512, 64);
+        f.decode_delay = Duration::from_millis(1);
+        // (a server that tells what was found, as the one the bench starts is: one caller)
+        let rt = crate::runtime::context::Context::new();
+        rt.tell_cached.store(true, std::sync::atomic::Ordering::Relaxed);
+        let addr = crate::server::tests::serve_fake_in(f, None, 4, false, None, &[], rt);
+        let url = format!("http://{addr}");
+        let stats = || get_json(&format!("{url}/stats")).map(|v| (v["prompt_tokens"].as_f64().unwrap(), v["prefix_hit_tokens"].as_f64().unwrap())).unwrap();
+        let turns = converse(&agent(), &url, "fake", "short", 7, 3, 24);
+        let errors = || turns.iter().map(|r| r.error.clone()).collect::<Vec<_>>();
+        assert_eq!(turns.iter().map(|r| r.turn).collect::<Vec<_>>(), vec![0, 1, 2], "{:?}", errors());
+        assert!(turns.iter().all(|r| r.error.is_none() && r.tokens > 0), "{:?}", errors());
+        let (run, hit) = stats();
+        assert!(hit >= 2.0 * crate::kv::PAGE as f64 && hit < run, "{hit} of {run} prompt tokens found in the cache");
+        let mut seed = 100;
+        let r = round(&agent(), &url, "fake", "short*3", 2, &mut seed, 24);
+        assert!(r.errors == 0 && r.ttft.is_some() && r.ttft_later.is_some() && r.prefill.is_none());
+        // (one request each: no later turns)
+        assert!(round(&agent(), &url, "fake", "short", 2, &mut seed, 8).ttft_later.is_none());
+    }
+
+    #[test]
+    fn the_report_puts_the_engines_side_by_side_by_tier_and_model() {
+        let dir = std::env::temp_dir().join(format!("glyd-bench-report-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("4080s")).unwrap();
+        let result = |engine: &str, source: &str, level: Option<&str>, bits: f64, params: f64, tps: f64| {
+            let c = |prompt: &str, conc: u64, d: f64| json!({"prompt": prompt, "conc": conc, "errors": 0, "decode_tps_per_user": stats(&[d]), "agg_tps": stats(&[d * conc as f64 * 0.9]), "ttft_s": stats(&[0.5])});
+            json!({"schema": SCHEMA, "label": format!("{engine} Q4_K_M"), "machine": {"gpu": "NVIDIA GeForce RTX 4080 SUPER", "memory_mib": 16376.0, "driver": "580.1", "cpu": "c", "cpu_threads": 32},
+                "model": {"id": "x", "level": level, "source": source, "bits": bits, "params_b": params}, "server": {"engine": engine, "started_by_bench": engine == "glyd"},
+                "config": {"loads": ["short:1", "short:4", "4k:1"], "runs": 3, "max_tokens": 256}, "peak_mib": 9000, "cells": [c("short", 1, tps), c("short", 4, tps), c("4k", 1, tps)]})
+        };
+        let put = |name: &str, v: Value| std::fs::write(dir.join("4080s").join(name), v.to_string()).unwrap();
+        put("glyd-gemma-wren.json", result("glyd", "google/gemma-4-12B-it", Some("wren"), 4.53, 12.0, 80.0));
+        put("llama.cpp-gemma-Q4_0.json", result("llama.cpp", "google/gemma-4-12B-it", None, 4.61, 12.0, 70.0));
+        put("glyd-q38-wren.json", result("glyd", "Qwen/Qwen3.8-27B", Some("wren"), 4.53, 27.0, 31.0));
+        put("llama.cpp-q38-Q4_K_M.json", result("llama.cpp", "Qwen/Qwen3.8-27B", None, 4.9, 27.0, 12.0));
+        std::fs::write(dir.join("4080s/llama.cpp-gemma-Q4_0.cmd"), "server: llama-server -m x.gguf").unwrap();
+        std::fs::write(dir.join("4080s/ollama-gemma-Q4_0.skip"), "no ollama here").unwrap();
+        let t = report(&dir, "Consumer benchmarks").unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(t.contains("## NVIDIA GeForce RTX 4080 SUPER (16 GB tier)"), "{t}");
+        // the largest model at 20 tokens/s or more: Glyd's 27B, llama.cpp's 12B (its 27B ran at 12)
+        assert!(
+            t.contains("| glyd | Qwen/Qwen3.8-27B | 27B | wren | 31.0 |") && t.contains("| llama.cpp | google/gemma-4-12B-it | 12B | Q4_K_M | 70.0 |"),
+            "{t}"
+        );
+        // a model's rows, the most bits first, with the files beside them
+        let (a, b) = (
+            t.find("| llama.cpp | Q4_K_M | 4.61 | 70.0 |").unwrap(),
+            t.find("| glyd | wren | 4.53 | 80.0 | 288.0 (x4) | 0.500 | 9000 | 0 | 4080s/glyd-gemma-wren.json |").unwrap(),
+        );
+        assert!(a < b && t.contains("4080s/llama.cpp-gemma-Q4_0.json, 4080s/llama.cpp-gemma-Q4_0.cmd"), "{t}");
+        assert!(t.contains("## Not run\n\n- 4080s/ollama-gemma-Q4_0: no ollama here"), "{t}");
+        assert_eq!((tier(8188.0), tier(12282.0), tier(16376.0), tier(24564.0), tier(32607.0), tier(81559.0), tier(6144.0)), (8, 12, 16, 24, 32, 80, 0));
+        assert!(report(std::path::Path::new("/nonexistent-glyd"), "x").is_err());
+    }
+
+    /// A result says what a comparison groups and orders it by: the engine, the Hub repo whose weights the server runs, its bits a weight and parameters, as given (the
+    /// made-up model's server, measured with --against as another engine's would be).
+    #[test]
+    fn a_result_keeps_the_engine_the_source_the_bits_and_the_parameters() {
+        let mut f = crate::sched::tests::Fake::new(512, 64);
+        f.decode_delay = Duration::from_millis(1);
+        let addr = crate::server::tests::serve_fake(f, None, 4);
+        let out = std::env::temp_dir().join(format!("glyd-bench-fields-{}.json", std::process::id()));
+        let words = [
+            "bench",
+            "--against",
+            &format!("http://{addr}"),
+            "--loads",
+            "short:1",
+            "--runs",
+            "1",
+            "--warmup",
+            "0",
+            "--max-tokens",
+            "8",
+            "--quiet",
+            "--engine",
+            "llama.cpp",
+            "--source",
+            "google/gemma-4-12B-it",
+            "--bits",
+            "4.61",
+            "--params",
+            "12",
+            "--out",
+            &out.to_string_lossy(),
+        ];
+        measure(&Args::from(words.iter().map(|w| w.to_string()))).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        std::fs::remove_file(&out).ok();
+        assert_eq!(v["server"]["engine"], "llama.cpp");
+        assert_eq!(
+            (v["model"]["source"].as_str(), v["model"]["bits"].as_f64(), v["model"]["params_b"].as_f64()),
+            (Some("google/gemma-4-12B-it"), Some(4.61), Some(12.0)),
+            "{}",
+            v["model"]
+        );
+    }
+
+    /// The server the bench starts is asked for as many users as the heaviest load sends, up to the scheduler's limit: not 8 (64 at once ran 8 and queued 56);
+    /// `--users` says otherwise, and a server that holds fewer is said to.
+    #[test]
+    fn the_server_takes_as_many_users_as_the_loads_send() {
+        let args = |extra: &[&str]| Args::from(["bench", "m"].iter().chain(extra).map(|s| s.to_string()));
+        assert_eq!(users_asked(&args(&[]), &parse_loads("short:1,short:64").unwrap()).unwrap(), 64);
+        assert_eq!(users_asked(&args(&[]), &suite("gate").unwrap()).unwrap(), 8);
+        assert_eq!(users_asked(&args(&[]), &suite("occupancy").unwrap()).unwrap(), 64);
+        // (the full suite's 256 at once: the most `serve` takes, the rest queued)
+        assert_eq!(users_asked(&args(&[]), &suite("full").unwrap()).unwrap(), crate::sched::MAX_USERS);
+        assert_eq!(users_asked(&args(&["--users", "12"]), &suite("occupancy").unwrap()).unwrap(), 12);
+        assert!(users_asked(&args(&["--users", "0"]), &suite("gate").unwrap()).is_err());
+        assert!(held_note(64, Some(24)).unwrap().contains("runs 24 requests at once") && held_note(64, Some(64)).is_none() && held_note(8, None).is_none());
+    }
+
     #[test]
     fn suites_and_loads_are_read() {
+        assert_eq!(suite("occupancy").unwrap(), vec![("short".to_string(), 1), ("short".to_string(), 8), ("short".to_string(), 32), ("short".to_string(), 64)]);
         assert_eq!(suite("gate").unwrap().len(), 4);
         assert!(suite("full").unwrap().contains(&("short".to_string(), 256)));
         assert_eq!(parse_loads("short:1,4k:8").unwrap(), vec![("short".to_string(), 1), ("4k".to_string(), 8)]);
         assert!(parse_loads("short").is_err() && parse_loads("short:0").is_err());
+        // requests one after another: the kind carries the time between them, and is the load's name in the result
+        assert_eq!(parse_loads("4k+250ms:8").unwrap(), vec![("4k+250ms".to_string(), 8)]);
+        assert_eq!(kind_parts("4k+250ms").unwrap(), Kind { prompt: "4k", gap: Duration::from_millis(250), turns: 1 });
+        assert_eq!(kind_parts("short").unwrap(), Kind { prompt: "short", gap: Duration::ZERO, turns: 1 });
+        // a conversation: the turns, with or without a time between the conversations' starts
+        assert_eq!(kind_parts("1k*4").unwrap(), Kind { prompt: "1k", gap: Duration::ZERO, turns: 4 });
+        assert_eq!(kind_parts("1k*4+250ms").unwrap(), Kind { prompt: "1k", gap: Duration::from_millis(250), turns: 4 });
+        assert_eq!(parse_loads("1k*4:8").unwrap(), vec![("1k*4".to_string(), 8)]);
+        assert!(parse_loads("1k*1:8").is_err() && parse_loads("1k*x:8").is_err() && parse_loads("5k*4:8").is_err());
+        assert!(suite("chat").unwrap().iter().all(|(k, _)| kind_parts(k).unwrap().turns == 4));
+        // requests that begin alike: the notes the same for every seed, the question the seed's own, and last
+        let (a, b) = (prompt("same1k", 1).unwrap(), prompt("same1k", 2).unwrap());
+        let alike = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+        assert!(alike > 4000 && alike < a.len() && a != b && !a.starts_with('['), "{alike} of {}", a.len());
+        assert!(prompt("same4k", 1).unwrap().len() > 3 * a.len() && prompt("1k", 1).unwrap().starts_with("[1] "));
+        assert_eq!(parse_loads("same4k+250ms:8").unwrap(), vec![("same4k+250ms".to_string(), 8)]);
+        assert!(parse_loads("sameshort:1").is_err() && parse_loads("same5k:1").is_err());
+        assert!(suite("shared").unwrap().iter().all(|(k, n)| *n == 8 && k.starts_with("same")));
+        assert!(parse_loads("4k+250:8").is_err() && parse_loads("4k+0ms:8").is_err() && parse_loads("5k+250ms:8").is_err());
+        assert!(suite("arrive").unwrap().iter().all(|(k, n)| *n == 8 && !kind_parts(k).unwrap().gap.is_zero()));
     }
 
     #[test]
@@ -1217,6 +1909,20 @@ mod tests {
         // a time is worse where it is longer
         let (_, _, worse, _, _) = judge(&runs(0.1, 0.004, 5), &runs(0.11, 0.004, 5), &[], 3.0, 0.003, false).unwrap();
         assert!(worse > 0.09);
+    }
+
+    #[test]
+    fn the_base_is_mains_usual_result_not_its_last_alone() {
+        // main's last run a third faster than its others: a candidate at the others' is no regression
+        let hist = [0.103, 0.104, 0.096, 0.067, 0.103];
+        let (mb, _, worse, band, _) = judge(&runs(0.067, 0.004, 5), &runs(0.103, 0.004, 5), &hist, 3.0, 0.003, false).unwrap();
+        assert!((mb - 0.103).abs() < 1e-12 && worse <= band, "{mb} {worse} {band}");
+        // a slowdown past main's usual still is one
+        let (_, _, worse, band, _) = judge(&runs(0.067, 0.004, 5), &runs(0.2, 0.004, 5), &hist, 3.0, 0.003, false).unwrap();
+        assert!(worse > band, "{worse} {band}");
+        // fewer than three stored results: main's last
+        let (mb, ..) = judge(&runs(0.067, 0.004, 5), &runs(0.103, 0.004, 5), &[0.103, 0.104], 3.0, 0.003, false).unwrap();
+        assert!((mb - 0.067).abs() < 0.001, "{mb}");
     }
 
     #[test]
@@ -1249,6 +1955,18 @@ mod tests {
         assert_eq!(gpu_word("NVIDIA A100-SXM4-80GB"), "A100");
         assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4080 SUPER", 16376.0), Some(736.0));
         assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4080", 16376.0), Some(716.8));
+        // the occupancy check's datacenter cards and the consumer tiers' (a name's longer form before its shorter)
+        assert_eq!(spec_bandwidth("NVIDIA H100 80GB HBM3", 81559.0), Some(3352.0));
+        assert_eq!(spec_bandwidth("NVIDIA H100 PCIe", 81559.0), Some(2039.0));
+        assert_eq!(spec_bandwidth("NVIDIA H100 NVL", 95830.0), Some(3938.0));
+        assert_eq!(spec_bandwidth("NVIDIA H200", 143771.0), Some(4800.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4070 Ti SUPER", 16376.0), Some(672.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4070 SUPER", 12282.0), Some(504.2));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 4060 Ti", 8188.0), Some(288.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 3060 Ti", 8192.0), Some(448.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 3060", 12288.0), Some(360.0));
+        assert_eq!(spec_bandwidth("NVIDIA GeForce RTX 5070 Ti", 16303.0), Some(896.0));
+        assert_eq!(spec_bandwidth("NVIDIA RTX A4000", 16376.0), Some(448.0));
     }
 
     #[test]
@@ -1271,6 +1989,55 @@ mod tests {
         assert_eq!(compare(&args(&["--synthetic", "0.999"])).unwrap(), 0);
         for n in ["base", "same"] {
             std::fs::remove_file(std::env::temp_dir().join(format!("glyd-bench-test-{}-{n}.json", std::process::id()))).ok();
+        }
+    }
+
+    /// The server ends with the bench (`tie`): this test run again as the bench, with a `sleep` tied to it as its server, is ended by SIGTERM (as `timeout` ends it), and on Linux by
+    /// SIGKILL too; the server is gone within seconds, not the minute it sleeps. (Its standard output is the pipe this test reads: the pipe's end comes when the bench and the server
+    /// have both ended.)
+    #[cfg(unix)]
+    #[test]
+    fn a_bench_that_is_ended_ends_its_server() {
+        const NAME: &str = "bench::tests::a_bench_that_is_ended_ends_its_server";
+        if std::env::var_os("GLYD_TEST_TIE_BENCH").is_some() {
+            let mut server = Command::new("sleep");
+            server.arg("60").stdin(Stdio::null()).stderr(Stdio::null());
+            tie::on_exit(&mut server);
+            let mut child = server.spawn().expect("sleep");
+            tie::watch(child.id());
+            println!("ready");
+            let _ = child.wait();
+            return;
+        }
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        let sigs: &[i32] = if cfg!(target_os = "linux") { &[15, 9] } else { &[15] };
+        for &sig in sigs {
+            let mut bench = Command::new(std::env::current_exe().expect("the test binary"))
+                .args(["--exact", NAME, "--nocapture", "--test-threads", "1"])
+                .env("GLYD_TEST_TIE_BENCH", "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("the test binary again");
+            let mut out = BufReader::new(bench.stdout.take().expect("piped"));
+            let mut line = String::new();
+            // (the harness's own line before it: "test NAME ... ready")
+            while !line.trim_end().ends_with("ready") {
+                line.clear();
+                assert!(out.read_line(&mut line).expect("the bench's output") > 0, "the bench ended before its server started");
+            }
+            // SAFETY: a signal to the child this test started.
+            assert_eq!(unsafe { kill(bench.id() as i32, sig) }, 0);
+            bench.wait().expect("the bench ends");
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut rest = String::new();
+                let _ = std::io::Read::read_to_string(&mut out, &mut rest);
+                let _ = tx.send(());
+            });
+            assert!(rx.recv_timeout(Duration::from_secs(10)).is_ok(), "signal {sig}: the server outlived the bench");
         }
     }
 }

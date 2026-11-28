@@ -7,7 +7,8 @@
 // or with an nvcc that has no Blackwell, is an error.
 // NVCC12: a CUDA 12.9 (or newer 12) nvcc, with the one in NVCC (CUDA 13) or on PATH: the kernels are built a second time, uncompressed (a fatbin compressed for size needs a driver of
 // CUDA 12.4 or newer), as engine12.fatbin, which the binary loads on a driver that reports CUDA 12 (cfg `kernels12`: dev.rs picks by the driver's version, machine.rs says what the build runs on).
-// Without NVCC12 the build carries the one nvcc's kernels, and the cfg `kernels12` where that nvcc is CUDA 12's.
+// Without NVCC12 the build carries the one nvcc's kernels, and the cfg `kernels12` where that nvcc is CUDA 12's. The cfg `tensor_map_128`: NVCC (the main fatbin's) is CUDA 13's, whose cuda.h
+// aligns a CUtensorMap to 128 bytes (CUDA 12's: 64), and src/device.rs's TensorMap follows it.
 // Every build keeps the names engine.cu gives its kernels (the source is open: a release build is this source as it reads).
 //
 // GLYD_HIP=1: AMD GPUs in place of NVIDIA's. kernels/engine.cu by hipcc (HIPCC: hipcc, or a script that runs a clang with HIP as hipcc would) as code objects for RDNA 3 and 4 in
@@ -49,15 +50,45 @@ fn find_nvcc() -> Option<PathBuf> {
     env::split_paths(&path).map(|d| d.join(exe)).find(|p| p.exists())
 }
 
+#[path = "build/kernel_types.rs"]
+mod kernel_types;
+
+/// `crate::kt` (src/lib.rs): a type for each kernel of kernels/*.cu, written to OUT_DIR on every build, with or without a CUDA compiler.
+fn write_kernel_types() {
+    println!("cargo:rerun-if-changed=build/kernel_types.rs");
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir("kernels")
+        .expect("kernels/")
+        .map(|e| e.expect("an entry of kernels/").path())
+        .filter(|p| p.extension().is_some_and(|x| x == "cu"))
+        .collect();
+    files.sort();
+    let sources: Vec<(String, String)> =
+        files.iter().map(|p| (p.file_name().expect("a name").to_string_lossy().into_owned(), std::fs::read_to_string(p).expect("a kernel source"))).collect();
+    let out = kernel_types::generate(&sources).unwrap_or_else(|e| panic!("the kernels' types: {e}"));
+    let dir = std::env::var("OUT_DIR").expect("OUT_DIR");
+    std::fs::write(std::path::Path::new(&dir).join("kernel_types.rs"), out).expect("kernel_types.rs written");
+}
+
 fn main() {
+    // R9's MLX spike (src/runtime/mlx.rs): mlx-c, where the `mlx` feature is on
+    if env::var_os("CARGO_FEATURE_MLX").is_some() {
+        let prefix = env::var("MLX_PREFIX").unwrap_or_else(|_| "/opt/homebrew".into());
+        println!("cargo:rustc-link-search=native={prefix}/lib");
+        println!("cargo:rerun-if-env-changed=MLX_PREFIX");
+    }
+    write_kernel_types();
     println!("cargo:rerun-if-changed=kernels/engine.cu");
     println!("cargo:rerun-if-changed=kernels/qwen35.cu");
     println!("cargo:rerun-if-changed=kernels/moe.cu");
+    println!("cargo:rerun-if-changed=kernels/residual.cu");
     println!("cargo:rerun-if-changed=kernels/moe_rows.cu");
     println!("cargo:rerun-if-changed=kernels/moe_hb.cu");
+    println!("cargo:rerun-if-changed=kernels/moe_hbg.cu");
     println!("cargo:rerun-if-changed=kernels/nemotron.cu");
+    println!("cargo:rerun-if-changed=kernels/short_conv.cu");
     println!("cargo:rerun-if-changed=kernels/glm.cu");
     println!("cargo:rerun-if-changed=kernels/glm_cb.cu");
+    println!("cargo:rerun-if-changed=kernels/mla.cu");
     println!("cargo:rerun-if-changed=kernels/kimi.cu");
     println!("cargo:rerun-if-changed=kernels/dsv4.cu");
     println!("cargo:rerun-if-changed=kernels/muse.cu");
@@ -66,10 +97,13 @@ fn main() {
     println!("cargo:rerun-if-changed=kernels/qwen4x.cu");
     println!("cargo:rerun-if-changed=kernels/vision.cu");
     println!("cargo:rerun-if-changed=kernels/gemma4.cu");
+    println!("cargo:rerun-if-changed=kernels/attn.cu");
     println!("cargo:rerun-if-changed=kernels/tp.cu");
     println!("cargo:rerun-if-changed=kernels/gemm_idx.h");
     println!("cargo:rerun-if-changed=../gpu/hip.h");
     println!("cargo:rerun-if-changed=../gpu/warp_emu.h");
+    println!("cargo:rerun-if-changed=../gpu/glyd_gpu_kernels.h");
+    println!("cargo:rerun-if-changed=kernels/fold.cu");
     println!("cargo:rerun-if-env-changed=GLYD_HIP");
     println!("cargo:rerun-if-env-changed=GLYD_HIP_ARCHS");
     println!("cargo:rerun-if-env-changed=HIPCC");
@@ -84,7 +118,15 @@ fn main() {
     println!("cargo:rustc-env=GLYD_SOURCE_COMMIT={}", env::var("GLYD_SOURCE_COMMIT").unwrap_or_default());
     println!("cargo::rustc-check-cfg=cfg(no_kernels)");
     println!("cargo::rustc-check-cfg=cfg(kernels12)");
+    println!("cargo::rustc-check-cfg=cfg(tensor_map_128)");
     println!("cargo:rerun-if-env-changed=NVCC12");
+    println!("cargo:rerun-if-env-changed=GLYD_ENGINE_FATBIN_CACHE");
+    println!("cargo:rerun-if-env-changed=GLYD_ENGINE_NVCC_THREADS");
+    // GLYD_ENGINE_FATBIN_CACHE=DIR: a fatbin found there (engine.fatbin, engine12.fatbin) is taken in place of compiling it, and one compiled is left there.
+    // The workflows key DIR's cache by the kernels' sources, this file and the toolkits, so a build whose kernels did not change skips nvcc; nothing else sets it.
+    let cache = env::var_os("GLYD_ENGINE_FATBIN_CACHE").filter(|d| !d.is_empty()).map(PathBuf::from);
+    // GLYD_ENGINE_NVCC_THREADS=N: nvcc compiles N architectures at once (--threads N; each takes its own memory)
+    let threads = env::var("GLYD_ENGINE_NVCC_THREADS").ok().filter(|s| !s.trim().is_empty());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let out = out_dir.join("engine.fatbin");
     std::fs::write(out_dir.join("engine12.fatbin"), b"").unwrap(); // (dev.rs embeds both; the second is empty unless NVCC12 built it)
@@ -125,19 +167,43 @@ fn main() {
             archs.push_str(" 110");
         }
     }
-    // one fatbin of kernels/engine.cu by `nvcc` for `archs`: CUDA 13's compressed for size (nvcc 12.4 on knows the flag; where it fails, as it is), CUDA 12's not compressed at all
-    // (a driver below CUDA 12.4 cannot read a compressed fatbin); the compute_89 PTX in a release build, and in a development build the compute_80 PTX
-    let fatbin = |nvcc: &Path, out: &Path, archs: &str, compress: bool, uncompressed: bool| {
+    // an nvcc's CUDA major version (`nvcc --version`: "release 13.0, V13.0.88"): each fatbin's flags and the tensor maps' alignment follow it, so a build stops where nvcc does not say it
+    let major = |nvcc: &Path| {
+        let v = Command::new(nvcc).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        v.split("release ")
+            .nth(1)
+            .and_then(|s| s.split('.').next())
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or_else(|| panic!("{}: no CUDA version in what `nvcc --version` says ({v:?})", nvcc.display()))
+    };
+    // CUtensorMap (cuda.h), the parameter of Hopper's kernels that src/device.rs's TensorMap makes: 128 bytes, aligned to 64 by CUDA 12's cuda.h and to 128 by CUDA 13's.
+    // The binary's maps are aligned as the main fatbin's toolkit aligns them (cfg `tensor_map_128`), which a CUDA 12 fatbin's 64 divides; each nvcc's compile of
+    // kernels/fold.cu holds its own cuda.h to the alignment said here for it (GLYD_TENSOR_MAP_ALIGN).
+    let map_align = |nvcc: &Path| if major(nvcc) >= 13 { 128 } else { 64 };
+    // one fatbin of kernels/engine.cu by `nvcc` for `archs`: CUDA 13's compressed for size, CUDA 12's (`cuda12`) not compressed at all (a driver below CUDA 12.4 cannot read a
+    // compressed fatbin); the compute_89 PTX in a release build, and in a development build the compute_80 PTX
+    let fatbin = |nvcc: &Path, out: &Path, archs: &str, cuda12: bool| -> bool {
+        let name = out.file_name().expect("a fatbin's name");
+        if let Some(hit) = cache.as_ref().map(|c| c.join(name)).filter(|f| f.metadata().is_ok_and(|m| m.len() > 0)) {
+            std::fs::copy(&hit, out).unwrap_or_else(|e| panic!("{}: {e}", hit.display()));
+            println!("cargo:warning=glyd-engine: {} from GLYD_ENGINE_FATBIN_CACHE ({})", name.to_string_lossy(), hit.display());
+            return true;
+        }
         let mut cmd = Command::new(nvcc);
+        if let Some(n) = &threads {
+            cmd.arg("--threads").arg(n.trim());
+        }
         cmd.args(["-fatbin", "-O3", "-std=c++17", "--expt-relaxed-constexpr", "-o"]).arg(out);
+        cmd.arg(format!("-DGLYD_TENSOR_MAP_ALIGN={}", map_align(nvcc)));
+        if cfg!(windows) {
+            // (MSVC says C++98 in `__cplusplus` whatever /std is, and cuda.h gives CUtensorMap its alignas only from C++11 on: without this a Windows compile
+            // aligns the map to 8 and kernels/fold.cu's assertion of the alignment said above fails)
+            cmd.args(["-Xcompiler", "/Zc:__cplusplus"]);
+        }
         if env::var_os("GLYD_ENGINE_LINEINFO").is_some() {
             cmd.arg("-lineinfo"); // (for a profiler: it makes the fatbin several times larger)
         }
-        if compress {
-            cmd.arg("--compress-mode=size");
-        } else if uncompressed {
-            cmd.arg("--compress-mode=none");
-        }
+        cmd.arg(if cuda12 { "--compress-mode=none" } else { "--compress-mode=size" });
         for a in archs.split_whitespace() {
             cmd.arg("-gencode").arg(format!("arch=compute_{a},code=sm_{a}"));
         }
@@ -149,15 +215,18 @@ fn main() {
             cmd.arg("-gencode").arg("arch=compute_80,code=compute_80");
         }
         cmd.arg("kernels/engine.cu");
-        cmd.status().unwrap_or_else(|e| panic!("{}: {e}", nvcc.display()))
-    };
-    let major = |nvcc: &Path| {
-        let v = Command::new(nvcc).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-        v.split("release ").nth(1).and_then(|s| s.split('.').next()).and_then(|s| s.trim().parse::<u32>().ok()).unwrap_or(13)
+        let ok = cmd.status().unwrap_or_else(|e| panic!("{}: {e}", nvcc.display())).success();
+        if let (true, Some(c)) = (ok, &cache) {
+            std::fs::create_dir_all(c).and_then(|_| std::fs::copy(out, c.join(name))).unwrap_or_else(|e| panic!("{}: {e}", c.display()));
+        }
+        ok
     };
     let primary12 = major(&nvcc) < 13;
-    if !fatbin(&nvcc, &out, &archs, !primary12, primary12).success() && !fatbin(&nvcc, &out, &archs, false, primary12).success() {
+    if !fatbin(&nvcc, &out, &archs, primary12) {
         panic!("nvcc failed on kernels/engine.cu");
+    }
+    if map_align(&nvcc) == 128 {
+        println!("cargo:rustc-cfg=tensor_map_128");
     }
     // the second fatbin, for drivers that report CUDA 12 (empty without NVCC12)
     let out12 = out_dir.join("engine12.fatbin");
@@ -168,16 +237,19 @@ fn main() {
             panic!("NVCC12={}: this nvcc is CUDA {}'s, not 12's", nvcc12.display(), major(&nvcc12));
         }
         let known12 = Command::new(&nvcc12).arg("--list-gpu-arch").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        // (Jetson Thor's sm_110 is CUDA 13's alone, and a driver that reports CUDA 12 runs no Thor: the CUDA 12 fatbin leaves it out)
+        const CUDA13_ONLY: &[&str] = &["110"];
+        let wanted12: Vec<&str> = archs.split_whitespace().filter(|a| !CUDA13_ONLY.contains(&a.trim_end_matches(|c| c == 'a' || c == 'f'))).collect();
         // (Blackwell's code needs CUDA 12.8: the build refuses an older one, as the CUDA 13 build refuses an nvcc without it)
         let archs12: Vec<&str> =
-            archs.split_whitespace().filter(|a| known12.lines().any(|l| l.trim() == format!("compute_{}", a.trim_end_matches('a')))).collect(); // (nvcc lists compute_90, and takes 90a)
-        if release && archs12.len() != archs.split_whitespace().count() {
+            wanted12.iter().copied().filter(|a| known12.lines().any(|l| l.trim() == format!("compute_{}", a.trim_end_matches('a')))).collect(); // (nvcc lists compute_90, and takes 90a)
+        if release && archs12.len() != wanted12.len() {
             panic!(
                 "GLYD_ENGINE_RELEASE=1: NVCC12 has no compute_{{{}}}: a release build needs CUDA 12.8 or newer",
-                archs.split_whitespace().filter(|a| !archs12.contains(a)).collect::<Vec<_>>().join(", ")
+                wanted12.iter().filter(|a| !archs12.contains(a)).copied().collect::<Vec<_>>().join(", ")
             );
         }
-        if !fatbin(&nvcc12, &out12, &archs12.join(" "), false, true).success() {
+        if !fatbin(&nvcc12, &out12, &archs12.join(" "), true) {
             panic!("nvcc ({}) failed on kernels/engine.cu", nvcc12.display());
         }
         kernels12 = true;

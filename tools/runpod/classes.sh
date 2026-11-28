@@ -11,7 +11,7 @@ class_types() {
     a6000) echo "NVIDIA RTX A6000";;
     l40) printf '%s\n' "NVIDIA L40" "NVIDIA L40S";;
     a100) echo "NVIDIA A100-SXM4-80GB";;   # 80 GB: Nemotron 3 Super packed at wren (tools/cards/nh_run_check_job.sh)
-    h200) printf '%s\n' "NVIDIA H200" "NVIDIA H200 NVL";;   # 141 GB: Nemotron 3 Super packed at swift (tools/cards/nh_run_check_job.sh)
+    h200) printf '%s\n' "NVIDIA H200" "NVIDIA H200 NVL";;   # 141 GB: Nemotron 3 Super packed at linnet (tools/cards/nh_run_check_job.sh)
     # 4-GPU pods (class_gpus) for the routing-skew job (tools/cards/glm_skew.sh): GLM-5.3-Flash is 328 GB of FP8, so 4 x 80 GB (320 GB) does not hold it
     glm) printf '%s\n' "NVIDIA RTX PRO 6000 Blackwell Server Edition" "NVIDIA RTX PRO 6000 Blackwell Workstation Edition" "NVIDIA H100 NVL" "NVIDIA H200 NVL" "NVIDIA H200";;
     glmh) printf '%s\n' "NVIDIA H100 NVL" "NVIDIA H200 NVL" "NVIDIA H200";;   # Hopper only, if the FP8 kernels fail on the Blackwell cards

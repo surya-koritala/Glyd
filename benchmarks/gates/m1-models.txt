@@ -3,11 +3,11 @@
 # (the release build's planner, wren included since #421: on 8 GB only Nemotron-3.5-Lightning at wren runs, with its experts in RAM; gemma-4-12B at wren needs 9.4 GiB and still does not fit)
 # run = the model loads and gives a first token within 2 minutes, refuse = `glyd run` says in a few lines why it does not and exits non-zero.
 # Every model was released after 2026-05-20 (createdAt on the Hub: the owner's rule, models older than six months are not tested).
-google/gemma-4-12B-it | 2026-05-23 | refuse | run | run | BLOCKED(packs): the 16 GB plan is kestrel, and glyd/gemma-4-12B-kestrel is not published
-google/gemma-4-12B-it-qat-w4a16-ct | 2026-06-05 | refuse | run | run | BLOCKED(packs): the QAT checkpoint; its 16 GB plan is kestrel too (no repo)
-nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 | 2026-08-01 | run | run | run | BLOCKED(packs): no glyd repo of Lightning at hummingbird or swift. Mamba-2 hybrid MoE; experts in RAM on 8 GB at wren (needs 24 GiB of free RAM; wren is in the release build since #421), hummingbird on 16 GB
+# (2026-11-21: google/gemma-4-12B-it-qat-w4a16-ct dropped: the same model as gemma-4-12B-it, in a compressed-tensors format that is M3's F3c)
+google/gemma-4-12B-it | 2026-05-23 | refuse | run | run | the 16 GB plan is kestrel (glyd/gemma-4-12B-kestrel, packed 2026-11-21)
+nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 | 2026-08-01 | run | run | run | Mamba-2 hybrid MoE: wren on 8 GB with its experts in RAM (needs about 24 GiB of free RAM), kestrel on 16 GB (glyd/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16-wren and -kestrel, packed 2026-11-21)
 Qwen/Qwen3.8-27B | 2026-08-05 | refuse | refuse | run | dense Qwen3.5 family
-Qwen/Qwen3.8-Flash-Next | 2026-08-24 | refuse | refuse | refuse | Condor's model: glyd run takes it with P8
+Qwen/Qwen3.8-Flash-Next | 2026-08-24 | refuse | refuse | refuse | Ibis's model: glyd run takes it with P8
 Qwen/Qwen-AgentWorld-35B-A3B | 2026-06-22 | refuse | refuse | refuse | Qwen3.5 MoE
 zai-org/GLM-5.3-Flash | 2026-08-25 | refuse | refuse | refuse | 328B MoE
 meta-models/Muse-Glimmer-30B | 2026-08-09 | refuse | refuse | refuse | Muse Glimmer

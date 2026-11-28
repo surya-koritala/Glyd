@@ -7,9 +7,26 @@
 use crate::deepseek_v4::{fp4_runs, fp8_bf16, ConfigV4};
 use crate::dev::Buf;
 use crate::ffi::{err, Error, Result};
-use crate::qwen35_ref::bf16;
+use crate::gpu_ops::GpuOps;
+use crate::runtime::reference::{ffn::Routed, mla::Picked};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
+
+#[cfg(test)]
+thread_local! {
+    /// A test's switch: every bf16 rounding of this reference off on this thread (its simulated quantizations kept), the arithmetic between its rounding
+    /// points in fp32: its noise floor's other side (`logits::tests::deepseek_v4_noise_floor`).
+    pub(crate) static PLAIN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The bf16 value of `x`, where the release holds a bf16 tensor (`x` itself on a thread of a test that set `PLAIN`).
+fn bf16(x: f32) -> f32 {
+    #[cfg(test)]
+    if PLAIN.with(|p| p.get()) {
+        return x;
+    }
+    crate::qwen35_ref::bf16(x)
+}
 
 fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| Error(e.to_string()))
@@ -66,12 +83,6 @@ fn tensor(ck: &Checkpoint, name: &str) -> Result<(Vec<u64>, Vec<f32>)> {
     Ok((sh, v))
 }
 
-/// A tensor decoded as the reference reads it (FP8 and FP4 with their scales), for the runtime's tests.
-#[cfg(test)]
-pub(crate) fn tensor_of(ck: &Checkpoint, name: &str) -> Result<(Vec<u64>, Vec<f32>)> {
-    tensor(ck, name)
-}
-
 fn mat(ck: &Checkpoint, name: &str) -> Result<Mat> {
     let (sh, w) = tensor(ck, name)?;
     if sh.len() != 2 {
@@ -90,44 +101,9 @@ fn rms(x: &[f32], w: &[f32], eps: f32) -> Vec<f32> {
     x.iter().zip(w).map(|(&v, &g)| bf16(g * (v * r))).collect()
 }
 
-/// kernel.py's power-of-two scale: 2^ceil(log2(amax / max)), from the f32 bits.
-fn pow2_scale(amax: f32, inv_max: f32) -> f32 {
-    let b = (amax * inv_max).to_bits();
-    let e = ((b >> 23) & 0xFF) as i32 - 127 + ((b & 0x7F_FFFF) != 0) as i32;
-    f32::from_bits(((e + 127) as u32) << 23)
-}
-
-/// v (at most 448 in size) rounded to E4M3, to nearest and ties to even.
-pub fn e4m3_round(v: f32) -> f32 {
-    let a = v.abs();
-    let e = (((a.to_bits() >> 23) & 0xFF) as i32 - 127).max(-6);
-    let q = f32::from_bits(((e - 3 + 127) as u32) << 23);
-    ((a / q).round_ties_even() * q).copysign(v)
-}
-
-/// v (at most 6 in size) rounded to E2M1, to nearest and ties to even.
-pub fn e2m1_round(v: f32) -> f32 {
-    let a = v.abs();
-    let q = if a < 2.0 {
-        0.5
-    } else if a < 4.0 {
-        1.0
-    } else {
-        2.0
-    };
-    ((a / q).round_ties_even() * q).copysign(v)
-}
-
-/// kernel.py's act_quant in place (FP8, blocks of `block`, power-of-two scales): each value rounded to E4M3 at its block's scale, back as bf16.
-pub fn fp8_sim(x: &mut [f32], block: usize) {
-    for b in x.chunks_mut(block) {
-        let amax = b.iter().fold(0f32, |m, v| m.max(v.abs())).max(1e-4);
-        let s = pow2_scale(amax, 1.0 / 448.0);
-        for v in b {
-            *v = bf16(e4m3_round((*v / s).clamp(-448.0, 448.0)) * s);
-        }
-    }
-}
+// (the power-of-two scale, E4M3, E2M1 and act_quant: src/cpu_fp4.rs's, which the host's FP4 experts round their activations with too)
+pub use crate::cpu_fp4::{e2m1_round, e4m3_round, fp8_sim};
+use crate::cpu_fp4::{pow2_scale, Sim};
 
 /// kernel.py's fp4_act_quant in place (E2M1, blocks of 32, power-of-two scales).
 pub fn fp4_sim(x: &mut [f32]) {
@@ -389,6 +365,14 @@ pub struct RefV4 {
     pub margin: std::cell::Cell<(f32, f32)>,
     /// each layer's attention input (normed) and output, its experts' input (normed) and output, and the streams after it, of the last step, where kept
     pub trace: Option<Vec<[Vec<f32>; 5]>>,
+    /// Each mixture-of-experts layer's experts for the tokens to come, each token's in turn, taken in the place of its router's own choice (their
+    /// weights its router's scores), and each indexer's picks (the compressed entries a query reads, the indexed layers in order) in the place of its
+    /// own: a comparison's, which runs another reference on the same choices. Empty: the router's, the indexer's.
+    pub take: std::cell::RefCell<Vec<std::collections::VecDeque<Vec<usize>>>>,
+    pub take_picks: Vec<std::collections::VecDeque<Vec<usize>>>,
+    /// Where Some: each step's routing in each mixture-of-experts layer and each indexer's choice (the indexed layers in order) as the kinds' reference
+    /// records them (`Routed`, `Picked`, an entry a pool of its own), the router's and the indexer's own beside the choice taken: a check's view.
+    pub chose: std::cell::RefCell<Option<(Vec<Vec<Routed>>, Vec<Vec<Picked>>)>>,
 }
 
 impl RefV4 {
@@ -463,6 +447,9 @@ impl RefV4 {
             sim: act_fp8,
             trace: None,
             margin: std::cell::Cell::new((f32::INFINITY, f32::INFINITY)),
+            take: Default::default(),
+            take_picks: Vec::new(),
+            chose: Default::default(),
         })
     }
 
@@ -529,12 +516,22 @@ impl RefV4 {
                     (bf16(s), t)
                 })
                 .collect();
+            let score: Vec<f32> = sc.iter().map(|x| x.0).collect();
             sc.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
             if sc.len() > c.idx_topk {
                 let (m, g) = (self.margin.get(), (sc[c.idx_topk - 1].0 - sc[c.idx_topk].0) / sc[0].0.abs().max(1e-6));
                 self.margin.set((m.0, m.1.min(g)));
             }
-            picked = sc.iter().take(c.idx_topk).map(|&(_, t)| t).collect();
+            // (the entries in their order, as the engine's pick leaves them; a check's picks in the place of its own)
+            let mut own: Vec<usize> = sc.iter().take(c.idx_topk).map(|&(_, t)| t).collect();
+            own.sort_unstable();
+            let at = c.ratios[..l].iter().filter(|&&r| r == 4).count();
+            picked = self.take_picks.get_mut(at).and_then(|q| q.pop_front()).filter(|t| !t.is_empty()).unwrap_or_else(|| own.clone());
+            if let Some((_, p)) = self.chose.borrow_mut().as_mut() {
+                p.resize_with(p.len().max(at + 1), Vec::new);
+                let gap = crate::runtime::reference::ffn::margin(&score, c.idx_topk);
+                p[at].push(Picked { picks: picked.clone(), own, gap, score, block: 1 });
+            }
         } else if ratio > 0 {
             picked = (0..(pos + 1) / ratio).collect();
         }
@@ -578,8 +575,8 @@ impl RefV4 {
     fn moe(&self, l: usize, x: &[f32], token: u32) -> Vec<f32> {
         let (c, m) = (&self.c, &self.layers[l].moe);
         let scores: Vec<f32> = m.gate.mul(x).iter().map(|&v| (if v > 20.0 { v } else { v.exp().ln_1p() }).sqrt()).collect();
-        let idx: Vec<usize> = match (&m.tid2eid, &m.bias) {
-            (Some(t), _) => t[token as usize * c.top_k..][..c.top_k].iter().map(|&e| e as usize).collect(),
+        let (own, rank): (Vec<usize>, Vec<f32>) = match (&m.tid2eid, &m.bias) {
+            (Some(t), _) => (t[token as usize * c.top_k..][..c.top_k].iter().map(|&e| e as usize).collect(), scores.clone()),
             (None, Some(b)) => {
                 let mut o: Vec<usize> = (0..c.experts).collect();
                 o.sort_by(|&i, &j| (scores[j] + b[j]).total_cmp(&(scores[i] + b[i])).then(i.cmp(&j)));
@@ -587,11 +584,18 @@ impl RefV4 {
                 let g = (scores[o[c.top_k - 1]] + b[o[c.top_k - 1]]) - (scores[o[c.top_k]] + b[o[c.top_k]]);
                 self.margin.set((m.0.min(g), m.1));
                 o.truncate(c.top_k);
-                o
+                (o, scores.iter().zip(b).map(|(s, b)| s + b).collect())
             }
             (None, None) => unreachable!(),
         };
+        // (a check's experts in the place of the router's own)
+        let idx = self.take.borrow_mut().get_mut(l).and_then(|q| q.pop_front()).filter(|t| !t.is_empty()).unwrap_or_else(|| own.clone());
         let sum: f32 = idx.iter().map(|&e| scores[e]).sum();
+        if let Some((r, _)) = self.chose.borrow_mut().as_mut() {
+            r.resize_with(r.len().max(l + 1), Vec::new);
+            let gap = if m.tid2eid.is_some() { f32::INFINITY } else { crate::runtime::reference::ffn::margin(&rank, c.top_k) };
+            r[l].push(Routed { w: idx.iter().map(|&e| scores[e] / sum * c.route_scale).collect(), ids: idx.clone(), own, gap, rank });
+        }
         let lim = c.swiglu_limit;
         let expert = |w: &[Mat; 3], wt: Option<f32>| -> Vec<f32> {
             let g = self.q_lin(&w[0], x);
@@ -645,7 +649,7 @@ impl RefV4 {
 }
 
 /// E4M3's byte of a value it holds exactly.
-fn e4m3_byte(v: f32) -> u8 {
+pub(crate) fn e4m3_byte(v: f32) -> u8 {
     let (s, a) = (((v.to_bits() >> 31) as u8) << 7, v.abs());
     if a == 0.0 {
         return s;
@@ -662,7 +666,40 @@ fn e4m3_byte(v: f32) -> u8 {
 /// alone, overlapping pools of 4 with an indexer, pools of 16, and again), the first routed by token, a window of 32 and an indexer picking 8, so that a few hundred tokens reach every path.
 /// `real`: (layers, experts) at the release's widths (DeepSeek-V4-Flash's heads, latents, indexer, windows and compressors, the experts' sizes and 6 a token, its vocabulary; the layers' compression
 /// ratios its first ones'), for timing a step on one GPU.
+/// The small random DeepSeek-V4 model's config (`random` without `real`): five layers of two compression ratios, 16 experts.
+pub(crate) const SMALL_CONFIG: &str = r#"{"architectures": ["DeepseekV4ForCausalLM"], "model_type": "deepseek_v4", "hidden_size": 1024, "num_hidden_layers": 5, "vocab_size": 4096, "rms_norm_eps": 1e-6, "max_position_embeddings": 65536,
+        "bos_token_id": 0, "eos_token_id": 1, "num_attention_heads": 16, "num_key_value_heads": 1, "head_dim": 512, "qk_rope_head_dim": 64, "q_lora_rank": 256, "o_lora_rank": 256, "o_groups": 4,
+        "sliding_window": 32, "compress_ratios": [0, 4, 16, 4, 0, 0], "index_n_heads": 16, "index_head_dim": 128, "index_topk": 8, "n_routed_experts": 16, "num_experts_per_tok": 4,
+        "moe_intermediate_size": 256, "n_shared_experts": 1, "num_hash_layers": 1, "routed_scaling_factor": 1.5, "swiglu_limit": 10.0, "scoring_func": "sqrtsoftplus", "topk_method": "noaux_tc",
+        "norm_topk_prob": true, "hc_mult": 4, "hc_sinkhorn_iters": 20, "hc_eps": 1e-6, "rope_theta": 10000, "compress_rope_theta": 160000, "hidden_act": "silu", "tie_word_embeddings": false,
+        "rope_scaling": {"beta_fast": 32, "beta_slow": 1, "factor": 16, "original_max_position_embeddings": 65536, "type": "yarn"}, "num_nextn_predict_layers": 0, "expert_dtype": "fp4",
+        "quantization_config": {"activation_scheme": "dynamic", "fmt": "e4m3", "quant_method": "fp8", "scale_fmt": "ue8m0", "weight_block_size": [128, 128]}}"#;
+
 pub fn random(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
+    random_with(out, real, false)
+}
+
+/// The DSpark drafter `random_dspark` gives the small model (`SMALL_CONFIG` with it): two draft layers (the model's with the window alone and its experts), main_x of
+/// the inputs of layers 2 to 4, a Markov head of rank 32, a block of 8 (its anchor and 7 drafts: a round's most).
+const DSPARK_KEYS: &str = r#""num_nextn_predict_layers": 2, "n_mtp_layers": 2, "dspark_block_size": 8, "dspark_noise_token_id": 4095, "dspark_target_layer_ids": [2, 3, 4], "dspark_markov_rank": 32"#;
+
+/// `random`'s small model with a DSpark drafter (`DSPARK_KEYS`; the draftcheck case deepseek-v4): the model's tensors `random`'s to the bit, then its drafter's under
+/// DeepSeek's names (`mtp.{i}.`: each draft layer's attention of the window and its experts as a model layer's, drawn by the same rules; main_proj FP8 and
+/// main_norm on the first, the Markov head's two matrices, the confidence head, the final norm and the hyper-head on the last), drawn after the model's.
+pub fn random_dspark(out: &Path) -> Result<()> {
+    random_with(out, None, true)
+}
+
+/// `random_dspark`'s config: the small one with the drafter's keys (`DSPARK_KEYS`).
+#[cfg(test)]
+pub(crate) fn dspark_config() -> String {
+    SMALL_CONFIG.replace(r#""num_nextn_predict_layers": 0"#, DSPARK_KEYS)
+}
+
+fn random_with(out: &Path, real: Option<(usize, usize)>, dspark: bool) -> Result<()> {
+    if dspark && real.is_some() {
+        return err("a DSpark drafter is drawn for the small model alone");
+    }
     let real_text = real.map(|(layers, experts)| {
         let ratios: Vec<String> = (0..=layers).map(|l| if l == layers || l == 0 { "0".to_string() } else if l % 2 == 1 { "4".to_string() } else { "128".to_string() }).collect();
         format!(
@@ -676,13 +713,7 @@ pub fn random(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
             ratios.join(", ")
         )
     });
-    let small_text = r#"{"architectures": ["DeepseekV4ForCausalLM"], "model_type": "deepseek_v4", "hidden_size": 1024, "num_hidden_layers": 5, "vocab_size": 4096, "rms_norm_eps": 1e-6, "max_position_embeddings": 65536,
-        "bos_token_id": 0, "eos_token_id": 1, "num_attention_heads": 16, "num_key_value_heads": 1, "head_dim": 512, "qk_rope_head_dim": 64, "q_lora_rank": 256, "o_lora_rank": 256, "o_groups": 4,
-        "sliding_window": 32, "compress_ratios": [0, 4, 16, 4, 0, 0], "index_n_heads": 16, "index_head_dim": 128, "index_topk": 8, "n_routed_experts": 16, "num_experts_per_tok": 4,
-        "moe_intermediate_size": 256, "n_shared_experts": 1, "num_hash_layers": 1, "routed_scaling_factor": 1.5, "swiglu_limit": 10.0, "scoring_func": "sqrtsoftplus", "topk_method": "noaux_tc",
-        "norm_topk_prob": true, "hc_mult": 4, "hc_sinkhorn_iters": 20, "hc_eps": 1e-6, "rope_theta": 10000, "compress_rope_theta": 160000, "hidden_act": "silu", "tie_word_embeddings": false,
-        "rope_scaling": {"beta_fast": 32, "beta_slow": 1, "factor": 16, "original_max_position_embeddings": 65536, "type": "yarn"}, "num_nextn_predict_layers": 0, "expert_dtype": "fp4",
-        "quantization_config": {"activation_scheme": "dynamic", "fmt": "e4m3", "quant_method": "fp8", "scale_fmt": "ue8m0", "weight_block_size": [128, 128]}}"#;
+    let small_text = SMALL_CONFIG;
     let text = real_text.as_deref().unwrap_or(small_text);
     let c = ConfigV4::parse(text, "random", None)?;
     let mut r = 0x2026_1018_0000_0001u64;
@@ -727,9 +758,13 @@ pub fn random(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
         t.push((format!("{name}.scale"), "F8_E8M0", vec![gr as u64, gc as u64], s));
     };
     let (d, hd, nh) = (c.hidden, c.head_dim, c.heads);
+    // (the head: the small model's U(-0.05, 0.05); at the release's widths half the matrices' scale, the logits' RMS about 0.5 as GLM-5.3's and Kimi-K3's random models
+    // draw them: narrower than 0.05 by the root of the width alone (the small model's RMS, 0.9), a cut of two layers moved its rows with no choice apart by KL mean
+    // 1.65e-5 against itself with its experts' sums in another order, past a tenth of the kind's bound; `storecheck --floor`)
+    let hs = if real.is_some() { 0.5 * (3.0 / d as f32).sqrt() } else { 0.05 };
     let mut tensors_bf16: Vec<(String, Vec<u64>, f32, f32)> = vec![
         ("embed.weight".into(), vec![c.vocab as u64, d as u64], -1.0, 1.0),
-        ("head.weight".into(), vec![c.vocab as u64, d as u64], -0.05, 0.05),
+        ("head.weight".into(), vec![c.vocab as u64, d as u64], -hs, hs),
         ("norm.weight".into(), vec![d as u64], 0.9, 1.1),
     ];
     let mut tensors_f32: Vec<(String, Vec<u64>, f32, f32)> = vec![
@@ -797,9 +832,12 @@ pub fn random(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
         fp8(&mut t, &format!("{f}.shared_experts.w2"), d, c.inter, &mut uni);
         for e in 0..c.experts {
             for (w, rows, cols) in [("w1", c.inter, d), ("w3", c.inter, d), ("w2", d, c.inter)] {
-                // random E2M1 codes; each run's scale near sqrt(3 / cols) / 3
+                // random E2M1 codes (rms 2.93), each run's scale a power of two near sqrt(3 / cols) / 6, one exponent either way: a weight's rms is 0.9 / sqrt(cols), as the
+                // FP8 matrices' 1 / sqrt(cols). Near sqrt(3 / cols) / 3 it was 1.8: an expert's output 3 times its input's rms and 10 times the attention's, the stream a mixture of
+                // experts' alone, and the SwiGLU's product doubles the roundings it carries: the reference's noise floor without the simulation was KL mean 1.11e-5, max 1.76e-5
+                // (four draws 1.08e-5 to 1.26e-5, max up to 2.62e-5; `logits::tests::deepseek_v4_noise_floor`), past a tenth of the kind's bound whatever the draw
                 let q: Vec<u8> = (0..rows * cols / 2).map(|_| uni(0.0, 256.0) as u8).collect();
-                let e0 = (((3.0 / cols as f32).sqrt() / 3.0).log2().round() as i32 + 127) as f32;
+                let e0 = (((3.0 / cols as f32).sqrt() / 3.0).log2().round() as i32 + 126) as f32;
                 let s: Vec<u8> = (0..rows * cols / 32).map(|_| (e0 + uni(-1.0, 1.0).round()) as u8).collect();
                 t.push((format!("{f}.experts.{e}.{w}.weight"), "I8", vec![rows as u64, cols as u64 / 2], q));
                 t.push((format!("{f}.experts.{e}.{w}.scale"), "F8_E8M0", vec![rows as u64, cols as u64 / 32], s));
@@ -816,6 +854,74 @@ pub fn random(out: &Path, real: Option<(usize, usize)>) -> Result<()> {
         let v = (0..n).map(|_| uni(lo, hi)).collect();
         t.push((name, "F32", shape, f32s(v)));
     }
+    // (the drafter, after every tensor of the model: a layer's tensors as a model layer's of the window alone, by the same rules, then its own)
+    let with_draft;
+    let text = if dspark {
+        let (mut bf, mut f32t): (Vec<(String, Vec<u64>, f32, f32)>, Vec<(String, Vec<u64>, f32, f32)>) = (Vec::new(), Vec::new());
+        let (layers, targets, rank) = (2usize, 3usize, 32usize);
+        for i in 0..layers {
+            let p = format!("mtp.{i}");
+            for b in ["attn", "ffn"] {
+                f32t.push((format!("{p}.hc_{b}_fn"), vec![24, 4 * d as u64], -0.02, 0.02));
+                f32t.push((format!("{p}.hc_{b}_base"), vec![24], -0.5, 0.5));
+                f32t.push((format!("{p}.hc_{b}_scale"), vec![3], 0.5, 1.5));
+                bf.push((format!("{p}.{b}_norm.weight"), vec![d as u64], 0.9, 1.1));
+            }
+            let a = format!("{p}.attn");
+            fp8(&mut t, &format!("{a}.wq_a"), c.q_lora, d, &mut uni);
+            fp8(&mut t, &format!("{a}.wq_b"), nh * hd, c.q_lora, &mut uni);
+            fp8(&mut t, &format!("{a}.wkv"), hd, d, &mut uni);
+            fp8(&mut t, &format!("{a}.wo_a"), c.o_groups * c.o_lora, nh * hd / c.o_groups, &mut uni);
+            fp8(&mut t, &format!("{a}.wo_b"), d, c.o_groups * c.o_lora, &mut uni);
+            bf.push((format!("{a}.q_norm.weight"), vec![c.q_lora as u64], 0.9, 1.1));
+            bf.push((format!("{a}.kv_norm.weight"), vec![hd as u64], 0.9, 1.1));
+            f32t.push((format!("{a}.attn_sink"), vec![nh as u64], -1.0, 1.0));
+            let f = format!("{p}.ffn");
+            let sc = (3.0 / d as f32).sqrt();
+            bf.push((format!("{f}.gate.weight"), vec![c.experts as u64, d as u64], -sc, sc));
+            f32t.push((format!("{f}.gate.bias"), vec![c.experts as u64], -0.1, 0.1));
+            fp8(&mut t, &format!("{f}.shared_experts.w1"), c.inter, d, &mut uni);
+            fp8(&mut t, &format!("{f}.shared_experts.w3"), c.inter, d, &mut uni);
+            fp8(&mut t, &format!("{f}.shared_experts.w2"), d, c.inter, &mut uni);
+            for e in 0..c.experts {
+                for (w, rows, cols) in [("w1", c.inter, d), ("w3", c.inter, d), ("w2", d, c.inter)] {
+                    let q: Vec<u8> = (0..rows * cols / 2).map(|_| uni(0.0, 256.0) as u8).collect();
+                    let e0 = (((3.0 / cols as f32).sqrt() / 3.0).log2().round() as i32 + 126) as f32;
+                    let s: Vec<u8> = (0..rows * cols / 32).map(|_| (e0 + uni(-1.0, 1.0).round()) as u8).collect();
+                    t.push((format!("{f}.experts.{e}.{w}.weight"), "I8", vec![rows as u64, cols as u64 / 2], q));
+                    t.push((format!("{f}.experts.{e}.{w}.scale"), "F8_E8M0", vec![rows as u64, cols as u64 / 32], s));
+                }
+            }
+        }
+        let last = format!("mtp.{}", layers - 1);
+        fp8(&mut t, "mtp.0.main_proj", d, targets * d, &mut uni);
+        bf.push(("mtp.0.main_norm.weight".into(), vec![d as u64], 0.9, 1.1));
+        let m = (3.0 / rank as f32).sqrt();
+        bf.push((format!("{last}.markov_head.markov_w1.weight"), vec![c.vocab as u64, rank as u64], -1.0, 1.0));
+        bf.push((format!("{last}.markov_head.markov_w2.weight"), vec![c.vocab as u64, rank as u64], -m, m));
+        bf.push((format!("{last}.confidence_head.proj.weight"), vec![1, (d + rank) as u64], -0.05, 0.05));
+        bf.push((format!("{last}.norm.weight"), vec![d as u64], 0.9, 1.1));
+        f32t.push((format!("{last}.hc_head_fn"), vec![4, 4 * d as u64], -0.02, 0.02));
+        f32t.push((format!("{last}.hc_head_base"), vec![4], -0.5, 0.5));
+        f32t.push((format!("{last}.hc_head_scale"), vec![1], 0.5, 1.5));
+        for (name, shape, lo, hi) in bf {
+            let n: u64 = shape.iter().product();
+            let v = (0..n).map(|_| uni(lo, hi)).collect();
+            t.push((name, "BF16", shape, bf16s(v)));
+        }
+        for (name, shape, lo, hi) in f32t {
+            let n: u64 = shape.iter().product();
+            let v = (0..n).map(|_| uni(lo, hi)).collect();
+            t.push((name, "F32", shape, f32s(v)));
+        }
+        with_draft = text.replace(r#""num_nextn_predict_layers": 0"#, DSPARK_KEYS);
+        if with_draft == text {
+            return err("the small config has no num_nextn_predict_layers to put the drafter's keys at");
+        }
+        &with_draft[..]
+    } else {
+        text
+    };
     io(std::fs::create_dir_all(out))?;
     io(std::fs::write(out.join("config.json"), text))?;
     let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = t.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), &b[..])).collect();
@@ -1607,5 +1713,307 @@ mod tests {
         let mut x = vec![1.0, 1.0, 1.0, 1.0];
         hadamard(&mut x);
         assert_eq!(x, vec![2.0, 0.0, 0.0, 0.0]);
+    }
+}
+
+/// `v4qcheck [--rows N] [--block 32]` (development): each operation of the compressed attention and its experts that quantizes as a release does (its
+/// simulation's form, `Sim`: DeepSeek-V4's of FP8 blocks of 128, or with `--block 32` V4.1's), fed the same input as this reference's own function for it
+/// (src/cpu_fp4.rs's quantizers for the form of 32s, the kinds' reference's), against that function bit for bit. The form of 128s: the activations to E4M3
+/// in blocks of 128 and 64 (`v4_fp8` against `fp8_sim`), the window's key-value row (`v4_kv_prep`: its norm, its rotary, its first channels to E4M3), the
+/// compressed entries (`v4_comp_out`: the attention's E4M3, the indexer's Hadamard rotation and E2M1), the indexer's queries (`v4_idx_q`), the grouped
+/// output's E4M3 (`v4_ogather`). The form of 32s: the activations to E4M3 in 32s (`v4_fp8`: every quantized product's input, the attention's output in
+/// place), the window's key (`v4_kv_prep`: norm, rotary, the whole row to E4M3 in 32s), the compressed entries (`v4_comp_out`: norm, rotary, E2M1 in 16s at
+/// E4M3 scales), the indexer's keys (`v4_idx_keys`: the key product, norm, rotary, E2M1 in 32s, unrotated) and queries (`v4_idx_q`), the grouped output's
+/// E4M3 in 32s (`v4_ogather`), the experts' activation's (`v4_moe_act`). A norm's input is a sign a channel with a mean square of 1 and an epsilon of 0 (the
+/// indexer's keys: a product of one-hot rows of signs), so that its root is exact on both sides and every value the quantization reads is the weight's: what
+/// differs past that is the quantization's rule (its block, scale, rounding, clamp) or the rotary's arithmetic. Prints each operation's count of elements
+/// whose bits differ; exit 1 where one is not 0.
+pub fn qcheck(a: &crate::args::Args) -> Result<()> {
+    let sim = Sim::of(Some(a.num("block", 128usize)?), true);
+    if sim == Sim::Off {
+        return err("v4qcheck --block: 128 or 32, the forms the kernels simulate");
+    }
+    qcheck_rows(sim, a.num("rows", 64usize)?)
+}
+
+/// `qcheck` of the form `sim` on `n` rows of each operation (the logits cases of DeepSeek-V4 and V4.1 run it as a part of their checks: `logits::dsv4_also`,
+/// `logits::dsv41_also`).
+pub fn qcheck_rows(sim: Sim, n: usize) -> Result<()> {
+    use crate::launch;
+    let dev = crate::dev::Dev::new(0)?;
+    let s = dev.stream;
+    let mut seed = 0x2026_1125_0000_0001u64;
+    let mut uni = move |lo: f32, hi: f32| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        lo + (hi - lo) * ((seed >> 40) as f32 / (1u64 << 24) as f32)
+    };
+    // (values over five decades, a quarter of them of four significant bits: E4M3's rounding ties where their block's scale meets them)
+    let mut val = |i: usize| -> f32 {
+        let m = uni(-1.0, 1.0) * 10f32.powf(uni(-3.0, 2.0));
+        if i % 4 == 1 {
+            let q = f32::from_bits(((((m.abs().to_bits() >> 23) & 0xff) as i32 - 3).max(1) as u32) << 23);
+            bf16(((m / q).trunc() + 0.5) * q)
+        } else {
+            bf16(m)
+        }
+    };
+    let bits = |v: &[f32]| -> Vec<u16> { v.iter().map(|x| (x.to_bits() >> 16) as u16).collect() };
+    let up = |v: &[f32]| -> Result<Buf> { crate::weights::upload_bytes(crate::weights::as_bytes(&bits(v))) };
+    let up32 = |v: &[f32]| -> Result<Buf> { crate::weights::upload_bytes(crate::weights::as_bytes(v)) };
+    let upi = |v: &[i32]| -> Result<Buf> { crate::weights::upload_bytes(crate::weights::as_bytes(v)) };
+    let down = |b: &Buf, k: usize| -> Result<Vec<u16>> {
+        crate::dev::sync_stream(s)?;
+        let mut out = vec![0u16; k];
+        b.read(0, &mut out)?;
+        Ok(out)
+    };
+    let differ = |got: &[u16], want: &[u16]| got.iter().zip(want).filter(|(a, b)| a != b).count();
+    let (hd, rd, idx) = (512usize, 64usize, 128usize);
+    let f = crate::deepseek_v4::freqs(rd, 10_000.0, None);
+    let mp = 4 * n + 64;
+    let (mut cs, mut sn) = (Vec::new(), Vec::new());
+    for p in 0..mp {
+        for &fr in &f {
+            let (x, c) = ((p as f32 * fr) as f64).sin_cos();
+            cs.push(c as f32);
+            sn.push(x as f32);
+        }
+    }
+    let (csb, snb) = (up32(&cs)?, up32(&sn)?);
+    let mut bad: Vec<String> = Vec::new();
+    let mut report = |what: &str, d: usize, of: usize| {
+        println!("{} {what}: {d} of {of} elements differ", if d == 0 { "PASS" } else { "FAIL" });
+        if d > 0 {
+            bad.push(what.to_string());
+        }
+    };
+    if sim == Sim::B128 {
+        // the activations to E4M3 (act_quant), blocks of 128 (every FP8 product's input) and of 64
+        for block in [128usize, 64] {
+            let w = 2048;
+            let x: Vec<f32> = (0..n * w).map(&mut val).collect();
+            let (xb, yb) = (up(&x)?, Buf::new(n * w * 2)?);
+            let k: crate::kt::v4_fp8 = dev.typed()?;
+            // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+            unsafe { launch!(k, [n as u32, ((w / block) as u32).div_ceil(4), 1], [128, 1, 1], s; xb.ptr, yb.ptr, w as i32, block as i32) }?;
+            let mut want = x.clone();
+            for r in want.chunks_mut(w) {
+                fp8_sim(r, block);
+            }
+            report(&format!("v4_fp8, blocks of {block}"), differ(&down(&yb, n * w)?, &bits(&want)), n * w);
+        }
+        // the window's key-value row at positions 0..n: norm (weight w, the input's signs), rotary on the last 64, the first 448 to E4M3 in blocks of 64
+        {
+            let kv: Vec<f32> = (0..n * hd).map(|_| if val(0) < 0.0 { -1.0 } else { 1.0 }).collect();
+            let w: Vec<f32> = (0..hd).map(&mut val).collect();
+            let pos: Vec<i32> = (0..n as i32).collect();
+            let (kb, wb, pb, ring) = (up(&kv)?, up(&w)?, upi(&pos)?, Buf::new(n * hd * 2)?);
+            let k: crate::kt::v4_kv_prep = dev.typed()?;
+            // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+            unsafe { launch!(k, [n as u32, 1, 1], [128, 1, 1], s; kb.ptr, wb.ptr, csb.ptr, snb.ptr, pb.ptr, ring.ptr, n as i32, 0u64, 0i64, 0f32, 1i32) }?;
+            let mut want = Vec::with_capacity(n * hd);
+            for (t, r) in kv.chunks(hd).enumerate() {
+                let mut o = rms(r, &w, 0.0);
+                rope(&mut o[hd - rd..], &f, t, false);
+                fp8_sim(&mut o[..hd - rd], 64);
+                want.extend(o);
+            }
+            report("v4_kv_prep (norm, rotary, E4M3 in 64s)", differ(&down(&ring, n * hd)?, &bits(&want)), n * hd);
+        }
+        // the compressed entries of ratio 1 at positions 0..n: the attention's (d 512: E4M3 in 64s) and the indexer's (d 128: Hadamard, E2M1)
+        for (d, mode) in [(hd, 0i32), (idx, 1)] {
+            let pooled: Vec<f32> = (0..n * d).map(|_| if val(0) < 0.0 { -1.0 } else { 1.0 }).collect();
+            let w: Vec<f32> = (0..d).map(&mut val).collect();
+            let pos: Vec<i32> = (0..n as i32).collect();
+            let (pb, wb, posb, cache) = (up32(&pooled)?, up(&w)?, upi(&pos)?, Buf::new(n * d * 2)?);
+            let k: crate::kt::v4_comp_out = dev.typed()?;
+            // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+            unsafe {
+                launch!(k, [(n + 1) as u32, 1, 1], [128, 1, 1], s; pb.ptr, wb.ptr, csb.ptr, snb.ptr, posb.ptr, n as i32, cache.ptr, 0u64, 0i64, 1i32, d as i32, mode, 0f32, 1i32, 0u64)
+            }?;
+            let mut want = Vec::with_capacity(n * d);
+            for (g, r) in pooled.chunks(d).enumerate() {
+                let mut o = rms(r, &w, 0.0);
+                rope(&mut o[d - rd..], &f, g, false);
+                if mode == 1 {
+                    hadamard(&mut o);
+                    fp4_sim(&mut o);
+                } else {
+                    fp8_sim(&mut o[..d - rd], 64);
+                }
+                want.extend(o);
+            }
+            let what = if mode == 1 { "v4_comp_out, the indexer's (Hadamard, E2M1)" } else { "v4_comp_out, the attention's (E4M3 in 64s)" };
+            report(what, differ(&down(&cache, n * d)?, &bits(&want)), n * d);
+        }
+        // the indexer's queries: 8 heads of 128 at positions 0..n, rotary on the last 64, Hadamard, E2M1
+        {
+            let heads = 8;
+            let q: Vec<f32> = (0..n * heads * idx).map(&mut val).collect();
+            let pos: Vec<i32> = (0..n as i32).collect();
+            let (qb, pb) = (up(&q)?, upi(&pos)?);
+            let k: crate::kt::v4_idx_q = dev.typed()?;
+            // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+            unsafe { launch!(k, [n as u32, heads as u32, 1], [128, 1, 1], s; qb.ptr, csb.ptr, snb.ptr, pb.ptr, 1i32) }?;
+            let mut want = q.clone();
+            for (i, h) in want.chunks_mut(idx).enumerate() {
+                rope(&mut h[idx - rd..], &f, i / heads, false);
+                hadamard(h);
+                fp4_sim(h);
+            }
+            report("v4_idx_q (rotary, Hadamard, E2M1)", differ(&down(&qb, n * heads * idx)?, &bits(&want)), n * heads * idx);
+        }
+        // the grouped output's gather: 4 groups of 256 a row, each row to E4M3 in blocks of 128
+        {
+            let (g, ol) = (4usize, 256usize);
+            let mid: Vec<f32> = (0..g * n * ol).map(&mut val).collect();
+            let (mb, ob) = (up(&mid)?, Buf::new(n * g * ol * 2)?);
+            let k: crate::kt::v4_ogather = dev.typed()?;
+            // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+            unsafe { launch!(k, [n as u32, ((g * ol / 128) as u32).div_ceil(4), 1], [128, 1, 1], s; mb.ptr, ob.ptr, n as i32, g as i32, ol as i32, 128i32) }?;
+            let mut want = Vec::with_capacity(n * g * ol);
+            for t in 0..n {
+                let mut row: Vec<f32> = (0..g).flat_map(|j| mid[(j * n + t) * ol..][..ol].to_vec()).collect();
+                fp8_sim(&mut row, 128);
+                want.extend(row);
+            }
+            report("v4_ogather (E4M3 in 128s)", differ(&down(&ob, n * g * ol)?, &bits(&want)), n * g * ol);
+        }
+    }
+    if sim == Sim::B32 {
+        // the activations to E4M3 in blocks of 32 (every quantized product's input; the attention's output before its grouped low rank, in place)
+        {
+            let w = 2048;
+            let x: Vec<f32> = (0..n * w).map(&mut val).collect();
+            let xb = up(&x)?;
+            let k: crate::kt::v4_fp8 = dev.typed()?;
+            // SAFETY: every buffer is as large as the kernel reads and writes for these rows (in place: y = x).
+            unsafe { launch!(k, [n as u32, ((w / 32) as u32).div_ceil(4), 1], [128, 1, 1], s; xb.ptr, xb.ptr, w as i32, 32i32) }?;
+            let mut want = x.clone();
+            fp8_sim(&mut want, 32);
+            report("v4_fp8, blocks of 32 (in place)", differ(&down(&xb, n * w)?, &bits(&want)), n * w);
+        }
+        // the window's key at positions 0..n: norm (weight w, the input's signs), rotary on the last 64, the whole row to E4M3 in blocks of 32
+        {
+            let kv: Vec<f32> = (0..n * hd).map(|_| if val(0) < 0.0 { -1.0 } else { 1.0 }).collect();
+            let w: Vec<f32> = (0..hd).map(&mut val).collect();
+            let pos: Vec<i32> = (0..n as i32).collect();
+            let (kb, wb, pb, ring) = (up(&kv)?, up(&w)?, upi(&pos)?, Buf::new(n * hd * 2)?);
+            let k: crate::kt::v4_kv_prep = dev.typed()?;
+            // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+            unsafe {
+                launch!(k, [n as u32, 1, 1], [128, 1, 1], s; kb.ptr, wb.ptr, csb.ptr, snb.ptr, pb.ptr, ring.ptr, n as i32, 0u64, 0i64, 0f32, Sim::B32 as i32)
+            }?;
+            let mut want = Vec::with_capacity(n * hd);
+            for (t, r) in kv.chunks(hd).enumerate() {
+                let mut o = rms(r, &w, 0.0);
+                rope(&mut o[hd - rd..], &f, t, false);
+                fp8_sim(&mut o, 32);
+                want.extend(o);
+            }
+            report("v4_kv_prep (norm, rotary, the whole row to E4M3 in 32s)", differ(&down(&ring, n * hd)?, &bits(&want)), n * hd);
+        }
+        // the compressed entries of ratio 1 at positions 0..n: norm, rotary, E2M1 in blocks of 16 at E4M3 scales
+        {
+            let pooled: Vec<f32> = (0..n * hd).map(|_| if val(0) < 0.0 { -1.0 } else { 1.0 }).collect();
+            let w: Vec<f32> = (0..hd).map(&mut val).collect();
+            let pos: Vec<i32> = (0..n as i32).collect();
+            let (pb, wb, posb, cache) = (up32(&pooled)?, up(&w)?, upi(&pos)?, Buf::new(n * hd * 2)?);
+            let k: crate::kt::v4_comp_out = dev.typed()?;
+            // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+            unsafe {
+                launch!(k, [(n + 1) as u32, 1, 1], [128, 1, 1], s; pb.ptr, wb.ptr, csb.ptr, snb.ptr, posb.ptr, n as i32, cache.ptr, 0u64, 0i64, 1i32, hd as i32, 0i32, 0f32, Sim::B32 as i32, 0u64)
+            }?;
+            let mut want = Vec::with_capacity(n * hd);
+            for (g, r) in pooled.chunks(hd).enumerate() {
+                let mut o = rms(r, &w, 0.0);
+                rope(&mut o[hd - rd..], &f, g, false);
+                crate::cpu_fp4::fp4_e4m3_sim(&mut o, 16);
+                want.extend(o);
+            }
+            report("v4_comp_out, the attention's (E2M1 in 16s at E4M3 scales)", differ(&down(&cache, n * hd)?, &bits(&want)), n * hd);
+        }
+        // the indexer's keys of n entries of ratio 2 (entry g at position 2 g): the key product of one-hot rows of the entries' signs, its norm, rotary, E2M1 in 32s
+        {
+            let ratio = 2usize;
+            let raw: Vec<f32> = (0..n * hd).map(|_| if val(0) < 0.0 { -1.0 } else { 1.0 }).collect();
+            let col = |c: usize| (c * 37 + 5) % hd;
+            let wk: Vec<f32> = (0..idx * hd).map(|i| if i % hd == col(i / hd) { 1.0 } else { 0.0 }).collect();
+            let w: Vec<f32> = (0..idx).map(&mut val).collect();
+            let pos: Vec<i32> = (0..(n * ratio) as i32).collect();
+            let (rb, wkb, wb, pb, keys) = (up(&raw)?, up(&wk)?, up(&w)?, upi(&pos)?, Buf::new(n * idx * 2)?);
+            let k: crate::kt::v4_idx_keys = dev.typed()?;
+            // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+            unsafe {
+                launch!(k, [(n + 1) as u32, 1, 1], [128, 1, 1], s; rb.ptr, 0u64, 0i64, wkb.ptr, wb.ptr, csb.ptr, snb.ptr, pb.ptr, (n * ratio) as i32, keys.ptr, ratio as i32, 0f32, Sim::B32 as i32)
+            }?;
+            let mut want = Vec::with_capacity(n * idx);
+            for (g, r) in raw.chunks(hd).enumerate() {
+                let prod: Vec<f32> = (0..idx).map(|c| r[col(c)]).collect();
+                let mut o = rms(&prod, &w, 0.0);
+                rope(&mut o[idx - rd..], &f, g * ratio, false);
+                crate::cpu_fp4::fp4_sim(&mut o, 32);
+                want.extend(o);
+            }
+            report("v4_idx_keys (key product, norm, rotary, E2M1 in 32s)", differ(&down(&keys, n * idx)?, &bits(&want)), n * idx);
+        }
+        // the indexer's queries: 8 heads of 128 at positions 0..n, rotary on the last 64, E2M1 in 32s
+        {
+            let heads = 8;
+            let q: Vec<f32> = (0..n * heads * idx).map(&mut val).collect();
+            let pos: Vec<i32> = (0..n as i32).collect();
+            let (qb, pb) = (up(&q)?, upi(&pos)?);
+            let k: crate::kt::v4_idx_q = dev.typed()?;
+            // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+            unsafe { launch!(k, [n as u32, heads as u32, 1], [128, 1, 1], s; qb.ptr, csb.ptr, snb.ptr, pb.ptr, Sim::B32 as i32) }?;
+            let mut want = q.clone();
+            for (i, h) in want.chunks_mut(idx).enumerate() {
+                rope(&mut h[idx - rd..], &f, i / heads, false);
+                crate::cpu_fp4::fp4_sim(h, 32);
+            }
+            report("v4_idx_q (rotary, E2M1 in 32s)", differ(&down(&qb, n * heads * idx)?, &bits(&want)), n * heads * idx);
+        }
+        // the grouped output's gather: 4 groups of 256 a row, each row to E4M3 in blocks of 32
+        {
+            let (g, ol) = (4usize, 256usize);
+            let mid: Vec<f32> = (0..g * n * ol).map(&mut val).collect();
+            let (mb, ob) = (up(&mid)?, Buf::new(n * g * ol * 2)?);
+            let k: crate::kt::v4_ogather = dev.typed()?;
+            // SAFETY: every buffer is as large as the kernel reads and writes for these rows.
+            unsafe { launch!(k, [n as u32, ((g * ol / 128) as u32).div_ceil(4), 1], [128, 1, 1], s; mb.ptr, ob.ptr, n as i32, g as i32, ol as i32, 32i32) }?;
+            let mut want = Vec::with_capacity(n * g * ol);
+            for t in 0..n {
+                let mut row: Vec<f32> = (0..g).flat_map(|j| mid[(j * n + t) * ol..][..ol].to_vec()).collect();
+                fp8_sim(&mut row, 32);
+                want.extend(row);
+            }
+            report("v4_ogather (E4M3 in 32s)", differ(&down(&ob, n * g * ol)?, &bits(&want)), n * g * ol);
+        }
+        // the experts' activation (the shared expert's: a weight of 1): bf16(silu(min(g, 10)) clamp(u, -10, 10)) of n rows of 256, then E4M3 in blocks of 32
+        {
+            let (inter, lim) = (256usize, 10f32);
+            let gu: Vec<f32> = (0..n * 2 * inter).map(|i| val(i) * 4.0).map(bf16).collect();
+            let (gb, ob) = (up(&gu)?, Buf::new(n * inter * 2)?);
+            let k: crate::kt::v4_moe_act = dev.typed()?;
+            // SAFETY: every buffer is as large as the kernel reads and writes for these rows (no plan: every row, a weight of 1).
+            unsafe {
+                launch!(k, [n as u32, ((inter / 128) as u32).div_ceil(4), 1], [128, 1, 1], s; gb.ptr, ob.ptr, 0u64, 0u64, 0i32, inter as i32, lim, 32i32)
+            }?;
+            let mut want = Vec::with_capacity(n * inter);
+            for r in gu.chunks(2 * inter) {
+                let mut h: Vec<f32> = (0..inter).map(|i| crate::cpu_fp4::release(r[i], r[inter + i], 1.0, lim)).collect();
+                fp8_sim(&mut h, 32);
+                want.extend(h);
+            }
+            report("v4_moe_act (the activation, E4M3 in 32s)", differ(&down(&ob, n * inter)?, &bits(&want)), n * inter);
+        }
+    }
+    if bad.is_empty() {
+        println!("v4qcheck: every quantizing operation the same bits as the reference's on the same input");
+        Ok(())
+    } else {
+        err(format!("v4qcheck: {} differ: {}", bad.len(), bad.join("; ")))
     }
 }

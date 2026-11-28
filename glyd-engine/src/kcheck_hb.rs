@@ -8,6 +8,7 @@
 use crate::args::Args;
 use crate::dev::{Buf, Dev, Timer};
 use crate::ffi::{err, Error, Lib, Result};
+use crate::gpu_ops::GpuOps;
 use crate::moe_hb::{HbHost, HbKern, HbPlace, HbStack};
 use glyd_gpu::codebook::{decode_codebook_rows, pack_codebook_rows, CbRows};
 
@@ -169,7 +170,7 @@ unsafe fn launches(dev: &Dev, lib: &Lib, kern: &HbKern, c: &Case, st: &HbStack, 
     Ok(Out { y: yh, plan: ph, a: ah })
 }
 
-fn upload<T: Copy>(v: &[T]) -> Result<Buf> {
+fn upload<T: crate::dev::Plain>(v: &[T]) -> Result<Buf> {
     let b = Buf::new(std::mem::size_of_val(v))?;
     b.write(0, v)?;
     Ok(b)

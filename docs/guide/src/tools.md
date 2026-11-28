@@ -22,7 +22,7 @@ family's): start the server with `--context N`.
 
 A container on Linux reaches a server on this computer only from the host's network (`docker run --network=host ...`). Docker
 Desktop and Podman reach it as `host.docker.internal` and `host.containers.internal`, and the server's Host check answers those
-two names and no others. A server started with `--host 0.0.0.0` has the Host and Origin checks off: give it a key.
+two names and no others. A server started with `--host 0.0.0.0` is open to the network (the Origin check stays on, and any Host the computer has is let in): give it a key.
 `glyd connect open-webui` prints the whole `docker run` line.
 
 ## What is checked
@@ -30,7 +30,7 @@ two names and no others. A server started with `--host 0.0.0.0` has the Host and
 The clients are checked in [tests/clients/](https://github.com/surya-koritala/Glyd/tree/main/tests/clients): `run.sh URL [KEY]`
 runs the OpenAI, Anthropic, Ollama, LangChain and Open Responses checks, each with the newest release of its library, against a
 running server, and `openwebui_check.py` checks an Open WebUI container. Claude Code and Open WebUI were run against the
-server; [docs/serve-api.md](https://github.com/surya-koritala/Glyd/blob/main/docs/serve-api.md), Connecting tools, says on what. Continue's settings are printed by `glyd connect`; a session with Continue
+server; the [API reference](api.md), Connecting tools, says on what. Continue's settings are printed by `glyd connect`; a session with Continue
 is not recorded.
 
 If you try another tool, say how it went in an [issue](https://github.com/surya-koritala/Glyd/issues).

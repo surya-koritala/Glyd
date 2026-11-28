@@ -163,10 +163,24 @@ fn join(base: &str, loc: &str) -> String {
     format!("{scheme}://{dir}/{loc}")
 }
 
-/// The free bytes of the filesystem holding `path` (an existing directory), where it can be told (on Linux).
-#[cfg(not(target_os = "linux"))]
+/// The free bytes of the filesystem holding `path` (an existing directory), where it can be told (Linux: statvfs; Windows: GetDiskFreeSpaceExW). Without it a download
+/// larger than the disk is not refused before it starts: on Windows (the M1 gate, an A10G with 250 GB) GLM-5.3-Flash's 328 GB was downloaded until the disk was full.
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn disk_free(_path: &Path) -> Option<u64> {
     None
+}
+
+#[cfg(windows)]
+pub fn disk_free(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(dir: *const u16, free_to_caller: *mut u64, total: *mut u64, total_free: *mut u64) -> i32;
+    }
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let (mut free, mut total, mut total_free) = (0u64, 0u64, 0u64);
+    // SAFETY: a NUL-ended UTF-16 path and three u64s the call writes (ULARGE_INTEGER is a u64).
+    (unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, &mut total, &mut total_free) } != 0).then_some(free)
 }
 
 #[cfg(target_os = "linux")]
@@ -951,7 +965,7 @@ pub fn save_token(token: &str) -> std::io::Result<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The token as the Hub's own tools take it, and the flag `--hf-token` first of all: the flag, HF_TOKEN, HUGGING_FACE_HUB_TOKEN, the saved login; a blank one is none.
@@ -972,10 +986,10 @@ mod tests {
     use std::sync::Arc;
 
     /// The Hub in miniature, on 127.0.0.1: the listing, `resolve` that redirects to a second host name of the same server ("storage", localhost) which serves ranges. Every request is noted.
-    type Log = Arc<Mutex<Vec<(String, Option<String>, bool)>>>;
-    struct Mock {
+    pub(crate) type Log = Arc<Mutex<Vec<(String, Option<String>, bool)>>>;
+    pub(crate) struct Mock {
         port: u16,
-        log: Log,
+        pub(crate) log: Log,
         files: Arc<Vec<(String, Vec<u8>)>>,
         corrupt: Arc<Mutex<bool>>,
     }
@@ -1054,13 +1068,18 @@ mod tests {
     }
 
     fn mock() -> (Mock, Hub, PathBuf) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
         let files = vec![
             ("config.json".to_string(), b"{\"a\": 1}".to_vec()),
             ("model.safetensors".to_string(), bytes_of(1, 10_000)),
             ("sub/tokenizer.json".to_string(), bytes_of(2, 900)),
         ];
+        mock_with(files)
+    }
+
+    /// The Hub in miniature with these files as the repo org/model's.
+    pub(crate) fn mock_with(files: Vec<(String, Vec<u8>)>) -> (Mock, Hub, PathBuf) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
         let m = Mock { port, log: Arc::new(Mutex::new(Vec::new())), files: Arc::new(files), corrupt: Arc::new(Mutex::new(false)) };
         let (log, files, corrupt) = (m.log.clone(), m.files.clone(), m.corrupt.clone());
         std::thread::spawn(move || {
@@ -1216,7 +1235,7 @@ mod tests {
         assert_eq!(join("https://huggingface.co/org/m/resolve/x/f", "/api/resolve-cache/x"), "https://huggingface.co/api/resolve-cache/x");
         assert_eq!(join("https://huggingface.co/org/m/resolve/x/f", "https://cdn.example.com/y?z=1"), "https://cdn.example.com/y?z=1");
         assert_eq!(join("https://h.co/a/b/c", "d"), "https://h.co/a/b/d");
-        if cfg!(target_os = "linux") {
+        if cfg!(any(target_os = "linux", windows)) {
             assert!(disk_free(&std::env::temp_dir()).unwrap() > 1 << 20);
         }
     }

@@ -61,13 +61,13 @@ jobs:
         run: |
           echo "STARLINGS_CORE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
           git config --global init.defaultBranch main
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Restore pinned Windows toolchain
         if: runner.os == 'Windows'
         id: windows_toolchain
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: |
             ~/.rustup/toolchains/1.97.1-x86_64-pc-windows-msvc
@@ -78,7 +78,7 @@ jobs:
         run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
       - name: Save validated pinned Windows toolchain
         if: runner.os == 'Windows' && matrix.partition == 'backend' && steps.windows_toolchain.outputs.cache-hit != 'true'
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: |
             ~/.rustup/toolchains/1.97.1-x86_64-pc-windows-msvc
@@ -91,7 +91,7 @@ jobs:
       - name: Cache locked Rust dependencies and builds
         id: cache
         if: runner.environment != 'self-hosted'
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: |
             ~/.cargo/registry
@@ -179,7 +179,7 @@ jobs:
           fi
       - name: Save build cache even when a test fails
         if: always() && !cancelled() && steps.cache_prepare.outputs.ready == 'true'
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -216,7 +216,7 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install verified dependency checker

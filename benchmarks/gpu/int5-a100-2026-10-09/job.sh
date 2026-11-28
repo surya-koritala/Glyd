@@ -1,4 +1,4 @@
-# Int5 (branch int5-swift) on this A100: the library and the engine built, examples/int5 (the GPU's decode and products against the
+# Int5 (branch int5-linnet) on this A100: the library and the engine built, examples/int5 (the GPU's decode and products against the
 # packer), then, once the fresh-install check is done, Qwen3.8-27B with --layout i5 and i6 (its checkpoint from that check's download).
 set -u
 cd ~/i5; P=~/i5/steps.txt; : > $P

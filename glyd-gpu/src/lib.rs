@@ -38,7 +38,7 @@ pub mod v1;
 /// The C API this crate calls (glyd_gpu.h's `GLYD_GPU_API_VERSION`): a
 /// library of another version is refused, as a C FFI does not see a call's
 /// arguments.
-pub const API_VERSION: i32 = 16;
+pub const API_VERSION: i32 = 26;
 /// A GPU's class by name in its code ([`Library::gpu`]): "GeForce" in its name.
 pub const GEFORCE: i32 = 1000;
 /// A GPU's class by name in its code: "A10" in its name as a word (an A10, not an A10G, A100 or A40).
@@ -243,8 +243,15 @@ api! { Api, DECLARED;
     fn glyd_gpu_moe_way(ids: *const i64, p: i64, e: i64, plan: *mut i32, cs: Stream) -> c_int;
     fn glyd_gpu_mma_moe_workspace(e: i64, o: i64, k: i64, t: i64, topk: i64, act: i64, weighted: i64, bytes: *mut usize) -> c_int;
     fn glyd_gpu_mma_moe(data: *const u8, blocks: *const u8, block_base: *const i32, tiers: *const u32, e: i64, o: i64, k: i64, x: *const u16, t: i64, topk: i64, gather: i64, plan: *const i32, act: i64, bias: *const u16, w: *const c_void, wf32: i64, ids: *const i64, y: *mut u16, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream) -> c_int;
+    fn glyd_gpu_mma_moe_placed(data: *const u8, blocks: *const u8, block_base: *const i32, tiers: *const u32, stride: i64, e: i64, o: i64, k: i64, x: *const u16, t: i64, topk: i64, gather: i64, plan: *const i32, act: i64, bias: *const u16, w: *const c_void, wf32: i64, ids: *const i64, y: *mut u16, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream) -> c_int;
     fn glyd_gpu_mma12_moe_workspace(e: i64, o: i64, k: i64, t: i64, topk: i64, act: i64, weighted: i64, bytes: *mut usize) -> c_int;
     fn glyd_gpu_mma12_moe(data: *const u8, exc: *const u32, exc_base: *const i32, sym: *const u32, e: i64, o: i64, k: i64, x: *const u16, t: i64, topk: i64, gather: i64, plan: *const i32, act: i64, bias: *const u16, w: *const c_void, wf32: i64, ids: *const i64, y: *mut u16, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream) -> c_int;
+    // (the same three for a part of a layer, cut as the whole layer's call: wo the rows an expert has in the whole layer, we the layer's experts; 0: the call's own)
+    fn glyd_gpu_mma_moe_as_workspace(e: i64, o: i64, k: i64, t: i64, topk: i64, act: i64, weighted: i64, wo: i64, we: i64, bytes: *mut usize) -> c_int;
+    fn glyd_gpu_mma_moe_as(data: *const u8, blocks: *const u8, block_base: *const i32, tiers: *const u32, e: i64, o: i64, k: i64, x: *const u16, t: i64, topk: i64, gather: i64, plan: *const i32, act: i64, bias: *const u16, w: *const c_void, wf32: i64, ids: *const i64, y: *mut u16, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream, wo: i64, we: i64) -> c_int;
+    fn glyd_gpu_mma_moe_placed_as(data: *const u8, blocks: *const u8, block_base: *const i32, tiers: *const u32, stride: i64, e: i64, o: i64, k: i64, x: *const u16, t: i64, topk: i64, gather: i64, plan: *const i32, act: i64, bias: *const u16, w: *const c_void, wf32: i64, ids: *const i64, y: *mut u16, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream, wo: i64, we: i64) -> c_int;
+    fn glyd_gpu_mma12_moe_as_workspace(e: i64, o: i64, k: i64, t: i64, topk: i64, act: i64, weighted: i64, wo: i64, we: i64, bytes: *mut usize) -> c_int;
+    fn glyd_gpu_mma12_moe_as(data: *const u8, exc: *const u32, exc_base: *const i32, sym: *const u32, e: i64, o: i64, k: i64, x: *const u16, t: i64, topk: i64, gather: i64, plan: *const i32, act: i64, bias: *const u16, w: *const c_void, wf32: i64, ids: *const i64, y: *mut u16, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream, wo: i64, we: i64) -> c_int;
     fn glyd_gpu_mma_moe_unpack(data: *const u8, blocks: *const u8, block_base: *const i32, tiers: *const u32, e: i64, o: i64, k: i64, p: i64, plan: *const i32, out: *mut u16, cs: Stream) -> c_int;
     fn glyd_gpu_mma12_moe_unpack(data: *const u8, exc: *const u32, exc_base: *const i32, sym: *const u32, e: i64, o: i64, k: i64, p: i64, plan: *const i32, out: *mut u16, cs: Stream) -> c_int;
 
@@ -257,12 +264,19 @@ api! { Api, DECLARED;
     fn glyd_gpu_kv_write(key: *const u16, key_stride: i64, value: *const u16, value_stride: i64, slots: *const i64, n: i64, pool: *mut u8, page_stride: i64, kbase: *const u8, vbase: *const u8, h: i64, d: i64, a: i64, escape: *mut u8, nchunks: i64, raw: *mut u8, nslabs: i64, layer: i64, status: *mut u32, lost: *mut u32, nlost: i64, ring: i64, cs: Stream) -> c_int;
     fn glyd_gpu_kv_release(pool: *mut u8, page_stride: i64, nblocks: i64, blocks: *const i32, n: i64, h: i64, d: i64, a: i64, escape: *mut u8, nchunks: i64, raw: *mut u8, nslabs: i64, layer: i64, status: *mut u32, lost: *mut u32, nlost: i64, cs: Stream) -> c_int;
     fn glyd_gpu_kv_unpack(pool: *const u8, page_stride: i64, pages: *const i32, n: i64, kbase: *const u8, vbase: *const u8, h: i64, d: i64, a: i64, escape: *const u8, nchunks: i64, raw: *const u8, nslabs: i64, out_k: *mut u16, out_v: *mut u16, cs: Stream) -> c_int;
+    fn glyd_gpu_kv_image_bytes(h: i64, d: i64, a: i64, bytes: *mut i64) -> c_int;
+    fn glyd_gpu_kv_save(pool: *const u8, page_stride: i64, nblocks: i64, pages: *const i32, n: i64, h: i64, d: i64, a: i64, escape: *const u8, nchunks: i64, raw: *const u8, nslabs: i64, layer: i64, out: *mut u8, moved: *mut u32, cs: Stream) -> c_int;
+    fn glyd_gpu_kv_load(img: *const u8, dst: *const i32, n: i64, pool: *mut u8, page_stride: i64, nblocks: i64, h: i64, d: i64, a: i64, escape: *mut u8, nchunks: i64, raw: *mut u8, nslabs: i64, layer: i64, status: *mut u32, ring: i64, cs: Stream) -> c_int;
     fn glyd_gpu_kv_gather(pool: *const u8, page_stride: i64, pages: *const i32, dst: *const i32, n: i64, kbase: *const u8, vbase: *const u8, h: i64, d: i64, a: i64, escape: *const u8, nchunks: i64, raw: *const u8, nslabs: i64, out: *mut u16, cs: Stream) -> c_int;
     fn glyd_gpu_kv_work_put(key: *const u16, key_stride: i64, value: *const u16, value_stride: i64, slots: *const i64, n: i64, h: i64, d: i64, out: *mut u16, blocks: i64, cs: Stream) -> c_int;
     fn glyd_gpu_kv_decode_shares(b: i64, h: i64, max_pages: i64, splits: *mut i64) -> c_int;
     fn glyd_gpu_kv_decode_workspace(b: i64, h: i64, g: i64, d: i64, splits: i64, bytes: *mut usize) -> c_int;
     fn glyd_gpu_kv_floor_set(floor: c_int) -> c_int;
     fn glyd_gpu_kv_decode(q: *const u16, q_stride: i64, pool: *const u8, page_stride: i64, kbase: *const u8, vbase: *const u8, block_table: *const i32, bt_stride: i64, seq_lens: *const i32, b: i64, splits: i64, h: i64, g: i64, d: i64, a: i64, escape: *const u8, nchunks: i64, raw: *const u8, nslabs: i64, scale: f64, out: *mut u16, out_stride: i64, workspace: *mut c_void, workspace_bytes: usize, cs: Stream) -> c_int;
+    fn glyd_gpu_kv_decode_from(q: *const u16, q_stride: i64, pool: *const u8, page_stride: i64, kbase: *const u8, vbase: *const u8, block_table: *const i32, bt_stride: i64, seq_lens: *const i32, first: *const i32, round_scores: i64, b: i64, splits: i64, h: i64, g: i64, d: i64, a: i64, escape: *const u8, nchunks: i64, raw: *const u8, nslabs: i64, scale: f64, out: *mut u16, out_stride: i64, workspace: *mut c_void, workspace_bytes: usize, cs: Stream) -> c_int;
+    fn glyd_gpu_kv_prefill(q: *const u16, q_stride: i64, key: *const u16, key_stride: i64, value: *const u16, value_stride: i64, n: i64, start: i64, window: i64, pool: *const u8, page_stride: i64, kbase: *const u8, vbase: *const u8, block_table: *const i32, h: i64, g: i64, d: i64, a: i64, escape: *const u8, nchunks: i64, raw: *const u8, nslabs: i64, scale: f64, round_scores: i64, softcap: f64, sinks: *const f32, out: *mut u16, out_stride: i64, cs: Stream) -> c_int;
+    fn glyd_gpu_kv_decode_bf16(q: *const u16, q_stride: i64, kc: *const u16, vc: *const u16, block_table: *const i32, bt_stride: i64, cap: i64, seq_lens: *const i32, first: *const i32, round_scores: i64, b: i64, splits: i64, h: i64, g: i64, d: i64, scale: f64, out: *mut u16, out_stride: i64, workspace: *mut c_void, workspace_bytes: usize, cs: Stream) -> c_int;
+    fn glyd_gpu_kv_prefill_bf16(q: *const u16, q_stride: i64, kc: *const u16, vc: *const u16, block_table: *const i32, cap: i64, n: i64, start: i64, window: i64, h: i64, g: i64, d: i64, scale: f64, round_scores: i64, softcap: f64, sinks: *const f32, out: *mut u16, out_stride: i64, cs: Stream) -> c_int;
 
     fn glyd_gpu_fast_gemv(sm: *const u8, planes: *const u32, exc: *const u8, exc_base: *const i32, top: u64, o: i64, k: i64, x: *const u16, bias: *const u16, y: *mut u16, cs: Stream) -> c_int;
     fn glyd_gpu_fast_decode(sm: *const u8, planes: *const u32, exc: *const u8, exc_base: *const i32, top: u64, row0: i64, rows: i64, row_ids: *const i64, n_ids: i64, k: i64, out: *mut u16, cs: Stream) -> c_int;
@@ -1146,6 +1160,13 @@ mod tests {
                 .unwrap_or_else(|| panic!("glyd_gpu.h has no {name}"))
         };
         assert_eq!(define("GLYD_GPU_API_VERSION"), API_VERSION, "GLYD_GPU_API_VERSION is not API_VERSION");
+        // (the header the Python package installs: its functions are a part of these, its number the library's; the wheel's install check holds the two to each other)
+        let public =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../glyd-gpu-py/include/glyd_gpu.h")).expect("glyd-gpu-py/include/glyd_gpu.h");
+        assert!(
+            public.contains(&format!("#define GLYD_GPU_API_VERSION {API_VERSION}\n")),
+            "glyd-gpu-py/include/glyd_gpu.h's GLYD_GPU_API_VERSION is not API_VERSION ({API_VERSION})"
+        );
         for (name, r) in [
             ("DECODE", Route::Decode),
             ("GEMM", Route::Gemm),

@@ -972,6 +972,8 @@ pub fn plan_dir(g: &Gguf, label: &str, root: &Path) -> Done<PathBuf> {
         std::fs::create_dir_all(&tmp).map_err(io)?;
         std::fs::write(tmp.join("generation_config.json"), &generation).map_err(io)?;
         std::fs::write(tmp.join("config.json"), &config).map_err(io)?;
+        // the file's tensors by their headers, as the planner reads them (src/sizes.rs: the Hugging Face names the engine loads, the bytes the file holds)
+        crate::sizes::Table::from_gguf(g).write(&tmp.join(crate::sizes::GGUF_TENSORS));
         if std::fs::rename(&tmp, &dir).is_err() {
             let _ = std::fs::remove_dir_all(&tmp);
         }
@@ -1535,6 +1537,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// R3a (#136): a GGUF maps to the same description as a Hugging Face checkpoint. The config.json its metadata makes describes (the description builder of
+    /// src/runtime/describe.rs, as a Hub download's does), and the tensors that description reads are the GGUF's own under their Hugging Face names, all of them.
+    #[test]
+    fn a_gguf_has_the_description_of_its_hugging_face_twin() {
+        let g = Gguf::parse(&tiny_qwen3(BF16, F32)).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&config_json(&g, &g.description().unwrap()).unwrap()).unwrap();
+        let d = crate::runtime::describe::describe(&config).unwrap_or_else(|e| panic!("{}", e.msg));
+        let mapped: std::collections::BTreeSet<String> =
+            g.tensors.iter().map(|t| hf_name(&t.name).unwrap_or_else(|| panic!("{} has no Hugging Face name", t.name))).collect();
+        assert_eq!(d.names(), mapped);
+        assert_eq!(d.desc.blocks.len(), 2 * config["num_hidden_layers"].as_u64().unwrap() as usize);
+    }
+
     #[test]
     fn another_architecture_is_described_and_refused_by_name() {
         let mut b = Build::new();
@@ -1792,7 +1807,7 @@ mod tests {
         let out = plan_dir(&g, "tiny-BF16.gguf", &dir).unwrap();
         let mut names: Vec<String> = std::fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         names.sort();
-        assert_eq!(names, ["config.json", "generation_config.json"]);
+        assert_eq!(names, ["config.json", "generation_config.json", "glyd-tensors.json"]);
         let c = crate::weights::Config::load(&out).unwrap();
         assert_eq!((c.layers, c.hidden, c.vocab, c.eos.clone()), (1, 4, 261, vec![259]));
         assert_eq!(plan_dir(&g, "tiny-BF16.gguf", &dir).unwrap(), out);
@@ -1801,6 +1816,11 @@ mod tests {
         std::fs::write(&file, tiny_qwen3(BF16, F32)).unwrap();
         let run = materialize(&file, &dir.join("run"), &|_| {}).unwrap();
         assert_eq!(std::fs::read(run.join("config.json")).unwrap(), std::fs::read(out.join("config.json")).unwrap());
+        // the planner's table of the file's headers is the bytes the run loads (P2b: the tensors of the directory the file becomes, by their Hugging Face names)
+        let (planned, loaded) = (crate::sizes::Table::from_dir(&out).unwrap(), crate::sizes::Table::from_dir(&run).unwrap());
+        let sum = |t: &crate::sizes::Table, keep: &dyn Fn(&str) -> bool| t.rows.iter().filter(|r| keep(&r.name)).map(|r| r.bytes).sum::<u64>();
+        let weights = |n: &str| n.starts_with("model.") || n == "lm_head.weight";
+        assert!(sum(&planned, &weights) > 0 && (sum(&planned, &weights) as f64 / sum(&loaded, &weights) as f64 - 1.0).abs() < 0.01);
         // refusals, with nothing made
         let before = std::fs::read_dir(&dir).unwrap().count();
         let mut q = Build::new();

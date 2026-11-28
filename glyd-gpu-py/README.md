@@ -12,14 +12,15 @@ or 13 builds of PyTorch). Import name: `glyd_gpu`; `python -m glyd_gpu` has `fit
 
 ## The engine
 
-`glyd run` starts Glyd's own engine, `glyd-engine` (a program in this package, beside the libraries), for a model it runs on a GPU where it is measured at least as fast as vLLM and with less memory, and where it will
-certainly run the model (checked before anything is downloaded), and vLLM everywhere else, as before: it is measured on no GPU yet, so until it is every model runs on vLLM. Lossless, the 2026 models (Qwen3.5, Qwen3.8, Gemma 4) run on vLLM: the engine does not run them yet. `glyd serve` runs vLLM, which serves more
-users at once than the engine's 8. Where the engine does not get up (it refuses, crashes, is killed or goes silent) the command goes on with vLLM, with one line saying why. `GLYD_ENGINE=0` keeps vLLM, and
-`GLYD_ENGINE=1` asks for the engine for `glyd serve`. It needs only the NVIDIA driver and this package's library.
+`glyd run` starts Glyd's own engine, `glyd-engine` (a program in this package, beside the libraries), where it will certainly run the model (checked before anything is downloaded), and vLLM where it will not,
+as before. A plain dense model at penguin goes to the engine only on a GPU where it is measured at least as fast as vLLM and with less memory (`GPUS` in `glyd-engine/src/machine.rs`: the RTX 4080 SUPER so far); every other family and level is the
+engine's whatever that list says. `glyd serve` of a lossless model other than Gemma 4 runs vLLM, which serves more users at once than the 8 this tool allows the engine (the engine itself takes up to 64); a level, a Gemma 4 model and a glyd-v7 directory
+go to the engine. Where the engine does not get up (it refuses, crashes, is killed or goes silent) the command goes on with vLLM, with one line saying why. `GLYD_ENGINE=0` keeps vLLM, and
+`GLYD_ENGINE=1` asks for the engine for `glyd serve`. The engine needs only the NVIDIA driver.
 
-`glyd run MODEL:LEVEL` holds the weights in fewer bits, not lossless, on the engine only (the Qwen3.5 family, Qwen3.8 included): `kestrel`
-is 6.53 bits per weight (`--lossy` is the same) and `swift` 5.53; `penguin` is lossless, the default. Qwen3.8-27B's weights are 20.48 GiB
-at kestrel and 17.35 GiB at swift. A level the engine can't run on this GPU stops with a message rather than going to vLLM.
+`glyd run MODEL:LEVEL` holds the weights in fewer bits, not lossless, on the engine only (Gemma, Qwen and Nemotron-H have `kestrel`, `linnet` and `wren`; Nemotron-H, Kimi, GLM, DeepSeek and Muse also `hummingbird`): `kestrel`
+is 6.53 bits per weight (`--lossy` is the same) and `linnet` 5.53; `penguin` is lossless, the default. Qwen3.8-27B's weights are 20.48 GiB
+at kestrel and 17.35 GiB at linnet. A level the engine can't run on this GPU stops with a message rather than going to vLLM.
 
 ## C, C++, Rust
 

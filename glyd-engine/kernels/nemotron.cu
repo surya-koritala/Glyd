@@ -1,6 +1,5 @@
-// Nemotron 3 Super's own kernels (included by engine.cu after qwen35.cu; src/model_nh.rs runs them): the Mamba-2 layer (the causal convolution with its bias, the selective state
-// update as a recurrence and in chunks by the state-space duality, the gated norm over groups) and the attention layer at head 128 without any positional encoding (the keys and values
-// into the cache, a decode step's attention). bf16 in memory, fp32 inside; the rounding points are vLLM's (nemotron_h.py, mamba_mixer2.py). Reference: tools/nemotron_ref.py.
+// Nemotron-H's own kernels (included by engine.cu after qwen35.cu; src/kern/mamba2.rs's table runs them): the Mamba-2 layer (the causal convolution with its bias, the selective state
+// update as a recurrence and in chunks by the state-space duality, the gated norm over groups). Its attention layers are the attention kind's (kernels/attn.cu). bf16 in memory, fp32 inside; the rounding points are vLLM's (nemotron_h.py, mamba_mixer2.py). Reference: tools/nemotron_ref.py.
 // Shapes: a head has NH_P = 64 channels, the state NH_N = 128 per channel; B and C are shared by the nh / ng heads of a group. The in_proj's output rows are [z | x B C | dt]; the convolution's
 // output rows are [x (nh 64) | B (ng 128) | C (ng 128)].
 
@@ -13,7 +12,7 @@
 // st [3, C] the channel's last three inputs (the oldest first), read and left holding the last three of these rows; y [n, C]. A thread a channel.
 // ponytail: a thread a channel and the tokens one after another is 40 blocks and a prompt's latency of its length; split the tokens over blocks (each taking the three before its first as its
 // state) when a profile shows it.
-extern "C" __global__ void nh_conv(const bf16* x, int xs, const bf16* w, const bf16* bias, bf16* st, bf16* y, int n, int C) {
+__device__ __forceinline__ void nh_conv_of(const bf16* x, int xs, const bf16* w, const bf16* bias, bf16* st, bf16* y, int n, int C) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= C) return;
     const float w0 = b2f(w[c * 4]), w1 = b2f(w[c * 4 + 1]), w2 = b2f(w[c * 4 + 2]), w3 = b2f(w[c * 4 + 3]), bb = b2f(bias[c]);
@@ -34,12 +33,27 @@ extern "C" __global__ void nh_conv(const bf16* x, int xs, const bf16* w, const b
     st[2 * C + c] = f2b(s2);
 }
 
+extern "C" __global__ void nh_conv(const bf16* x, int xs, const bf16* w, const bf16* bias, bf16* st, bf16* y, int n, int C) { nh_conv_of(x, xs, w, bias, st, y, n, C); }
+
+// nh_conv of a step's rows that decode, a token of a sequence each (grid C / 256 by rows): row r's state at sts[r ss] (a table of addresses; 0: a padding row, whose output
+// is zeroed and which reads and writes no state), its input row r of x, its output row r of y. Each row's arithmetic is nh_conv's on that sequence's one token.
+extern "C" __global__ void nh_conv_rows(const bf16* x, int xs, const bf16* w, const bf16* bias, const unsigned long long* sts, int ss, bf16* y, int C) {
+    const int r = blockIdx.y;
+    bf16* st = reinterpret_cast<bf16*>(sts[(size_t)r * ss]);
+    if (!st) {
+        const int c = blockIdx.x * blockDim.x + threadIdx.x;
+        if (c < C) y[(size_t)r * C + c] = f2b(0.f);
+        return;
+    }
+    nh_conv_of(x + (size_t)r * xs, xs, w, bias, st, y + (size_t)r * C, 1, C);
+}
+
 // ---- the selective state update, one token after another ---------------------------------------------------------------------------------------------------------------------------
 // For the n rows of a sequence: xc [n, cs] the convolution's output, dtr [n, dts] the dt columns of the in_proj's output (bf16), dt_bias, A_log and D bf16 [nh]; state fp32 [nh, 64, 128] (the
 // state S[h][p][i]), read and written back; y [n, nh 64] (bf16, before the gated norm). Per token and head: dt = max(softplus(dt + dt_bias), dt_min), A = -exp(A_log),
 // S = S exp(A dt) + dt x B^T, y = S C + D x (B and C of the head's group). A warp a channel of a head (grid nh x 64 / warps), a lane 4 of the state's 128.
-extern "C" __global__ void __launch_bounds__(256) nh_ssm(const bf16* xc, int cs, const bf16* dtr, int dts, const bf16* dt_bias, const bf16* A_log, const bf16* Dp, float* state, bf16* y, int n, int nh,
-                                                         int ng, float dt_min) {
+__device__ __forceinline__ void nh_ssm_of(const bf16* xc, int cs, const bf16* dtr, int dts, const bf16* dt_bias, const bf16* A_log, const bf16* Dp, float* state, bf16* y, int n, int nh,
+                                          int ng, float dt_min) {
     const int h = blockIdx.x, lane = threadIdx.x & 31, p = blockIdx.y * (blockDim.x >> 5) + (threadIdx.x >> 5);
     const int di = nh * NH_P, g = h / (nh / ng);
     float* st = state + ((size_t)h * NH_P + p) * NH_N + lane * 4;
@@ -65,6 +79,26 @@ extern "C" __global__ void __launch_bounds__(256) nh_ssm(const bf16* xc, int cs,
         if (lane == 0) y[(size_t)t * di + h * NH_P + p] = f2b(fmaf(Dh, xv, acc));
     }
     *reinterpret_cast<float4*>(st) = s;
+}
+
+extern "C" __global__ void __launch_bounds__(256) nh_ssm(const bf16* xc, int cs, const bf16* dtr, int dts, const bf16* dt_bias, const bf16* A_log, const bf16* Dp, float* state, bf16* y, int n, int nh,
+                                                         int ng, float dt_min) {
+    nh_ssm_of(xc, cs, dtr, dts, dt_bias, A_log, Dp, state, y, n, nh, ng, dt_min);
+}
+
+// nh_ssm of a step's rows that decode, a token of a sequence each (grid nh by 64 / warps by rows): row r's state at sts[r ss] (0: a padding row, whose output is zeroed and
+// which reads and writes no state), its rows of xc, dtr and y at r cs, r dts and r nh 64. Each row's arithmetic is nh_ssm's on that sequence's one token.
+extern "C" __global__ void __launch_bounds__(256) nh_ssm_rows(const bf16* xc, int cs, const bf16* dtr, int dts, const bf16* dt_bias, const bf16* A_log, const bf16* Dp,
+                                                              const unsigned long long* sts, int ss, bf16* y, int nh, int ng, float dt_min) {
+    const int r = blockIdx.z;
+    float* st = reinterpret_cast<float*>(sts[(size_t)r * ss]);
+    bf16* out = y + (size_t)r * nh * NH_P;
+    if (!st) {
+        const int p = blockIdx.y * (blockDim.x >> 5) + (threadIdx.x >> 5);
+        if ((threadIdx.x & 31) == 0) out[blockIdx.x * NH_P + p] = f2b(0.f);
+        return;
+    }
+    nh_ssm_of(xc + (size_t)r * cs, cs, dtr + (size_t)r * dts, dts, dt_bias, A_log, Dp, st, out, 1, nh, ng, dt_min);
 }
 
 // ---- the same in chunks of NH_L tokens (state-space duality: transformers' mamba2_chunk_scan), for a prompt --------------------------------------------------------------------------------
@@ -284,111 +318,4 @@ extern "C" __global__ void nh_gated_norm(bf16* y, const bf16* z, int zs, const b
         const int i = threadIdx.x + j * 256;
         if (i < gs) yr[i] = f2b(b2f(w[g * gs + i]) * b2f(f2b(v[j] * r)));
     }
-}
-
-// ---- the attention layer (head 128, no positional encoding) ---------------------------------------------------------------------------------------------------------------------------
-// The keys and values of the n rows of qkv [n, stride] (nq query heads of 128, then nk key heads, then nk value heads) into the cache kv [positions, nk, 256] (a position's head: its 128 keys, then its 128
-// values: the layout of the engine's prompt attention) at each row's position. Block (row, key-value head), 128 threads.
-extern "C" __global__ void nh_kv_write(const bf16* qkv, int stride, const int* pos, bf16* kv, int nq, int nk) {
-    const int t = blockIdx.x, j = blockIdx.y, i = threadIdx.x;
-    const bf16* row = qkv + (size_t)t * stride;
-    bf16* dst = kv + ((size_t)pos[t] * nk + j) * 256;
-    dst[i] = row[nq * 128 + j * 128 + i];
-    dst[128 + i] = row[(nq + nk) * 128 + j * 128 + i];
-}
-
-#define NH_KB 32  // keys a tile
-#define NH_KS 65  // a key's row in shared memory: 64 words and one more, so that 32 lanes reading 32 rows meet no bank twice
-#define NH_PART 130  // floats of a part's result: 128 outputs, the maximum, the sum
-
-// A decode step's attention: row t of q [n, qs] (query head h at h * 128) over the cache's keys 0 .. pos[t] (pos on the device: a graph replays it), nq / nk (at most 16) query heads to a key-value head, one
-// warp each. The keys go in S parts at once (block (row, key-value head, part), 32 * nq / nk threads): a part's maximum (log2 units), sum and unnormalized outputs to
-// part [((t nq + h) S + part) NH_PART]; nh_attn_merge combines them. ponytail: 2 key-value heads x S parts is 32 blocks, few for a long context; more parts when a profile shows it. fp32 scores and sums, the probabilities rounded to bf16 for the values (as FlashAttention). sl2 = 128^-0.5 * log2(e).
-extern "C" __global__ void __launch_bounds__(512) nh_attn_parts(const bf16* q, int qs, const bf16* kv, const int* pos, int n, int nq, int nk, float sl2, float* part, int S) {
-    __shared__ __align__(16) uint32_t Ks[NH_KB * NH_KS];
-    __shared__ __align__(16) uint32_t Vs[NH_KB * 64];
-    __shared__ __align__(16) uint32_t Qs[16 * 64];
-    __shared__ int s_k0, s_k1;
-    const int G = nq / nk, w = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    const int t = blockIdx.x, kvh = blockIdx.y, h = kvh * G + w;
-    for (int c = lane; c < 64; c += 32) Qs[w * 64 + c] = reinterpret_cast<const uint32_t*>(q + (size_t)t * qs + h * 128)[c];
-    if (threadIdx.x == 0) {
-        const int m = pos[t] + 1;
-        const int span = ((m + S - 1) / S + NH_KB - 1) / NH_KB * NH_KB;
-        s_k0 = min(m, blockIdx.z * span);
-        s_k1 = min(m, s_k0 + span);
-    }
-    __syncthreads();
-    const int k_lo = s_k0, kmax = s_k1;
-    float m_run = -INFINITY, l_run = 0.f, acc[4] = {0.f, 0.f, 0.f, 0.f};
-    for (int k0 = k_lo; k0 < kmax; k0 += NH_KB) {
-        __syncthreads();
-        for (int c = threadIdx.x; c < NH_KB * 32; c += blockDim.x) {
-            const bool isv = c >= NH_KB * 16;
-            const int cc = isv ? c - NH_KB * 16 : c, j = cc >> 4, part_ = cc & 15;
-            uint4 v = make_uint4(0, 0, 0, 0);
-            if (k0 + j < kmax) v = reinterpret_cast<const uint4*>(kv + ((size_t)(k0 + j) * nk + kvh) * 256 + (isv ? 128 : 0))[part_];
-            if (isv) {
-                *reinterpret_cast<uint4*>(Vs + j * 64 + part_ * 4) = v;
-            } else {
-                uint32_t* d = Ks + j * NH_KS + part_ * 4;
-                d[0] = v.x;
-                d[1] = v.y;
-                d[2] = v.z;
-                d[3] = v.w;
-            }
-        }
-        __syncthreads();
-        const uint32_t* kr = Ks + lane * NH_KS;
-        const uint32_t* qr = Qs + w * 64;
-        float s0 = 0.f, s1 = 0.f;
-#pragma unroll 8
-        for (int c = 0; c < 64; c++) {
-            const float2 a = bf2(qr[c]), b = bf2(kr[c]);
-            s0 = fmaf(a.x, b.x, s0);
-            s1 = fmaf(a.y, b.y, s1);
-        }
-        const float s = k0 + lane < kmax ? (s0 + s1) * sl2 : -INFINITY;
-        const float m_new = fmaxf(m_run, warp_max(s));  // (finite: a part's first key is in the row's keys)
-        const float p = exp2f(s - m_new), corr = exp2f(m_run - m_new);
-        l_run = l_run * corr + warp_sum(p);
-        const float pb = b2f(f2b(p));
-#pragma unroll
-        for (int e = 0; e < 4; e++) acc[e] *= corr;
-#pragma unroll 4
-        for (int j = 0; j < NH_KB; j++) {
-            const float pj = __shfl_sync(0xffffffffu, pb, j);
-            const uint2 v = *reinterpret_cast<const uint2*>(Vs + j * 64 + lane * 2);
-            const float2 v0 = bf2(v.x), v1 = bf2(v.y);
-            acc[0] = fmaf(pj, v0.x, acc[0]);
-            acc[1] = fmaf(pj, v0.y, acc[1]);
-            acc[2] = fmaf(pj, v1.x, acc[2]);
-            acc[3] = fmaf(pj, v1.y, acc[3]);
-        }
-        m_run = m_new;
-    }
-    float* pp = part + ((size_t)(t * nq + h) * S + blockIdx.z) * NH_PART;
-#pragma unroll
-    for (int e = 0; e < 4; e++) pp[lane * 4 + e] = acc[e];
-    if (lane == 0) {
-        pp[128] = m_run;
-        pp[129] = l_run;
-    }
-}
-
-// The S parts of nh_attn_parts combined: out [n, nq 128] (rows os apart) = bf16(sum of the parts' outputs, each times 2^(its maximum - the largest), over the sum likewise). Block (row, query head), 128 threads.
-extern "C" __global__ void nh_attn_merge(const float* part, int S, bf16* out, int os, int nq) {
-    const int t = blockIdx.x, h = blockIdx.y, d = threadIdx.x;
-    const float* pp = part + (size_t)(t * nq + h) * S * NH_PART;
-    float mx = -INFINITY;
-    for (int z = 0; z < S; z++) mx = fmaxf(mx, pp[z * NH_PART + 128]);
-    float l = 0.f, a = 0.f;
-    for (int z = 0; z < S; z++) {
-        const float m = pp[z * NH_PART + 128];
-        if (m == -INFINITY) continue;  // (a part with no keys)
-        const float wz = exp2f(m - mx);
-        l = fmaf(pp[z * NH_PART + 129], wz, l);
-        a = fmaf(pp[z * NH_PART + d], wz, a);
-    }
-    out[(size_t)t * os + h * 128 + d] = f2b(a / l);
 }

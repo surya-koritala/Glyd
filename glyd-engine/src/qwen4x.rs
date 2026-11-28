@@ -4,8 +4,8 @@
 
 use crate::ffi::{err, Error, Result};
 use crate::qwen35::Pack35;
+use crate::runtime::config::ModelConfig;
 use crate::weights::{eos_ids, num};
-use glyd_gpu::json::{self, Value};
 use std::path::Path;
 
 /// A layer's token mixer: Gated DeltaNet (`linear_attention`) or Qwen Sparse Attention (`full_attention`, transformers' `indexed_attention`: gated attention over the tokens its indexer picks).
@@ -70,23 +70,26 @@ pub struct ConfigQx {
 
 /// Whether a config.json is a Qwen3.8-Flash-Next's.
 pub fn is_qx(text: &str) -> bool {
-    json::parse(text).ok().and_then(|v| v.get("model_type").and_then(Value::as_str).map(|s| s == "qwen4_exp")).unwrap_or(false)
+    crate::runtime::config::family_of(text) == Some(crate::support::Family::FlashNext)
 }
 
 impl ConfigQx {
     pub fn load(dir: &Path) -> Result<ConfigQx> {
-        let p = dir.join("config.json");
-        let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-        ConfigQx::parse(&text, &p.display().to_string(), generation.as_deref())
+        ModelConfig::read(dir, ConfigQx::of)
     }
 
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<ConfigQx> {
-        let v = json::parse(text).map_err(|e| Error(format!("{label}: {e}")))?;
+        ConfigQx::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
+    }
+
+    /// `parse` of a config.json parsed once (`ModelConfig`).
+    pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<ConfigQx> {
+        use serde_json::Value;
+        let v = &c.top;
         if v.get("model_type").and_then(Value::as_str) != Some("qwen4_exp") {
             return err(format!("{label}: not a qwen4_exp model"));
         }
-        let t = v.get("text_config").ok_or_else(|| Error(format!("{label}: no text_config")))?;
+        let t = v.get("text_config").and_then(Value::as_object).ok_or_else(|| Error(format!("{label}: no text_config")))?;
         let get = |k: &str| t.get(k).filter(|x| **x != Value::Null).ok_or_else(|| Error(format!("{label}: no {k}")));
         let u = |k: &str| -> Result<usize> { get(k)?.as_u64().map(|x| x as usize).ok_or_else(|| Error(format!("{label}: {k}: not an integer"))) };
         let u_or = |k: &str, d: usize| -> Result<usize> {
@@ -138,7 +141,7 @@ impl ConfigQx {
         let head_dim = u("head_dim")?;
         let rotary = (head_dim as f64 * factor) as usize;
         let gate = t.get("output_gate_type").and_then(Value::as_str).unwrap_or("silu");
-        let ple = match t.get("ple_layer_ids").and_then(Value::as_u64s) {
+        let ple = match t.get("ple_layer_ids").and_then(crate::runtime::config::u64s) {
             Some(ids) if ids.len() > 1 => return refuse("n-gram embeddings at more than one layer"),
             Some(ids) if ids.len() == 1 => {
                 let layer = ids[0] as usize;
@@ -147,8 +150,10 @@ impl ConfigQx {
                 }
                 let (ngram, heads) = (u_or("ngram_size", 3)?, u_or("heads_per_ngram", 8)?);
                 let dim = u_or("ple_embed_dim", u("hidden_size")?)?;
-                if ngram < 2 || heads == 0 || !dim.is_multiple_of(heads * (ngram - 1)) {
-                    return err(format!("{label}: an n-gram embedding of {dim} over {} heads", heads * (ngram - 1)));
+                // (the numbers are a file's: an n-gram size of 0, or sizes whose product does not fit, is refused in words like any other)
+                let over = heads.checked_mul(ngram.saturating_sub(1)).filter(|&n| ngram >= 2 && n > 0);
+                if over.is_none_or(|n| !dim.is_multiple_of(n)) {
+                    return err(format!("{label}: an n-gram embedding of {dim} over {heads} heads for each of n-grams of {ngram}"));
                 }
                 Some(PleDims { layer: layer - 1, dim, kernel: u_or("ple_conv_kernel_size", 4)?, ngram, heads })
             }
@@ -201,30 +206,121 @@ impl ConfigQx {
             mtp_layers,
             prefix: "model.language_model.",
         };
-        // (what the kernels hold to: model_qwen4x.rs's checks name the limits)
+        // (what the kernels hold to: kernels/qwen4x.cu's and the delta rule's)
         if u_or("linear_key_head_dim", 128)? != 128 || u_or("linear_value_head_dim", 128)? != 128 || c.conv != 4 || c.nk == 0 || !c.nv.is_multiple_of(c.nk) {
             return refuse("Gated DeltaNet heads other than 128 channels with a convolution of 4");
         }
         if c.head_dim != 256 || c.kv_heads == 0 || !c.heads.is_multiple_of(c.kv_heads) || c.heads / c.kv_heads > 16 || c.rotary > 128 || c.rotary % 2 != 0 {
             return refuse(&format!("attention of {} heads of {} over {} key-value heads, a rotary of {}", c.heads, c.head_dim, c.kv_heads, c.rotary));
         }
-        if c.ix_dim != 128
-            || u_or("indexer_kv_heads", 1)? != 1
-            || c.ix_block != 4
+        if u_or("indexer_kv_heads", 1)? != 1
+            || c.ix_block == 0
             || c.ix_budget == 0
             || !c.ix_budget.is_multiple_of(c.ix_block)
             || c.ix_budget / c.ix_block > 1024
             || c.rotary > c.ix_dim
         {
-            return refuse("an indexer other than one key head of 128 over blocks of 4 tokens");
+            return refuse("an indexer other than one key head over blocks of tokens");
         }
-        if c.hc != 4 || c.hidden > 4096 || !c.hidden.is_multiple_of(64) {
+        if c.hc == 0 || c.hidden > 4096 || !c.hidden.is_multiple_of(64) {
             return refuse(&format!("{} streams of {}", c.hc, c.hidden));
         }
-        if c.ple.as_ref().is_some_and(|p| p.ngram != 3 || p.kernel != 4) {
-            return refuse("an n-gram embedding other than bigrams and trigrams with a convolution of 4");
-        }
         Ok(c)
+    }
+
+    /// What this engine reads of a model, from the model's description (`runtime::describe`: its layer kinds, and the experts' widths from the
+    /// shapes it says), with what no description holds from `own` (this engine's reading of the same config: the end tokens, with the generation
+    /// config's, the longest context, the tensors' prefix). Held to `own` (`agrees`, at the executor's load: `dynamic::qwen4x::lowered`), it is the
+    /// check that the description says everything the engine runs on.
+    pub fn lowered(d: &crate::runtime::describe::Described, own: &ConfigQx) -> Result<ConfigQx> {
+        use crate::runtime::describe::Source;
+        use crate::runtime::kinds::{Body, Ffn, Mixer, Residual};
+        let m = &d.desc;
+        let mixers: Vec<&Body> = m.blocks.iter().map(|b| &b.body).filter(|b| matches!(b, Body::Mixer(_))).collect();
+        let kinds: Vec<QxKind> = mixers
+            .iter()
+            .map(|b| match b {
+                Body::Mixer(Mixer::Linear(_)) => Ok(QxKind::Gdn),
+                Body::Mixer(Mixer::Attention(_)) => Ok(QxKind::Attn),
+                b => err(format!("Qwen3.8-Flash-Next: a {b:?}, where a layer is Gated DeltaNet or attention")),
+            })
+            .collect::<Result<_>>()?;
+        let lin = mixers.iter().find_map(|b| if let Body::Mixer(Mixer::Linear(l)) = b { Some(l) } else { None });
+        let attn = mixers.iter().find_map(|b| if let Body::Mixer(Mixer::Attention(a)) = b { Some(a) } else { None });
+        let (lin, attn) = lin.zip(attn).ok_or_else(|| Error("Qwen3.8-Flash-Next: no Gated DeltaNet layer or no attention layer".into()))?;
+        let (ix, rope) =
+            attn.indexer.as_ref().zip(attn.rope.as_ref()).ok_or_else(|| Error("Qwen3.8-Flash-Next: an attention without its indexer or rotary".into()))?;
+        let moe = m.blocks.iter().find_map(|b| if let Body::Ffn(Ffn::Moe(e)) = &b.body { Some(e) } else { None });
+        let gr = m.blocks.iter().find_map(|b| if let Residual::GatedStreams(g) = b.residual { Some(g) } else { None });
+        let (moe, gr) = moe.zip(gr).ok_or_else(|| Error("Qwen3.8-Flash-Next: no experts or no gated residuals".into()))?;
+        // (the experts' widths: the shapes said of the first layer's tensors of each role)
+        let width = |role: &str, at: usize| -> Result<usize> {
+            d.blocks
+                .iter()
+                .flatten()
+                .find(|(r, _)| r == role)
+                .and_then(|(_, s)| if let Source::Tensor(n) = s { d.shapes.get(n) } else { None })
+                .and_then(|s| s.get(at).copied())
+                .ok_or_else(|| Error(format!("Qwen3.8-Flash-Next: no shape said of {role}")))
+        };
+        let mut layer = 0;
+        let mut ple = None;
+        for b in &m.blocks {
+            match &b.body {
+                Body::Ngram(n) => ple = Some(PleDims { layer, dim: n.dim, kernel: n.conv, ngram: n.order, heads: n.heads }),
+                Body::Mixer(_) => layer += 1,
+                _ => {}
+            }
+        }
+        let ngram = m.blocks.iter().find_map(|b| if let Body::Ngram(n) = &b.body { Some(n.eos) } else { None });
+        Ok(ConfigQx {
+            hidden: m.hidden,
+            layers: kinds.len(),
+            vocab: m.vocab,
+            eps: m.final_norm.eps,
+            max_pos: own.max_pos,
+            eos: own.eos.clone(),
+            eos_ngram: ngram.unwrap_or(own.eos_ngram),
+            kinds,
+            nk: lin.k_heads,
+            nv: lin.v_heads,
+            conv: lin.conv,
+            gate_sigmoid: lin.gate_act == crate::runtime::kinds::Act::Sigmoid,
+            heads: attn.heads,
+            kv_heads: attn.kv_heads,
+            head_dim: attn.head_dim,
+            rotary: rope.dim,
+            theta: rope.theta,
+            ix_heads: ix.heads,
+            ix_dim: ix.head_dim,
+            ix_budget: ix.top_k,
+            ix_block: ix.block,
+            hc: gr.streams,
+            hc_rank: gr.lowrank,
+            experts: moe.experts,
+            top_k: moe.router.top_k,
+            inter: width("experts_down", 2)?,
+            shared_inter: if moe.shared.is_some() { width("shared_down", 1)? } else { 0 },
+            norm_topk: moe.router.renorm,
+            ple,
+            mtp_layers: d.mtp_layers,
+            prefix: own.prefix,
+        })
+    }
+
+    /// `own` where its config's description, lowered (`lowered`), reads the same model: else the first difference named.
+    pub fn agrees(own: ConfigQx, d: &crate::runtime::describe::Described) -> Result<ConfigQx> {
+        let (a, b) = (format!("{own:?}"), format!("{:?}", ConfigQx::lowered(d, &own)?));
+        if a == b {
+            return Ok(own);
+        }
+        let at = a.bytes().zip(b.bytes()).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
+        let near = |s: &str| s.get(at.saturating_sub(40)..(at + 40).min(s.len())).unwrap_or("").to_string();
+        err(format!(
+            "Qwen3.8-Flash-Next: its description and this engine's reading of its config differ (at {:?}, where the engine has {:?})",
+            near(&b),
+            near(&a)
+        ))
     }
 
     pub fn layers_of(&self, kind: QxKind) -> usize {
@@ -344,8 +440,73 @@ impl ConfigQx {
     }
 }
 
+/// Which of Ibis's packs of experts a directory serves as (`qwenget` makes them: DIR/pack or DIR/fast, DIR/precise, DIR/best): precise where asked (`--precise`), best
+/// where the directory's name starts with "best", else fast. Each takes its own sidecars and its own skipping of the misses' tail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackMode {
+    Precise,
+    Best,
+    Fast,
+}
+
+impl PackMode {
+    pub fn of(pack: &Path, precise: bool) -> PackMode {
+        if precise {
+            PackMode::Precise
+        } else if pack.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("best")) {
+            PackMode::Best
+        } else {
+            PackMode::Fast
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PackMode::Precise => "precise",
+            PackMode::Best => "best",
+            PackMode::Fast => "fast",
+        }
+    }
+
+    /// The sidecar whose copies of some experts the GPU's places hold in place of the pack's, where the pack has one: precise its `hot` (its cb3 and cb4 experts as
+    /// they are, the hottest at three bits); else its `fast` (every cb3 and cb4 expert at two bits: smaller places, more of them; MMLU-Pro 124/150 as with the
+    /// pack's own), else its `hot`.
+    pub fn side(self, pack: &Path) -> Option<std::path::PathBuf> {
+        let names: &[&str] = if self == PackMode::Precise { &["hot"] } else { &["fast", "hot"] };
+        names.iter().map(|x| pack.join(x)).find(|d| d.join("meta.json").exists())
+    }
+
+    /// The offload's `skip_rank`: precise 1, the most skipping that keeps its pack's numbers against the bf16 model (Strata's set: top-64 KL 0.137, top-1 88.1%,
+    /// against 0.152 and 87.0% at 3); best 0, none skipped (its pack's 0.099 and 89.6%; 0.105 at 1, 0.117 at 3); fast 3.
+    pub fn skip_rank(self) -> usize {
+        match self {
+            PackMode::Precise => 1,
+            PackMode::Best => 0,
+            PackMode::Fast => 3,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// A pack's mode by the flag and the directory's name, and each mode's sidecar where the pack has it.
+    #[test]
+    fn a_packs_mode_takes_its_sidecar_and_skipping() {
+        let root = std::env::temp_dir().join(format!("glyd-packmode-{}", std::process::id()));
+        let (best, fast) = (root.join("best-v2"), root.join("fast"));
+        for d in [best.join("hot"), fast.join("fast"), fast.join("hot")] {
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("meta.json"), "{}").unwrap();
+        }
+        assert_eq!([PackMode::of(&best, false), PackMode::of(&fast, false), PackMode::of(&best, true)], [PackMode::Best, PackMode::Fast, PackMode::Precise]);
+        assert_eq!(PackMode::Fast.side(&fast), Some(fast.join("fast")));
+        assert_eq!(PackMode::Precise.side(&fast), Some(fast.join("hot")));
+        assert_eq!(PackMode::Best.side(&best), Some(best.join("hot")));
+        assert_eq!(PackMode::Fast.side(&root), None);
+        assert_eq!([PackMode::Precise, PackMode::Best, PackMode::Fast].map(PackMode::skip_rank), [1, 0, 3]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
 
     pub(crate) fn real() -> ConfigQx {
@@ -371,5 +532,46 @@ mod tests {
         assert_eq!(shapes(3), [(13312, 2560), (2560, 6144), (640, 2560), (1280, 2560), (2560, 640)]);
         assert_eq!(c.layer_name(48), "mtp.layers.0");
         assert_eq!(c.ple_pack().map(|p| (p.rows(), p.cols)), Some((12800, 2560)));
+    }
+
+    /// The released config's description, lowered, is every number this engine reads of the config (R3d): the layers' kinds, the heads, the
+    /// indexer, the streams, the experts and their widths, the n-gram embedding's layer and sizes, the MTP layer; the tiny model's of the
+    /// `qwen4x` logits case too. A description of another model is told apart, the difference named.
+    #[test]
+    fn the_description_lowers_to_this_engines_reading() {
+        let text = include_str!("../tests/fixtures/qwen4x_config.json");
+        let d = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap();
+        let c = ConfigQx::agrees(real(), &d).unwrap();
+        assert_eq!(c.ple.as_ref().map(|p| p.layer), Some(1));
+        let m: serde_json::Value = serde_json::from_str(include_str!("../tests/fixtures/qwen4x_tiny_manifest.json")).unwrap();
+        let tiny = m["config"].as_str().unwrap();
+        let own = ConfigQx::parse(tiny, "tiny", None).unwrap();
+        assert!(ConfigQx::agrees(own.clone(), &crate::runtime::describe::describe(&serde_json::from_str(tiny).unwrap()).unwrap()).is_ok());
+        let e = ConfigQx::agrees(own, &d).unwrap_err().to_string();
+        assert!(e.contains("differ") && e.contains("hidden"), "{e}");
+    }
+
+    /// The n-gram embedding's sizes are refused in words where they make no embedding: a size of 0 or 1, no heads, sizes whose product does not fit a word (the fuzzer's
+    /// find: an n-gram size of 0 was a subtraction below zero in the refusal itself).
+    #[test]
+    fn n_gram_sizes_that_make_no_embedding_are_refused() {
+        let text = include_str!("../tests/fixtures/qwen4x_config.json");
+        // (the fixture's own: "ngram_size": 3 and "heads_per_ngram": 8)
+        let with = |key: &str, value: &str| {
+            let had = format!("\"{key}\": {}", if key == "ngram_size" { 3 } else { 8 });
+            assert!(text.contains(&had), "{had}");
+            ConfigQx::parse(&text.replace(&had, &format!("\"{key}\": {value}")), "qx", None)
+        };
+        for (key, value) in [
+            ("ngram_size", "0"),
+            ("ngram_size", "1"),
+            ("heads_per_ngram", "0"),
+            ("heads_per_ngram", "18446744073709551615"),
+            ("ngram_size", "18446744073709551615"),
+        ] {
+            let e = with(key, value).err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(e.contains("n-gram embedding"), "{key} {value}: {e}");
+        }
+        assert!(with("ngram_size", "3").is_ok());
     }
 }

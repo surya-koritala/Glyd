@@ -1,6 +1,6 @@
 # Cost profiles and the tier predictor on an RTX 4080 SUPER, 2026-10-20
 
-GLY-236 on the owner's PC (Ryzen 9 7950X3D, 60 GiB, RTX 4080 SUPER 16 GB, driver 595.91.07): `glyd-engine costs` of Qwen3.5-9B at swift,
+GLY-236 on the owner's PC (Ryzen 9 7950X3D, 60 GiB, RTX 4080 SUPER 16 GB, driver 595.91.07): `glyd-engine costs` of Qwen3.5-9B at linnet,
 kestrel and penguin from their packed directories, `glyd-engine rates` on this machine, and the predictor (a token's time is the sum over the
 memory tiers of the bytes it reads there over the tier's rate) against the engine's own bench and against the dynamic engine served. Nemotron 3
 Super at hummingbird: the profile from the Hub's safetensors headers (nothing downloaded) and the predictor against the measured decode of the
@@ -10,14 +10,14 @@ lock; every file below is its output as it came. docs/cost-profile.md has the fi
 ## Predicted against measured
 
 This machine (`tiers.json`, 512 MiB buffers, 10 passes each): the GPU's memory 697.1 GB/s streamed by a kernel, 312.1 copied within it, **628.1 GB/s
-as the engine's own products read the swift directory's first layers' packs** (90% of the stream); the link 26.9 GB/s from pinned memory (27.1 back,
+as the engine's own products read the linnet directory's first layers' packs** (90% of the stream); the link 26.9 GB/s from pinned memory (27.1 back,
 21.6 from pageable); the computer's memory 74.5 GB/s on 32 threads (51.9 on one); the disk under the Hub cache 6.78 GB/s in 2 MiB direct reads 16 at a
 time (3.99 one at a time). The prediction takes the GPU's memory at the product rate, the keys and values of 1,152 positions (the prompt and half the
 output) and the states read and written. One user, `--ctx 4096`, a 1,024-token prompt, 256 tokens; another process held 2,226 MiB of the GPU throughout.
 
 | model, level | bytes a token from the GPU's memory | predicted | `glyd-engine bench` (the hand-written Qwen3.5 engine) | served (the dynamic engine, timed by the client) | predicted vs bench | the same prediction at the 697.1 GB/s stream |
 | :--- | --: | --: | --: | --: | --: | --: |
-| Qwen3.5-9B swift | 5,637,877,620 | **111.41 tok/s** (8.976 ms) | **106.89 tok/s** (9.356 ms mean, p99 9.365; prefill 216.9 ms) | 107.16 tok/s (2.389 s for 256) | **+4.2%** | 123.7 (+15.7%) |
+| Qwen3.5-9B linnet | 5,637,877,620 | **111.41 tok/s** (8.976 ms) | **106.89 tok/s** (9.356 ms mean, p99 9.365; prefill 216.9 ms) | 107.16 tok/s (2.389 s for 256) | **+4.2%** | 123.7 (+15.7%) |
 | Qwen3.5-9B kestrel | 6,629,044,596 | **94.76 tok/s** (10.553 ms) | **92.64 tok/s** (10.794 ms, p99 10.803; prefill 218.4 ms) | 92.89 tok/s (2.756 s) | **+2.3%** | 105.2 (+13.5%) |
 | Qwen3.5-9B penguin (glyd-v4) | 10,825,132,869 | 58.03 tok/s (17.234 ms) | not run: the engine's Qwen3.5 path does not read a glyd-v4 directory (costs-penguin-loaded.err, bench-penguin.err: `no model.language_model.layers.0...weight`; serve went to the lossless route, which refuses the family) | not run | — | 64.6 |
 
@@ -25,8 +25,8 @@ The profile against what the engine allocated (`costs --load`, and the served `/
 
 | | profile (the files) | allocated (the engine's counters) |
 | :--- | --: | --: |
-| swift: weights | 6,200,345,704 | 6,200,345,608 (96 bytes less: one 4-byte block base per linear-attention layer, where two saved packs are joined at load) |
-| swift: KV at 4,096, a token; state; working memory; engine | 134,217,728; 32,768; 51,511,296; (unavailable before a load); 6,386,074,728 + working | 134,217,728; 32,768; 51,511,296; 601,399,076; 6,987,473,708 (the same bytes as the 2026-10-19 serve record; nvidia-smi 7,002 MiB) |
+| linnet: weights | 6,200,345,704 | 6,200,345,608 (96 bytes less: one 4-byte block base per linear-attention layer, where two saved packs are joined at load) |
+| linnet: KV at 4,096, a token; state; working memory; engine | 134,217,728; 32,768; 51,511,296; (unavailable before a load); 6,386,074,728 + working | 134,217,728; 32,768; 51,511,296; 601,399,076; 6,987,473,708 (the same bytes as the 2026-10-19 serve record; nvidia-smi 7,002 MiB) |
 | kestrel: weights; engine | 7,318,652,008; 7,504,381,032 + working | 7,318,651,912; 8,105,780,012 (working 601,399,076) |
 
 Nemotron 3 Super at hummingbird (`costs-nemotron-hummingbird.json`, the Hub's headers, 7 s): 48,681,614,344 bytes of tensors (the pack's directory is
@@ -79,7 +79,7 @@ How to read it:
 | :--- | :--- |
 | record.sh | the run |
 | build.txt | the engine's and the GPU library's SHA-256, the commit, rustc, nvcc, the kernel, the CPU, the driver, the memory |
-| tiers.json, tiers.err | this machine's tiers: the GPU's memory (read, copy, the engine's products over the swift directory's first layers), the link (pinned, pageable, both ways), the computer's memory (32 threads, one), the disk under the Hub cache (16 reads at once, one) |
+| tiers.json, tiers.err | this machine's tiers: the GPU's memory (read, copy, the engine's products over the linnet directory's first layers), the link (pinned, pageable, both ways), the computer's memory (32 threads, one), the disk under the Hub cache (16 reads at once, one) |
 | costs-LEVEL.json | the profile of Qwen3.5-9B at the level with the predictor's rows from tiers.json (`--predict --rates tiers.json --ctx 4096 --prompt 1024 --new 256`) |
 | costs-LEVEL-loaded.json | the same model loaded on the GPU by the dynamic engine (`--load`): `allocated` is the engine's own counters |
 | bench-LEVEL.txt, bench-LEVEL.err | `glyd-engine bench DIR --prompt 1024 --new 256 --ctx 4096 --reps 5`: the hand-written Qwen3.5 engine, each decode step timed on the host |
@@ -102,7 +102,7 @@ How to read it:
   event (HTTP and the sampler included), so the 0.3% between them is within that.
 - The penguin profile is of a glyd-v4 directory the engine does not run; basis `file` all the same (its embedding is held in bf16 there).
 - The Hummingbird mean expert is the plain mean of a layer's 512; the 3-bit experts are the most-used, so a token's real mean is a little above it.
-- Prefill is not predicted (the bench's prefill: 216.9 ms for 1,024 tokens at swift, 218.4 at kestrel).
+- Prefill is not predicted (the bench's prefill: 216.9 ms for 1,024 tokens at linnet, 218.4 at kestrel).
 - The test suite (`cargo test --release -p glyd-engine --lib`, 399 tests) passed on this machine after the record (tests.log, not kept: 4.2 s).
 
 ## The second machine
@@ -111,7 +111,7 @@ Pending: a rented consumer card (the owner's go). The same script, on the pod, w
 
 ```
 git clone <the private repo> && cd <it> && GLYD_SOURCE_COMMIT=$(git rev-parse HEAD) cargo build --release -p glyd-engine     # or the release wheel's binary
-glyd-engine fetch glyd/Qwen3.5-9B-swift                                                        # and kestrel, penguin: the snapshots into HF_HUB_CACHE
+glyd-engine fetch glyd/Qwen3.5-9B-linnet                                                        # and kestrel, penguin: the snapshots into HF_HUB_CACHE
 OUT=/root/rec ENGINE=/root/glyd/target/release/glyd-engine HUB=/root/.cache/huggingface/hub GLYD_GPU_LIB=/root/glyd/target/release/libglyd_gpu_cuda13.so \
   COMMIT=$(git rev-parse HEAD) benchmarks/gpu/rtx4080s-cost-profile-2026-10-20/record.sh      # no lock on a pod of one's own
 ```

@@ -52,7 +52,7 @@ execution path, while unqualified means the required evidence is missing.
 
 | Surface | Current classification | Evidence | What is still required |
 | --- | --- | --- | --- |
-| Linux x64/ARM64, macOS and Windows Rust software | Experimental control plane | [Configured CI coverage](../.github/workflows/ci.yml), both feature modes; inspect the exact source/main run for its actual result. | CI is not native model/device qualification; ARM64 does not certify a Raspberry Pi. |
+| Linux x64/ARM64, macOS and Windows Rust software | Experimental control plane | [Configured CI coverage](../../.github/workflows/starlings-ci.yml), both feature modes; inspect the exact source/main run for its actual result. | CI is not native model/device qualification; ARM64 does not certify a Raspberry Pi. |
 | Mac–Ubuntu enrollment/control | Experimental control plane | [M1 physical evidence](evidence/M1-hardware.md), with exact historical source and rerun scope. | It does not establish current inference, GPU, mixed-family or two-node same-family support. |
 | One Mac CPU JSON/SSE daemon route | Experimental, task-only | [Bounded native acceptance](evidence/native/2026-10-12-m1max-cpu-daemon-acceptance/README.md), exact historical source and fixed inputs. | No general arbitrary-prompt memory bound, installed Glyd qualification or current benchmark win. Its one-shot approval is consumed. |
 | CPU service recovery | Experimental, task-only | [Recovery contract](service-recovery.md) and [historical bounded evidence](evidence/native/2026-10-12-m1max-cpu-recovery-acceptance/README.md). | Only the exact preapproved cleanup contract/launch can recover; other quarantines remain protected. |

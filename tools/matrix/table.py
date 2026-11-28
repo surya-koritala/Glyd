@@ -66,7 +66,7 @@ def selftest():
     with tempfile.TemporaryDirectory() as t:
         d = Path(t) / "4090"; d.mkdir()
         (d / "gpu.txt").write_text("NVIDIA GeForce RTX 4090, 580.1, 24564 MiB\n")
-        (d / "cells.tsv").write_text("Q/m\tswift\t4096\t0\t50\t1\nQ/m\tswift\t32768\t3\t4\t2\nQ/m\tpenguin\t4096\t0\t9\t3\n")
+        (d / "cells.tsv").write_text("Q/m\tlinnet\t4096\t0\t50\t1\nQ/m\tlinnet\t32768\t3\t4\t2\nQ/m\tpenguin\t4096\t0\t9\t3\n")
         (d / "c1.err").write_text("Ready in 31 s: m on the GPU\n(120 tokens, 41.2 tokens/s)\n"); (d / "c1.out").write_text("\nParis is the capital.\nMore.\n")
         (d / "c2.err").write_text("Loading\nm does not fit this GPU: it needs about 30 GiB.\n")
         (d / "c3.out").write_text("hi\n")

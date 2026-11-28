@@ -11,8 +11,8 @@
 // bf16(silu(min(g, limit)) * clamp(u, -limit, limit)) with silu(x) = x / (1 + exp(-x)), written to act [hoff + row][2048]. A is the tokens' rows of x' (a pair's token from `tok`), by cp.async; B is the 128 rows' codes, a row a
 // thread, 16 bytes (64 codes) a step through registers, one prmt a pair of weights, stored in the layout ldmatrix reads (the rows' chunks XORed by the row's low bits).
 // c2_down (BM = 64 pairs, 128 outputs, K = 2,048 neurons): act [row][neuron] times the downT rows (a neuron's row of 4,096 outputs: 32 bytes of codes cover a tile's 128), B in shared memory as [neuron][output] and read
-// by ldmatrix.trans; each product is multiplied by its pair's weight and added to yrot [token][4096] (fp32) with an atomic add: a token's pairs come from several experts, so the order of the sums is not fixed (the
-// sums differ from run to run at the rounding of fp32).
+// by ldmatrix.trans; each pair's row of products is stored as it is (fp32, not weighted) at the pair's place in the router's order, prow [pair][4096] (`pid`: each pair of the plan's number there, token * k + choice):
+// every (pair, output) is one thread's, written once, no atomic add; the caller sums a token's rows in the router's order (a fixed order: the same bits from run to run, whatever runs at once).
 // The grids are (tiles of the launch, 32); a tile belongs to a segment (an expert's rows, or a part of them) of C2Segs. Three and four bits: a weight is looked up in its row's table in shared memory (the row's entries
 // and a thread's row: the rows of the first product are the threads', the second product's are a K-step's 64).
 
@@ -21,7 +21,7 @@
 
 struct C2Segs {
     int n;
-    int begin[16];  // the segment's first pair in the plan (tok, wt)
+    int begin[16];  // the segment's first pair in the plan (tok, pid)
     int rows[16];   // its pairs
     int hoff[16];   // its first row in act
     int tiles[17];  // prefix of tiles (BM rows each)
@@ -260,7 +260,6 @@ __device__ __forceinline__ void c2_up_t(const unsigned short* __restrict__ xrb, 
     const int m0 = (tile - sg.tiles[seg]) * BM;
     const int rows = sg.rows[seg] - m0;
     const int j0 = blockIdx.y * 64;  // the tile's first neuron
-    const int mi = lane >> 3, r8 = lane & 7;
     const int lr = F::row(tid), lc = F::chunk(tid);
     const uint32_t soff = (uint32_t)F::soff(tid) * 2;
     uint32_t goffA[PA];
@@ -403,8 +402,8 @@ __device__ __forceinline__ void c2_up_t(const unsigned short* __restrict__ xrb, 
 
 // BN: the outputs a block takes, 128 (4 warps) or 256 (8 warps: a step's prologue and the pairs' rows of act read once for twice the outputs; Qwen3.8-Flash-Next's, whose K of 640 is ten steps)
 template <int STAGES, int B, int HID = C2_HID, int INT = C2_INT, int BN = 128>
-__device__ __forceinline__ void c2_down_t(const bf16* __restrict__ act, const int* __restrict__ tok, const float* __restrict__ wt, const unsigned char* __restrict__ rcodes, const unsigned char* __restrict__ rbooks,
-                                          float* __restrict__ yrot, const C2Segs& sg, unsigned short* s_tab) {
+__device__ __forceinline__ void c2_down_t(const bf16* __restrict__ act, const int* __restrict__ pid, const unsigned char* __restrict__ rcodes, const unsigned char* __restrict__ rbooks, float* __restrict__ prow,
+                                          const C2Segs& sg, unsigned short* s_tab) {
     constexpr int BM = 64, BK = 64, WARPS_M = 2, WARPS_N = BN / 64, NTH = WARPS_M * WARPS_N * 32;
     constexpr int Q = NTH / 64;  // threads a row of B (each 64 of its outputs)
     constexpr int WM = BM / WARPS_M, WN = BN / WARPS_N;  // 32 pairs, 64 outputs
@@ -587,27 +586,14 @@ __device__ __forceinline__ void c2_down_t(const bf16* __restrict__ act, const in
 #pragma unroll
     for (int mt = 0; mt < MT; mt++) {
         const int r0 = wm * WM + mt * 16 + g, r1 = r0 + 8;
-        int t0 = 0, t1 = 0;
-        float w0 = 0.f, w1 = 0.f;
-        if (r0 < rows) {
-            t0 = tok[sg.begin[seg] + m0 + r0];
-            w0 = wt[sg.begin[seg] + m0 + r0];
-        }
-        if (r1 < rows) {
-            t1 = tok[sg.begin[seg] + m0 + r1];
-            w1 = wt[sg.begin[seg] + m0 + r1];
-        }
+        // (each pair's outputs at its place in the router's order: this thread's two of them, stored once)
+        float* y0 = r0 < rows ? prow + (size_t)pid[sg.begin[seg] + m0 + r0] * HID : nullptr;
+        float* y1 = r1 < rows ? prow + (size_t)pid[sg.begin[seg] + m0 + r1] * HID : nullptr;
 #pragma unroll
         for (int nt = 0; nt < NTL; nt++) {
             const int col = n0 + wn * WN + nt * 8 + 2 * t4;
-            if (r0 < rows) {
-                atomicAdd(yrot + (size_t)t0 * HID + col, w0 * acc[mt][nt][0]);
-                atomicAdd(yrot + (size_t)t0 * HID + col + 1, w0 * acc[mt][nt][1]);
-            }
-            if (r1 < rows) {
-                atomicAdd(yrot + (size_t)t1 * HID + col, w1 * acc[mt][nt][2]);
-                atomicAdd(yrot + (size_t)t1 * HID + col + 1, w1 * acc[mt][nt][3]);
-            }
+            if (y0) *reinterpret_cast<float2*>(y0 + col) = make_float2(acc[mt][nt][0], acc[mt][nt][1]);
+            if (y1) *reinterpret_cast<float2*>(y1 + col) = make_float2(acc[mt][nt][2], acc[mt][nt][3]);
         }
     }
 }
@@ -655,9 +641,9 @@ extern "C" __global__ void __launch_bounds__(256) c2_tern_cb2(const unsigned cha
         c2_up_t<S, B>(xrb, tok, rcodes, rbooks, act, sg, limit, s_tab);                                                                                                                                      \
     }
 #define C2_DOWN(B, S, BLK)                                                                                                                                                                                   \
-    extern "C" __global__ void __launch_bounds__(128, BLK) c2_down##B##_##S(const bf16* act, const int* tok, const float* wt, const unsigned char* rcodes, const unsigned char* rbooks, float* yrot, C2Segs sg) { \
+    extern "C" __global__ void __launch_bounds__(128, BLK) c2_down##B##_##S(const bf16* act, const int* pid, const unsigned char* rcodes, const unsigned char* rbooks, float* prow, C2Segs sg) { \
         __shared__ unsigned short s_tab[C2_DOWN_TAB(B, S)];                                                                                                                                                  \
-        c2_down_t<S, B>(act, tok, wt, rcodes, rbooks, yrot, sg, s_tab);                                                                                                                                      \
+        c2_down_t<S, B>(act, pid, rcodes, rbooks, prow, sg, s_tab);                                                                                                                                      \
     }
 C2_UP(2, 2, 2)
 C2_UP(2, 3, 1)
@@ -679,9 +665,9 @@ C2_DOWN(4, 3, 1)
         c2_up_t<S, B, 2560, 640>(xrb, tok, rcodes, rbooks, act, sg, limit, s_tab);                                                                                                                           \
     }
 #define C2Q_DOWN(B, S, BLK)                                                                                                                                                                                  \
-    extern "C" __global__ void __launch_bounds__(128, BLK) c2q_down##B##_##S(const bf16* act, const int* tok, const float* wt, const unsigned char* rcodes, const unsigned char* rbooks, float* yrot, C2Segs sg) { \
+    extern "C" __global__ void __launch_bounds__(128, BLK) c2q_down##B##_##S(const bf16* act, const int* pid, const unsigned char* rcodes, const unsigned char* rbooks, float* prow, C2Segs sg) { \
         __shared__ unsigned short s_tab[C2_DOWN_TAB(B, S)];                                                                                                                                                  \
-        c2_down_t<S, B, 2560, 640>(act, tok, wt, rcodes, rbooks, yrot, sg, s_tab);                                                                                                                           \
+        c2_down_t<S, B, 2560, 640>(act, pid, rcodes, rbooks, prow, sg, s_tab);                                                                                                                           \
     }
 C2Q_UP(2, 2, 2)
 C2Q_UP(2, 3, 1)
@@ -715,19 +701,19 @@ C2Q_DOWN(4, 3, 1)
         }                                                                                                                                                                                                    \
     }
 #define C2QX_DOWN(S, BLK)                                                                                                                                                                                    \
-    extern "C" __global__ void __launch_bounds__(256, BLK) c2qx_down_##S(const bf16* act, const int* tok, const float* wt, const unsigned char* rcodes, const unsigned char* rbooks, float* yrot, C2Segs sg) {   \
+    extern "C" __global__ void __launch_bounds__(256, BLK) c2qx_down_##S(const bf16* act, const int* pid, const unsigned char* rcodes, const unsigned char* rbooks, float* prow, C2Segs sg) {   \
         __shared__ unsigned short s_tab[C2_DOWN_TAB(4, S)];                                                                                                                                                  \
         const int tile = blockIdx.x;                                                                                                                                                                         \
         if (tile >= sg.tiles[sg.n]) return;                                                                                                                                                                  \
         int seg = 0;                                                                                                                                                                                         \
         while (seg + 1 < sg.n && tile >= sg.tiles[seg + 1]) seg++;                                                                                                                                           \
         switch (sg.dbits[seg]) {                                                                                                                                                                             \
-            case 2: c2_down_t<S, 2, 2560, 640, 256>(act, tok, wt, rcodes, rbooks, yrot, sg, s_tab); break;                                                                                                   \
-            case 3: c2_down_t<S, 3, 2560, 640, 256>(act, tok, wt, rcodes, rbooks, yrot, sg, s_tab); break;                                                                                                   \
-            case 5: c2_down_t<S, 5, 2560, 640, 256>(act, tok, wt, rcodes, rbooks, yrot, sg, s_tab); break;                                                                                                   \
-            case 6: c2_down_t<S, 6, 2560, 640, 256>(act, tok, wt, rcodes, rbooks, yrot, sg, s_tab); break;                                                                                                   \
-            case 7: c2_down_t<S, 7, 2560, 640, 256>(act, tok, wt, rcodes, rbooks, yrot, sg, s_tab); break;                                                                                                   \
-            default: c2_down_t<S, 4, 2560, 640, 256>(act, tok, wt, rcodes, rbooks, yrot, sg, s_tab); break;                                                                                                  \
+            case 2: c2_down_t<S, 2, 2560, 640, 256>(act, pid, rcodes, rbooks, prow, sg, s_tab); break;                                                                                                   \
+            case 3: c2_down_t<S, 3, 2560, 640, 256>(act, pid, rcodes, rbooks, prow, sg, s_tab); break;                                                                                                   \
+            case 5: c2_down_t<S, 5, 2560, 640, 256>(act, pid, rcodes, rbooks, prow, sg, s_tab); break;                                                                                                   \
+            case 6: c2_down_t<S, 6, 2560, 640, 256>(act, pid, rcodes, rbooks, prow, sg, s_tab); break;                                                                                                   \
+            case 7: c2_down_t<S, 7, 2560, 640, 256>(act, pid, rcodes, rbooks, prow, sg, s_tab); break;                                                                                                   \
+            default: c2_down_t<S, 4, 2560, 640, 256>(act, pid, rcodes, rbooks, prow, sg, s_tab); break;                                                                                                  \
         }                                                                                                                                                                                                    \
     }
 C2QX_UP(2, 2)
@@ -751,19 +737,19 @@ extern "C" __global__ void __launch_bounds__(256, 1) c2qx_up128_2(const unsigned
 C2QX_DOWN(2, 1)
 C2QX_DOWN(3, 1)
 // the same with 128 outputs a block (4 warps; at two stages 49,152 bytes of dynamic shared memory and its 4,608 of tables, where a block takes 64 KiB at most: src/dev.rs smem64)
-extern "C" __global__ void __launch_bounds__(128, 2) c2qx_down4w_2(const bf16* act, const int* tok, const float* wt, const unsigned char* rcodes, const unsigned char* rbooks, float* yrot, C2Segs sg) {
+extern "C" __global__ void __launch_bounds__(128, 2) c2qx_down4w_2(const bf16* act, const int* pid, const unsigned char* rcodes, const unsigned char* rbooks, float* prow, C2Segs sg) {
     __shared__ unsigned short s_tab[C2_DOWN_TAB(4, 2)];
     const int tile = blockIdx.x;
     if (tile >= sg.tiles[sg.n]) return;
     int seg = 0;
     while (seg + 1 < sg.n && tile >= sg.tiles[seg + 1]) seg++;
     switch (sg.dbits[seg]) {
-        case 2: c2_down_t<2, 2, 2560, 640, 128>(act, tok, wt, rcodes, rbooks, yrot, sg, s_tab); break;
-        case 3: c2_down_t<2, 3, 2560, 640, 128>(act, tok, wt, rcodes, rbooks, yrot, sg, s_tab); break;
-        case 5: c2_down_t<2, 5, 2560, 640, 128>(act, tok, wt, rcodes, rbooks, yrot, sg, s_tab); break;
-        case 6: c2_down_t<2, 6, 2560, 640, 128>(act, tok, wt, rcodes, rbooks, yrot, sg, s_tab); break;
-        case 7: c2_down_t<2, 7, 2560, 640, 128>(act, tok, wt, rcodes, rbooks, yrot, sg, s_tab); break;
-        default: c2_down_t<2, 4, 2560, 640, 128>(act, tok, wt, rcodes, rbooks, yrot, sg, s_tab); break;
+        case 2: c2_down_t<2, 2, 2560, 640, 128>(act, pid, rcodes, rbooks, prow, sg, s_tab); break;
+        case 3: c2_down_t<2, 3, 2560, 640, 128>(act, pid, rcodes, rbooks, prow, sg, s_tab); break;
+        case 5: c2_down_t<2, 5, 2560, 640, 128>(act, pid, rcodes, rbooks, prow, sg, s_tab); break;
+        case 6: c2_down_t<2, 6, 2560, 640, 128>(act, pid, rcodes, rbooks, prow, sg, s_tab); break;
+        case 7: c2_down_t<2, 7, 2560, 640, 128>(act, pid, rcodes, rbooks, prow, sg, s_tab); break;
+        default: c2_down_t<2, 4, 2560, 640, 128>(act, pid, rcodes, rbooks, prow, sg, s_tab); break;
     }
 }
 
@@ -797,8 +783,3 @@ extern "C" __global__ void __launch_bounds__(256) c2_tern_rows(const unsigned ch
     for (int o = 0; o < 5; o++) q[o] = (unsigned char)(d[4 * o] | d[4 * o + 1] << 2 | d[4 * o + 2] << 4 | d[4 * o + 3] << 6);
 }
 
-// y [count] += x [count] (fp32): the host's share of a call's sums added to the GPU's.
-extern "C" __global__ void c2_add_f32(float* __restrict__ y, const float* __restrict__ x, long long count) {
-    const long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < count) y[i] += x[i];
-}

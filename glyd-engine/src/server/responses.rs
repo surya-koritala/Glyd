@@ -6,7 +6,7 @@
 use super::*;
 use tools::obj;
 
-fn fail(s: &mut TcpStream, cors: &str, code: u16, msg: &str) {
+fn fail(s: &mut dyn Conn, cors: &str, code: u16, msg: &str) {
     respond_with(s, code, "application/json", cors, error_body(msg, code).as_bytes());
 }
 
@@ -193,6 +193,7 @@ pub(super) fn chat_of(v: &Value) -> std::result::Result<Value, String> {
         ("seed", "seed"),
         ("parallel_tool_calls", "parallel_tool_calls"),
         ("stream", "stream"),
+        ("cache_salt", "cache_salt"),
     ] {
         if let Some(x) = set(from) {
             o.push((to, x.clone()));
@@ -281,7 +282,7 @@ impl Ctx {
     }
 
     /// The response object: its `status` (`in_progress`, `completed`, `incomplete`), its output items (JSON each), and its usage once it is known.
-    fn response(&self, status: &str, reason: Option<&str>, output: &[String], usage: Option<(usize, usize)>, error: Option<&str>) -> String {
+    fn response(&self, status: &str, reason: Option<&str>, output: &[String], usage: Option<(usize, usize, usize)>, error: Option<&str>) -> String {
         let mut f = vec![
             format!("\"id\":{}", jstr(&self.id)),
             "\"object\":\"response\"".to_string(),
@@ -302,8 +303,9 @@ impl Ctx {
         }
         f.push(format!(
             "\"usage\":{}",
-            usage.map_or("null".to_string(), |(i, o)| format!(
-                "{{\"input_tokens\":{i},\"input_tokens_details\":{{\"cached_tokens\":0}},\"output_tokens\":{o},\"output_tokens_details\":{{\"reasoning_tokens\":0}},\"total_tokens\":{}}}",
+            // (input, output, and the input tokens found in the cache, which are among the input's)
+            usage.map_or("null".to_string(), |(i, o, cached)| format!(
+                "{{\"input_tokens\":{i},\"input_tokens_details\":{{\"cached_tokens\":{cached}}},\"output_tokens\":{o},\"output_tokens_details\":{{\"reasoning_tokens\":0}},\"total_tokens\":{}}}",
                 i + o
             ))
         ));
@@ -352,7 +354,7 @@ enum Cur {
 
 /// The events of a streamed response, each with its number in the order they go: one output item is open at a time, its events sent as the deltas come.
 struct Events<'a> {
-    s: &'a mut TcpStream,
+    s: &'a mut dyn Conn,
     seq: u64,
     /// The items that are done, as JSON (the response's output where it ends).
     done: Vec<String>,
@@ -442,6 +444,24 @@ impl Events<'_> {
         self.send(kind, vec![("output_index", index), ("item", v)])
     }
 
+    /// A message item opened with its (empty) text part: `output_item.added` and `content_part.added`, as the text's own events then refer to them (a client that keeps the response as the events build it needs the part to be there).
+    fn open_text(&mut self) -> bool {
+        let id = item_id("msg");
+        let mut ok = self.raw_item("response.output_item.added", &message_item(&id, "in_progress", None));
+        let index = self.index();
+        ok &= self.send(
+            "response.content_part.added",
+            vec![
+                ("item_id", Value::from(id.as_str())),
+                ("output_index", index),
+                ("content_index", Value::from(0u64)),
+                ("part", json::parse("{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[],\"logprobs\":[]}").unwrap_or(Value::Null)),
+            ],
+        );
+        self.cur = Some(Cur::Text { id, text: String::new() });
+        ok
+    }
+
     /// What a delta adds: thinking, answer text, and calls, each in an item of its own kind (a change of kind ends the open item and begins another).
     fn delta(&mut self, d: &Delta) -> bool {
         let mut ok = true;
@@ -469,19 +489,7 @@ impl Events<'_> {
         if !d.content.is_empty() {
             if !matches!(self.cur, Some(Cur::Text { .. })) {
                 ok &= self.close();
-                let id = item_id("msg");
-                ok &= self.raw_item("response.output_item.added", &message_item(&id, "in_progress", None));
-                let index = self.index();
-                ok &= self.send(
-                    "response.content_part.added",
-                    vec![
-                        ("item_id", Value::from(id.as_str())),
-                        ("output_index", index),
-                        ("content_index", Value::from(0u64)),
-                        ("part", json::parse("{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[],\"logprobs\":[]}").unwrap_or(Value::Null)),
-                    ],
-                );
-                self.cur = Some(Cur::Text { id, text: String::new() });
+                ok &= self.open_text();
             }
             if let Some(Cur::Text { id, text }) = &mut self.cur {
                 text.push_str(&d.content);
@@ -524,7 +532,7 @@ impl Events<'_> {
 }
 
 /// One Responses request on `s`.
-pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, id: u64) {
+pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req, id: u64) {
     let cors = req.cors.as_str();
     let Some(v) = std::str::from_utf8(&req.body).ok().and_then(|t| json::parse(t).ok()).filter(|v| matches!(v, Value::Object(_))) else {
         return fail(s, cors, 400, "the body is not a JSON object");
@@ -537,6 +545,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
         Ok(st) => st,
         Err((code, m)) => return fail(s, cors, code, &m),
     };
+    let found = h.cached.clone();
     let abort = h.abort.clone();
     let ctx = Ctx::new(&v, &sh.name, id);
     let (out_tx, out_rx) = std::sync::mpsc::channel::<Out>();
@@ -558,19 +567,16 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
                         let mut fine = ev.delta(&last) && ev.close();
                         if ev.done.is_empty() {
                             // (a reply with no words: the message is there, empty, as OpenAI's is)
-                            let id = item_id("msg");
-                            fine = fine && ev.raw_item("response.output_item.added", &message_item(&id, "in_progress", None));
-                            ev.cur = Some(Cur::Text { id, text: String::new() });
-                            fine = fine && ev.close();
+                            fine = fine && ev.open_text() && ev.close();
                         }
                         let (status, reason) =
                             status_of(if ev.done.iter().any(|i| i.contains("\"type\":\"function_call\"")) { "tool_calls" } else { done.finish_reason });
                         let kind = if status == "completed" { "response.completed" } else { "response.incomplete" };
-                        let body = ctx.response(status, reason, &ev.done, Some((prompt_tokens, done.tokens)), None);
+                        let body = ctx.response(status, reason, &ev.done, Some((prompt_tokens, done.tokens, found.load(Ordering::Relaxed) as usize)), None);
                         let _ = fine && ev.raw(kind, "response", &body) && ev.s.write_all(b"0\r\n\r\n").is_ok();
                         return;
                     }
-                    Ok(Out::Failed(e)) => {
+                    Ok(Out::Failed(e, _)) => {
                         eprintln!("glyd: a request failed: {e}");
                         let body = ctx.response("failed", None, &ev.done, None, Some(&e));
                         let _ = ev.raw("response.failed", "response", &body) && ev.s.write_all(b"0\r\n\r\n").is_ok();
@@ -603,10 +609,10 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
                         output.push(call_item(&item_id("fc"), &tools::new_id(), &c.name, &c.arguments, "completed"));
                     }
                     let (status, reason) = status_of(if done.calls.is_empty() { done.finish_reason } else { "tool_calls" });
-                    let body = ctx.response(status, reason, &output, Some((prompt_tokens, done.tokens)), None);
+                    let body = ctx.response(status, reason, &output, Some((prompt_tokens, done.tokens, found.load(Ordering::Relaxed) as usize)), None);
                     return respond_with(s, 200, "application/json", cors, body.as_bytes());
                 }
-                Ok(Out::Failed(e)) => return fail(s, cors, 500, &e),
+                Ok(Out::Failed(e, server)) => return fail(s, cors, if server { 500 } else { 400 }, &e),
                 Err(RecvTimeoutError::Disconnected) => return fail(s, cors, 500, "the engine stopped"),
             }
         }
@@ -621,6 +627,29 @@ mod tests {
     /// The JSON of each event of a stream (its `data:` line).
     fn events(body: &str) -> Vec<Value> {
         body.lines().filter_map(|l| l.strip_prefix("data: ")).map(|d| json::parse(d).unwrap()).collect()
+    }
+
+    /// P5e: the input tokens a response found in the cache are in its usage (`input_tokens_details.cached_tokens`, among `input_tokens`): none the first time a prompt is
+    /// seen in its cache scope (`cache_salt`), and none told to a request with no scope.
+    #[test]
+    fn the_usage_counts_the_input_tokens_found_in_the_cache() {
+        let addr = serve_script("the answer");
+        let q = |salt: &str| {
+            format!(r#"{{"model":"m","max_output_tokens":20,"temperature":0{salt},"input":"LONG"}}"#).replace("LONG", "the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills")
+        };
+        let cached = |body: &str| {
+            let d = parse(body);
+            (at(&d, &["usage", "input_tokens"]).as_u64().unwrap(), at(&d, &["usage", "input_tokens_details", "cached_tokens"]).as_u64().unwrap())
+        };
+        let a = r#","cache_salt":"tenant-a""#;
+        let (st, first) = call(addr, "/v1/responses", &q(a));
+        assert_eq!(st, 200, "{first}");
+        let (input, none) = cached(&first);
+        assert_eq!(none, 0);
+        let (again, found) = cached(&call(addr, "/v1/responses", &q(a)).1);
+        assert!(again == input && found >= 32 && found < input && found % crate::kv::PAGE as u64 == 0, "{found} of {input}");
+        // no scope: nothing told, twice
+        assert_eq!((cached(&call(addr, "/v1/responses", &q("")).1).1, cached(&call(addr, "/v1/responses", &q("")).1).1), (0, 0));
     }
 
     const CALL: &str = "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>";
@@ -810,6 +839,26 @@ mod tests {
             (Some("response.incomplete"), Some("max_output_tokens")),
             "{body}"
         );
+    }
+
+    /// A reply with no words still has its message, with the text part opened before the text's events refer to it: a client that builds the response from the events (the SDK's stream helper) indexes the part.
+    #[test]
+    fn an_empty_reply_opens_its_text_part() {
+        let addr = serve_script("<|im_end|>");
+        let (st, body) = ask(addr, r#"{"input":"hi","stream":true,"max_output_tokens":50,"reasoning":{"effort":"none"}}"#);
+        assert_eq!(st, 200, "{body}");
+        let kinds: Vec<String> = events(&body).iter().map(|e| at(e, &["type"]).as_str().unwrap().to_string()).collect();
+        let pos = |k: &str| kinds.iter().position(|x| x == k).unwrap_or_else(|| panic!("no {k} in {kinds:?}"));
+        assert!(
+            pos("response.output_item.added") < pos("response.content_part.added") && pos("response.content_part.added") < pos("response.output_text.done"),
+            "{kinds:?}"
+        );
+        assert!(
+            pos("response.output_text.done") < pos("response.content_part.done") && pos("response.content_part.done") < pos("response.output_item.done"),
+            "{kinds:?}"
+        );
+        let last = events(&body).pop().unwrap();
+        assert_eq!(at(&last, &["response", "output", "0", "content", "0", "type"]).as_str(), Some("output_text"), "{body}");
     }
 
     /// A call of a function: a `function_call` item with the call's id, the function's name and its arguments as the string they are, in the whole response and in the stream (the arguments in deltas, then whole).

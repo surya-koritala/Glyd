@@ -373,6 +373,11 @@ impl Gram {
         &self.ends
     }
 
+    /// The tokens a mask has (its length: the tokenizer's, or the row's where that is wider).
+    pub fn width(&self) -> usize {
+        self.vocab
+    }
+
     /// Masks made.
     pub fn masks(&self) -> u64 {
         self.masks
@@ -424,15 +429,27 @@ pub fn call_grammar(tools: &[glyd_gpu::json::Value], named: Option<&str>, format
     if pick.is_empty() {
         return None;
     }
-    // (a tool's parameters: each name, and whether its value is text)
-    let props = |t: &Value| -> Vec<(String, bool, String)> {
+    // (a tool's parameters: each name, whether its value is text (the reader's rule: `tools::is_text`), its schema, and the values a text parameter is limited to by an `enum`
+    // or a `const`, as the text the reader takes: a string's characters, any other value's JSON)
+    let props = |t: &Value| -> Vec<(String, bool, String, Option<Vec<String>>)> {
         match t.get("function").and_then(|f| f.get("parameters")).and_then(|p| p.get("properties")) {
-            Some(Value::Object(o)) => {
-                o.iter().map(|(k, p)| (k.clone(), p.get("type").and_then(Value::as_str) == Some("string"), glyd_gpu::json::to_compact(p))).collect()
-            }
+            Some(Value::Object(o)) => o
+                .iter()
+                .map(|(k, p)| {
+                    let as_text = |v: &Value| v.as_str().map_or_else(|| glyd_gpu::json::to_compact(v), str::to_string);
+                    let values = match (p.get("enum"), p.get("const")) {
+                        (Some(Value::Array(vs)), _) if !vs.is_empty() => Some(vs.iter().map(as_text).collect()),
+                        (_, Some(c)) => Some(vec![as_text(c)]),
+                        _ => None,
+                    };
+                    (k.clone(), crate::tools::is_text(p), glyd_gpu::json::to_compact(p), values)
+                })
+                .collect(),
             _ => Vec::new(),
         }
     };
+    // (a text value limited to its values, each one a literal)
+    let one_of = |values: &[String]| format!("({})", values.iter().map(|v| lark_str(v)).collect::<Vec<_>>().join(" | "));
     let mut rules = Vec::new();
     let mut alts = Vec::new();
     match format {
@@ -450,10 +467,15 @@ pub fn call_grammar(tools: &[glyd_gpu::json::Value], named: Option<&str>, format
         Format::Xml => {
             for (i, t) in pick.iter().enumerate() {
                 let mut params = Vec::new();
-                for (k, string, schema) in props(t) {
+                for (k, string, schema, values) in props(t) {
                     let head = lark_str(&format!("<parameter={k}>\n"));
+                    let end = lark_str("\n</parameter>\n");
                     // (the text rule takes the end of the parameter with it)
-                    params.push(if string { format!("{head} text") } else { format!("{head} %json{schema} {}", lark_str("\n</parameter>\n")) });
+                    params.push(match (string, values) {
+                        (true, Some(vs)) => format!("{head} {} {end}", one_of(&vs)),
+                        (true, None) => format!("{head} text"),
+                        (false, _) => format!("{head} %json{schema} {end}"),
+                    });
                 }
                 let rule = format!("params{i}");
                 rules.push(if params.is_empty() { format!("{rule}: \"\"") } else { format!("{rule}: ({})*", params.join(" | ")) });
@@ -469,9 +491,13 @@ pub fn call_grammar(tools: &[glyd_gpu::json::Value], named: Option<&str>, format
         Format::Glm => {
             for (i, t) in pick.iter().enumerate() {
                 let mut params = Vec::new();
-                for (k, string, schema) in props(t) {
+                for (k, string, schema, values) in props(t) {
                     let head = format!("ws {} ws \"<arg_value>\"", lark_str(&format!("<arg_key>{k}</arg_key>")));
-                    params.push(if string { format!("{head} text") } else { format!("{head} %json{schema} \"</arg_value>\"") });
+                    params.push(match (string, values) {
+                        (true, Some(vs)) => format!("{head} {} \"</arg_value>\"", one_of(&vs)),
+                        (true, None) => format!("{head} text"),
+                        (false, _) => format!("{head} %json{schema} \"</arg_value>\""),
+                    });
                 }
                 let rule = format!("params{i}");
                 rules.push(if params.is_empty() { format!("{rule}: \"\"") } else { format!("{rule}: ({})*", params.join(" | ")) });
@@ -491,12 +517,12 @@ pub fn call_grammar(tools: &[glyd_gpu::json::Value], named: Option<&str>, format
             let dsml = format == Format::Dsml;
             for (i, t) in pick.iter().enumerate() {
                 let mut params = Vec::new();
-                for (k, string, schema) in props(t) {
+                for (k, string, schema, values) in props(t) {
                     let flag = |s: bool| if dsml { format!("{k}\" string=\"{s}\">") } else { format!("{k}\">") };
-                    params.push(if string {
-                        format!("{} text ws", lark_str(&format!("{}{}", tg.param, flag(true))))
-                    } else {
-                        format!("{} %json{schema} {} ws", lark_str(&format!("{}{}", tg.param, flag(false))), lark_str(tg.param_end))
+                    params.push(match (string, values) {
+                        (true, Some(vs)) => format!("{} {} {} ws", lark_str(&format!("{}{}", tg.param, flag(true))), one_of(&vs), lark_str(tg.param_end)),
+                        (true, None) => format!("{} text ws", lark_str(&format!("{}{}", tg.param, flag(true)))),
+                        (false, _) => format!("{} %json{schema} {} ws", lark_str(&format!("{}{}", tg.param, flag(false))), lark_str(tg.param_end)),
                     });
                 }
                 let rule = format!("params{i}");
@@ -637,8 +663,8 @@ mod tests {
                 // (a grammar is no greedy step: the GPU's largest logit is not the choice, nor are its largest logits the draw's whole)
                 assert!(!p.greedy());
                 let mut s = Sampler::new(p, &[]);
-                // (the GPU's largest logits serve a draw that looks at no more of the row than they hold)
-                assert_eq!(s.top_need().is_some(), temperature <= 0.0 || (1..=64).contains(&top_k));
+                // (a GPU's candidates of a draw under a grammar are of the row with the grammar's mask on it, never the model's own)
+                assert!(s.changes(), "the model's own candidates do not serve a draw under a grammar");
                 let mut out = Vec::new();
                 for step in 0..20 {
                     let logits: Vec<f32> =
@@ -655,7 +681,7 @@ mod tests {
             }
         }
         // a request with no grammar is as it was
-        assert!(Params::default().greedy() && Sampler::new(Params::default(), &[]).top_need().is_none());
+        assert!(Params::default().greedy() && Sampler::new(Params::default(), &[]).proc().is_none());
     }
 
     /// The draw under a grammar is the draw from the row with the grammar's tokens taken out, as the sampler makes it with no grammar: a top-k, a top-p, whole or not.
@@ -758,6 +784,66 @@ mod tests {
         }
     }
 
+    /// A parameter limited by an `enum` and given no `type` (as clients write them) is text to the readers of the XML, GLM, DSML and Atem calls: the grammar lets a model write one
+    /// of its values as text and nothing else (not the value in JSON quotes, which the reader would keep as part of the text), and the reader reads that value. The client
+    /// matrix's `get_time` found it on a GPU: a random model wrote `"CET"` and the call's zone was the five characters.
+    #[test]
+    fn an_enum_parameter_is_one_of_its_values_as_text() {
+        use crate::tools::{extract, forced_prefix, Format, ToolChoice};
+        let tools = glyd_gpu::json::parse(
+            r#"[{"type":"function","function":{"name":"get_time","parameters":{"type":"object","properties":{"zone":{"enum":["UTC","CET"]},"n":{"type":"integer","enum":[1,2]}},"required":["zone"]}}}]"#,
+        )
+        .unwrap();
+        let tools = tools.as_array().unwrap();
+        let g =
+            Grammars::new((0..=255u8).map(|b| vec![b]).chain([[&[TokTrie::SPECIAL_TOKEN_MARKER][..], b"<|end|>"].concat()]).collect(), &[256], 300).unwrap();
+        let (dsml, atem) = (Format::Dsml.tags(), Format::Atem.tags());
+        let cases: Vec<(Format, String, String)> = vec![
+            (
+                Format::Xml,
+                "<parameter=zone>\nCET\n</parameter>\n<parameter=n>\n2\n</parameter>\n</function>\n</tool_call>".into(),
+                "<parameter=zone>\n\"".into(),
+            ),
+            (
+                Format::Glm,
+                "\n<arg_key>zone</arg_key>\n<arg_value>CET</arg_value>\n<arg_key>n</arg_key>\n<arg_value>2</arg_value>\n</tool_call>".into(),
+                "\n<arg_key>zone</arg_key>\n<arg_value>\"".into(),
+            ),
+            (
+                Format::Dsml,
+                format!("<｜DSML｜parameter name=\"zone\" string=\"true\">CET</｜DSML｜parameter>\n<｜DSML｜parameter name=\"n\" string=\"false\">2</｜DSML｜parameter>\n</｜DSML｜invoke>\n{}", dsml.close),
+                "<｜DSML｜parameter name=\"zone\" string=\"true\">\"".into(),
+            ),
+            (
+                Format::Atem,
+                format!("<atem:parameter name=\"zone\">CET</atem:parameter>\n<atem:parameter name=\"n\">2</atem:parameter>\n</atem:invoke>\n{}", atem.close),
+                "<atem:parameter name=\"zone\">\"".into(),
+            ),
+        ];
+        for (format, good, quoted) in cases {
+            let lark = call_grammar(tools, Some("get_time"), format).unwrap();
+            let c = g.compile(&Spec::Grammar(lark.clone())).unwrap_or_else(|e| panic!("{format:?}: {e}\n{lark}"));
+            // (the bytes of `text` the grammar takes from its start, and whether it is whole there)
+            let takes = |text: &str| {
+                let mut gram = c.start();
+                for (i, &b) in text.as_bytes().iter().enumerate() {
+                    if !gram.allowed()[b as usize] {
+                        return (i, false);
+                    }
+                    gram.consume(b as u32);
+                }
+                (text.len(), gram.accepting())
+            };
+            assert_eq!(takes(&good), (good.len(), true), "{format:?}: {good:?}\n{lark}");
+            assert_eq!(takes(&quoted).0, quoted.len() - 1, "{format:?}: a quote opens the value\n{lark}");
+            let e = extract(&format!("{}{good}", forced_prefix(&ToolChoice::Named("get_time".into()), format).unwrap()), format, tools);
+            assert!(e.called && e.calls.len() == 1, "{format:?}: {e:?}");
+            let args = glyd_gpu::json::parse(&e.calls[0].arguments).unwrap();
+            assert_eq!(args.get("zone").and_then(glyd_gpu::json::Value::as_str), Some("CET"), "{format:?}: {e:?}");
+            assert_eq!(args.get("n").map(glyd_gpu::json::to_compact).as_deref(), Some("2"), "{format:?}: {e:?}");
+        }
+    }
+
     /// The mask an engine is handed for the next step is the one the sequence's draw then takes, before and after the draw has it, and the sampler offers it only where its draw looks at the candidates.
     #[test]
     fn the_mask_an_engine_puts_on_the_gpu_is_the_draws() {
@@ -775,18 +861,26 @@ mod tests {
         let after = bits(&g.handle().unwrap().words().unwrap());
         assert_eq!(after, g.allowed());
         assert!(after[end() as usize] && after.iter().filter(|&&x| x).count() == 1);
-        // the sampler: a handle where the draw looks at the GPU's candidates (greedy, or a top-k within them), none where it needs the row
-        for (temperature, top_k, handle) in [(0.0, 0, true), (0.8, 40, true), (0.8, 0, false), (0.8, 65, false)] {
-            let s = Sampler::new(Params { temperature, top_k, constraint: Some(c.clone()), ..Params::default() }, &[]);
-            assert_eq!(s.mask_handle().is_some(), handle, "temperature {temperature} top_k {top_k}");
+        // the sampler: whatever the draw, what the GPU puts on the row holds the grammar's mask (the row's width wider than the grammar's: the rest taken out); none with no grammar
+        let width = vocab().len() + 5;
+        for (temperature, top_k) in [(0.0, 0), (0.8, 40), (0.8, 0), (0.8, 65)] {
+            let mut s = Sampler::new(Params { temperature, top_k, constraint: Some(c.clone()), ..Params::default() }, &[]);
+            let r = s.proc().expect("a grammar's mask").resolve(width);
+            assert_eq!(
+                (0..width).map(|t| r.allows(t)).collect::<Vec<_>>(),
+                (0..width).map(|t| t < first.len() && first[t]).collect::<Vec<_>>(),
+                "temperature {temperature} top_k {top_k}"
+            );
         }
-        assert!(Sampler::new(Params { temperature: 0.8, top_k: 40, ..Params::default() }, &[]).mask_handle().is_none());
+        assert!(Sampler::new(Params { temperature: 0.8, top_k: 40, ..Params::default() }, &[]).proc().is_none());
     }
 
-    /// The GPU's largest logits with the grammar's mask put on them before the cut give the token the whole row gives, wherever they give one: at every place of a grammar, at temperature 0 and with a top-k.
+    /// A GPU's view of the row with the grammar's mask put on it (and the penalties, a bias, the tokens held back: `Proc`) gives the token the whole row gives, at every place of a
+    /// grammar and whatever the draw: temperature 0, a top-k, a top-p, a min-p, a draw over the whole row, never reading the row; the row the GPU makes is the host's bit for bit at
+    /// every step (`emu::draw`).
     #[test]
     fn a_draw_from_the_candidates_is_the_draw_from_the_row() {
-        use crate::sampler::{Params, Sampler};
+        use crate::sampler::{emu, Params, Sampler};
         let c = grammars()
             .compile(&Spec::JsonSchema(
                 r#"{"type":"object","properties":{"ab":{"type":"integer"},"yes":{"type":"boolean"}},"required":["ab"],"additionalProperties":false}"#.into(),
@@ -794,41 +888,54 @@ mod tests {
             .unwrap();
         let width = vocab().len() + 5;
         let (mut some, mut none) = (0, 0);
-        for (temperature, top_k) in [(0.0, 0), (0.9, 1), (0.9, 5), (1.2, 40), (0.9, 64)] {
-            for seed in 0..12u64 {
-                let p = Params { temperature, top_k, seed, constraint: Some(c.clone()), ..Params::default() };
-                let (mut by_top, mut by_row) = (Sampler::new(p.clone(), &[]), Sampler::new(p, &[]));
+        for (temperature, top_k, top_p, min_p) in [
+            (0.0, 0, 1.0, 0.0),
+            (0.9, 1, 1.0, 0.0),
+            (0.9, 5, 1.0, 0.0),
+            (1.2, 40, 0.9, 0.0),
+            (0.9, 64, 1.0, 0.1),
+            (1.0, 0, 0.9, 0.0),
+            (1.0, 0, 1.0, 0.05),
+            (0.8, 0, 1.0, 0.0),
+            (1.0, 100, 1.0, 0.0),
+        ] {
+            for (seed, (rep, pres, bias)) in [(1.0, 0.0, vec![]), (1.3, 0.0, vec![]), (1.0, 0.7, vec![(id("ab"), 2.0f32)]), (0.9, -0.4, vec![(end(), -5.0)])]
+                .into_iter()
+                .cycle()
+                .take(12)
+                .enumerate()
+            {
+                let p = Params {
+                    temperature,
+                    top_k,
+                    top_p,
+                    min_p,
+                    seed: seed as u64,
+                    repetition_penalty: rep,
+                    presence_penalty: pres,
+                    logit_bias: bias,
+                    constraint: Some(c.clone()),
+                    ..Params::default()
+                };
+                let (mut by_top, mut by_row) = (Sampler::new(p.clone(), &[id("ab"), 3]), Sampler::new(p, &[id("ab"), 3]));
                 // (the grammar is walked as far as it goes, the same tokens in both)
                 for step in 0..40 {
-                    let row: Vec<f32> = (0..width).map(|t| (((t * 7919 + step * 31 + seed as usize * 13) % 211) as f32 / 8.0).floor() / 4.0 - 3.0).collect();
-                    let mut by: Vec<u32> = (0..width as u32).collect();
-                    by.sort_by(|&a, &b| row[b as usize].partial_cmp(&row[a as usize]).unwrap().then(a.cmp(&b)));
-                    let cands: Vec<(u32, f32)> = by[..64].iter().map(|&i| (i, row[i as usize])).collect();
+                    let row: Vec<f32> = (0..width).map(|t| (((t * 7919 + step * 31 + seed * 13) % 211) as f32 / 8.0).floor() / 4.0 - 3.0).collect();
+                    let (got, read) = emu::draw(&mut by_top, &row);
                     let want = by_row.sample(&row);
-                    let got = match by_top.top_need() {
-                        Some(_) => by_top.sample_top(&cands, None),
-                        None => None,
-                    };
-                    let tok = match got {
-                        Some(t) => {
-                            some += 1;
-                            assert_eq!(t, want, "temperature {temperature} top_k {top_k} seed {seed} step {step}");
-                            t
-                        }
-                        None => {
-                            none += 1;
-                            // (the whole row is read: the draw is the same one, the generator where it was)
-                            assert_eq!(by_top.sample(&row), want, "temperature {temperature} top_k {top_k} seed {seed} step {step}");
-                            want
-                        }
-                    };
-                    if tok == end() {
+                    assert_eq!(got, want, "temperature {temperature} top_k {top_k} top_p {top_p} min_p {min_p} seed {seed} step {step}");
+                    if read {
+                        none += 1;
+                    } else {
+                        some += 1;
+                    }
+                    if got == end() {
                         break;
                     }
                 }
             }
         }
-        assert!(some > 50 && none > 0, "{some} draws from the candidates, {none} from the row");
+        assert!(some > 500 && none == 0, "{some} draws from the GPU's view, {none} from the row");
     }
 
     /// A least length does not hold a reply that the grammar has ended past its end: the end token is chosen where nothing else may be.
@@ -845,6 +952,18 @@ mod tests {
         let text: Vec<u8> = said[..at].iter().flat_map(|&t| vocab()[t as usize].clone()).collect();
         assert_eq!(text, b"ab");
         assert!(said[at..].iter().all(|&t| t == end()));
+        // (the same where the GPU puts the grammar and the held-back end on the row: the end put back at 0, the penalties after, as the host does)
+        let c = grammars().compile(&Spec::Choice(vec!["ab".into()])).unwrap();
+        for (temperature, rep) in [(0.0, 1.0), (0.0, 1.5), (0.7, 1.2)] {
+            let p = Params { temperature, repetition_penalty: rep, min_tokens: 10, constraint: Some(c.clone()), seed: 4, ..Params::default() };
+            let (mut a, mut b) = (Sampler::new(p.clone(), &[end()]), Sampler::new(p, &[end()]));
+            a.set_suppress(vec![end()]);
+            b.set_suppress(vec![end()]);
+            for step in 0..4 {
+                let (got, read) = crate::sampler::emu::draw(&mut a, &logits);
+                assert_eq!((got, read), (b.sample(&logits), false), "temperature {temperature} repetition {rep} step {step}");
+            }
+        }
     }
 
     /// A draft token the grammar does not allow is never kept; one it does is.

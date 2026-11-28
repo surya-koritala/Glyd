@@ -6,6 +6,8 @@ release has it. Today it exists for Nemotron 3 Super alone (`src/moe_hb.rs`, `sr
 description builder maps (Kimi-K3, DeepSeek-V4, GLM-5.3-Flash, Muse Spark, Qwen3.5/3.8 MoE), with the calibration in the engine.
 Written 2026-11-21 against main ca0b6a4b.
 
+Status (2026-11-26): built for the families above: the calibration is `calibrate-experts` (`src/hb_usage.rs`), the packer `pack MODEL OUT --layout hummingbird --usage FILE` (`src/hb_pack.rs`) and the block `src/moe_hbg.rs`; `docs/design/runtime.md` and `glyd-engine/REFERENCE.md` describe what runs. The "Today" and "exists for Nemotron 3 Super alone" lines below are those of 2026-11-21.
+
 ## What a hummingbird expert is
 
 An expert of width W (its input: the hidden size, or the latent where the MoE has one) and intermediate size I is stored as
@@ -20,7 +22,7 @@ layout (`codebook.rs`, tags c2r and c3r) unchanged: it takes any W in runs of 32
 3.53 and 2.51 at W = 4,096, 3.54 and 2.51 at Kimi-K3's 3,584.
 
 R = (I ⊗ H_b) diag(s): H_b the orthonormal Walsh-Hadamard matrix of order b in natural order, applied to each run of b values,
-b the largest power of two that divides W, at most 1,024; s the layer's signs. Condor already rotates Qwen3.8-Flash-Next's 2,560 in
+b the largest power of two that divides W, at most 1,024; s the layer's signs. Ibis already rotates Qwen3.8-Flash-Next's 2,560 in
 five blocks of 512 (`qx_cb_rot_in`); Nemotron 3 Super's latent of 1,024 is one block, the case `moe_hb.rs` runs.
 
 | model | W | b | blocks |
@@ -37,7 +39,7 @@ authority (a reader never draws them).
 ## Running it: one block for every family
 
 `moe::MoeLayer` already holds its routed experts in one of several formats (the packs, or `f8` as an FP8 release has them). Hummingbird
-is one more, `hb`, and the layer's forwards (`forward`, `forward_muse`, `forward_release` and Kimi-K3's latent path) keep their router,
+is one more, `hb`, and the layer's forwards (`forward`, `forward_normed`, `forward_weighed` and Kimi-K3's latent path) keep their router,
 activation and sum. Only the two products change:
 
 1. x' = R x once a token (a block a run of b values, signs then the butterfly).
@@ -64,6 +66,14 @@ A pair goes to its group's kernels by two small tables, `group_of` [E] and `loca
   group at its real bytes, so a 3-bit expert costs 1.4 times a 2-bit one to copy.
 - `Costs` keep a host pair time per format; the copy-or-compute choice is per expert and per format, as the M2 design already says.
 
+Built (`src/hbg_store.rs`): a cached layer's two groups are pools of places on the GPU, and for each call of at most 64 tokens the store
+(`ExpertStore::run_groups_at`) reads the router's choices once, copies misses into free places or keeps them for the host, and a small
+kernel (`hbg_tables`) points each expert of the call at its place, or at no group where the host computes it. The products and the
+plan stay over the layer's own expert numbers, so the activation and sum kernels are the resident layer's. The host computes its pairs
+from the host tier as it holds them (`cpu_hbg::store_pairs`) and its sums join the GPU's before R^T (after Muse Spark's normed sum).
+Where the computer's memory holds less than all the experts, each group keeps its share in memory and reads the rest from the layer's
+expert file in direct reads (`HbgDisk`). A step with such a layer is not captured in a graph.
+
 The planner sizes a layer's experts as 0.4 x 3-bit + 0.6 x 2-bit bytes (the recipe's share) until it has read the directory, then by
 the directory's own counts.
 
@@ -83,25 +93,29 @@ Two steps, both Rust, replacing `nemotron_hbr.py`:
 
 1. `glyd-engine calibrate-experts MODEL OUT.json`: the model runs on the engine (any level and placement that runs it) over the built-in
    calibration corpus (`calib.rs`, chat-templated, 32,768 tokens by default), prompt passes only; each MoE layer's router choices are
-   read back and counted per expert. With `--hessians DIR` each expert's E[x' x'^T] and E[h h^T] are kept too, for GPTQ.
+   read back and counted per expert. The codec takes each expert's E[x' x'^T] and E[h h^T] where they are given, for GPTQ (`hb_codec::ExpertHessians`); this command does not collect them.
 2. `glyd-engine pack MODEL OUT --layout hummingbird --usage OUT.json`: for each MoE layer, the experts ranked by use; the recipe hb40
    puts the 40% most used at 3 bits and the rest at 2 (ties to the lower index; an expert never chosen stays, at 2 bits). Each expert's
    matrices are read from the release exactly (bf16, FP8 with its block scales, FP4 and MXFP4 decoded to f32), rotated, and rounded
    row by row: to the nearest codebook entry, or with GPTQ act-order (over the columns for `gate_up`, over the neurons for `down_t`)
-   where Hessians were collected and the expert has at least 2,048 tokens. The rest of the release is copied byte for byte.
+   where Hessians are given and the expert has at least 2,048 tokens. The rest of the release is copied byte for byte.
 
 Nearest rounding needs only the counts, which is what a corpus pass on a single machine gives cheaply. Whether a family needs GPTQ is
 the quality bar's question (#235): Nemotron 3 Super shipped with it (+10.3% perplexity at 2.99 bits, KL 0.095).
 
 ## The directory
 
-glyd-v7, `glyd.json` level `hummingbird`, layout `hb`, with the recipe and the usage file's hash under `calibration`:
+`glyd.json` of format `glyd-hbg/1`, level `hummingbird`, with an `experts` record: the recipe, the rounding, the usage file's tokens and
+hash, and each MoE layer's block, file, width, rotation block, sizes, experts' bits, bytes and sha256. It is not a glyd-v7 directory:
+glyd-v7 readers take every matrix as packed at a level, and here everything but the experts is the release's.
 
 - the release's tensors but the routed experts, copied with their names and dtypes (BF16, F32, F8_E4M3 and its scales, MXFP4's U8
   blocks and scales), in shards with an index, and the release's config, tokenizer and template files;
-- per MoE layer, each expert's `gate_up` and `down_t` as c3r or c2r packs under the expert's module name, and `glyd_rot_signs` (I8 [W]).
+- per MoE layer, `experts-BBBB.safetensors` (BBBB the description's block): `glyd_rot_signs` (I8 [W]) and, for each expert e and matrix m
+  (`gate_up`, `down_t`), `eEEEE.m.codes`, `.scales` and `.codebook` in the c3r or c2r layout.
 
-A family loader that reads the release reads this directory the same way, and builds the layer's `hb` experts from the packs.
+A family loader that reads the release reads this directory the same way, and builds the layer's `hb` experts from the expert files
+(`HbDir::experts_for`, `MoeLayer::new_hb`).
 `hbpack.rs`'s Nemotron 3 Super directories (six-bit elsewhere, from an export) stay readable as they are; new Nemotron-H packs follow
 this layout once Nemotron-H is described (R3b).
 

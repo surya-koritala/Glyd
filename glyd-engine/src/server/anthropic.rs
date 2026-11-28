@@ -3,7 +3,9 @@
 //! its refusals, its grammar, its tools, its window), and the reply is written as a message, or as the events of a stream: `message_start`, `ping`, the content blocks (`text`, `tool_use`, `thinking`) with their
 //! `content_block_start`, `content_block_delta` and `content_block_stop`, `message_delta` and `message_stop`. Errors are Anthropic's: `{"type": "error", "error": {"type", "message"}}`.
 //!
-//! Prompt caching (`cache_control`) is read and has no effect (P5e); the usage says no token was cached. A thinking block carries no signature (this server cannot make one): it is empty.
+//! Prompt caching (`cache_control`, P5e): what a request finds of its prompt in the cache it finds whatever it marks; a request with a marker has what it leaves held
+//! before others' for the marker's time (5 minutes, an hour with `ttl: "1h"`: `sched::Submit::pin`); and the usage says how many tokens were found
+//! that way (`cache_read_input_tokens`, with `input_tokens` the rest; in a stream, in `message_delta`, since `message_start` is sent before the engine has looked). A thinking block carries no signature (this server cannot make one): it is empty.
 
 use super::*;
 use tools::obj;
@@ -13,6 +15,17 @@ use tools::obj;
 /// enable_thinking (off unless it is enabled).
 pub fn openai_of(v: &Value) -> std::result::Result<Value, String> {
     openai_of_with(v, crate::vision::PREP.get().is_some())
+}
+
+/// The longest time a request's `cache_control` markers ask for (on a system block, a tool, a block of a message): 300 seconds, or 3,600 with `ttl: "1h"`. None: no marker.
+/// The marker's place is not read: the server keeps the whole of what a request leaves, and a later request finds as much of it as it begins with.
+fn cache_pin(v: &Value) -> Option<u64> {
+    let marked = |x: &Value| {
+        x.get("cache_control").filter(|c| c.as_object().is_some()).map(|c| if c.get("ttl").and_then(Value::as_str) == Some("1h") { 3600u64 } else { 300 })
+    };
+    let blocks = |x: Option<&Value>| x.and_then(Value::as_array).into_iter().flatten().filter_map(marked).max();
+    let of_messages = v.get("messages").and_then(Value::as_array).into_iter().flatten().filter_map(|m| blocks(m.get("content"))).max();
+    [blocks(v.get("system")), blocks(v.get("tools")), of_messages].into_iter().flatten().max()
 }
 
 /// `openai_of`, its image blocks image_url parts where `images` (the model reads them), else left out.
@@ -136,10 +149,14 @@ pub fn openai_of_with(v: &Value, images: bool) -> std::result::Result<Value, Str
             o.push(("parallel_tool_calls", Value::Bool(false)));
         }
     }
-    for k in ["max_tokens", "temperature", "top_p", "top_k", "stream"] {
+    for k in ["max_tokens", "temperature", "top_p", "top_k", "stream", "cache_salt"] {
         if let Some(x) = v.get(k) {
             o.push((k, x.clone()));
         }
+    }
+    // (prompt caching: what this request leaves in the cache is held, before others', for the longest time a `cache_control` of its asks)
+    if let Some(secs) = cache_pin(v) {
+        o.push(("cache_pin_seconds", Value::from(secs)));
     }
     if let Some(x) = v.get("stop_sequences") {
         o.push(("stop", x.clone()));
@@ -168,12 +185,12 @@ pub(super) fn anthropic_body(code: u16, msg: &str) -> String {
     format!("{{\"type\":\"error\",\"error\":{{\"type\":\"{kind}\",\"message\":{}}}}}", jstr(&said(msg)))
 }
 
-fn fail(s: &mut TcpStream, cors: &str, code: u16, msg: &str) {
+fn fail(s: &mut dyn Conn, cors: &str, code: u16, msg: &str) {
     respond_with(s, code, "application/json", cors, anthropic_body(code, msg).as_bytes());
 }
 
 /// An event of a streamed Messages reply, as one chunk of the chunked body.
-fn event(s: &mut TcpStream, kind: &str, fields: &str) -> bool {
+fn event(s: &mut dyn Conn, kind: &str, fields: &str) -> bool {
     let ev = format!("event: {kind}\ndata: {{\"type\":\"{kind}\"{}{fields}}}\n\n", if fields.is_empty() { "" } else { "," });
     s.write_all(format!("{:x}\r\n{ev}\r\n", ev.len()).as_bytes()).and_then(|_| s.flush()).is_ok()
 }
@@ -201,7 +218,7 @@ struct Blocks {
 }
 
 impl Blocks {
-    fn close(&mut self, s: &mut TcpStream) -> bool {
+    fn close(&mut self, s: &mut dyn Conn) -> bool {
         let Some(open) = self.open.take() else { return true };
         // (a thinking block ends with its signature, which this server has no way to make: empty)
         let signed = open != Open::Thinking
@@ -210,7 +227,7 @@ impl Blocks {
         signed && event(s, "content_block_stop", &format!("\"index\":{}", self.next - 1))
     }
 
-    fn begin(&mut self, s: &mut TcpStream, kind: Open, block: &str) -> bool {
+    fn begin(&mut self, s: &mut dyn Conn, kind: Open, block: &str) -> bool {
         if self.open == Some(kind) {
             return true;
         }
@@ -219,7 +236,7 @@ impl Blocks {
         ok
     }
 
-    fn delta(&mut self, s: &mut TcpStream, d: &Delta) -> bool {
+    fn delta(&mut self, s: &mut dyn Conn, d: &Delta) -> bool {
         let mut ok = true;
         if !d.reasoning.is_empty() {
             ok &= self.begin(s, Open::Thinking, "{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}");
@@ -278,8 +295,16 @@ fn stop_reason(done: &Done, called: bool) -> &'static str {
     }
 }
 
-fn usage(input: usize, output: usize) -> String {
-    format!("{{\"input_tokens\":{input},\"output_tokens\":{output},\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}")
+/// A usage object as Anthropic's API has it: `cached` of the prompt's `input` tokens were found in the cache and not run again (`cache_read_input_tokens`); a request
+/// with a cache marker left `created` more findable in it (`cache_creation_input_tokens`: the cache keeps every prompt's blocks, at no price; what is reported is what
+/// a request with the same start would find); `input_tokens` is the rest.
+fn usage(input: usize, output: usize, cached: usize, created: usize) -> String {
+    let cached = cached.min(input);
+    let created = created.min(input - cached);
+    format!(
+        "{{\"input_tokens\":{},\"output_tokens\":{output},\"cache_creation_input_tokens\":{created},\"cache_read_input_tokens\":{cached}}}",
+        input - cached - created
+    )
 }
 
 /// `max_tokens` as Anthropic's API wants it: there, and a whole number of at least 1.
@@ -292,7 +317,7 @@ fn max_tokens_ok(v: &Value) -> std::result::Result<(), String> {
 }
 
 /// One Messages request on `s`: the request read as the OpenAI one it is the same as, one choice made as a chat completion's, the reply in Anthropic's form.
-pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, count: bool, id: u64) {
+pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req, count: bool, id: u64) {
     let cors = req.cors.as_str();
     let Some(v) = std::str::from_utf8(&req.body).ok().and_then(|t| json::parse(t).ok()).filter(|v| matches!(v, Value::Object(_))) else {
         return fail(s, cors, 400, "Request body must be a valid JSON object");
@@ -315,7 +340,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
         Ok(st) => st,
         Err((code, m)) => return fail(s, cors, code, &m),
     };
-    let abort = h.abort.clone();
+    let (abort, found, made) = (h.abort.clone(), h.cached.clone(), h.created.clone());
     let mid = format!("msg_{:016x}{id:08x}", fresh_seed());
     let (name, n_in) = (jstr(&sh.name), prompt_tokens);
     let (out_tx, out_rx) = std::sync::mpsc::channel::<Out>();
@@ -325,9 +350,14 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
         if api.stream {
             let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n{cors}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
             let mut ok = s.write_all(head.as_bytes()).is_ok()
-                && event(s, "message_start", &format!("\"message\":{{\"id\":\"{mid}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{name},\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{}}}", usage(n_in, 1)))
+                && event(s, "message_start", &format!("\"message\":{{\"id\":\"{mid}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":{name},\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{}}}", usage(n_in, 1, 0, 0)))
                 && event(s, "ping", "");
             let mut blocks = Blocks::default();
+            // (a reply to a request for thinking begins with its thinking block, as Anthropic's API has it, empty where the model wrote none: a client reads it
+            // first; a model that closes its thinking at once, or writes only what the reader holds back, left a reply with no block at all)
+            if thinking {
+                ok &= blocks.begin(s, Open::Thinking, "{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}");
+            }
             while ok {
                 match out_rx.recv_timeout(WAIT_TICK) {
                     // (waiting for its turn or its prompt: a ping, as Anthropic's API sends them, and a look at the client)
@@ -340,17 +370,18 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
                                 s,
                                 "message_delta",
                                 &format!(
-                                    "\"delta\":{{\"stop_reason\":\"{}\",\"stop_sequence\":{}}},\"usage\":{{\"input_tokens\":{n_in},\"output_tokens\":{}}}",
+                                    // (the usage is the whole message's, as the API's is: what message_start could not know, the prompt tokens found in the cache, is here)
+                                    "\"delta\":{{\"stop_reason\":\"{}\",\"stop_sequence\":{}}},\"usage\":{}",
                                     stop_reason(&done, blocks.called),
                                     done.stop.as_deref().map_or("null".to_string(), jstr),
-                                    done.tokens
+                                    usage(n_in, done.tokens, found.load(Ordering::Relaxed) as usize, made.load(Ordering::Relaxed) as usize)
                                 ),
                             )
                             && event(s, "message_stop", "")
                             && s.write_all(b"0\r\n\r\n").is_ok();
                         return;
                     }
-                    Ok(Out::Failed(e)) => {
+                    Ok(Out::Failed(e, _)) => {
                         eprintln!("glyd: a request failed: {e}");
                         let _ =
                             event(s, "error", &format!("\"error\":{{\"type\":\"api_error\",\"message\":{}}}", jstr(&e))) && s.write_all(b"0\r\n\r\n").is_ok();
@@ -372,8 +403,9 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
                 Err(RecvTimeoutError::Timeout) | Ok(Out::Delta(..)) => {}
                 Ok(Out::Done { done, thinking: reasoning, .. }) => {
                     let mut content: Vec<String> = Vec::new();
-                    if let Some(t) = reasoning.filter(|t| thinking && !t.is_empty()) {
-                        content.push(format!("{{\"type\":\"thinking\",\"thinking\":{},\"signature\":\"\"}}", jstr(&t)));
+                    // (the thinking block first wherever thinking was asked for, empty where the model wrote none, as the stream's)
+                    if thinking {
+                        content.push(format!("{{\"type\":\"thinking\",\"thinking\":{},\"signature\":\"\"}}", jstr(&reasoning.unwrap_or_default())));
                     }
                     content.extend(done.content.iter().filter(|t| !t.is_empty()).map(|t| format!("{{\"type\":\"text\",\"text\":{}}}", jstr(t))));
                     for c in &done.calls {
@@ -390,11 +422,12 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
                         content.join(","),
                         stop_reason(&done, !done.calls.is_empty()),
                         done.stop.as_deref().map_or("null".to_string(), jstr),
-                        usage(n_in, done.tokens)
+                        usage(n_in, done.tokens, found.load(Ordering::Relaxed) as usize, made.load(Ordering::Relaxed) as usize)
                     );
                     return respond_with(s, 200, "application/json", cors, body.as_bytes());
                 }
-                Ok(Out::Failed(e)) => return fail(s, cors, 500, &e),
+                // (the server's doing: 500; the request's own, a prompt the cache does not hold: 400)
+                Ok(Out::Failed(e, server)) => return fail(s, cors, if server { 500 } else { 400 }, &e),
                 Err(RecvTimeoutError::Disconnected) => return fail(s, cors, 500, "the engine stopped"),
             }
         }
@@ -512,6 +545,94 @@ mod tests {
             anthropic_body(401, "no").contains("\"type\":\"authentication_error\"")
                 && anthropic_body(404, "no").contains("not_found_error")
                 && anthropic_body(503, "no").contains("overloaded_error")
+        );
+    }
+
+    /// P5e: a prompt the server has run before is found in its cache, and the usage says so as Anthropic's does: `cache_read_input_tokens` the tokens found, `input_tokens`
+    /// the rest, the two together the prompt. Whole and streamed (in a stream, in `message_delta`: `message_start` goes out before the engine has looked). For a request with
+    /// a cache scope (`cache_salt`): a request with none is told nothing.
+    #[test]
+    fn the_usage_counts_the_prompt_tokens_found_in_the_cache() {
+        let addr = serve_script("the answer");
+        let q = |stream: bool, salt: &str| {
+            format!(r#"{{"model":"claude-x","max_tokens":20,"temperature":0,"stream":{stream}{salt},"messages":[{{"role":"user","content":"LONG"}}]}}"#).replace("LONG", "the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills")
+        };
+        let usage = |d: &Value, k: &str| at(d, &["usage", k]).as_u64().unwrap();
+        let a = r#","cache_salt":"tenant-a""#;
+        let first = parse(&ask(addr, &q(false, a)).1);
+        assert_eq!((usage(&first, "cache_read_input_tokens"), usage(&first, "cache_creation_input_tokens")), (0, 0));
+        let prompt = usage(&first, "input_tokens");
+        // again: the same prompt in the same scope
+        let second = parse(&ask(addr, &q(false, a)).1);
+        let found = usage(&second, "cache_read_input_tokens");
+        assert!(found >= 32 && found < prompt && found % crate::kv::PAGE as u64 == 0, "{found} of {prompt}");
+        assert_eq!(usage(&second, "input_tokens") + found, prompt);
+        assert_eq!(usage(&second, "output_tokens"), usage(&first, "output_tokens"));
+        // with no scope: nothing of the scope's is found, and what its own second request finds is not told
+        for _ in 0..2 {
+            let d = parse(&ask(addr, &q(false, "")).1);
+            assert_eq!((usage(&d, "cache_read_input_tokens"), usage(&d, "input_tokens")), (0, prompt));
+        }
+        // streamed: message_start has the prompt, message_delta what was found
+        let (st, body) = ask(addr, &q(true, a));
+        assert_eq!(st, 200, "{body}");
+        let evs: Vec<Value> = body.lines().filter_map(|l| l.strip_prefix("data: ")).map(parse).collect();
+        let delta = evs.iter().find(|e| at(e, &["type"]).as_str() == Some("message_delta")).expect("message_delta");
+        assert_eq!((usage(delta, "cache_read_input_tokens"), usage(delta, "input_tokens")), (found, prompt - found), "{body}");
+        assert_eq!(at(&evs[0], &["message", "usage", "input_tokens"]).as_u64(), Some(prompt));
+    }
+
+    /// P5e: requests as Claude Code sends them: the system prompt in blocks with `cache_control` markers, the same in every request of every session, and the
+    /// conversation after it. A second session's first request finds the system prompt in the cache though its own message is another; the conversation's next turn
+    /// finds the turn before as well; and each usage says what was found (`cache_read_input_tokens`, with `input_tokens` the rest).
+    #[test]
+    fn claude_codes_repeated_system_prompt_is_found_by_the_next_session() {
+        let addr = serve_script("done");
+        let system = r#"[{"type":"text","text":"You are Claude Code, a command line tool for software engineering.","cache_control":{"type":"ephemeral"}},{"type":"text","text":"Follow the conventions of the repository you are in. Read a file before you change it. Run the tests after a change and say plainly what failed. Never commit unless you are asked to.","cache_control":{"type":"ephemeral","ttl":"1h"}}]"#;
+        let q = |messages: &str| {
+            format!(r#"{{"model":"claude-x","max_tokens":12,"temperature":0,"cache_salt":"one-user","system":{system},"messages":{messages}}}"#)
+        };
+        let usage = |d: &Value, k: &str| at(d, &["usage", k]).as_u64().unwrap();
+        let user = |text: &str| format!(r#"{{"role":"user","content":[{{"type":"text","text":"{text}","cache_control":{{"type":"ephemeral"}}}}]}}"#);
+        // the first session's first request: nothing to find
+        let a = parse(&ask(addr, &q(&format!("[{}]", user("list the files in src and tell me which is the largest")))).1);
+        assert_eq!(usage(&a, "cache_read_input_tokens"), 0);
+        // a second session, another question: the system prompt is found, and no more than it (the two part at the question)
+        let first = user(
+            "why does the build fail on the second step when the cache is cold and pass when it is warm and what in the build script decides which of the two it is and where is that written down",
+        );
+        let b = parse(&ask(addr, &q(&format!("[{first}]"))).1);
+        let (found, rest) = (usage(&b, "cache_read_input_tokens"), usage(&b, "input_tokens"));
+        assert!(found >= 48 && found % crate::kv::PAGE as u64 == 0 && rest >= 8, "{found} found, {rest} run");
+        // its next turn: the turn before is found too
+        let reply = at(&b, &["content"]).as_array().and_then(|c| c.iter().find_map(|x| at(x, &["text"]).as_str().map(str::to_string))).expect("a text block");
+        let next = format!(r#"[{first},{{"role":"assistant","content":"{reply}"}},{}]"#, user("and on the third"));
+        let c = parse(&ask(addr, &q(&next)).1);
+        assert!(usage(&c, "cache_read_input_tokens") > found, "{} found at the next turn, {found} at the first", usage(&c, "cache_read_input_tokens"));
+        assert_eq!(usage(&c, "cache_creation_input_tokens"), 0);
+    }
+
+    /// `cache_control` asks for what the request leaves to be held: 5 minutes, an hour with `ttl: "1h"`, the longest of a request's markers, wherever they are (a system
+    /// block, a tool, a block of a message); a request with none asks for nothing, and a property of a tool's schema that happens to bear the name is no marker.
+    #[test]
+    fn cache_control_is_a_time_to_hold_what_the_request_leaves() {
+        let pin = |body: &str| openai_of(&parse(body)).unwrap().get("cache_pin_seconds").and_then(Value::as_u64);
+        let msg = r#""max_tokens":5,"messages":[{"role":"user","content":"hi"}]"#;
+        assert_eq!(pin(&format!("{{{msg}}}")), None);
+        assert_eq!(pin(&format!(r#"{{{msg},"system":[{{"type":"text","text":"s","cache_control":{{"type":"ephemeral"}}}}]}}"#)), Some(300));
+        assert_eq!(
+            pin(&format!(r#"{{{msg},"tools":[{{"name":"t","input_schema":{{"type":"object"}},"cache_control":{{"type":"ephemeral","ttl":"1h"}}}}]}}"#)),
+            Some(3600)
+        );
+        assert_eq!(
+            pin(
+                r#"{"max_tokens":5,"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","ttl":"5m"}}]}]}"#
+            ),
+            Some(3600)
+        );
+        assert_eq!(
+            pin(&format!(r#"{{{msg},"tools":[{{"name":"t","input_schema":{{"type":"object","properties":{{"cache_control":{{"type":"string"}}}}}}}}]}}"#)),
+            None
         );
     }
 

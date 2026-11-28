@@ -11,17 +11,20 @@ param([string]$Tier = "", [string]$Models = "$PSScriptRoot\m1-models.txt", [stri
 $ErrorActionPreference = "Continue"
 if (-not $Out) { $Out = Join-Path ([IO.Path]::GetTempPath()) ("m1-gate-" + [Guid]::NewGuid().ToString("N").Substring(0, 8)) }
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
-$Results = Join-Path $Out "results.tsv"; Set-Content -Path $Results -Value ""
-$script:Fails = 0; $script:Blocked = 0; $script:Passes = 0
+$Results = Join-Path $Out "results.tsv"; Set-Content -Path $Results -Value "" -Encoding UTF8
+$script:Fails = 0; $script:Blocked = 0; $script:Passes = 0  # (a row's own flag is $rowBlocked: PowerShell's names ignore case, and $blocked was this counter)
 function Step($status, $name, $detail) {
     "{0,-5} {1,-34} {2}" -f $status, $name, $detail | Write-Host
-    Add-Content -Path $Results -Value "$status`t$name`t$detail"
+    Add-Content -Path $Results -Value "$status`t$name`t$detail" -Encoding UTF8
     if ($status -eq "FAIL") { $script:Fails++ } elseif ($status -eq "PASS") { $script:Passes++ }
 }
+# a native program's output as its lines: Windows PowerShell 5.1 turns each stderr line into an error record ("NativeCommandError", several lines each) and
+# Out-String wraps at the console's width, so a two-line refusal counted 9 to 11; "$_" is the line itself
+function Lines { (@($input) | ForEach-Object { "$_" }) -join "`n" }
 function Rows { Get-Content $Models | Where-Object { $_.Trim() -ne "" -and -not $_.TrimStart().StartsWith("#") } | ForEach-Object { , ($_ -split "\|" | ForEach-Object { $_.Trim() }) } }
 function Plan-Of($model) {
     $fa = @("fit", $model); if ($Machine) { $fa += @("--machine", $Machine) }
-    $text = (& $Glyd @fa 2>&1 | Out-String)
+    $text = (& $Glyd @fa 2>&1 | Lines)
     $plan = ($text -split "`r?`n" | Where-Object { $_ -like "Plan: *" } | Select-Object -First 1)
     if ($plan -and $plan -notlike "*none fits*") { return @("run", $plan, $text) }
     $why = ($text -split "`r?`n" | Where-Object { $_ -match "^glyd: |does not fit|none fits|does not run" } | Select-Object -First 1)
@@ -57,36 +60,48 @@ if ($InstallCmd) {
     $t0 = Get-Date; & cmd /c $InstallCmd *> (Join-Path $Out "install.log")
     if ($LASTEXITCODE -eq 0) { Step "PASS" "install" ("{0:N0} s: {1}" -f ((Get-Date) - $t0).TotalSeconds, $InstallCmd) } else { Step "FAIL" "install" "failed: see $Out\install.log" }
 }
-$v = (& $Glyd --version 2>&1 | Out-String); if ($LASTEXITCODE -ne 0) { Step "FAIL" "glyd-version" "$Glyd --version failed" }
+# (the installer puts glyd in %LOCALAPPDATA%\Glyd and on the user's PATH, which this session's PATH does not have yet: the gate runs that glyd)
+$installed = Join-Path $(if ($env:GLYD_HOME) { $env:GLYD_HOME } else { Join-Path $env:LOCALAPPDATA "Glyd" }) "glyd.exe"
+if (-not (Get-Command $Glyd -ErrorAction SilentlyContinue) -and (Test-Path $installed)) { $Glyd = $installed }
+$v = try { (& $Glyd --version 2>&1 | Out-String) } catch { "" }
+if (-not $v -or $LASTEXITCODE -ne 0) { Step "FAIL" "glyd-version" "$Glyd --version failed: the gate stops"; Write-Host "---"; Write-Host "the gate stopped: $Glyd does not run"; exit 1 }
+Set-Content -Path (Join-Path $Out "version.txt") -Value $v
 
 if (-not $smi) {
-    $first = (Rows | Select-Object -First 1)[0]; $o = (& $Glyd run $first --prompt hi 2>&1 | Out-String); $code = $LASTEXITCODE; $n = ($o -split "`r?`n" | Where-Object { $_ }).Count
+    $first = (Rows | Select-Object -First 1)[0]; $o = (& $Glyd run $first --prompt hi 2>&1 | Lines); $code = $LASTEXITCODE; $n = ($o -split "`r?`n" | Where-Object { $_ }).Count
     if ($code -ne 0 -and $n -le 2) { Step "PASS" "vendor-one-line" "exit ${code}: $(($o -split "`n")[0])" } else { Step "FAIL" "vendor-one-line" "exit $code, $n lines" }
 }
 
 $schema = '{"type":"object","properties":{"city":{"type":"string"},"population":{"type":"integer"},"coastal":{"type":"boolean"}},"required":["city","population","coastal"],"additionalProperties":false}'
 $port = 18734; $base = "http://127.0.0.1:$port"
 foreach ($r in Rows) {
-    $m = $r[0]; $want = if ($col -ge 0) { $r[$col] } else { "" }; $blocked = ($r.Count -ge 6 -and $r[5] -like "*BLOCKED(packs)*")
+    $m = $r[0]; $want = if ($col -ge 0) { $r[$col] } else { "" }; $rowBlocked = ($r.Count -ge 6 -and $r[5] -like "*BLOCKED(packs)*")
     $p = Plan-Of $m; $got = $p[0]
     if ($want -and $got -ne $want) { Step "FAIL" "plan:$m" "the planner says $got, m1-models.txt expects $want on ${Tier}: $($p[1])"; continue }
     Step "PASS" "plan:$m" "${got}: $($p[1])"
     if ($got -eq "refuse") {
-        $o = (& $Glyd run $m --prompt hi 2>&1 | Out-String); $code = $LASTEXITCODE; $n = ($o -split "`r?`n" | Where-Object { $_ }).Count
-        if ($code -ne 0 -and $n -le 3) { Step "PASS" "refusal:$m" "exit $code, $n lines: $(($o -split "`n")[0])" } else { Step "FAIL" "refusal:$m" "exit $code, $n lines (a refusal is a few lines and a non-zero exit)" }
+        $o = (& $Glyd run $m --prompt hi 2>&1 | Lines); $code = $LASTEXITCODE; $n = ($o -split "`r?`n" | Where-Object { $_ }).Count
+        # (a refusal exits with its code, 1 to 123; a crash's code is not one)
+        if ($code -gt 0 -and $code -lt 124 -and $n -le 3) { Step "PASS" "refusal:$m" "exit $code, $n lines: $(($o -split "`n")[0])" } else { Step "FAIL" "refusal:$m" "exit $code, $n lines (a refusal is a few lines and a non-zero exit)" }
         continue
     }
     $t0 = Get-Date; $log = Join-Path $Out ("serve-" + ($m -replace "[/:]", "_") + ".log")
     $srv = Start-Process -FilePath $Glyd -ArgumentList @("serve", $m, "--host", "127.0.0.1", "--port", $port, "--users", 1) -PassThru -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError "$log.err"
-    $up = $false
-    while (((Get-Date) - $t0).TotalSeconds -lt 900 -and -not $srv.HasExited) { try { Invoke-RestMethod "$base/v1/models" -TimeoutSec 2 | Out-Null; $up = $true; break } catch { Start-Sleep 1 } }
-    if (-not $up) { if ($blocked) { Step "SKIP" "first-token:$m" "BLOCKED(packs): the server did not come up (the planned level's pre-packed repo is not published)"; $script:Blocked++ } else { Step "FAIL" "first-token:$m" "the server did not come up" }; if (-not $srv.HasExited) { $srv.Kill() }; continue }
-    $body = '{"messages":[{"role":"user","content":"Say hello."}],"max_tokens":4,"stream":true}'
-    $tok = (& curl.exe -sN -m 120 -H "Content-Type: application/json" -d $body "$base/v1/chat/completions" | Select-String -Pattern '"content":"[^"]' -List | Select-Object -First 1)
-    $total = [int]((Get-Date) - $t0).TotalSeconds
-    if ($tok -and $total -le $Limit) { Step "PASS" "first-token:$m" "$total s (limit $Limit)" }
-    elseif ($blocked) { Step "SKIP" "first-token:$m" "BLOCKED(packs): $total s (limit $Limit): the planned level's pre-packed repo is not published"; $script:Blocked++ }
-    else { Step "FAIL" "first-token:$m" "$total s (limit $Limit), token: $(if ($tok) { 'yes' } else { 'none' })" }
+    $up = $false; $tDl = $null
+    while (((Get-Date) - $t0).TotalSeconds -lt 900 -and -not $srv.HasExited) {
+        # (when the download ends: the serve log's "Downloaded " line, on either stream)
+        if ($null -eq $tDl -and (Select-String -Path $log, "$log.err" -Pattern "^Downloaded " -Quiet -ErrorAction SilentlyContinue)) { $tDl = [int]((Get-Date) - $t0).TotalSeconds }
+        try { Invoke-RestMethod "$base/v1/models" -TimeoutSec 2 | Out-Null; $up = $true; break } catch { Start-Sleep 1 } }
+    if (-not $up) { if ($rowBlocked) { Step "SKIP" "first-token:$m" "BLOCKED(packs): the server did not come up (the planned level's pre-packed repo is not published)"; $script:Blocked++ } else { Step "FAIL" "first-token:$m" "the server did not come up" }; if (-not $srv.HasExited) { $srv.Kill() }; continue }
+    # (the body from a file: Windows PowerShell 5.1 drops the double quotes of an argument it passes to a native program, and curl.exe sent JSON with none)
+    $bodyFile = Join-Path $Out "first-token.json"
+    Set-Content -Path $bodyFile -Value '{"messages":[{"role":"user","content":"Say hello."}],"max_tokens":4,"stream":true}' -Encoding ascii -NoNewline
+    $tok = (& curl.exe -sN -m 120 -H "Content-Type: application/json" --data-binary "@$bodyFile" "$base/v1/chat/completions" | Select-String -Pattern '"(content|reasoning_content|reasoning)":"[^"]' -List | Select-Object -First 1)
+    $total = [int]((Get-Date) - $t0).TotalSeconds; $dl = if ($null -ne $tDl) { $tDl } else { 0 }; $after = $total - $dl
+    # (the limit is on loading and the first token; a download is the connection's, said beside it)
+    if ($tok -and $after -le $Limit) { Step "PASS" "first-token:$m" "$after s after the download (limit $Limit); $total s in all, $dl s of it downloading" }
+    elseif ($rowBlocked) { Step "SKIP" "first-token:$m" "BLOCKED(packs): $total s (limit $Limit): the planned level's pre-packed repo is not published"; $script:Blocked++ }
+    else { Step "FAIL" "first-token:$m" "$after s after the download (limit $Limit), $total s in all; token: $(if ($tok) { 'yes' } else { 'none' })" }
     $info = try { Invoke-RestMethod "$base/v1/glyd/info" -TimeoutSec 10 } catch { $null }
     $lvl = $info.level.effective; $wb = $info.memory.weights_bytes
     $planLvl = if ($p[1] -match "^Plan: ([a-z]+)") { $Matches[1] } else { "" }

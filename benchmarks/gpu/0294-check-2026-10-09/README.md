@@ -1,7 +1,7 @@
-# 0.29.4's GPU check: Swift, the level tags and best-fit scales on an A100 (2026-10-09)
+# 0.29.4's GPU check: Linnet, the level tags and best-fit scales on an A100 (2026-10-09)
 
 Private record. One A100-SXM4-80GB (Runpod pod `gq5lunwnwtm262`, driver 595.91.07, $1.79/hour, 15:19-15:39 UTC: about $0.60), started
-by `tools/runpod/rp_run.sh`; branch `int5-swift` at e7aa3d89 (Int5, the level tags, best-fit scales for Int6 and Int5). Job: `job.sh`
+by `tools/runpod/rp_run.sh`; branch `int5-linnet` at e7aa3d89 (Int5, the level tags, best-fit scales for Int6 and Int5). Job: `job.sh`
 (library by `gpu/build_lib.sh` with CUDA 12.8, the engine's release build, the crate's tests, examples/int5 and int6, then Qwen/Qwen3.8-27B
 at 1d4bf0f2: bench and runs). Every step in `steps.txt` ended as it should (`tag-wren`'s status 1 is the refusal asked for).
 
@@ -15,7 +15,7 @@ at 1d4bf0f2: bench and runs). Every step in `steps.txt` ended as it should (`tag
 
 | On this pod | decode, ms a token | tokens a second | prompt of 1,024, ms | weights, GiB | in use, GiB | loaded in, s |
 | :-- | --: | --: | --: | --: | --: | --: |
-| Swift (`--layout i5`) | 21.039 | 47.53 | 417.7 | 17.351 | 19.504 | 157.3 |
+| Linnet (`--layout i5`) | 21.039 | 47.53 | 417.7 | 17.351 | 19.504 | 157.3 |
 | Kestrel (`--layout i6`) | 21.578 | 46.34 | 420.1 | 20.479 | 22.551 | 126.6 |
 
 Decode and memory as on the earlier A100 pod (benchmarks/gpu/int5-a100-2026-10-09: 47.78 and 46.62 tokens a second). Loading takes
@@ -25,9 +25,9 @@ A100-SXM4 pod, whose CPU may differ). A pre-packed download (0.30.0) removes the
 
 ## The level tags (`run-*.log`, `tag-wren.log`)
 
-* `run ~/v/bf16:swift`: "about 17.3 GiB on the GPU at the swift level (about 5.5 bits per weight, not lossless)", ready in 2m37s; asked
+* `run ~/v/bf16:linnet`: "about 17.3 GiB on the GPU at the linnet level (about 5.5 bits per weight, not lossless)", ready in 2m37s; asked
   for the capital of Australia, its reasoning has Canberra, chosen as a compromise between Sydney and Melbourne (the reply ends at the
   run's token limit while still reasoning: the run had no `--no-think`).
 * `run ~/v/bf16:kestrel --no-think`: about 20.5 GiB at the kestrel level, ready in 2m05s; "101, 103, 107".
 * `run ~/v/bf16 --lossy --no-think`: the same as kestrel; 17 x 23 = 391.
-* `run ~/v/bf16:wren`: status 1, "glyd: :wren is not built yet. The levels available now: penguin, kestrel, swift".
+* `run ~/v/bf16:wren`: status 1, "glyd: :wren is not built yet. The levels available now: penguin, kestrel, linnet".

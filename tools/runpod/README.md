@@ -26,7 +26,7 @@ Needs on the launching machine: `runpodctl` (the current Runpod CLI), `ssh`, `ss
 | `jobs/fmt_job.sh`, `jobs/fmt_measure.py` | The lossless room in 2026 checkpoints' released formats (bf16, FP8, MXFP4, NVFP4), sampled by HTTP range. Record: `formats-2026-2026-10-05`. |
 
 **New runs use 2026 models only.** The templates default to Qwen3.5-9B and Qwen3.5-0.8B. The steps that need the Rust engine to
-run a model family (`ENGINE_STEPS=1`) are off by default until the engine runs Qwen3.5; with them off, the engine's fallback to
+run a model family (`ENGINE_STEPS=1`) are off by default (the engine runs Qwen3.5 now; the job scripts were not changed); with them off, the engine's fallback to
 vLLM is checked on Qwen3.5. A release acceptance (published wheels, old saves, a clean pip resolve) follows the scripts kept in
 `benchmarks/gpu/acceptance-v0.28.0rc1-l4-2026-10-04/scripts/` (written for an AWS box that is gone: port them to a pod job, with
 2026 models, before reuse).

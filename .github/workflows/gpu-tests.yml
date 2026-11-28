@@ -49,7 +49,7 @@ jobs:
           [ -x "$CARGO_HOME/bin/cargo" ] || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
           nvidia-smi
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: The checkout's files get the times their content last changed (so cargo builds what changed, not the checkout)
@@ -61,9 +61,35 @@ jobs:
           "$E" --version
           "$E" bandwidth
           "$E" topkcheck
+          "$E" kvshapes
+          # (R17: what the engine folded from the GPU library's host side, the packed products' ways for every GPU code, the GPU's class and the KV cache's sizes, against the library's own)
+          GLYD_GPU_LIB="$GLYD_GPU_LIB_BUILT" "$E" foldcheck
           "$E" kcheck35
+          # (the attention kind's kernels, every family's head width and arithmetic, against an fp64 attention: prompt rows on the tensor cores and a warp a head, decode rows in parts)
+          "$E" attncheck
+          # (each layer kind of the recent families' random models on this GPU against its CPU f32 reference, kind by kind: runtime/reference/mod.rs's table)
+          "$E" kindcheck
+          # (a random Gemma 4 in 12-bit KV pages: the prompt's tokens read back the plain bf16 cache's values bit for bit, the same first token)
+          "$E" kv12check --case gemma4
+          # (the scheduler on 12-bit pages, then with pools made too small for four at once: void pages taken back and run again, every reply the one alone)
+          "$E" usercheck gemma4 --users 4 --kv12
+          # (values that do not compress, pools of one chunk and the least slabs: the newest sequence paused, no page void, no request failed)
+          GLYD_KV12_SHIFT=60 GLYD_KV12_POOL=1,0 "$E" usercheck gemma4 --users 8 --kv12
       # (its layers are toy ones: tens of megabytes of weights and scratch a case. The GPU's memory is sampled while it runs, the peak printed, and a peak of more than 12,000 MiB of the card's 16,376 fails it:
       # the margin a 16 GB card needs for the driver and the next step)
+      - name: Every pack format in tests/data/packs decodes on this GPU to its release's sha256 and its recorded logits (packcheck.rs)
+        run: |
+          # (the row and codebook layouts on the CPU, as verify does)
+          cargo build --release --locked -p glyd-gpu --bin glyd-gpu
+          for d in tests/data/packs/*/; do
+            GLYD_GPU_LIB="$GLYD_GPU_LIB_BUILT" "$CARGO_TARGET_DIR/release/glyd-gpu" verify "$d" --device cuda:0
+          done
+          # (each save that holds the fixtures' tiny dense model, its packs decoded by the GPU library, on the CPU reference against its digest in glyd-engine/tests/packs)
+          GLYD_GPU_LIB="$GLYD_GPU_LIB_BUILT" "$E" packcheck --gpu
+          # (the formats the engine loads a saved directory in, as the glyd/* repos are saved: glyd-v7 at penguin, kestrel, linnet, wren and hummingbird, each made from a logits
+          # case's random model by the repos' packer, loaded from the directory and held to the same model packed as it loads in the same layout, bit for bit, and to the
+          # case's reference in tests/logits where one bounds the level; the Hummingbird level to the digest of this GPU's kernel set in tests/packs, which fails where none is recorded)
+          "$E" packcheck --engine --scratch "$RUNNER_TEMP/packcheck"
       - name: MoE kernel checks (blocking; the peak GPU memory is printed and held under 12,000 MiB)
         run: |
           base=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
@@ -130,33 +156,138 @@ jobs:
         run: |
           "$E" doctor --bundle /tmp/doctor-bundle.json
           python3 scripts/ci_doctor_check.py /tmp/doctor-bundle.json
-      - name: The lossless KV cache (a random Qwen3 dense model made here, which kvtest reads as the dense engine's cache)
+      - name: The clients against a random model made here (Qwen3.8's layout, a character-level tokenizer, its chat template; tests/clients/tiny_check.py), whatever its weights write
         run: |
-          "$E" logitsmodel qwen3 /tmp/qwen3-standin
-          "$E" kvtest /tmp/qwen3-standin
+          [ -x /tmp/clients/bin/python ] || python3 -m venv /tmp/clients
+          /tmp/clients/bin/pip install -q openai anthropic ollama requests jsonschema langchain-openai langchain-anthropic langchain-ollama
+          "$E" logitsmodel qwen35 /tmp/tiny-qwen --servable
+          # (untagged: penguin, the Qwen3.5 layout on the dynamic route, lossless)
+          "$E" serve /tmp/tiny-qwen --port 8351 --ctx 4096 > /tmp/tiny-serve.log 2>&1 &
+          server=$!
+          for _ in $(seq 1 300); do
+            curl -sf http://127.0.0.1:8351/v1/models > /dev/null && break
+            kill -0 "$server" 2> /dev/null || { cat /tmp/tiny-serve.log; exit 1; }
+            sleep 2
+          done
+          status=0
+          /tmp/clients/bin/python tests/clients/tiny_check.py http://127.0.0.1:8351 || status=1
+          kill "$server" 2> /dev/null || true
+          wait "$server" 2> /dev/null || true
+          [ "$status" = 0 ] || tail -40 /tmp/tiny-serve.log
+          exit "$status"
+      - name: The 12-bit lossless KV pages of a dense model with recurrent layers between its attention ones (a random Qwen3.5-layout model made here, on the executor; kvpages.rs kv12check, logits.rs usercheck --kv12)
+        run: |
+          "$E" kv12check --case qwen35
+          "$E" usercheck qwen35 --users 8 --level penguin --kv12
+          # (and of the plain dense kind, attention layers alone: its random case)
+          "$E" kv12check --case dense
+          "$E" usercheck dense --users 8 --level penguin --kv12
+      - name: The 12-bit lossless KV pages of the latent attention kind (random Kimi-K3 and GLM-5.3-Flash made here; kvpages.rs kv12check, logits.rs usercheck --kv12)
+        run: |
+          # (a latent is one stream of the pages, its row in heads of 128; its attention reads a sequence's pages unpacked to bf16, so every token reads back and every reply is the bf16 cache's)
+          "$E" kv12check --case kimi
+          "$E" kv12check --case glm
+          "$E" usercheck kimi --users 4 --level penguin --kv12
+          "$E" usercheck glm --users 4 --level penguin --kv12
+          # (pools too small for all at once, with every page raw (the bases moved): the raw slabs are never fewer than one sequence alone at the run's context takes
+          # (`Lossless::alone_slabs`: 50 a ring at the 512 tokens of eight replies, 100 for the random model's two latent rings), and the eight replies of 5 to 208
+          # prompt tokens and 24 made take 2 + 4 + ... + 15 = 69 pages a ring, 138 at once: sequences are sent back for room. Four replies (40 pages) never were,
+          # under a floor of 68 at their 256 tokens; usercheck fails a run with small pools where none is sent back)
+          GLYD_KV12_SHIFT=60 GLYD_KV12_POOL=1,0 "$E" usercheck kimi --users 8 --level penguin --kv12
       - name: Logits of every model family against the stored references (glyd-engine/tests/logits, src/logits.rs)
         run: |
           # (a random model of each family's layout with its layer kinds, made here: only models released in the last six months are used, and those are larger than a 16 GB card holds; a fixture's bound is the
-          # reference's KL, or the same bits as the engine's own recorded output on this GPU generation)
+          # reference's KL, or the same bits as the engine's own recorded output on this GPU's kernel set: compute capability, name words, SMs)
           "$E" logitscheck --fixtures glyd-engine/tests/logits
-      - name: Each lossy level's KL from penguin against its threshold (Qwen3.5, Gemma 4 and Nemotron-H random models; kestrel, swift, wren; logits.rs levelcheck)
+      - name: Each lossy level's KL from penguin against its threshold (random Qwen3.5, Gemma 4 and state-space models at kestrel, linnet and wren; random DeepSeek-V4, Muse Spark, Kimi-K3 and GLM-5.3-Flash at hummingbird; logits.rs levelcheck)
         run: |
           "$E" levelcheck --fixtures glyd-engine/tests/logits
-      - name: The hand-written Qwen3.5, Gemma 4 and Nemotron-H engines against the description executor (R3b's parity record; logits.rs paritycheck)
-        run: |
-          # (the same random model, prompt and decode tokens as each R7 fixture, at each level it bounds that the hand-written engine runs)
-          "$E" paritycheck --fixtures glyd-engine/tests/logits
-      - name: Several sequences at once on the description executor (random Gemma 4, Qwen3.5-layout, Muse Spark, Kimi-K3 and GLM-5.3 models, each reply against the one-at-a-time reply; logits.rs usercheck)
+      - name: Several sequences at once on the description executor (random Gemma 4, Qwen3.5-layout in both its shapes, plain dense, Muse Spark, Kimi-K3, GLM-5.3-Flash and GLM-5.3 models, GLM-5.3's also in FP8 as released, each reply against the one-at-a-time reply; logits.rs usercheck)
         run: |
           # (prompts one a pass: every reply at once the reply alone, token for token; prompts together: counted)
-          for c in gemma4 qwen35 muse kimi glm; do
+          for c in gemma4 qwen35 qwen35-wide dense muse kimi glm glm-dsa glm-dsa-f8; do
             GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck "$c" --users 4 --level penguin
+            # (a round is one step: the rows that decode and the prompts' chunks in one pass; some step holds both. Then at 64 rows a step, and the round of two passes)
             "$E" usercheck "$c" --users 4 --level penguin
+            GLYD_ENGINE_STEP_TOKENS=64 "$E" usercheck "$c" --users 4 --level penguin
+            GLYD_ENGINE_ONE_STEP=0 "$E" usercheck "$c" --users 4 --level penguin
+            # (one sequence's logits by what its step holds beside it, against its row alone: what the other sequences hold changes nothing, and a step of 16 rows or fewer is the row's own
+            # pass bit for bit; the larger steps are counted. logits.rs roundcheck)
+            "$E" roundcheck "$c"
+            # (and where every reply is to be the reply alone: decode steps of up to 64 sequences, not a bit of a row's logits differing from its row alone)
+            GLYD_ENGINE_BATCH_PREFILL=0 "$E" roundcheck "$c"
+            # (a finished sequence kept in its slot and gone on with, as a conversation's next turn does: against a sequence that ran the same tokens and never ended, bit for bit;
+            # through the scheduler, the prompt tokens found and the reply. logits.rs keepcheck)
+            "$E" keepcheck "$c"
           done
           # (more users than the dense engine's 8 rows: 16 at once, prompts one a pass)
           GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck gemma4 --users 16 --level penguin
+          # (and 32: more than the 16 rows whose bits the kernels keep, so their decode steps are two passes; still every reply the reply alone)
+          GLYD_ENGINE_BATCH_PREFILL=0 "$E" usercheck gemma4 --users 32 --level penguin
           # (paged keys and values run out: 8 users on 24 blocks a group, each sequence sent back gives its blocks back and runs again; every reply comes, none fails)
           GLYD_ENGINE_PAGES=24 "$E" usercheck gemma4 --users 8 --level penguin
+          # (a model of the dynamic route with its layers cut into stages, as `run` cuts them over GPUs: both stages on this GPU, every pass's logits the one-GPU run's bits)
+          "$E" splitcheck qwen35
+          "$E" splitcheck qwen35-wide
+          # (two models in one process, R16: each with its scheduler in a runtime context of its own, a round of one between two rounds of the other; every reply the reply alone, each context's figures its own)
+          "$E" twomodels gemma4 qwen35
+          "$E" twomodels muse kimi
+          # (R1a: a buffer belongs to its context: one of a second context on the GPU written, read, zeroed and freed while the first is current)
+          "$E" bufcheck
+      - name: Requests of every sampling at once through the scheduler, the rows their draws see made on the GPU (random Gemma 4, Qwen3.5-layout and plain dense models; logits.rs samplecheck, #138)
+        run: |
+          # (prompts one a pass: each request at once its run alone token for token and the host's draws from its whole rows; greedy, a top-k, a JSON schema's grammar, the penalties, a bias,
+          # an allowed list and a least length in the same steps)
+          for c in gemma4 qwen35 dense; do GLYD_ENGINE_BATCH_PREFILL=0 "$E" samplecheck "$c" --users 8 --vocab 0; done
+          # (prompts together and 64 users: every request the host's draws; the replies like alone counted)
+          "$E" samplecheck gemma4 --users 64 --vocab 0
+      - name: Nemotron-H's developer tools on the executor (a random M*ME model made here, nhtoy with and without the decode graph, nhoffload through the expert cache, kcheck_nh.rs)
+        run: |
+          d="$RUNNER_TEMP/nh"
+          rm -rf "$d" && mkdir -p "$d/io"
+          "$E" nhrandom "$d/model"
+          echo "4 12 6" > "$d/io/toy.txt"
+          seq 1 12 > "$d/io/ids.txt"
+          "$E" nhtoy "$d/model" "$d/io"
+          "$E" nhoffload "$d/model" "$d/io"
+          rm -rf "$d"
+      - name: The expert cache against every expert on the GPU (R12 and hummingbird; random DeepSeek-V4, GLM-5.3-Flash, Muse Spark, Kimi-K3, Qwen3.5-with-experts and GLM-5.3 models; tiering.rs tiercheck)
+        run: |
+          # (copy mode: the products over the cache's places are the resident layer's. The same bits where the cache's calls are the resident pass's; where they are not, the differences are printed with --report: tiering.rs says which and why)
+          # (DeepSeek-V4's FP4 experts: 4 choices a token over 2 places, so every call is waves, a decode step's too)
+          "$E" dsv4random /tmp/v4-tier
+          "$E" tiercheck /tmp/v4-tier --places 2
+          # (its hummingbird directory: the same bits where every pair of a call has a place; with 2 places the pairs that find none are the host's in copy mode too, and are printed, with the host's own mode beside them)
+          "$E" calibrate-experts /tmp/v4-tier /tmp/v4-tier-usage.json --tokens 512 --context 256 --synthetic
+          "$E" pack /tmp/v4-tier /tmp/v4-tier-hb --layout hummingbird --usage /tmp/v4-tier-usage.json
+          "$E" tiercheck /tmp/v4-tier-hb --places 15 --tokens 6
+          "$E" tiercheck /tmp/v4-tier-hb --places 2 --report
+          "$E" tiercheck /tmp/v4-tier-hb --places 2 --mode cpu
+          # (GLM-5.3-Flash at a block level: its experts in places of the level's layout)
+          "$E" glmrandom /tmp/glm-tier
+          "$E" tiercheck /tmp/glm-tier --places 2 --layout i6
+          # (GLM-5.3-Flash's FP8 experts as released: each packed on its own in places, the heads made the place's; a call's pairs no more than the places. The same bits at any prompt length: the FP8 product adds a row group's K in one block, whatever its call holds)
+          "$E" glmrandom /tmp/glm-f8 --fp8
+          "$E" tiercheck /tmp/glm-f8 --places 6 --tokens 6
+          "$E" tiercheck /tmp/glm-f8 --places 6 --report
+          # (Muse Spark's lossless experts: the stack's tiered pack cut per expert, each place its own block entries; glyd_gpu_mma_moe_placed. As the FP8 experts': a call of as many tokens as the places hold)
+          "$E" muserandom /tmp/muse-tier
+          "$E" tiercheck /tmp/muse-tier --places 6 --tokens 6
+          "$E" tiercheck /tmp/muse-tier --places 6 --report
+          # (dense layers in the computer's memory, dense_ram.rs: the last two layers' matrices copied into one slot before each runs; the same bits)
+          "$E" tiercheck /tmp/muse-tier --places 6 --dense 2 --tokens 6
+          "$E" logitsmodel kimi /tmp/kimi-tier
+          "$E" tiercheck /tmp/kimi-tier --places 4 --dense 2
+          # (the Qwen3.5 layout with experts, 32 a layer of which a token takes 10: penguin's lossless bf16 experts the stack's tiered pack cut per expert, a block level's each expert's packs; 12 places hold a step's choices, 4 make every call waves; the same bits either way, the last two layers' dense matrices in the computer's memory too)
+          "$E" logitsmodel qwen35moe /tmp/q35m-tier
+          "$E" tiercheck /tmp/q35m-tier --places 12 --tokens 6
+          "$E" tiercheck /tmp/q35m-tier --places 4
+          "$E" tiercheck /tmp/q35m-tier --places 4 --layout i6
+          "$E" tiercheck /tmp/q35m-tier --places 12 --dense 2 --tokens 6
+          # (GLM-5.3 as released in FP8: each expert packed on its own in places, as GLM-5.3-Flash's)
+          "$E" logitsmodel glm-dsa-f8 /tmp/glm-dsa-f8-tier
+          "$E" tiercheck /tmp/glm-dsa-f8-tier --places 6 --tokens 6
+          "$E" tiercheck /tmp/glm-dsa-f8-tier --places 6
       - name: The workspace back to the runner's user
         if: always()
         run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP" 2> /dev/null || echo 1000:1000)" "$GITHUB_WORKSPACE" || true

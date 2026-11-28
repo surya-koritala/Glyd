@@ -13,15 +13,15 @@ glyd run MODEL          # the goal: works on any supported machine, with no flag
 What holds today:
 
 - `glyd-engine fit MODEL` prints the plan (level, placement, context, predicted tokens/s) before any download.
-  `glyd-engine run` and `serve` do not yet load by that plan (P2a).
+  `glyd-engine run` and `serve` load by that plan: every loader takes the plan `fit` printed (P2a).
 - `glyd-engine run` refuses with one line and a fix where it cannot run a model (`machine.rs`, `support.rs`).
 - Every choice can be overridden: `MODEL:level`, `--context`, `--split`, `--devices`, `--users`.
 - At run time the engine needs only the GPU driver, which it opens itself (`glyd-engine/src/ffi.rs`); building it needs
-  nvcc, or hipcc for AMD. The v0.33.0 `install.sh` installs the engine without Python; `glyd run` goes through the Python tool (vLLM) only where that tool is installed and the GPU is not one the engine is the default on.
+  nvcc, or hipcc for AMD. The v0.33.0 `install.sh` installs the engine without Python; `glyd run` goes through the Python tool (vLLM) only where that tool is installed and the model is a plain dense one at penguin on a GPU the engine is not the default on: every other family and level is the engine's.
 
 What is planned:
 
-- One `glyd` binary with the engine linked, no Python, no toolkit (P1). The AMD HIP runtime would ship in the backend bundle.
+- A small core that downloads its backend, so that the AMD HIP runtime ships in a backend bundle (P7b); today an AMD build is a development build.
 - Adapting at run time when other programs take GPU memory, instead of refusing at start. Today an out-of-memory load is
   refused with the numbers.
 - Datacenter transports (NCCL, RCCL, NIXL) loaded when present. The engine uses none of them today.
@@ -49,25 +49,25 @@ Decision order (`glyd fit MODEL` prints every step; today `glyd-engine fit`):
 
 1. **Backend**: the best available device vendor; CPU if none.
 2. **Format**: the release's own format if it fits (bf16 → lossless pack; FP8/FP4 kept exactly); else the highest lossy
-   level that fits at the minimum context (kestrel 6.5 → swift 5.5 → wren 4.5 → hummingbird ~2-3 bits on experts).
+   level that fits at the minimum context (kestrel 6.5 → linnet 5.5 → wren 4.5 → hummingbird ~2-3 bits on experts).
 3. **Placement**: dense layers on the fastest tier that holds them, split across GPUs when one is not enough; MoE experts
    ranked by use, hot experts on the GPU, the rest in RAM (computed on the CPU) or on NVMe; layer ranges on other
    machines only when local tiers cannot hold the model.
 4. **Context and users**: the KV cache takes what is left, sized for the asked context, else the largest that fits.
 5. **Speed**: the cost profile against measured rates gives tokens/s; if below a floor, the next level down is offered.
 
-The flowchart is the target. Today `fit` prints a plan like it, and `run` follows `support.rs`'s table, not the plan.
+The flowchart is the target. Today `fit` prints a plan like it, and `run` and `serve` load by it, within the levels and placements `support.rs`'s table allows the family.
 
 ```mermaid
 flowchart TD
   A["glyd run MODEL<br/>model bytes vs free memory"] --> Q1{"Fits VRAM bit for bit?"}
   Q1 -- yes --> L["Lossless (penguin)<br/>sign+mantissa byte, exponent coded<br/>≈10.75 bits, decoded in the kernel"]
   Q1 -- no --> Q2{"Fits at a lossy level?"}
-  Q2 -- yes --> Y["kestrel 6.5 · swift 5.5 · wren 4.5 bits<br/>KL printed before download"]
+  Q2 -- yes --> Y["kestrel 6.5 · linnet 5.5 · wren 4.5 bits<br/>KL printed before download"]
   Q2 -- no --> Q3{"MoE, RAM to spare?"}
   Q3 -- yes --> C["Expert tiers (hummingbird)<br/>hot experts in VRAM, rest in RAM/NVMe<br/>CPU computes misses"]
   Q3 -- no --> Q4{"More GPUs here?"}
-  Q4 -- yes --> G["Split across GPUs<br/>(tensor/expert parallel: M5)"]
+  Q4 -- yes --> G["Split across GPUs<br/>(tensor/expert parallel: M4)"]
   Q4 -- no --> Q5{"Other machines joined?"}
   Q5 -- yes --> S["Starlings: layer ranges per machine<br/>mutual TLS, one round trip a step"]
   Q5 -- no --> R["Refuse with the numbers"]
@@ -78,13 +78,13 @@ speed above a floor.
 
 The pieces exist today: `glyd-engine/src/plan.rs` (the planner behind `glyd-engine fit`), `costs.rs` (cost profile and
 rates), `machine.rs` and `preflight` (probe), `offload.rs` (expert cache), `dynamic/split.rs` (layer split), `starlings/`
-(other machines). `run` and `serve` do not load by the plan yet, and `fit` can plan runs that `run` refuses: one
-capability table shared by `fit`, `run` and refusals (P16) and loading by the plan (P2a) close that gap. Machines whose GPU
+(other machines). `run` and `serve` load by the plan, and `fit`, `run` and the refusals read one
+capability table (`support.rs`, P16), so `fit` plans no run that `run` refuses (P2a, P16). Machines whose GPU
 shares the computer's memory (Apple, DGX Spark, Jetson, Strix Halo) count that memory once.
 
 ## Runtime layers
 
-The target; today most families have their own pipeline, and batching exists on the Qwen3 path only (M2 replaces them).
+The target; today every family runs on the description executor through one scheduler, with batching and paged KV (M2).
 
 ```
 APIs            OpenAI (chat, completions, responses, embeddings) · Anthropic · Ollama · MCP · C ABI · Rust crate
@@ -122,29 +122,34 @@ pub trait Backend {
 }
 ```
 
-Within CUDA and HIP, one device layer (memory, streams, events, graphs, modules) sits under the kernels (R1). Dispatch is
+Within CUDA and HIP, one device layer (memory, streams, events, graphs, modules) sits under the kernels (R1a for CUDA in M2, R1b for HIP in M5b). Dispatch is
 dynamic at the layer-kind boundary; nothing is generic over the backend engine-wide.
 
 | Backend | Kernels | Libraries | State |
 | :--- | :--- | :--- | :--- |
-| CUDA | `glyd-engine/kernels/*.cu`, `gpu/glyd_gpu.cu` (mma.sync, cp.async; wgmma on H100/H200) | cuBLAS(Lt) when present; NCCL planned (C2a) | sm_80-sm_120, driver ≥ 535 (570 for Blackwell; a build with CUDA 13's kernels alone: 580), Linux x86_64; the default only on measured GPUs (S10) |
-| ROCm/HIP | the same sources through `gpu/hip.h` (tensor ops emulated today); wave64 and MFMA paths for CDNA | hipBLASLt, RCCL planned | RDNA 3/4 development builds (`GLYD_HIP=1`); CDNA to do |
-| Metal | MLX via `mlx-c` for dense ops; Glyd's formats as custom Metal kernels | MLX | To do |
-| CPU | AVX2, AVX-512, NEON (`cpu_*.rs`) | none | Experts only; whole models to do |
+| CUDA | `glyd-engine/kernels/*.cu`, `gpu/glyd_gpu.cu` (mma.sync, cp.async; wgmma on H100/H200) | cuBLAS(Lt) when present; CUTLASS/FlashInfer (V8a, M2); NCCL planned (C2a, M4) | sm_80-sm_120, driver ≥ 535 (570 for Blackwell; a build with CUDA 13's kernels alone: 580), Linux x86_64; the default only on measured GPUs (S10) |
+| ROCm/HIP | the same sources through `gpu/hip.h` (tensor ops emulated today); wave64 and MFMA paths for CDNA | hipBLASLt, aiter, composable_kernel (V8b, M5b); RCCL planned | RDNA 3/4 development builds (`GLYD_HIP=1`); CDNA to do (M5b) |
+| Metal | MLX via `mlx-c` for dense ops; Glyd's formats as custom Metal kernels | MLX | To do (M5a) |
+| CPU | AVX2, AVX-512, NEON (`cpu_*.rs`) | none | Experts only; whole models to do (M5a) |
 
 The engine opens the driver at run time (`glyd-engine/src/ffi.rs`), but the vendor is a build-time choice today
 (`cfg(glyd_hip)`). The release carries the engine's kernels twice, built with CUDA 13 (compressed) and CUDA 12.9 (not compressed, so that a driver of
-CUDA 12.2 reads them), and the GPU library for both; the driver's version picks (`dev.rs`, `ffi.rs`), and the release build adds the compute_89 PTX so
+CUDA 12.2 reads them), and no GPU library (a CUDA build loads none); the driver's version picks the kernels (`dev.rs`), and the release build adds the compute_89 PTX so
 a GPU newer than the machine code still runs (P6). The target is a small core that downloads the signed kernel bundle for the machine's vendor (P7b).
 
-## Build or reuse
+## Build or reuse (split execution bottom)
 
-Used today: `tokenizers`, `minijinja` (chat templates), `flate2`, `sha2`, `ureq`; the Hub client, safetensors reader and
-JSON parser are Glyd's own. Planned (all Apache-2.0/MIT/BSD): `llguidance` (constrained decoding, R5a), `cudarc` for NCCL
-(C2a), `mlx-c` (V3a), NIXL (after 1.0), and kernel libraries where they beat Glyd's own (V8: FlashInfer, CUTLASS, Marlin,
-aiter and composable_kernel). Built here: the kernels for Glyd's formats (one CUDA/HIP source tree, MLX custom Metal
-kernels, Rust SIMD on CPU), the KV block store and scheduler, the planner, the GGUF reader (quant kernels ported from
-ggml), and the API front ends.
+Used today: `tokenizers`, `minijinja` (chat templates), `flate2`, `sha2`, `ureq`, `llguidance` (constrained decoding, R5a), `tokio` (the async front end); the Hub client, safetensors reader and
+JSON parser are Glyd's own. Planned (all Apache-2.0/MIT/BSD): `cudarc` for NCCL
+(C2a), `mlx-c` (V3a), NIXL (after 1.0), and kernel libraries where they beat Glyd's own (`V8a` in M2: FlashInfer, CUTLASS,
+Marlin, cuBLASLt — including datacenter Blackwell `sm_100` standard dense/FP8/NVFP4 GEMMs; `V8b` in M5b: hipBLASLt, aiter
+and composable_kernel). Built here: the kernels for Glyd's compressed formats (one CUDA/HIP source tree, MLX custom Metal
+kernels, Rust SIMD on CPU), 12-bit lossless KV attention, async MoE expert streaming, the KV block store and scheduler, the
+SLO-aware planner, the GGUF reader (canonical quant kernels ported from ggml), and the API front ends.
+
+The invariant across 8 GB cards to datacenter nodes is a **split execution bottom**: unify the binary, `ModelDesc`, scheduler,
+memory/KV/expert-tier fabric and planner, while owning custom kernels only at the compression/offload boundary and delegating
+compute-bound standard dense/FP8/NVFP4 ops to proven vendor libraries.
 
 ## Formats
 
@@ -152,9 +157,9 @@ ggml), and the API front ends.
 | :--- | ---: | :---: | :--- |
 | penguin (`mma`, `mma12`) | ~10.75 / ~12.04 | yes | bf16 weights bit for bit; layout chosen per GPU |
 | FP8 / FP4 / MXFP4 releases | as released | yes | kept as the release's codes; FP8 also in a ~7-bit lossless coding |
-| kestrel / swift / wren | 6.5 / 5.5 / 4.5 | no | Int6 / Int5 / Int4; wren keeps QAT 4-bit releases exactly |
+| kestrel / linnet / wren | 6.5 / 5.5 / 4.5 | no | Int6 / Int5 / Int4; wren keeps QAT 4-bit releases exactly |
 | hummingbird | ~2-3.4 on experts | no | experts' bits by use; attention 4-6 bits |
-| KV cache | 12 (bf16 16) | yes | per-model tables; paged on the Qwen3 path today, every model in M2 |
+| KV cache | 12 (bf16 16) | yes | per-model tables; the executor's pages are bf16, or 12-bit where `GLYD_KV=lossless` asks for them (where the model's attention has heads of 128, 256 or 512 channels or is a latent attention, and no draft model runs beside it) and they reserve no more than bf16 for the plan: the plan chooses and says which (`kv_format`), and the loader follows it. `kv12check` and `usercheck --kv12` hold the Qwen3.5 layout's too |
 
 `glyd verify` checks a lossless pack tensor by tensor against the source's sha256.
 
@@ -191,8 +196,8 @@ sequenceDiagram
   A-->>C: stream
 ```
 
-- In one machine: layer split today (`--split`, `--devices`) for Nemotron-H, Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark at their lossless level, and not for Qwen3, Qwen3.5 or Gemma 4 (`support.rs`); tensor and expert parallel over P2P, NVLink or NCCL/RCCL
-  in M5.
+- In one machine: layer split today (`--split`, `--devices`) for the Qwen3.5 layout at every level (the lossy levels in stages), Nemotron-H, GLM-5.3, DeepSeek-V4.1 and Qwen3.8-Flash-Next at penguin, and Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark at penguin and hummingbird, and not for the plain dense kind or Gemma 4 (`support.rs`, `split_levels`); tensor and expert parallel over P2P, NVLink or NCCL
+  in M4 (RCCL in M5b).
 - Across machines (`starlings/`): enrollment with fingerprints, mutual TLS over TCP, the engine's `rangeworker` per
   stage (`docs/range-worker.md`); RDMA transports for datacenters.
 - One planner decides between them from measured link rates.
@@ -206,6 +211,6 @@ sequenceDiagram
 | `glyd-gpu/` | packer and verifier |
 | `src/`, `glyd-store/` | codec and store |
 | `starlings/` | cluster: own Cargo workspace, `rust-toolchain.toml` |
-| `condor/` | MoE-on-one-GPU setup scripts, chat app, benchmarks |
+| `ibis/` | MoE-on-one-GPU setup scripts, chat app, benchmarks |
 | `bindings/`, `glyd-gpu-py/` | Python/Go bindings, Python GPU package (frozen) |
 | `benchmarks/`, `research/` | measured results and research records |

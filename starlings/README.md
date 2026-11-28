@@ -2,14 +2,14 @@
 
 One model across several GPUs: two cards in one machine, or machines on one LAN. Each GPU holds a contiguous range of
 layers; tokens cross between stages once per step, and the output is the same tokens the whole model gives on one card.
-Becomes `glyd cluster` ([ROADMAP.md](../ROADMAP.md), M5).
+Becomes `glyd cluster` ([ROADMAP.md](../ROADMAP.md), M4).
 
 **Beta:** 2 GPUs, 2 machines, NVIDIA on Linux, Qwen3.5-family models. Guide: [docs/beta.md](docs/beta.md).
 
 ```bash
-starlings up --model glyd/Qwen3.8-27B-swift                 # one machine, its GPUs
-starlings up --model glyd/Qwen3.8-27B-swift --machines 2    # first machine; prints a join code
-starlings join --model glyd/Qwen3.8-27B-swift               # second machine; enter the code, approve on the first
+starlings up --model glyd/Qwen3.8-27B-linnet                 # one machine, its GPUs
+starlings up --model glyd/Qwen3.8-27B-linnet --machines 2    # first machine; prints a join code
+starlings join --model glyd/Qwen3.8-27B-linnet               # second machine; enter the code, approve on the first
 ```
 
 Then a chat page and an OpenAI-style `/v1/chat/completions` on loopback. Two RTX 4090 machines (0.4-0.6 ms apart):

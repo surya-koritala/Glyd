@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # A model card's task benchmarks (GSM8K, MMLU-Pro through `glyd serve`, Inspect AI, non-thinking), into cards/<model>-<level>.json under "evals".
-#   bash tools/cards/evals.sh [--dry-run] [--as-bf16-for CARD.json] MODEL REVISION LEVEL CLASS [--shards N] [--limit N]    e.g.  glyd/Qwen3.8-27B-swift 690a3ff5... swift a6000 --shards 8
+#   bash tools/cards/evals.sh [--dry-run] [--as-bf16-for CARD.json] MODEL REVISION LEVEL CLASS [--shards N] [--limit N]    e.g.  glyd/Qwen3.8-27B-linnet 690a3ff5... linnet a6000 --shards 8
 # TASKS=gsm8k (env): one benchmark only. One pod per shard (every N-th question of each task), through rp_class.sh; the shards' results are merged weighted by their question counts. --limit: at most N questions per task per shard.
-# The bf16 baseline is the same command on the source model at LEVEL bf16 (stock vLLM serves it: the engine's lossless path runs Qwen3 only so far) with --as-bf16-for cards/X-swift.json: stored there as "evals_bf16".
+# The bf16 baseline is the same command on the source model at LEVEL bf16 (stock vLLM serves it: the engine's lossless path runs Qwen3 only so far) with --as-bf16-for cards/X-linnet.json: stored there as "evals_bf16".
 # --dry-run starts nothing (no runpodctl) and prints the plan and the worst-case cost.
 set -u
 DRY=0; SHARDS=1; LIMIT=0; BF16=""; POS=()
@@ -11,7 +11,7 @@ while [ $# -gt 0 ]; do case $1 in --dry-run) DRY=1; shift;; --shards) SHARDS=$2;
 MODEL=${POS[0]}; REV=${POS[1]}; LEVEL=${POS[2]}; C=${POS[3]}
 ROOT=$(git -C "$(dirname "$0")" rev-parse --show-toplevel); cd "$ROOT" || exit 1
 . tools/runpod/classes.sh
-case $LEVEL in bf16|penguin|kestrel|swift) ;; *) echo "LEVEL is bf16, penguin, kestrel or swift"; exit 2;; esac
+case $LEVEL in bf16|penguin|kestrel|linnet) ;; *) echo "LEVEL is bf16, penguin, kestrel or linnet"; exit 2;; esac
 class_types "$C" > /dev/null || { echo "unknown GPU class $C"; exit 2; }
 [[ $SHARDS =~ ^[1-9][0-9]*$ && $LIMIT =~ ^[0-9]+$ ]] || { echo "--shards and --limit are whole numbers"; exit 2; }
 BASE=$(basename "$MODEL"); BASE=${BASE%-$LEVEL}; CARD=${BF16:-cards/$BASE-$LEVEL.json}; KEY=evals; [ -n "$BF16" ] && KEY=evals_bf16

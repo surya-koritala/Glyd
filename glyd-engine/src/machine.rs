@@ -30,6 +30,21 @@ pub fn driver_min(cc: (i32, i32)) -> i32 {
     driver_min_for(KERNELS12, cc)
 }
 
+/// What `run`, `serve` and `fit` say on a GPU whose driver reports CUDA `driver` (12090 for 12.9) where the build carries the CUDA 12 kernels beside the CUDA 13 ones
+/// (`both`, a release's): the driver takes the CUDA 12 kernels (dev.rs `pick_fatbin`; a CUDA build loads no GPU library), and says why and
+/// how fast. Measured 2026-11-23: gemma-4-12B at wren on an RTX 4080 SUPER with the CUDA 12 pair against the CUDA 13 one, every load of the bench's gate suite
+/// within 0.3% (decode and prompt). None on a driver of CUDA 13, or a build with one pair.
+pub fn cuda12_note(driver: i32, both: bool) -> Option<String> {
+    (both && driver > 0 && driver < 13000).then(|| {
+        format!(
+            "this driver (the {} series) reports CUDA {}.{}, not 13, so the engine runs its CUDA 12 kernels; they measured as fast as the CUDA 13 ones (gemma-4-12B on an RTX 4080 SUPER, within 0.3%). A driver of 580 or newer runs the CUDA 13 ones.",
+            driver_series(driver),
+            driver / 1000,
+            driver % 1000 / 10
+        )
+    })
+}
+
 /// The driver series that reports CUDA version `cuda` (13000 for 13.0): 580 for CUDA 13.0, 575 for 12.9, 570 for 12.8, 550 for 12.4, 535 for 12.2.
 pub fn driver_series(cuda: i32) -> i32 {
     match cuda {
@@ -112,13 +127,19 @@ pub fn instead(with_vllm: &str, rust_only: &str) -> String {
 }
 
 /// The Rust-only install's way to the models and GPUs the engine does not run: the whole tool.
-pub const FULL_TOOL: &str = "install the full glyd, which runs it another way: curl -LsSf https://getglyd.com/install.sh | sh";
+pub const FULL_TOOL: &str = "install the full glyd, which runs it another way: curl -LsSf https://getglyd.com/install.sh | GLYD_WITH_VLLM=1 sh";
+
+/// Whether a run skips the measured list (`GPUS`): the user asked for the engine by name (`asked`: GLYD_ENGINE=1), or vLLM is not installed. The list chooses between the engine and vLLM where
+/// both are here; with the Rust install alone (no Python: the installer's default) the engine is what there is, and it runs on every GPU it supports, measured or not (#214).
+pub fn engine_chosen(asked: bool) -> bool {
+    asked || !vllm_installed()
+}
 
 /// A line of the list: the word the driver's name for the GPU holds, the GPU's compute capability, and the model families the engine is measured on there.
 pub type Entry = (&'static str, (i32, i32), &'static [&'static str]);
 
 /// The family of the Qwen3 dense models (Qwen3ForCausalLM), the one `glyd run` hands to the engine by default: the lossless levels of the others are vLLM's, and their lossy levels are the engine's by the user's asking
-/// (`:kestrel`, `:swift`), where this list is not looked at (vLLM has no lossy levels).
+/// (`:kestrel`, `:linnet`), where this list is not looked at (vLLM has no lossy levels).
 pub const QWEN3: &str = "Qwen3";
 
 /// For a path that is the engine's whatever the list (the user asked for it by name, or a lossy level): the list is not looked at, and no family is named.
@@ -129,18 +150,19 @@ pub const ANY_FAMILY: &str = "";
 ///
 /// THE SPEED BAR: a family is here on a GPU only where the engine has been measured at least as fast as vLLM at every load it would serve there, with less memory (the engine serves up to 8 users at once, so
 /// `glyd serve` is vLLM's, whatever is here), and has run on the GPU. Measurements decide it, not what the engine can run: it was EMPTY until they were made (the first line, the RTX 4080 SUPER, is of 2026-11-20), and while it is empty every model runs as
-/// it did in v0.28 (vLLM). Every GPU not named here, and every compute capability, runs vLLM. Adding a GPU, once the engine is measured on it, is one line here, e.g. `("L4", (8, 9), &["Qwen3"]),` (docs/adding-a-gpu.md: `scripts/gpu_bar.py` reads the two measurement files).
+/// it did in v0.28 (vLLM). Where vLLM is installed, every GPU not named here, and every compute capability, runs vLLM; with the Rust install alone the engine runs on every GPU it supports (`engine_chosen`). Adding a GPU, once the engine is measured on it, is one line here, e.g. `("L4", (8, 9), &["Qwen3"]),` (docs/adding-a-gpu.md: `scripts/gpu_bar.py` reads the two measurement files).
 pub const GPUS: &[Entry] = &[
     // measured 2026-11-20 on glyd-pc, Qwen3-8B, 1, 4 and 8 users at once with short, 2,000 and 4,000-token prompts, 5 runs of each engine: benchmarks/gpu/rtx4080s-bar-2026-11-20
     ("RTX 4080 SUPER", (8, 9), &["Qwen3"]),
 ];
 
-/// The architectures of the computers the engine has run a model on (`std::env::consts::ARCH`): a GH200 is a Grace computer, and the engine has not run on one. Adding one takes a run on its GPU
-/// (a GH200, a DGX Spark, a Jetson Thor), which CI has none of.
-pub const ARCHS: &[&str] = &["x86_64"];
+/// The architectures the engine plans for (`std::env::consts::ARCH`): an aarch64 computer (GH200, GB200, DGX Spark, Jetson Thor, an Arm workstation) is planned as an x86_64 one is, and is
+/// refused, as one is, only by its GPU: the compute capability, the driver, and the measured list (`GPUS`), which names no Arm-hosted GPU until one is measured (#459). Another architecture
+/// is refused here.
+pub const ARCHS: &[&str] = &["x86_64", "aarch64"];
 
-/// The architectures CI builds the engine on and runs its host-side unit tests on, with no GPU (ci.yml: `ubuntu-24.04-arm` for aarch64): what a refusal by `ARCHS` says is proven there, and
-/// what is not. It proves the build and the tests; it is not a run on a GPU, so it adds nothing to `ARCHS`.
+/// The architectures CI builds the engine on and runs its host-side unit tests on, with no GPU (ci.yml: `ubuntu-24.04-arm` for aarch64, where the CPU expert kernels run as NEON): what a
+/// refusal by `ARCHS` of another architecture says is proven where.
 pub const ARCHS_BUILT: &[&str] = &["x86_64", "aarch64"];
 
 /// The most positions the KV cache's tables cover.
@@ -289,7 +311,7 @@ pub fn wddm_note(name: &str, free: u64, total: u64) -> (String, String) {
             gb(free),
             gb(total)
         ),
-        "Set NVIDIA Control Panel, Manage 3D settings, CUDA - Sysmem Fallback Policy, to 'Prefer No Sysmem Fallback' (driver 536 or newer): an allocation that does not fit then fails with the memory said; close programs that hold GPU memory (the browser, games) before a large model".to_string(),
+        format!("The plans keep {} more of the GPU free here than on Linux. Set NVIDIA Control Panel, Manage 3D settings, CUDA - Sysmem Fallback Policy, to 'Prefer No Sysmem Fallback' (driver 536 or newer): an allocation that does not fit then fails with the memory said; close programs that hold GPU memory (the browser, games) before a large model", gb(crate::plan::WDDM_EXTRA)),
     )
 }
 
@@ -315,13 +337,13 @@ pub fn config_refusal(name: &str, c: &Config) -> Option<Refusal> {
     if c.head_dim != 128 {
         return Some(cannot(
             format!("{name}: its attention heads have {} values, and the engine's KV cache takes 128", c.head_dim),
-            instead("Other models run with vLLM", "Pick a Qwen3 model, which this engine runs: glyd run Qwen/Qwen3-8B"),
+            instead("Other models run with vLLM", "Pick a model of a family this engine runs: glyd run Qwen/Qwen3.8-27B"),
         ));
     }
     if c.kv_heads == 0 || !c.heads.is_multiple_of(c.kv_heads) || c.heads / c.kv_heads > MAX_GROUP {
         return Some(cannot(
             format!("{name} has {} query heads to {} KV heads, and the engine takes up to {MAX_GROUP} to one", c.heads, c.kv_heads),
-            instead("Other models run with vLLM", "Pick a Qwen3 model, which this engine runs: glyd run Qwen/Qwen3-8B"),
+            instead("Other models run with vLLM", "Pick a model of a family this engine runs: glyd run Qwen/Qwen3.8-27B"),
         ));
     }
     None
@@ -366,6 +388,16 @@ pub fn disk_refusal(name: &str, models: Option<u64>, cache: Option<u64>, same: b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #151: a driver of CUDA 12 under a build with both kernels is told why it runs the CUDA 12 ones, how fast they measured, and what runs the CUDA 13 ones;
+    /// a driver of CUDA 13, or a build with one pair, is told nothing.
+    #[test]
+    fn a_fallback_to_the_cuda_12_kernels_is_said_with_its_speed() {
+        let n = cuda12_note(12090, true).unwrap();
+        assert!(n.contains("575 series") && n.contains("CUDA 12.9") && n.contains("as fast as the CUDA 13") && n.contains("580"), "{n}");
+        assert!(cuda12_note(12040, true).unwrap().contains("CUDA 12.4"));
+        assert_eq!((cuda12_note(13000, true), cuda12_note(12090, false), cuda12_note(0, true)), (None, None, None));
+    }
 
     /// Lines of the kind `GPUS` gets once a GPU is measured, to test every rule with: the shipped list is a decision of the measurements (it is empty until they are made).
     const TABLE: &[Entry] = &[("A100", (8, 0), &["Qwen3"]), ("L4", (8, 9), &["Qwen3"]), ("H100", (9, 0), &["Qwen3"]), ("GH200", (9, 0), &["Qwen3"])];
@@ -444,12 +476,15 @@ mod tests {
         // and the refusals say the list the table holds, whatever it holds
         let said = refusal_on(TABLE, ARCHS, &gpu("NVIDIA B200", (10, 0), 180, 13000), "x86_64", false, "Qwen3").unwrap().what;
         assert!(said.ends_with("it runs on the A100, L4, H100 or GH200"), "{said}");
-        // an architecture added to ARCHS is one line too
+        // an aarch64 computer is planned as an x86_64 one: a GPU on the list is handed models on either, a GPU off it is refused for the bar on either; another architecture is refused for itself
         let grace = gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000);
-        assert!(
-            refusal_on(TABLE, ARCHS, &grace, "aarch64", false, "Qwen3").is_some()
-                && refusal_on(TABLE, &["x86_64", "aarch64"], &grace, "aarch64", false, "Qwen3").is_none()
+        assert!(refusal_on(TABLE, ARCHS, &grace, "aarch64", false, "Qwen3").is_none() && refusal_on(TABLE, ARCHS, &grace, "x86_64", false, "Qwen3").is_none());
+        let off = gpu("NVIDIA B200", (10, 0), 180, 13000);
+        assert_eq!(
+            refusal_on(TABLE, ARCHS, &off, "aarch64", false, "Qwen3").map(|r| r.what),
+            refusal_on(TABLE, ARCHS, &off, "x86_64", false, "Qwen3").map(|r| r.what)
         );
+        assert!(refusal_on(TABLE, ARCHS, &grace, "riscv64", false, "Qwen3").unwrap().what.contains("has not run on riscv64 computers"));
         // the shipped list: an L4 is handed models by the line `("L4", (8, 9), &["Qwen3"])`, which is all it takes
         let l4 = gpu("NVIDIA L4", (8, 9), 22, 13000);
         assert!(refusal_on(&[GPUS, &[("L4", (8, 9), &["Qwen3"])]].concat(), ARCHS, &l4, "x86_64", false, "Qwen3").is_none());
@@ -511,7 +546,7 @@ mod tests {
             for (g, arch, said) in [
                 (gpu("NVIDIA A100-SXM4-40GB MIG 1g.5gb", (8, 0), 5, 13000), "x86_64", "MIG slice"),
                 (gpu("Tesla T4", (7, 5), 15, 13000), "x86_64", "older"),
-                (gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000), "aarch64", "aarch64"),
+                (gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000), "riscv64", "riscv64"),
                 (gpu("NVIDIA GeForce RTX 4090", (8, 9), 24, 12080), "x86_64", "CUDA 12.8"),
             ] {
                 let r = refusal_on(table, ARCHS, &g, arch, true, "Qwen3").unwrap();
@@ -557,11 +592,9 @@ mod tests {
         assert!(said(gpu("NVIDIA A100-SXM4-40GB MIG 1g.5gb", (8, 0), 5, 13000), "x86_64").unwrap().1.contains("MIG slice"));
         let old = said(gpu("Tesla T4", (7, 5), 15, 13000), "x86_64").unwrap();
         assert!(old.0 == 3 && old.1.contains("7.5") && old.1.contains("older"), "{old:?}");
-        // a computer that is not x86-64 (a GH200 is a Grace and a Hopper: it has not run there)
-        let arm = said(gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000), "aarch64").unwrap();
-        assert!(arm.0 == 3 && arm.1.contains("aarch64") && arm.1.contains("GH200"), "{arm:?}");
-        // what CI proves of aarch64 is said (the build and the unit tests), and what it does not (a run on a GPU); a computer CI does not build on is only "not run"
-        assert!(arm.1.contains("builds and passes its unit tests") && arm.1.contains("has not run a model"), "{arm:?}");
+        // an aarch64 computer (a GH200 is a Grace and a Hopper) is planned as an x86_64 one: what its GPU decides, nothing for the architecture; another architecture is refused for itself
+        let gh200 = gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000);
+        assert_eq!(said(gh200.clone(), "aarch64"), said(gh200, "x86_64"));
         let other = said(gpu("NVIDIA GH200 480GB", (9, 0), 90, 13000), "riscv64").unwrap();
         assert!(other.1.contains("has not run on riscv64 computers yet") && !other.1.contains("unit tests"), "{other:?}");
         // Blackwell, Ampere's A10, Turing are not among the capabilities it has run on
@@ -641,7 +674,7 @@ mod tests {
             FORCE_VLLM.with(|f| f.set(Some(installed)));
             let rs = [
                 refusal_on(&[], ARCHS, &l4, "x86_64", false, "Qwen3").unwrap(),
-                refusal_on(TABLE, ARCHS, &gpu("NVIDIA L4", (8, 9), 22, 13000), "aarch64", true, "Qwen3").unwrap(),
+                refusal_on(TABLE, ARCHS, &gpu("NVIDIA L4", (8, 9), 22, 13000), "riscv64", true, "Qwen3").unwrap(),
                 refusal_on(TABLE, ARCHS, &old, "x86_64", true, "Qwen3").unwrap(),
                 config_refusal("x", &wide).unwrap(),
                 context_refusal("m", 100_000).unwrap(),
@@ -656,7 +689,7 @@ mod tests {
             assert!(!fix.contains("vLLM") && !fix.contains("vllm"), "{fix}");
         }
         assert!(alone[0].contains("GLYD_ENGINE=1 glyd run MODEL") && alone[0].contains("install.sh"), "{}", alone[0]);
-        assert!(alone[1].contains("install.sh") && alone[3].contains("Qwen/Qwen3-8B") && alone[4].contains("--context 40960"), "{alone:?}");
+        assert!(alone[1].contains("install.sh") && alone[3].contains("Qwen/Qwen3.8-27B") && alone[4].contains("--context 40960"), "{alone:?}");
         // the driver's update is exact either way: what it has, what the engine needs, and the command
         for fix in [&alone[2], &all(true)[2]] {
             assert!(fix.contains("runs CUDA 12.8") && fix.contains("CUDA 13.0") && fix.contains("580") && fix.contains("nvidia-driver-580"), "{fix}");
@@ -699,6 +732,19 @@ mod tests {
         assert!(gpu_refusal(&g, "x86_64", true, "Gemma4").is_none() && gpu_refusal(&g, "x86_64", true, ANY_FAMILY).is_none());
         let table: &[Entry] = &[("L4", (8, 9), &["Qwen3", "Gemma4"]), ("H100", (9, 0), &["Qwen3"])];
         assert!(on_list(table, &gpu("NVIDIA L4", (8, 9), 22, 13000), "Gemma4") && !on_list(table, &gpu("NVIDIA H100 80GB HBM3", (9, 0), 80, 13000), "Gemma4"));
+    }
+
+    /// The list chooses between the engine and vLLM: with the Rust install alone (no vLLM) an unmeasured GPU runs the engine, and where vLLM is installed it runs vLLM unless the engine is asked for.
+    #[test]
+    fn the_list_chooses_only_where_vllm_is_installed() {
+        let g = gpu("NVIDIA GeForce RTX 4090", (8, 9), 24, 13000);
+        FORCE_VLLM.with(|f| f.set(Some(false)));
+        assert!(engine_chosen(false) && engine_chosen(true));
+        assert!(gpu_refusal(&g, "x86_64", engine_chosen(false), QWEN3).is_none());
+        FORCE_VLLM.with(|f| f.set(Some(true)));
+        assert!(!engine_chosen(false) && engine_chosen(true));
+        assert!(gpu_refusal(&g, "x86_64", engine_chosen(false), QWEN3).is_some() && gpu_refusal(&g, "x86_64", engine_chosen(true), QWEN3).is_none());
+        assert!(FULL_TOOL.contains("GLYD_WITH_VLLM=1 sh"), "{FULL_TOOL}");
     }
 
     #[test]

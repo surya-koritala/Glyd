@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License"); see LICENSE. Unl
 software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
 
 This repository holds all of Glyd: the codec and CLI (src/), the store (glyd-store/), the GPU library and its kernels (gpu/), the
-packer (glyd-gpu/), the Python packages (bindings/python/, glyd-gpu-py/), the inference engine (glyd-engine/), Condor (condor/) and
+packer (glyd-gpu/), the Python packages (bindings/python/, glyd-gpu-py/), the inference engine (glyd-engine/), Ibis (ibis/) and
 Starlings, the multi-machine runner (starlings/). All of it is under the Apache License 2.0.
 
 Releases v0.29.0 to v0.32.1 were published under the Business Source License 1.1, and earlier releases under the licenses named in

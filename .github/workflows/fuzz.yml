@@ -1,6 +1,6 @@
 name: Fuzz
 # The parsers that read what a stranger sends (fuzz/: libFuzzer through cargo-fuzz, one target for each of them) fuzzed on CI machines of GitHub's: a minute for each on a pull request that touches a parser or the
-# targets, ten minutes each every night, and by hand (gh workflow run fuzz.yml -f seconds=3600 -f targets="gguf json"). A target's corpus is cached from run to run and cut down to what adds coverage after a
+# targets (a job a target, side by side, each from its own corpus as the last nightly kept it: one after another in one job took 14 minutes of a pull request's 20), ten minutes each every night (a job a target), and by hand (gh workflow run fuzz.yml -f seconds=3600 -f targets="gguf json"). A target's corpus is cached from run to run and cut down to what adds coverage after a
 # long run. A crash fails its job, is kept as an artifact, and, on the nightly run, becomes an issue (label `fuzz-crash`) that names the run and holds no input.
 # Not in ci.yml: it builds with a nightly compiler and the sanitizers, and a pull request that touches no parser does not wait for it.
 on:
@@ -20,7 +20,6 @@ on:
       - 'glyd-engine/src/tools.rs'
       - 'glyd-engine/src/weights.rs'
       - 'glyd-engine/src/plan.rs'
-      - 'glyd-engine/src/glm_cb.rs'
       - 'glyd-engine/src/glm.rs'
       - 'glyd-engine/src/kimi.rs'
       - 'glyd-engine/src/muse.rs'
@@ -28,7 +27,7 @@ on:
       - 'glyd-engine/src/qwen35.rs'
       - 'glyd-engine/src/qwen4x.rs'
       - 'glyd-engine/src/deepseek_v4.rs'
-      - 'glyd-engine/src/model_gemma4.rs'
+      - 'glyd-engine/src/gemma4.rs'
       - 'src/safetensors.rs'
   schedule:
     - cron: '17 3 * * *'
@@ -62,7 +61,7 @@ jobs:
     outputs:
       targets: ${{ steps.list.outputs.targets }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
@@ -98,7 +97,7 @@ jobs:
         run: |
           mkdir -p bins
           for t in $(cd fuzz && cargo "+$NIGHTLY" fuzz list); do cp "fuzz/target/x86_64-unknown-linux-gnu/release/$t" bins/; done
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-bins
           path: bins
@@ -123,16 +122,16 @@ jobs:
       # the scratch files of the targets that read a path: memory, not the runner's disk
       TMPDIR: /dev/shm
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: fuzz-bins
           path: bins
       - name: Corpus
         id: corpus
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
@@ -154,13 +153,13 @@ jobs:
           rm -rf "fuzz/corpus/$TARGET"; mv merged "fuzz/corpus/$TARGET"
       - name: Keep the corpus
         if: always() && github.event_name != 'pull_request'
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
       - name: Crash
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: crash-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}

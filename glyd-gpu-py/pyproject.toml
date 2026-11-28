@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glyd-gpu"
-version = "0.33.1"
+version = "0.35.0"
 description = "Glyd on the GPU: a bf16 model's weights held compressed in GPU memory, bit for bit, and multiplied from there. The GPU half of glyd (pip install \"glyd[gpu]\"), compiled."
 keywords = ["compression", "lossless", "llm", "gpu", "cuda", "bfloat16", "transformers", "pytorch", "vllm"]
 classifiers = [
@@ -46,5 +46,6 @@ packages = ["glyd_gpu"]
 
 [tool.setuptools.package-data]
 # the chat page glyd run shows; the GPU kernels (gpu/build_lib.sh) for PyTorch built with CUDA 12 and with CUDA 13, and their C header; the text the lossless KV cache's
-# tables are calibrated on (gpu/vllm/make_kvcorpus.py); Glyd's own engine (glyd-engine, executable: setup.py), which glyd run and glyd serve start for the models it runs
+# tables are calibrated on (gpu/vllm/make_kvcorpus.py); Glyd's own engine (glyd-engine, executable: setup.py), which glyd run and glyd serve start for the models it runs,
+# where a wheel is built with it (the release's is not, since a wheel with it is past PyPI's size limit: build.sh's GLYD_GPU_NO_ENGINE=1; the installer's engine is on the PATH)
 glyd_gpu = ["chat.html", "libglyd_gpu_cuda12.so", "libglyd_gpu_cuda13.so", "glyd_gpu.h", "kvcorpus.bin", "glyd-engine"]

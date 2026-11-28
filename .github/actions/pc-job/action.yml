@@ -2,13 +2,23 @@ name: A clean job on the PC
 description: >-
   On the self-hosted runner (the owner's PC, label glyd-pc), this job's own home, tool cache, cache and temp folder, which the runner removes
   when the job ends: GitHub's machines start every job clean, and a job here must not see another's Pythons, packages or files in the PC's home.
+inputs:
+  keep-target:
+    description: >-
+      A name (codec, lint, engine, ...): the job's target/ is this runner's build directory of that name, kept from job to job (a runner runs one job at a time), so a
+      build here starts from the last one instead of from GitHub's cache. One name for each kind of build, as their flags differ. Main's runs and the pull requests'
+      keep separate directories (a pull request's build never reaches a run on main); a Dependabot pull request keeps none; a fork's pull request never runs on the PC.
+      Empty: target/ is the checkout's own.
+    default: ''
 runs:
   using: composite
   steps:
     - if: runner.environment == 'self-hosted'
       shell: bash
       run: |
-        for d in home toolcache cache tmp; do mkdir -p "$RUNNER_TEMP/job-$d"; done
+        # (from nothing each time: a job cut short (cancelled) leaves its half-installed toolchains here, and a later job on this runner would
+        # take them as installed: "missing manifest in toolchain")
+        for d in home toolcache cache tmp; do rm -rf "$RUNNER_TEMP/job-$d"; mkdir -p "$RUNNER_TEMP/job-$d"; done
         {
           echo "HOME=$RUNNER_TEMP/job-home"
           echo "RUNNER_TOOL_CACHE=$RUNNER_TEMP/job-toolcache"
@@ -19,3 +29,23 @@ runs:
           echo "CARGO_BUILD_JOBS=8"
           echo "RUST_TEST_THREADS=8"
         } >> "$GITHUB_ENV"
+    - if: runner.environment == 'self-hosted' && inputs.keep-target != ''
+      shell: bash
+      env:
+        NAME: ${{ inputs.keep-target }}
+        EVENT: ${{ github.event_name }}
+        ACTOR: ${{ github.actor }}
+      run: |
+        # (main's runs and the pull requests' keep separate directories, so nothing a pull request's build leaves can be in a run on main; a Dependabot
+        # pull request, whose new dependencies' build scripts run in its build, keeps none)
+        if [ "$ACTOR" = "dependabot[bot]" ]; then echo "a Dependabot run builds in its checkout's own target/"; exit 0; fi
+        case "$EVENT" in
+          pull_request|pull_request_target|merge_group) scope=pr ;;
+          *) if [ "$GITHUB_REF" = refs/heads/main ]; then scope=main; else scope=pr; fi ;;
+        esac
+        # (outside the checkout, which git clean empties; past 15 GB it starts over and the next build makes what it needs)
+        keep="$(dirname "$RUNNER_WORKSPACE")/_glyd-target/$scope/$NAME"
+        mkdir -p "$keep"
+        if [ "$(du -s --block-size=1G "$keep" | cut -f1)" -gt 15 ]; then rm -rf "$keep"; mkdir -p "$keep"; fi
+        rm -rf target && ln -s "$keep" target
+        echo "target/ is $keep ($(du -sh "$keep" | cut -f1))"

@@ -26,7 +26,7 @@ if fit.get("spread") != plan.get("spread"):
     bad.append(f"spread over the GPUs: fit {fit.get('spread')}, run {plan.get('spread')}")
 
 # what the loader allocated against the plan: the weights the engine counts, and the memory the load took (the plan's total without its reserve)
-# (the multi-GPU route and Condor do not count their weights apart: 0)
+# (the multi-GPU route and Ibis do not count their weights apart: 0)
 if used["weights_bytes"] and abs(used["weights_bytes"] / plan["weights_on_gpu_bytes"] - 1) > 0.03:
     bad.append(f"weights: planned {plan['weights_on_gpu_bytes']}, loaded {used['weights_bytes']}")
 if used["gpu_used_bytes"] > plan["gpu_total_bytes"] - plan["reserve_bytes"]:

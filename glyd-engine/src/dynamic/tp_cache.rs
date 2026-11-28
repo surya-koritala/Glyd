@@ -317,9 +317,17 @@ impl Leader {
             mine.iter().map(|&j| crate::cpu_fp4::Fp4Pair { expert: host.view(ids[j] as usize), token: j / k, weight: wts[j] }).collect();
         let mut out = vec![0f32; mine.len() * latent];
         let t0 = Instant::now();
-        crate::cpu_fp4::experts(self.kernel, z, &pairs, &mut out, host.act, self.off.threads, self.off.pin)?;
+        crate::cpu_fp4::experts(
+            self.kernel,
+            z,
+            &pairs,
+            &mut out,
+            crate::cpu_fp4::Act::Situ { beta: host.act.0, linear: host.act.1 },
+            self.off.threads,
+            self.off.pin,
+        )?;
         let us = t0.elapsed().as_secs_f64() * 1e6;
-        self.costs.computed(mine.len(), us);
+        self.costs.computed(crate::cpu_fp4::by_expert(&pairs).len(), mine.len(), us);
         self.cpu_ms += us / 1e3;
         let mut sums = vec![0f32; tokens * latent];
         for (row, &j) in out.chunks_exact(latent).zip(mine) {
@@ -630,7 +638,7 @@ impl Rank {
             let wts = std::slice::from_raw_parts(self.wts.ptr as *const f32, pairs);
             let z = std::slice::from_raw_parts(self.z.ptr as *const u16, tokens * latent);
             let r = ld.borrow_mut().compute(&host, z, ids, wts, &plan.mine, k, tokens);
-            *sums.got.lock().map_err(|_| poisoned())? = Some(r.as_ref().map(|v| Arc::new(v.clone())).map_err(|e| e.0.clone()));
+            *sums.got.lock().map_err(|_| poisoned())? = Some(r.as_ref().map(|v| Arc::new(v.clone())).map_err(|e| e.msg.clone()));
             sums.cv.notify_all();
             span(3, t);
             r?;
@@ -841,7 +849,7 @@ pub fn replay_bench(a: &crate::args::Args) -> Result<()> {
 #[cfg(feature = "dev")]
 pub fn fill_bench(a: &crate::args::Args) -> Result<()> {
     let dev = crate::dev::Dev::new(0)?;
-    let k = crate::dynamic::kimi::KernKimi::load(&dev)?;
+    let k = crate::dynamic::experts::KernLatent::load(&dev)?;
     let fills: usize = a.num("fills", 16usize)?;
     let len = ((a.num("mb", 2.19f64)? * 1e6) as usize).next_multiple_of(16).max(16);
     let host = Pinned::portable(fills * len)?;

@@ -764,12 +764,19 @@ def test_hf_cache_files():
 
 
 def moe_ws_source_problems(cu):
-    """What glyd_gpu.cu's sizing of the 12-bit experts' products lacks of the wgmma route's workspace, read as text: nothing where glyd_gpu_mma12_moe_workspace asks
-    mma_moe_run for the 12-bit layout's own size (not the tiered layout's function's) and mma_moe_run's 12-bit branch adds the route's tail to it."""
+    """What glyd_gpu.cu's sizing of the 12-bit experts' products lacks of the wgmma route's workspace, read as text: nothing where glyd_gpu_mma12_moe_as_workspace (the size of a part of
+    a layer's experts: the whole layer's is its call with no part) asks mma_moe_run for the 12-bit layout's own size (not the tiered layout's) and glyd_gpu_mma12_moe_workspace is
+    that call, and mma_moe_run's 12-bit branch adds the route's tail to it."""
     bad = []
-    a = cu.find("int glyd_gpu_mma12_moe_workspace(")
-    body = cu[a : cu.find("\n}\n", a)] if a >= 0 else ""
-    if "mma_moe_run(Nib{}" not in body or "glyd_gpu_mma_moe_workspace" in body:
+
+    def body(name):
+        a = cu.find(f"int {name}(")
+        return cu[a : cu.find("\n}\n", a)] if a >= 0 else ""
+
+    sized, whole = body("glyd_gpu_mma12_moe_as_workspace"), body("glyd_gpu_mma12_moe_workspace")
+    if "mma_moe_run(Nib{}" not in sized or "glyd_gpu_mma_moe" in sized:
+        bad.append("glyd_gpu_mma12_moe_as_workspace does not size with the 12-bit layout")
+    if "glyd_gpu_mma12_moe_as_workspace(" not in whole or "glyd_gpu_mma_moe" in whole:
         bad.append("glyd_gpu_mma12_moe_workspace does not size with the 12-bit layout")
     r = cu.find("static int mma_moe_run(")
     b = cu.find("is_same_v<Fmt, Nib>", r) if r >= 0 else -1
@@ -779,24 +786,27 @@ def moe_ws_source_problems(cu):
 
 
 def test_moe_wg_workspace():
-    """The 12-bit experts' products' workspace holds the wgmma route's (an H100's default from 17 tokens: the tiles' records, the pairs' rows of X where the product has the gate, and
-    the weighted product's fp32 pair rows). A product given less takes the other kernels without a word, and a release build has no variable that makes that an error, so a merge
-    that gave the 12-bit layout the tiered one's size function would lose the route unseen. Read as text, anywhere (the checkout's glyd_gpu.cu): the function sizes with the
-    12-bit layout, and the check itself refuses the tiered layout's function and a size without the tail; on an H100 through the library (else skipped): the bytes it gives for
-    Qwen3-30B-A3B's two products and a small layer's, at 17 tokens (the route's first), 232 and 1,152, cover the route's."""
+    """The 12-bit experts' products' workspace holds the wgmma route's (Hopper's, where a development build's GLYD_GPU_MOE_WG asks for it, from that many tokens: the tiles' records, the pairs'
+    rows of X where the product has the gate, and the weighted product's fp32 pair rows). A product given less takes the other kernels without a word, and a release build has no variable
+    that makes that an error, so a merge that gave the 12-bit layout the tiered one's size function would lose the route unseen. Read as text, anywhere (the checkout's glyd_gpu.cu): the
+    functions size with the 12-bit layout, and the check itself refuses the tiered layout's function and a size without the tail; on an H100 through a development library with
+    GLYD_GPU_MOE_WG set (else skipped): the bytes it gives for Qwen3-30B-A3B's two products and a small layer's, at 17 tokens, 232 and 1,152, cover the route's."""
     cu = open(os.path.join(HERE, "..", "..", "gpu", "glyd_gpu.cu")).read()
     assert moe_ws_source_problems(cu) == [], moe_ws_source_problems(cu)
-    a = cu.index("int glyd_gpu_mma12_moe_workspace(")
-    z = cu.index("\n}\n", a)
-    delegated = cu[:a] + "int glyd_gpu_mma12_moe_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted, size_t* bytes) {\n    return glyd_gpu_mma_moe_workspace(E, O, K, T, k, act, weighted, bytes);" + cu[z:]
-    assert moe_ws_source_problems(delegated), "the check misses the tiered layout's size function"
+    for name, swap in (
+        ("glyd_gpu_mma12_moe_workspace", "glyd_gpu_mma_moe_workspace(E, O, K, T, k, act, weighted, bytes)"),
+        ("glyd_gpu_mma12_moe_as_workspace", "glyd_gpu_mma_moe_as_workspace(E, O, K, T, k, act, weighted, wO, wE, bytes)"),
+    ):
+        a = cu.index(f"int {name}(")
+        delegated = cu[: cu.index("{", a)] + "{\n    return " + swap + ";" + cu[cu.index("\n}\n", a) :]
+        assert moe_ws_source_problems(delegated), f"the check misses the tiered layout's size function in {name}"
     assert moe_ws_source_problems(cu.replace("wg_tail(E, K, P, act || gather)", "0")), "the check misses a size without the route's tail"
     try:
         import torch
     except ImportError:
         torch = None
-    if torch is None or not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0) or not re.search(r"\bH100\b", torch.cuda.get_device_name()) or os.environ.get("GLYD_GPU_MOE_WG"):
-        print("  (no H100, or GLYD_GPU_MOE_WG set: the library's sizes not asked)")
+    if torch is None or not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0) or not re.search(r"\bH100\b", torch.cuda.get_device_name()) or int(os.environ.get("GLYD_GPU_MOE_WG") or 0) <= 0:
+        print("  (no H100, or GLYD_GPU_MOE_WG not set: the library's sizes not asked)")
         return
     from glyd_gpu import _lib, kernels as g
 
@@ -815,13 +825,13 @@ def test_moe_wg_workspace():
 
 
 def test_moe_tiled_epilogue_source():
-    """mma_gemm_big_kernel's epilogue was 17,000 instructions long when it chose the gate's activation at each of its 128 products (SiLU and GELU's code, one among the other) and divided
+    """mma_gemm_big_kernel's (its body: mma_gemm_big_body) epilogue was 17,000 instructions long when it chose the gate's activation at each of its 128 products (SiLU and GELU's code, one among the other) and divided
     with the IEEE division's slow path: an instruction cache that missed, 54% of the epilogue's stalls and 30% of the kernel's warp samples (an L4, Qwen3-30B-A3B's shapes), a gate and up tile
     that spent two fifths of its time there. The activation is now chosen once, outside the loops, with the approximate reciprocal, and the down's pair rows and their weights are asked for together
     before the first store (a load that might alias a store waits for it). No result changes with either, so a merge that undid one would lose a fifth of the tiled kernel's time unseen: read
-    as text (the checkout's glyd_gpu.cu), anywhere."""
-    cu = open(os.path.join(HERE, "..", "..", "gpu", "glyd_gpu.cu")).read()
-    a = cu.index("mma_gemm_big_kernel(Fmt f, int64_t O, int64_t K, int64_t M, int64_t stages_per_split")
+    as text (the checkout's glyd_gpu_kernels.h, where the library and the engine have the kernel from one source), anywhere."""
+    cu = open(os.path.join(HERE, "..", "..", "gpu", "glyd_gpu_kernels.h")).read()
+    a = cu.index("mma_gemm_big_body(Fmt f, int64_t O, int64_t K, int64_t M, int64_t stages_per_split")
     k = cu[a : cu.index("// A prompt's product on GeForce Ada", a)]
     assert "auto epilogue = [&](auto kind)" in k and "epilogue(std::integral_constant<int, 1>())" in k and "epilogue(std::integral_constant<int, 2>())" in k, "the activation is chosen once"
     assert "silu_fast(gate)" in k and "silu(gate)" not in k.replace("silu_fast(gate)", ""), "the gate's SiLU by the approximate reciprocal"

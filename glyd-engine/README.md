@@ -2,7 +2,7 @@
 
 Glyd's inference engine: loads Glyd packs and released checkpoints, runs them on NVIDIA GPUs (AMD RDNA in development),
 serves OpenAI- and Anthropic-compatible APIs and a chat page. Rust; CUDA kernels in `kernels/`, compiled by `build.rs`
-into a fatbin the binary embeds. At run time it needs only the GPU driver and `libglyd_gpu` (`../gpu/`).
+into a fatbin the binary embeds. At run time it needs only the GPU driver: a CUDA build loads no GPU library (`GLYD_GPU_LIB` names one, for checks).
 
 ## Commands
 
@@ -29,20 +29,20 @@ GLYD_HIP=1 cargo build --release -p glyd-engine           # AMD RDNA 3/4
 cargo test --release -p glyd-engine                        # host-side tests, no GPU needed
 ```
 
-The default `dev` feature adds the development commands (`check`, `kcheck`, `kvtest`, `stress`, `bench`, `pack`, ...)
+The default `dev` feature adds the development commands (`check`, `kcheck`, `logitscheck`, `usercheck`, `pack`, ...)
 and `GLYD_ENGINE_*` tuning variables.
 
 ## Layout
 
 | Path | What |
 | :--- | :--- |
-| `src/ffi.rs`, `dev.rs`, `kern.rs` | driver bindings (CUDA, HIP), device, kernel launch |
-| `src/server.rs`, `sched.rs`, `chat.rs` | HTTP APIs, scheduler (Qwen3 path), chat templates |
-| `src/model.rs`, `model35.rs`, `model_gemma4.rs`, `model_nh.rs`, `model_glm.rs`, `model_qwen4x.rs` | model pipelines |
-| `src/dynamic/` | shared executor for the large MoE families (Kimi, DeepSeek-V4, GLM, Muse, Nemotron), split and TP |
+| `src/ffi.rs`, `dev.rs`, `kern/` | driver bindings (CUDA, HIP), device, kernel launch |
+| `src/server.rs`, `sched.rs`, `chat.rs` | HTTP APIs, the scheduler (every model's), chat templates |
+| `src/runtime/`, `kern35.rs`, `gemma4.rs`, `kern_glm.rs`, `kern_nh.rs` | the layer kinds and each family's description from its config.json (`runtime/`); the family files hold configs, kernel tables and packed weights |
+| `src/dynamic/` | the executor every family runs on (one loader, one step, one scheduler), split and TP |
 | `src/offload.rs`, `disk.rs`, `cpu_*.rs` | expert cache across VRAM, RAM, NVMe; CPU expert kernels |
-| `src/costs.rs`, `machine.rs`, `fit.rs` | cost profile, machine probe, fit |
-| `src/kv.rs`, `kvcal.rs`, `weights.rs`, `pack.rs`, `f8.rs` | lossless KV cache, packed weights, FP8 |
+| `src/costs.rs`, `machine.rs`, `plan.rs` | cost profile, machine probe, the planner (`fit`) |
+| `src/kv.rs`, `kvcal.rs`, `weights.rs`, `pack.rs`, `f8.rs` | the KV pager and the 12-bit pages' calibration (the pages: `dynamic/kvpages.rs`), packed weights, FP8 |
 | `src/*_ref.rs` | CPU references for tests |
 | `kernels/` | CUDA/HIP kernels |
 | `docs/design/` | design notes |

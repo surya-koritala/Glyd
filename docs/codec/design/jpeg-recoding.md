@@ -21,7 +21,7 @@ end-of-band runs whose grouping is the encoder's choice.
 
 ## Parts
 
-1. **Parser and writer** (`parse.rs`, `write.rs`): the headers kept
+1. **Parser and writer** (`parse` and `write` in `src/jpg/mod.rs`): the headers kept
    verbatim; a baseline scan decoded to coefficients (per component, a
    block grid) and written back from them with the same tables, the
    same restart markers, the same padding — bit for bit, or the JPEG

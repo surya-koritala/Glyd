@@ -59,7 +59,7 @@ jobs:
           [ -x "$CARGO_HOME/bin/cargo" ] || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
           nvidia-smi
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: The checkout's files get the times their content last changed
@@ -71,6 +71,15 @@ jobs:
           gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1 | tr -c 'A-Za-z0-9\n' '-' | sed 's/-*$//')
           echo "GPU=$gpu" >> "$GITHUB_ENV"
           for attempt in $(seq 1 20); do
+            # a quiet machine first: the runners beside this one compile on the same CPU (PR #539's two runs had three or four jobs building beside
+            # them and measured 2-3% slow with bands of 1.2-3.9%; on the machine with nothing else running the same two builds were within 0.1%,
+            # bands 0.3%). The container's /proc/loadavg is the machine's; the bench alone keeps it near one. Up to 20 minutes, then on, said.
+            for wait in $(seq 1 80); do
+              python3 -c 'import sys; sys.exit(0 if float(open("/proc/loadavg").read().split()[0]) < 4 else 1)' && break
+              [ "$wait" = 1 ] && echo "the machine is busy (load $(cut -d' ' -f1-3 /proc/loadavg)): waiting for its other jobs to end"
+              sleep 15
+            done
+            echo "load before attempt $attempt: $(cut -d' ' -f1-3 /proc/loadavg)"
             "$E" bench "$BENCH_MODEL" --suite gate --runs 5 --no-draft --weights-gib "$BENCH_WEIGHTS_GIB" --label "${GITHUB_REPOSITORY}@${GITHUB_SHA::10} ${GITHUB_EVENT_NAME}" --out result.json
             busy=$(python3 -c 'import json;print(json.load(open("result.json"))["contention"]["busy_before"])')
             [ "$busy" = "False" ] && break
@@ -113,7 +122,7 @@ jobs:
           else
             echo "measured on a busy GPU: not made main's last result"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: bench-result
