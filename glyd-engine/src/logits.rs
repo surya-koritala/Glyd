@@ -2134,6 +2134,25 @@ pub fn lfm3_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/lfm3_tiny_manifest.json"), out, 0x2026_1127_0000_0051, true, "LFM model")
 }
 
+/// Ling's small model (six layers in groups of three: two of the Kimi delta attention, two heads of 128 with each of q, k and v through its own convolution
+/// of 4 taps, the bounded decay a key channel, and a latent attention closing each group, its queries one product, its rotary on the 64 shared key
+/// channels, each head's output gated by one value; the first layer's feed-forward a dense MLP, the others 16 experts in 4 groups of which the best 2 are
+/// kept, 4 a token by a sigmoid router with a choice bias, beside a shared MLP; a SwiGLU limit on the activated gate on the last three layers' experts
+/// and, another, on the last two's shared MLP; 256 wide, the head its own, a vocabulary of 4096): the family's case, no release's. Its head is drawn at
+/// half a head's width (the manifest's `head`): at a whole one the case's noise floor against fp32 (`ling_noise_floor`) was KL mean 7.6e-6 and max 2.0e-5,
+/// within a tenth of the kind's bound (1.0e-5 and 2.5e-5) by a quarter of it; at half it is 7.5e-7 and 1.9e-6.
+pub fn ling_random(out: &Path) -> Result<()> {
+    ling_draw(out, LING_SEED)
+}
+
+/// The seed of `ling_random`'s draw.
+pub const LING_SEED: u64 = 0x2026_1128_0000_0061;
+
+/// `ling_random` drawn from `seed` (not 0).
+pub fn ling_draw(out: &Path, seed: u64) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/ling_tiny_manifest.json"), out, seed, true, "Ling model")
+}
+
 /// A small Qwen3.5-family text model (Qwen3_5ForCausalLM: three Gated DeltaNet layers and a gated full-attention one, 1024 wide, a vocabulary of 4096): the layout of Qwen3.8-27B and the releases of its family at 0.8B's widths.
 /// Drawn by `manifest_random`'s rules, then the final norm's (1 + w) times `QWEN35_HEAD` (`head_scaled`): its head's logits that much smaller, which every row's
 /// KL from a last-place difference goes as a power of. As first drawn, the GPU against itself (each prompt served alone against all 64 at once, its sums in another
@@ -2564,7 +2583,10 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
         } else if name.ends_with(".sinks") {
             // (a sink a head: a logit beside the keys' scores, about theirs in size)
             (0..n).map(|_| gauss(&mut u01) as f32).collect()
-        } else if name.contains("ngram_embedding") || name.contains("embed_tokens") {
+        } else if name.ends_with(".expert_bias") {
+            // (a router's choice bias an expert: beside sigmoid scores, small enough that the scores still choose and large enough to change some choices)
+            (0..n).map(|_| (gauss(&mut u01) * 0.1) as f32).collect()
+        } else if name.contains("ngram_embedding") || name.contains("embed_tokens") || name.contains("word_embeddings") {
             // (an embedding that is the head too, as Qwen3.5's tied one is, is as wide as a head's rows: else its logits are tens apart and the softmax a point)
             let std = if tied && name.contains("embed_tokens") { head / (cols as f64).sqrt() } else { 1.0 };
             (0..n).map(|_| (gauss(&mut u01) * std) as f32).collect()
@@ -2756,6 +2778,16 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: None,
+            also: None,
+        },
+        Case {
+            id: "ling",
+            family: "Ling (groups of the Kimi delta attention closed by a latent attention gated a head, on plain residuals; grouped experts with limits on the activated gate)",
+            weights: Weights::Random(ling_random),
+            engine: glm_dsa_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            on_choices: Some(ref_drive),
             also: None,
         },
         Case {
@@ -4707,6 +4739,24 @@ mod tests {
         assert!(worst <= 1e-5, "a noise floor of KL {worst:.2e}, past a tenth of the bound");
     }
 
+    /// Ling's layout (the ling case): its noise floor as `glm_dsa_noise_floor` measures GLM-5.3's (the rounding points its description gives, the RMS
+    /// norms' `Twice`, against every one in fp32, on the same experts), on the case's model and two of other seeds, each at most a tenth of the lossless
+    /// bound. Its description rounds every norm, so `every_case_held_to_a_reference_is_well_conditioned`'s floor of it is 0 and says nothing of its draw:
+    /// this one does. cargo test --profile ci -- --ignored ling_noise_floor.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn ling_noise_floor() {
+        let mut worst = 0f64;
+        for k in 0..3u64 {
+            let dir = std::env::temp_dir().join(format!("glyd-lingfloor-{k}-{}", std::process::id()));
+            ling_draw(&dir, LING_SEED ^ (k << 32)).unwrap();
+            worst = worst.max(rounded_against_f32(&dir, &format!("ling seed {k}")));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        assert!(worst <= 1e-5, "a noise floor of KL {worst:.2e}, past a tenth of the bound");
+    }
+
     /// The CPU reference of the model in `dir` with its description's rounding points against itself with every one in fp32 (`ModelDesc::f32_arithmetic`),
     /// the f32 run taking the rounded run's experts and indexer picks, on the standard tokens (each sequence a token at a time from a fresh model): the KL
     /// mean over the rows, printed with its max (as `what`).
@@ -5863,7 +5913,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "dense" | "domynedge" | "granite-swa" | "mellum" | "lfm3" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" | "kimi-dsa" => crate::dynamic::kimi::load(dir, o)?,
-        "glm-dsa" | "glm-dsa-f8" => crate::dynamic::glm::load_plain(dir, o)?,
+        "glm-dsa" | "glm-dsa-f8" | "ling" => crate::dynamic::glm::load_plain(dir, o)?,
         // (its experts at a lossy level, as its logits case: kestrel where penguin is asked)
         "glm" => crate::dynamic::glm::load(dir, &DynOpts { layout: Some(Layout::Tiered), ..o.clone() }, level_layout(level)?.unwrap_or(Layout::Int6))?,
         // (its experts at the level asked: the lossless one where none is)
@@ -5947,6 +5997,7 @@ fn random_model_of(case: &str, dir: &Path) -> Result<()> {
         "granite-swa" => granite_swa_random(dir),
         "mellum" => mellum_random(dir),
         "lfm3" => lfm3_random(dir),
+        "ling" => ling_random(dir),
         "muse" => crate::muse_ref::random(dir),
         "kimi" => crate::kimi_ref::random(dir, 1, true, 8),
         "kimi-dsa" => crate::kimi_ref::random_dsa(dir),

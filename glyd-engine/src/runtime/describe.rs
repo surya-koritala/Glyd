@@ -2,7 +2,8 @@
 //! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), Qwen3.8-Flash-Next (Ibis's
 //! model: gated residuals, the indexer on GQA, the hashed n-gram embedding), gemma-4 text, GLM-5.3 and
 //! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, DeepSeek-V4, Nemotron 3
-//! (`nemotron_h`), LFM3 (`lfm3`), Ling 3 (`bailing_hybrid`: described, not run yet), ERNIE 5.5 (`ernie5_5_moe`: described, not run yet), Hy4 Flash
+//! (`nemotron_h`), LFM3 (`lfm3`), Ling 3 (`bailing_hybrid`: described, its layers lowered to the executor and its random model a case of the
+//! checks; its release is in no row of what the engine runs yet), ERNIE 5.5 (`ernie5_5_moe`: described, not run yet), Hy4 Flash
 //! (`hy_v4_flash`: its config read and held, refused at the parts no kind says yet), Mistral Large (`mistral_large4_text`: described, not run
 //! yet), MiniMax M3 (`minimax_m3_vl`: described, not run yet), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3).
 //! Weight maps name the released tensors,

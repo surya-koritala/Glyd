@@ -1,7 +1,7 @@
 # Every #[ignore]d test of glyd-engine and glyd-gpu, by function name, once. scripts/check_tree.sh fails on an ignored test that is not named here, and on a name here that is not ignored.
 #   run NAME                  the gate runs it (scripts/test_ignored.sh: the green box's step `test-ignored`, ci.yml's engine job): CPU only, no file, no network, minutes at most.
 #   skip NAME because REASON  not in the gate, and why.
-# The ten below hold the rule that a random test model's noise floor is at most a tenth of the kind's bound, and that the two references agree; they need the default (dev) feature.
+# The eleven below hold the rule that a random test model's noise floor is at most a tenth of the kind's bound, and that the two references agree; they need the default (dev) feature.
 run muse_references_agree_on_the_same_choices
 run kimi_references_compute_the_same_function
 run kimi_references_agree_on_the_same_choices
@@ -12,6 +12,7 @@ run gemma4_reference_and_its_draws
 run glm_reference_with_its_residual_rounded
 run glm_noise_floor
 run glm_dsa_noise_floor
+run ling_noise_floor
 run nemotron_model_described_against_the_engines_logits
 # Every case with a CPU reference holds its reference fixture on the computer that runs it (logitscheck --cpu-ref's verdict; a fixture the reference recorded, to the bit).
 run every_reference_holds_its_fixture

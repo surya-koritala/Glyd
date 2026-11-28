@@ -111,6 +111,10 @@ fn latent_whole(d: &crate::runtime::describe::Described, eos: Vec<i64>, max_pos:
     super::lower::latent_moe(d, eos, max_pos, &Stage::whole(d.desc.blocks.len() / 2))
 }
 
+/// The refusal of a draft head for a model whose layers hold the Kimi delta attention on plain residuals (Ling's draft layer): described, and not run.
+pub const DRAFT_BESIDE_DELTA_NOT_RUN: &str =
+    "the draft head of a model whose layers hold the Kimi delta attention on plain residuals, which the executor does not run yet";
+
 /// `load_plain` of stage `st` (the whole model where None), with its draft head drafting `draft` tokens a round where given, its experts in the expert cache as
 /// `caching` says where it is given (not with a draft head: its verify pass takes the experts on the GPU).
 fn plain(dir: &Path, m: &ModelConfig, o: &Opts, st: Option<Stage>, draft: Option<usize>, caching: Option<&crate::hbg_store::HbCaching>) -> Result<Dyn> {
@@ -118,6 +122,11 @@ fn plain(dir: &Path, m: &ModelConfig, o: &Opts, st: Option<Stage>, draft: Option
         return err("GLM-5.3's draft head with its experts in the expert cache: its verify pass takes the experts on the GPU");
     }
     let (kinds, label, eos, max_pos) = plain_config(dir, m)?;
+    // (a draft head beside layers of the delta attention, Ling's: its verify pass would roll each sequence's delta states back, which no check has run)
+    use crate::runtime::kinds::{Body, Mixer};
+    if draft.is_some() && kinds.desc.blocks.iter().any(|b| matches!(b.body, Body::Mixer(Mixer::Linear(_)))) {
+        return err(DRAFT_BESIDE_DELTA_NOT_RUN);
+    }
     let layers = kinds.desc.blocks.len() / 2;
     let st = st.unwrap_or(Stage::whole(layers));
     let d = super::lower::latent_moe(&kinds, eos.clone(), max_pos, &st).map_err(|e| e.context(&label))?;
