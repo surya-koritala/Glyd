@@ -277,7 +277,7 @@ fn quality_lines(repo: &Path) -> Option<minijinja::Value> {
         ));
     }
     lines.push(format!("{:<34}{:>10}", "verdict", c["verdict"].as_str().unwrap_or("?")));
-    Some(minijinja::Value::from_iter([
+    Some(minijinja::Value::from_pairs([
         ("gpu", minijinja::Value::from(c["measured"]["gpu"].as_str().unwrap_or("?").to_string())),
         ("lines", minijinja::Value::from(lines)),
     ]))
