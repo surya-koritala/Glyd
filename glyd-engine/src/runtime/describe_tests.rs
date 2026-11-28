@@ -1224,6 +1224,7 @@ fn kimi_k31_pros_weight_map_is_its_index() {
         shared: false,
         form: IndexForm::Gated { key: Norm { kind: NormKind::Layer, ..Norm::rms(cfg["text_config"]["rms_norm_eps"].as_f64().unwrap() as f32) } },
         rope: 0,
+        rope_style: None,
     };
     let mut latent = 0;
     for (b, was) in d.desc.blocks.iter().zip(&d3.desc.blocks) {
@@ -3374,7 +3375,7 @@ fn ernie_5_5s_released_config_is_read_and_refused_at_the_parts_no_kind_says() {
     for part in ERNIE_LACKS {
         assert!(e.contains(part), "{part}: {e}");
     }
-    for tensor in ["softmax_offset"] {
+    for tensor in ["dspark_target_layer_ids"] {
         assert!(e.contains(tensor), "{tensor}: {e}");
     }
     assert!(keys_named(&e).is_empty() && !e.contains("has no description builder yet"), "{e}");

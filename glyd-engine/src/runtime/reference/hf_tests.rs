@@ -196,6 +196,8 @@ fn glm53_latent_attention() {
         absorbed: false,
         indexer: None,
         head_mix: 0,
+        sinks: false,
+        window: None,
     };
     let p = params(
         &f,
@@ -407,6 +409,8 @@ fn glm53_mtp_head() {
         absorbed: false,
         indexer: None,
         head_mix: 0,
+        sinks: false,
+        window: None,
     };
     let moe_kind = Moe {
         router: Router {

@@ -4802,7 +4802,7 @@ mod tests {
     fn picks_apart_are_judged_on_the_engines_inputs() {
         use crate::runtime::kinds::{IndexForm, Indexer};
         use crate::runtime::reference::mla::{choose, Picked};
-        let ix = Indexer { heads: 2, head_dim: 4, top_k: 2, block: 1, shared: false, form: IndexForm::LAYER_KEYS, rope: 0 };
+        let ix = Indexer { heads: 2, head_dim: 4, top_k: 2, block: 1, shared: false, form: IndexForm::LAYER_KEYS, rope: 0, rope_style: None };
         // (a key a token, scores rising with its first channel: tokens 3 and 4 the best two of 0..=4, token 2 near token 3 where `near`)
         let row = |near: bool, picks: Vec<usize>| {
             let s = [0.1f32, 0.2, if near { 0.6999 } else { 0.3 }, 0.7, 0.9];

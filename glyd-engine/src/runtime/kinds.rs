@@ -268,10 +268,19 @@ pub struct Indexer {
     /// (the full-size GLM's indexer, its `qk_rope_head_dim`); 0: none (GLM-5.3-Flash, Kimi-K3.1, DeepSeek-V4). The mean form's
     /// queries and pools are rotated as `IndexForm::Mean` says, whatever this is.
     pub rope: usize,
+    /// How the indexer's own rotary pairs its `rope` channels where that is not the attention's pairing (the same frequencies and positions): ERNIE's
+    /// latent attention turns interleaved pairs and its indexer halves, (i, i + rope / 2). None: as the attention's rotary.
+    pub rope_style: Option<RopeStyle>,
 }
 
-/// The derived form, with `form` said only where it is not the gated form with LayerNorm-ed keys (`IndexForm::LAYER_KEYS`) and `rope` only where it
-/// rotates: those indexers' descriptions read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
+impl Indexer {
+    /// The refusal of an indexer whose rotary pairs its channels otherwise than its attention's: the CPU reference computes it, the executor turns the
+    /// indexer's channels by the attention's table.
+    pub const ROPE_STYLE_NOT_RUN: &'static str = "an indexer's rotary of another pairing than its attention's, which the executor does not run yet";
+}
+
+/// The derived form, with `form` said only where it is not the gated form with LayerNorm-ed keys (`IndexForm::LAYER_KEYS`), `rope` only where it
+/// rotates and `rope_style` only where it is its own: those indexers' descriptions read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Indexer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Indexer");
@@ -281,6 +290,9 @@ impl std::fmt::Debug for Indexer {
         }
         if self.rope != 0 {
             s.field("rope", &self.rope);
+        }
+        if let Some(st) = &self.rope_style {
+            s.field("rope_style", st);
         }
         s.finish()
     }
@@ -389,7 +401,7 @@ impl std::fmt::Debug for Attn {
 /// rope_dim), q_lora]; `kv_a` [kv_lora + rope_dim, hidden], `kv_a_norm` [kv_lora], `kv_b` [heads * (nope + v_dim), kv_lora], `o` [hidden,
 /// heads * v_dim]; `g` [heads * v_dim, hidden] with a gate ([heads, hidden] with a `Head` one, [heads * v_dim, q_lora] with a `Latent` one). The cache holds per token the normed latent and the
 /// shared key part (kv_lora + rope_dim values); `absorbed` names how a backend computes it (the same function). With a `head_mix`, `mix_u` and `mix_v`
-/// [heads, head_mix].
+/// [heads, head_mix]; with `sinks`, `sinks` [heads].
 #[derive(Clone, PartialEq)]
 pub struct Mla {
     pub heads: usize,
@@ -409,10 +421,26 @@ pub struct Mla {
     /// The rank of the low-rank mix of the heads' outputs with each other, before the gate and the output product: o <- (I + V U^T) o over the head
     /// axis, each head's output plus sum_r V[h][r] (sum_g U[g][r] o_g), channel by channel (ERNIE's `vha_postmix_U`, `vha_postmix_V`); 0: none.
     pub head_mix: usize,
+    /// A learned logit a head that takes part in the softmax and attends to nothing (role `sinks`; ERNIE's `softmax_offset`): the value itself beside
+    /// the scaled scores, as `Attn::sinks`.
+    pub sinks: bool,
+    /// With an indexer of the layer's own: the query attends to its last `window` tokens whatever the indexer picks, and the indexer picks its
+    /// `top_k` among the tokens before them (ERNIE's latent layers: the model's `sliding_window`, so a query reads up to `top_k` + `window` tokens in
+    /// one softmax). None: the indexer picks among every token the query sees.
+    pub window: Option<usize>,
 }
 
-/// The derived form, with `head_mix` said only where there is one: the other latent attentions' descriptions read as they did before the field (the
-/// digests of tests/fixtures/descriptions.json are of this text).
+impl Mla {
+    /// The refusal of a latent attention with sinks: the CPU reference computes them, the executor's latent attention has no sink.
+    pub const SINKS_NOT_RUN: &'static str = "a latent attention with sinks, which the executor does not run yet";
+    /// The refusal of a latent attention whose last tokens are attended beside the indexer's picks: the CPU reference computes it, the executor's
+    /// indexer picks among every token.
+    pub const WINDOW_NOT_RUN: &'static str =
+        "a latent attention that reads a window of its last tokens beside its indexer's picks, which the executor does not run yet";
+}
+
+/// The derived form, with `head_mix`, `sinks` and `window` said only where there is one: the other latent attentions' descriptions read as they did
+/// before the fields (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Mla {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Mla");
@@ -422,6 +450,12 @@ impl std::fmt::Debug for Mla {
         s.field("indexer", &self.indexer);
         if self.head_mix != 0 {
             s.field("head_mix", &self.head_mix);
+        }
+        if self.sinks {
+            s.field("sinks", &self.sinks);
+        }
+        if let Some(w) = &self.window {
+            s.field("window", w);
         }
         s.finish()
     }

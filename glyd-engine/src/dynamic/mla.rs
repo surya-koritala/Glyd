@@ -221,6 +221,17 @@ impl MlaOp {
     /// the description's table `table` (made for the kind's rotary: `ModelDesc::ropes`). A gate takes a fused product.
     #[allow(clippy::too_many_arguments)]
     pub fn of(k: &kinds::Mla, input: MlaIn, q_b: usize, o: usize, s0: usize, ring: usize, tail: bool, table: Option<usize>) -> Result<MlaOp> {
+        // (the parts of a latent attention the CPU reference computes and no kernel does: each refused by its name, before the kind is read further)
+        let not_run = [
+            (k.head_mix != 0, kinds::HEAD_MIX_NOT_RUN),
+            (k.sinks, kinds::Mla::SINKS_NOT_RUN),
+            (k.window.is_some(), kinds::Mla::WINDOW_NOT_RUN),
+            (k.indexer.as_ref().is_some_and(|x| x.rope_style.is_some()), kinds::Indexer::ROPE_STYLE_NOT_RUN),
+            (k.gate.is_some_and(|g| g.from == kinds::GateFrom::Latent), kinds::GateFrom::LATENT_NOT_RUN),
+        ];
+        if let Some((_, part)) = not_run.iter().find(|x| x.0) {
+            return err(format!("a latent attention: {part}"));
+        }
         let q_rank = k.q_lora.ok_or_else(|| Error("a latent attention whose query has no low rank: not an operation of this executor".into()))?;
         let rot = match (&k.rope, table) {
             (None, _) => None,
@@ -233,9 +244,6 @@ impl MlaOp {
                 ))
             }
         };
-        if k.head_mix != 0 {
-            return err(format!("a latent attention: {}", kinds::HEAD_MIX_NOT_RUN));
-        }
         let gate = match (k.gate, input) {
             (None, _) => false,
             (Some(g), _) if g.from == kinds::GateFrom::Head => {
@@ -1045,8 +1053,11 @@ mod tests {
                 shared: false,
                 form: crate::runtime::kinds::IndexForm::LAYER_KEYS,
                 rope: 0,
+                rope_style: None,
             }),
             head_mix: 0,
+            sinks: false,
+            window: None,
         }
     }
 

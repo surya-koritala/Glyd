@@ -255,6 +255,9 @@ pub fn attend(c: &Comp, p: &Params, qr: &[f32], q: &[f32], keys: &[&[f32]], pos:
 /// One token's attention output for its input `x` (the block's normed input) at `pos`.
 pub fn step(c: &Comp, p: &Params, st: &mut CompState, x: &[f32], pos: u32) -> Result<Vec<f32>> {
     st.margin = f32::INFINITY;
+    if c.indexer.as_ref().is_some_and(|ix| ix.rope_style.is_some()) {
+        return err("a compressed attention's indexer turns as its attention does: a pairing of its own is a latent attention's indexer's");
+    }
     let (qr, q) = queries(c, p, x, pos)?;
     st.win.push((pos, key(c, p, x, pos)?));
     // the compressed entries this query may read
@@ -340,6 +343,7 @@ mod tests {
                 shared: false,
                 form: IndexForm::Gated { key: Norm::rms(1e-6) },
                 rope: 0,
+                rope_style: None,
             }),
             norm_eps: 1e-6,
             ape: false,

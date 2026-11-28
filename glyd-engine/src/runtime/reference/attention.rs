@@ -106,6 +106,9 @@ pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>,
         (matches!(a.rounding, Eager | Sdpa), a.rounding == Eager, matches!(a.rounding, Flash | Eager), a.rounding == Sdpa);
     let prod = |role: &str| -> Result<Vec<f32>> { Ok(p.prod(role, h)?.into_iter().map(r16).collect()) };
     let raw_q = prod("q")?;
+    if a.indexer.as_ref().is_some_and(|ix| ix.rope_style.is_some()) {
+        return err("attention: its indexer turns as the attention does: a pairing of its own is a latent attention's indexer's");
+    }
     if a.gate.is_some_and(|g| g.from == GateFrom::Latent) {
         return err("attention: an output gate from the query latent, where the queries are one product of the block's input (no latent)");
     }
@@ -384,7 +387,7 @@ mod tests {
         let (mut a, mut p) = layer(2, 1, 16, 32);
         let n = Norm::rms_plus_one(1e-6);
         (a.rope, a.q_norm, a.k_norm, a.v_norm) = (Some(Rope::plain(1e4, 8)), Some(n), Some(n), None);
-        a.indexer = Some(Indexer { heads: 2, head_dim: 16, top_k: 4, block: 2, shared: false, form: IndexForm::Mean { norm: n }, rope: 0 });
+        a.indexer = Some(Indexer { heads: 2, head_dim: 16, top_k: 4, block: 2, shared: false, form: IndexForm::Mean { norm: n }, rope: 0, rope_style: None });
         p.put("index_qk", &[48, 32], fill("qsa.qk", 48 * 32, -0.5, 0.5));
         p.put("index_q_norm", &[16], fill("qsa.qn", 16, -0.3, 0.3));
         p.put("index_k_norm", &[16], fill("qsa.kn", 16, -0.3, 0.3));

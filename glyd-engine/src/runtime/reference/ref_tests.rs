@@ -99,6 +99,8 @@ fn kimi_k3_mixers_against_kimi_ref() {
         absorbed: false,
         indexer: None,
         head_mix: 0,
+        sinks: false,
+        window: None,
     };
     for l in [0usize, 3] {
         let a = format!("language_model.model.layers.{l}.self_attn");

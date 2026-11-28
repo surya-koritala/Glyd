@@ -1984,7 +1984,16 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             if ih == 0 || idim == 0 || ratio == 0 || budget == 0 || budget % ratio != 0 || rp.dim > idim {
                 return err(format!("{mt}: an indexer of {ih} heads of {idim} keeping {budget} tokens in pools of {ratio}, under a rotary of {}", rp.dim));
             }
-            Some(Indexer { heads: ih, head_dim: idim, top_k: budget, block: ratio, shared: false, form: IndexForm::Mean { norm: pn }, rope: 0 })
+            Some(Indexer {
+                heads: ih,
+                head_dim: idim,
+                top_k: budget,
+                block: ratio,
+                shared: false,
+                form: IndexForm::Mean { norm: pn },
+                rope: 0,
+                rope_style: None,
+            })
         }
         [None, None, None, None, None] => None,
         _ => return err(format!("{mt}: the indexer's keys come together ({}), and some are missing", IX.join(", "))),
@@ -2900,7 +2909,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
                     if turned > dim {
                         return err(format!("{mt}: an indexer of heads of {dim} under a rotary of {turned} channels"));
                     }
-                    Some(Indexer { heads: h, head_dim: dim, top_k: top, block: pool, shared, form: IndexForm::LAYER_KEYS, rope: turned })
+                    Some(Indexer { heads: h, head_dim: dim, top_k: top, block: pool, shared, form: IndexForm::LAYER_KEYS, rope: turned, rope_style: None })
                 }
                 _ => None,
             };
@@ -2937,6 +2946,8 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
                 absorbed: true,
                 indexer,
                 head_mix: 0,
+                sinks: false,
+                window: None,
             })
         };
         mark(&r, &mut fp8set);
@@ -3134,6 +3145,8 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
         absorbed: true,
         indexer: None,
         head_mix: 0,
+        sinks: false,
+        window: None,
     };
     // Kimi-K3.1's sparse attention (`dsa_config`): on the latent attention layers it names (1-based), the sparse attention's indexer of a key a token, the
     // gated form, its keys RMS-normed at the model's eps or LayerNorm-ed with a bias (`index_k_norm_type`); the indexer's query from the q latent
@@ -3168,6 +3181,7 @@ fn kimi(c: &ModelConfig) -> Result<Described> {
                 shared: false,
                 form: IndexForm::Gated { key },
                 rope: 0,
+                rope_style: None,
             };
             dk.finish()?;
             Some((on, ix))
@@ -3540,6 +3554,8 @@ fn ling(c: &ModelConfig) -> Result<Described> {
         absorbed: true,
         indexer: None,
         head_mix: 0,
+        sinks: false,
+        window: None,
     };
     // the feed-forward
     let dense =
@@ -4035,6 +4051,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
                 shared: false,
                 form: IndexForm::Gated { key: Norm::rms(eps) },
                 rope: 0,
+                rope_style: None,
             }),
             norm_eps: eps,
             ape: true,
@@ -4423,6 +4440,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
                 shared: false,
                 form: IndexForm::Gated { key: Norm::rms(eps) },
                 rope: 0,
+                rope_style: None,
             }),
             norm_eps: eps,
             ape: false,
@@ -4592,7 +4610,7 @@ fn v41_shapes(out: &Described, inter: usize) -> std::collections::BTreeMap<Strin
 
 /// What an ERNIE 5.5 layer computes that no layer kind says yet, each with the checkpoint's tensors it is in (`ernie5_5`'s refusal names them all).
 pub const ERNIE_LACKS: &[&str] =
-    &["the latent attention's sinks (core_attention.softmax_offset) and its indexer's rotary in halves beside the attention's interleaved one"];
+    &["the drafter's targets, read after their layers (dspark_target_layer_ids: the mean of the streams each target layer leaves)"];
 
 /// ERNIE 5.5 (`ernie5_5_moe`, `Ernie5_5_MoeForCausalLM`; text in, text out: no tower): DeepSeek-V4's decoder (residual streams, the compressed
 /// attention with a window, grouped low-rank output) with layers of a second sort and seven parts of its own. `compress_ratios` says each layer's

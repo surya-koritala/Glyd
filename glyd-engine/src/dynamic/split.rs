@@ -1050,6 +1050,22 @@ pub fn not_run(d: &crate::runtime::describe::Described) -> Option<&'static str> 
     if mixer(&|m| matches!(m, Mixer::Mla(x) if x.head_mix != 0) || matches!(m, Mixer::Compressed(c) if c.head_mix != 0)) {
         return Some(crate::runtime::kinds::HEAD_MIX_NOT_RUN);
     }
+    use crate::runtime::kinds::{Indexer, Mla};
+    if mixer(&|m| matches!(m, Mixer::Mla(x) if x.sinks)) {
+        return Some(Mla::SINKS_NOT_RUN);
+    }
+    if mixer(&|m| matches!(m, Mixer::Mla(x) if x.window.is_some())) {
+        return Some(Mla::WINDOW_NOT_RUN);
+    }
+    let own = |ix: &Option<Indexer>| ix.as_ref().is_some_and(|ix| ix.rope_style.is_some());
+    if mixer(&|m| match m {
+        Mixer::Attention(a) => own(&a.indexer),
+        Mixer::Mla(x) => own(&x.indexer),
+        Mixer::Compressed(c) => own(&c.indexer),
+        _ => false,
+    }) {
+        return Some(Indexer::ROPE_STYLE_NOT_RUN);
+    }
     None
 }
 
@@ -1358,6 +1374,37 @@ mod tests {
         let Body::Mixer(Mixer::Compressed(c)) = &mut d.desc.blocks[4].body else { panic!("block 4 is no attention") };
         c.head_mix = 16;
         refused(&d, crate::runtime::kinds::HEAD_MIX_NOT_RUN);
+        // (a latent attention's sinks, its window beside the picks, its indexer's own pairing, its heads' mix and its gate from the latent: on GLM-5.3's
+        // released description, whose latent attention the executor lowers, and where the latent attention's kind is made the executor's)
+        let glm = {
+            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers/GLM-5.3.json");
+            let h: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+            crate::runtime::describe::describe(&serde_json::from_str(h["config"].as_str().unwrap()).unwrap()).unwrap()
+        };
+        assert_eq!(super::not_run(&glm), None);
+        use crate::runtime::kinds::{Indexer, Mla, RopeStyle};
+        let at = glm.desc.blocks.iter().position(|b| matches!(&b.body, Body::Mixer(Mixer::Mla(x)) if x.indexer.as_ref().is_some_and(|i| !i.shared))).unwrap();
+        let with = |f: &dyn Fn(&mut Mla)| {
+            let mut d = glm.clone();
+            let Body::Mixer(Mixer::Mla(x)) = &mut d.desc.blocks[at].body else { panic!("block {at}") };
+            f(x);
+            let kind = x.clone();
+            (d, kind)
+        };
+        let of =
+            |x: &Mla| crate::dynamic::mla::MlaOp::of(x, crate::dynamic::mla::MlaIn::Fused { w: 0 }, 1, 2, 3, 4, false, Some(5)).map(|_| ()).unwrap_err().msg;
+        for (edit, part) in [
+            (&(|x: &mut Mla| x.sinks = true) as &dyn Fn(&mut Mla), Mla::SINKS_NOT_RUN),
+            (&|x: &mut Mla| x.window = Some(128), Mla::WINDOW_NOT_RUN),
+            (&|x: &mut Mla| x.indexer.as_mut().unwrap().rope_style = Some(RopeStyle::Half), Indexer::ROPE_STYLE_NOT_RUN),
+            (&|x: &mut Mla| x.head_mix = 16, crate::runtime::kinds::HEAD_MIX_NOT_RUN),
+            (&|x: &mut Mla| x.gate = gate, GateFrom::LATENT_NOT_RUN),
+        ] {
+            let (d, kind) = with(edit);
+            assert_eq!(super::not_run(&d), Some(part));
+            assert_eq!(super::loader(&d).map(|_| ()).unwrap_err().msg, part);
+            assert!(of(&kind).contains(part), "{part}: {}", of(&kind));
+        }
         // (and by each lowering itself, whatever chose it: the dense one's, of a plain decoder with the correction)
         let plain = serde_json::json!({"architectures": ["X"], "model_type": "llama", "hidden_size": 256, "intermediate_size": 512, "num_hidden_layers": 2,
             "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 64, "vocab_size": 1024, "rms_norm_eps": 1e-5, "rope_theta": 10000.0,
