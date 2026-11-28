@@ -215,7 +215,9 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
 /// where it slides; a head width and a rotary of the layer's own, or no rotary) and the gated SiLU MLP, each `x + block(rmsnorm(x) w)`, or, where every block
 /// has a norm after it as well (Domyn Edge), `x + rmsnorm(block(rmsnorm(x) w)) post` (`Op::AddNorm`, the sandwich residual); the final norm on the last rows,
 /// the head the embedding's matrix where tied. Each matrix of a layer is its checkpoint tensors stacked (q, k and v; gate and up), sized by the shapes the
-/// description gives. The products are the library's at every row count, a long chunk's decoded and multiplied dense where its route says so: the products,
+/// description gives. A layer's experts are the Moe kind's block as its loader takes them (`experts::block`: a softmax router, or sigmoid scores with a
+/// choice bias, the best kept and renormalised, with or without a shared expert; MiMo's as released, packed 4-bit codes, are refused by name). The products
+/// are the library's at every row count, a long chunk's decoded and multiplied dense where its route says so: the products,
 /// norms, activation, embedding and head of the dense engine this replaces, kernel for kernel. A layer's mixer may be the gated short convolution in the
 /// attention's place (LFM's conv layers: its input product into Proj, `Op::ShortConv` over the sequence's state into Xc, its output product; a state a
 /// layer, fp32, in `states`), and an attention's gate one value a head (LFM's: its matrix stacked after q, k and v, the rows padded to rows that pack). An
@@ -463,6 +465,15 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
             (ops, 3 * m.hidden, 0, 0)
         };
         let inter = if experts {
+            // (experts stored as packed 4-bit codes with a byte's scale a run, MiMo's as released: the description names their scales, which are not an FP8
+            // matrix's block scales; the loader of this lowering's experts reads bf16 and FP8 matrices)
+            let packed = fr.iter().filter(|(r, _)| r.starts_with("experts_")).flat_map(|(_, s)| s.names()).find_map(|w| {
+                let s = d.scales.get(&w).filter(|s| !s.ends_with("_scale_inv"))?;
+                Some((w.clone(), s.clone()))
+            });
+            if let Some((w, s)) = packed {
+                return err(format!("{what}: layer {l}'s experts are stored as packed 4-bit codes ({w}, its scales {s}), which the loader does not read yet"));
+            }
             0
         } else {
             let gate_up = item(vec![one(fr, "gate")?, one(fr, "up")?], &shape)?;
@@ -2989,6 +3000,38 @@ mod tests {
             "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]});
         let Err(e) = dense(&mimo_config(serde_json::json!({"quantization_config": quant})), vec![2], 4096) else { panic!("a fused FP8 matrix, and lowered") };
         assert!(e.msg.contains("qkv_proj.weight is stored in FP8 with block scales that start again at each of its 2 shards"), "{}", e.msg);
+    }
+
+    /// MiMo's experts on the dense lowering: a layer's feed-forward the Moe kind's block where the config says experts, whose shape and arithmetic the block's
+    /// loader takes from the kind (sigmoid scores, a choice bias, the best 2 of 8 renormalised, no shared expert, SwiGLU experts; no group of choices); the
+    /// first layer keeps its dense MLP. As released the experts are packed 4-bit codes, which the lowering refuses by name (the split layout here: its FP8
+    /// products are matrices the loader reads).
+    #[test]
+    fn sigmoid_routed_experts_with_a_choice_bias_lower() {
+        use crate::moe::{Act, Scoring};
+        let sparse = serde_json::json!({"moe_layer_freq": [0, 1, 1], "moe_intermediate_size": 128, "n_routed_experts": 8, "num_experts_per_tok": 2,
+            "norm_topk_prob": true, "n_group": 1, "topk_group": 1, "attention_projection_layout": "split"});
+        let kinds = mimo_config(sparse.clone());
+        let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        let moe: Vec<usize> = d.layers.iter().map(|ops| ops.iter().filter(|o| matches!(o, Op::Moe(_))).count()).collect();
+        assert_eq!(moe, [0, 1, 1]);
+        assert!(d.layers[0].iter().any(|o| matches!(o, Op::GateUpSilu { .. })) && !d.layers[1].iter().any(|o| matches!(o, Op::GateUpSilu { .. })));
+        let blocks: Vec<_> = super::super::experts::of_layers(&kinds, (0, 3), 2).collect();
+        assert_eq!(blocks.iter().map(|(ix, _, _)| (ix.layer, ix.moe)).collect::<Vec<_>>(), vec![(1, 0), (2, 1)]);
+        let (_, m, roles) = &blocks[0];
+        let c = super::super::experts::cfg(m, 256, 128).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert_eq!(
+            (c.experts, c.router.scoring, c.router.top_k, c.router.renorm, c.router.scale, c.router.bf16_logits),
+            (8, Scoring::Sigmoid, 2, true, 1.0, false)
+        );
+        assert!(matches!(c.act, Act::SwiGlu { limit: None }) && m.router.bias && m.shared.is_none());
+        assert!(matches!(role(roles, "choice_bias"), Some(Source::Tensor(n)) if n == "model.layers.1.mlp.gate.e_score_correction_bias"));
+        assert!(matches!(role(roles, "experts_gate_up"), Some(Source::Experts(e)) if e.len() == 8 && e[0].len() == 2));
+        let mut quant = sparse;
+        quant["quantization_config"] = serde_json::json!({"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128], "store_dtype": "mxfp4",
+            "mxfp4_block_size": 32, "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]});
+        let Err(e) = dense(&mimo_config(quant), vec![2], 4096) else { panic!("experts packed at 4 bits, and lowered") };
+        assert!(e.msg.contains("layer 1's experts are stored as packed 4-bit codes (model.layers.1.mlp.experts.0.gate_proj.weight"), "{}", e.msg);
     }
 
     /// A plain dense decoder's config (the model type the description builder reads it by, the attention's settings) of three layers of hidden 256, 4 query heads over 2
