@@ -10,7 +10,7 @@ tokens, with an OpenAI and Anthropic compatible server and a chat page.
 ## Features
 
 - Lossless weights, bit for bit, decoded in the kernels; the KV cache in bf16 pages, or in 12-bit lossless pages where `GLYD_KV=lossless` asks for them (where the model's attention has heads of 128, 256 or 512 channels or is a latent attention, and no draft model runs beside it) and the plan finds that they reserve no more than bf16: `fit` and `run` say which.
-- Four lossy levels (kestrel, swift, wren, hummingbird) for when a model still does not fit.
+- Four lossy levels (kestrel, linnet, wren, hummingbird) for when a model still does not fit.
 - Mixture-of-experts models with their experts in RAM or on the SSD.
 - One model across the GPUs of a machine, and across machines with Starlings (beta).
 - A server for the OpenAI and Anthropic APIs, with tools and constrained JSON, and a chat page.
@@ -35,7 +35,7 @@ fit. [Serving](serve.md) and [connecting tools](tools.md) to use it from other p
 
 - NVIDIA Ampere or newer (RTX 30 series and up, A10, A100, L4, L40S, H100), Linux x86_64, driver 580 or newer.
 - The families are on the [Models](models.md) page, generated from the code.
-- A 180B mixture of experts on one 12-16 GB GPU: [Condor](condor.md).
+- A 180B mixture of experts on one 12-16 GB GPU: [Ibis](ibis.md).
 
 Not yet: macOS and CPU-only engines. Windows is a preview and aarch64 is built but not yet measured. AMD is a development build.
 
@@ -47,7 +47,7 @@ Not yet: macOS and CPU-only engines. Windows is a preview and aarch64 is built b
 4. [Serving and the APIs](serve.md)
 5. [Connecting tools](tools.md)
 6. [Several GPUs and Starlings](multi-gpu.md)
-7. [Condor](condor.md)
+7. [Ibis](ibis.md)
 8. [Troubleshooting](troubleshooting.md), by what `glyd doctor` prints
 9. [API reference](api.md) and [the background service](service.md), generated from `docs/serve-api.md` and `docs/service.md`
 10. [Models](models.md), generated from `glyd-engine/src/support.rs`

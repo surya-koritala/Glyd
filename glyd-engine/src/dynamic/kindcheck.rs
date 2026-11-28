@@ -45,7 +45,7 @@ use crate::runtime::cuda::{self, Cuda, Exec};
 use crate::runtime::kinds::{AttnRounding, Block, Body, Ffn, Indexer, LinearKind, Mixer, NormKind, NormWeight, Residual, StreamsP};
 use crate::runtime::reference::comp::CompState;
 use crate::runtime::reference::mla::{LatentCache, Picked};
-use crate::runtime::reference::model::{checkpoint_tensor, Depth, RefModel};
+use crate::runtime::reference::model::{described_source, Depth, RefModel};
 use crate::runtime::reference::{bf16, collapse, hc_weights, Hc, RefLayer, SeqState};
 use crate::weights::Layout;
 use std::ops::Range;
@@ -126,6 +126,12 @@ fn label(b: &Block) -> (Class, String) {
     match &b.body {
         Body::Mixer(Mixer::Attention(a)) => {
             let mut s = format!("attention: {} heads over {} of {}", a.heads, a.kv_heads, a.head_dim);
+            if a.v_head_dim != a.head_dim {
+                s += &format!(", values of {}", a.v_head_dim);
+            }
+            if a.v_scale != 1.0 {
+                s += &format!(", values times {}", a.v_scale);
+            }
             if let Some(w) = a.window {
                 s += &format!(", window {w}");
             }
@@ -175,8 +181,10 @@ fn label(b: &Block) -> (Class, String) {
             LinearKind::KimiDelta => (Class::KimiDelta, format!("Kimi delta attention: {} heads of {}", l.k_heads, l.k_dim)),
         },
         Body::Mixer(Mixer::Mamba2(m)) => (Class::Mamba2, format!("Mamba-2: {} heads of {}, state {}, {} groups", m.heads, m.head_dim, m.state, m.groups)),
+        // (the class is its nearest: a convolution over a state a channel, its sums fp32 and its output rounded once)
+        Body::Mixer(Mixer::ShortConv(c)) => (Class::Mamba2, format!("short convolution: {} taps{}", c.taps, if c.bias { ", biases" } else { "" })),
         Body::Ffn(Ffn::Mlp(m)) => {
-            (Class::Mlp, format!("MLP: {:?}{}{}", m.act, if m.gated { ", gated" } else { "" }, m.clamp.map_or(String::new(), |c| format!(", limit {c}"))))
+            (Class::Mlp, format!("MLP: {:?}{}{}", m.act, if m.gated { ", gated" } else { "" }, m.clamp.map_or(String::new(), |c| format!(", limit {c:?}"))))
         }
         Body::Ffn(Ffn::Moe(e)) => {
             let r = &e.router;
@@ -845,8 +853,7 @@ fn pass(
         dy.big.logits.read(0, &mut w)?;
         let logits: Vec<f32> = w.iter().map(|&b| f32::from_bits((b as u32) << 16)).collect();
         let h = &m.desc.head;
-        let want: Vec<f32> =
-            crate::runtime::reference::matvec_w(m.head_w(), d, &hin).into_iter().map(|z| crate::runtime::reference::model::logit(h, z)).collect();
+        let want: Vec<f32> = m.logits_of(&hin)?;
         let kind = format!(
             "head: the LM head{}{}",
             if h.scale != 1.0 { format!(", times {}", h.scale) } else { String::new() },
@@ -897,7 +904,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes, 
         .map_err(|e| Error(format!("config.json: {e}")))?;
     let d = crate::runtime::describe::describe(&cfg)?;
     let ck = glyd_gpu::safetensors::Checkpoint::open(dir).map_err(|e| Error(e.to_string()))?;
-    let mut m = RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n))?;
+    let mut m = RefModel::load(&d, &described_source(&ck, &d))?;
     // (Engram's compressed vocabulary, which the directory holds beside the weights)
     crate::logits::put_token_map(&mut m, dir)?;
     let layers = dy.big.d.layers.len();
@@ -925,7 +932,7 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes, 
             return err(format!("{id}: --sequence is not for a depth mix or lagged mHC"));
         }
         Passes::Sequence => {
-            let mut alone = RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n))?;
+            let mut alone = RefModel::load(&d, &described_source(&ck, &d))?;
             crate::logits::put_token_map(&mut alone, dir)?;
             Some((alone, given.map_or_else(|| crate::logits::token_list(prompt + steps, m.desc.vocab, 0), <[u32]>::to_vec)))
         }
@@ -1041,13 +1048,18 @@ fn case(id: &'static str, dir: &Path, prompt: usize, steps: usize, how: Passes, 
 
 /// `kindcheck [CASE...] [--prompt N] [--steps N] [--scratch DIR] [--chain | --sequence]`: the cases (all unless named), then each class's worst against its bound.
 pub fn run(a: &crate::args::Args) -> Result<()> {
-    const ALL: [&str; 17] = [
+    const ALL: [&str; 22] = [
         "gemma4",
         "gemma4-kv",
         "qwen35",
         "qwen35-wide",
         "qwen35moe",
         "dense",
+        "domynedge",
+        "granite-swa",
+        "mellum",
+        "lfm3",
+        "mimo",
         "nemotron-h",
         "muse",
         "kimi",

@@ -7,7 +7,7 @@ Milestones in execution order; each ships as one release. Tracks within a milest
 | v0.33.0 | [M0 Open-source baseline](https://github.com/surya-koritala/Glyd/milestone/1) | [#119](https://github.com/surya-koritala/Glyd/issues/119) | 14 | Apache-2.0 monorepo, no-Python release, CI & GPU CI |
 | v0.34.0 | [M1 Front door](https://github.com/surya-koritala/Glyd/milestone/2) | [#120](https://github.com/surya-koritala/Glyd/issues/120) | 27 | Single binary, Linux+Windows, OpenAI/Anthropic/Ollama APIs, `fit == run`, `R7`/`R8` gates |
 | v0.35.0 | [M2 One runtime](https://github.com/surya-koritala/Glyd/milestone/3) | [#121](https://github.com/surya-koritala/Glyd/issues/121) | 37 | Config-driven runtime, 64-user batching, hybrid paged/12-bit KV, CUDA seam (`R1a`), NVIDIA kernel libs (`V8a`) |
-| v0.36.0 | [M3 Core models, formats and desktop](https://github.com/surya-koritala/Glyd/milestone/4) | [#122](https://github.com/surya-koritala/Glyd/issues/122) | 52 | **Consumer launch:** Top-50 text models, canonical GGUF, FP8/FP4, long context, Condor in `glyd run`, pre-packed top-15 hub & coding-agent kit |
+| v0.36.0 | [M3 Core models, formats and desktop](https://github.com/surya-koritala/Glyd/milestone/4) | [#122](https://github.com/surya-koritala/Glyd/issues/122) | 52 | **Consumer launch:** Top-50 text models, canonical GGUF, FP8/FP4, long context, Ibis in `glyd run`, pre-packed top-15 hub & coding-agent kit |
 | v0.37.0 | [M4 Many GPUs, many machines](https://github.com/surya-koritala/Glyd/milestone/6) | [#124](https://github.com/surya-koritala/Glyd/issues/124) | 19 | **Datacenter proof (NVIDIA):** NCCL/TP/EP/PP, SLO-aware Planner v2, `glyd cluster`, 8× H100 server, compressed streaming load, sleep-to-RAM |
 | v0.38.0 | [M5a Apple Silicon, CPU and desktop extras](https://github.com/surya-koritala/Glyd/milestone/5) | [#123](https://github.com/surya-koritala/Glyd/issues/123) | 13 | macOS/`mlx-c`/Metal kernels, whole-model CPU, Vision, Embeddings, Batched LoRA, general Spec Decode |
 | v0.39.0 | [M5b AMD ROCm and older NVIDIA](https://github.com/surya-koritala/Glyd/milestone/9) | [#445](https://github.com/surya-koritala/Glyd/issues/445) | 8 | HIP device layer (`R1b`), warp/fragment portability (`V0`), RDNA 3/4, Strix Halo, MI300X, AMD libs (`V8b`), Turing (`V5`), dynamic backend bundles |
@@ -20,7 +20,7 @@ Glyd's goal is one unified, zero-Python Rust inference engine from an 8 GB lapto
 
 1. **Close M0 + M1 before expanding scope.** Every open M0/M1 item directly protects first-run trust (`fit == run`, Windows + Linux single binary, `R7` logits and `R8` bench regression gates). Do not open new M3/M4 feature tracks while M0/M1 blockers remain open.
 2. **Pull CUDA `R1a` (#134) and NVIDIA `V8a` (#255) into M2.** A unified 8 GB → datacenter engine depends on a **split execution bottom**: own custom fused kernels for compressed weights (`mma`/`mma12`, lossy tiers, Hummingbird), 12-bit lossless KV, and async MoE streaming; delegate compute-bound dense prefill, long-context paged attention, and native FP8/NVFP4/`sm_100` GEMMs to proven Apache-2.0/MIT/BSD libraries (CUTLASS, FlashInfer, cuBLASLt, Marlin). Pulling `R1a` and `V8a` into M2 prevents writing throwaway kernels during M2/M3 and ensures M6's B200 comparison does not pit `mma.sync` against `tcgen05`. Meanwhile, `#230`'s MLX spike validates the cross-vendor `Backend` seam before any CUDA assumptions harden.
-3. **Keep M3 focused on the consumer adoption launch.** Core text models, canonical GGUF quants, quantized safetensors, RTX 50 FP4, long context (>40K for coding agents), Condor folded into `glyd run`, installers, curated pre-packed top-15 repos (`P25`), and the `plan.rs` web calculator (`P26`) ship together as `v0.36.0`. Secondary modalities/features (Vision, Embeddings, Batched LoRA, general Spec Decode, macOS builds) live in M5a so M3 ships cleanly and fast.
+3. **Keep M3 focused on the consumer adoption launch.** Core text models, canonical GGUF quants, quantized safetensors, RTX 50 FP4, long context (>40K for coding agents), Ibis folded into `glyd run`, installers, curated pre-packed top-15 repos (`P25`), and the `plan.rs` web calculator (`P26`) ship together as `v0.36.0`. Secondary modalities/features (Vision, Embeddings, Batched LoRA, general Spec Decode, macOS builds) live in M5a so M3 ships cleanly and fast.
 4. **Ship M4 (NVIDIA multi-GPU/cluster) ahead of M5a (Apple/CPU) and M5b (AMD/Turing).** 95%+ of rentable CI and datacenter GPUs are NVIDIA, whereas 4 target AMD GPUs have zero rentals on Lambda, AWS or Vast.ai ([docs/hardware-plan.md](docs/hardware-plan.md)). Shipping M4 right after M3 proves the full 8 GB → 8× H100 vision months earlier instead of stalling on unrentable hardware.
 5. **Split Apple/CPU (`M5a`) from AMD/Turing (`M5b`).** Most developers test on Apple Silicon laptops and deploy to Linux/NVIDIA servers, so `M4 + M5a` covers ~90%+ of real users. `M5b` can advance in parallel as AMD hardware access or contributors arrive, without blocking `v1.0.0`.
 
@@ -33,7 +33,7 @@ Glyd's goal is one unified, zero-Python Rust inference engine from an 8 GB lapto
 - **Real hardware gates only.** Never check off a `needs-gpu` acceptance criterion from a compile-only or mocked test; commit measured results under `benchmarks/`.
 - **Keep docs and GitHub in sync.** When closing an issue, update the epic checklist and this file in the same PR.
 
-## Where it stands (v0.34.2, 2026-11-22)
+## Where it stands (v0.35.0, 2026-11-27)
 
 Released, on main and planned are listed apart.
 
@@ -48,12 +48,12 @@ Released, on main and planned are listed apart.
 **Before v0.33.0:** v0.32.1 (2026-10-17, BUSL-1.1) went through vLLM and Python and had no engine tarball.
 
 **In v0.33.0** (and on main after it)
-- One repository under Apache-2.0 with the engine, the GPU library, Condor and Starlings (#263); raw data out of the tree
+- One repository under Apache-2.0 with the engine, the GPU library, Ibis and Starlings (#263); raw data out of the tree
   (#265); rustfmt, clippy and cargo-deny in CI (#266, part of S8); one table of what the engine runs, shared by `fit`,
   `run` and `serve` (#267, P16); security updates (S7, #211).
-- The engine runs the plain dense kind, the Qwen3.5 layout (3.5, 3.6, 3.8) and Gemma 4 at penguin, kestrel, swift and wren,
-  Nemotron-H at those and hummingbird, and Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark at penguin and hummingbird, all on one executor. Qwen3.8-Flash-Next (Condor's
-  model) runs there too: `glyd run` takes it at penguin and its codes packs at hummingbird; Condor's scripts serve the packs
+- The engine runs the plain dense kind, the Qwen3.5 layout (3.5, 3.6, 3.8) and Gemma 4 at penguin, kestrel, linnet and wren,
+  Nemotron-H at those and hummingbird, and Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark at penguin and hummingbird, all on one executor. Qwen3.8-Flash-Next (Ibis's
+  model) runs there too: `glyd run` takes it at penguin and its codes packs at hummingbird; Ibis's scripts serve the packs
   with `qwenserve`. The list is `glyd-engine/src/support.rs`.
 - With the Python tool, `glyd run` hands a plain dense model at penguin to the engine only on GPUs listed in `GPUS` (`glyd-engine/src/machine.rs`):
   the RTX 4080 SUPER is the one so far (S10), the others use vLLM unless `GLYD_ENGINE=1`; every other family and level is the engine's.
@@ -182,7 +182,7 @@ Replace the per-family pipelines with one config-driven runtime (`docs/design/ru
 - [ ] F1d Qwen 2/2.5 and Qwen3 MoE ([#169](https://github.com/surya-koritala/Glyd/issues/169))
 - [ ] F1e Phi-4 family ([#170](https://github.com/surya-koritala/Glyd/issues/170))
 - [ ] F1h Granite, OLMo, SmolLM and other standard dense models ([#173](https://github.com/surya-koritala/Glyd/issues/173))
-- [ ] R3d Condor's model (Qwen3.8-Flash-Next) on the shared executor ([#140](https://github.com/surya-koritala/Glyd/issues/140))
+- [ ] R3d Ibis's model (Qwen3.8-Flash-Next) on the shared executor ([#140](https://github.com/surya-koritala/Glyd/issues/140))
 - [x] R3b Retire the hand-written Qwen3.5, Gemma 4 and Nemotron-H engines ([#137](https://github.com/surya-koritala/Glyd/issues/137))
 - [ ] R3c Qwen3 dense on the shared executor ([#139](https://github.com/surya-koritala/Glyd/issues/139))
 - [ ] R13 Retire or freeze the GLM development engine ([#234](https://github.com/surya-koritala/Glyd/issues/234))
@@ -197,7 +197,7 @@ Gate: A pinned per-GPU list (the smallest checkpoint of each family that the pla
 
 [Milestone](https://github.com/surya-koritala/Glyd/milestone/4) · [Epic #122](https://github.com/surya-koritala/Glyd/issues/122)
 
-Flagship consumer/prosumer NVIDIA launch: remaining core text model families, canonical GGUF quant kernels, quantized safetensors releases, consumer-Blackwell FP4/FP8, universal Hummingbird, long context (>40K), Condor folded into `glyd run`, live VRAM pressure adaptation, pack pipeline with license/quality rules, native installers on every channel, retire vLLM, curated pre-packed top-15 hub & local coding-agent launch kit (`P25`), interactive `plan.rs` web GPU fit calculator (`P26`), and consumer benchmarks published against Ollama, llama.cpp and LM Studio.
+Flagship consumer/prosumer NVIDIA launch: remaining core text model families, canonical GGUF quant kernels, quantized safetensors releases, consumer-Blackwell FP4/FP8, universal Hummingbird, long context (>40K), Ibis folded into `glyd run`, live VRAM pressure adaptation, pack pipeline with license/quality rules, native installers on every channel, retire vLLM, curated pre-packed top-15 hub & local coding-agent launch kit (`P25`), interactive `plan.rs` web GPU fit calculator (`P26`), and consumer benchmarks published against Ollama, llama.cpp and LM Studio.
 
 **Why here / Agent rules:** Narrowed from the original 30-issue M3 (Vision, Embeddings, Batched LoRA, general Spec Decode, and macOS builds moved to M5a) so Glyd ships a killer consumer + local coding-agent release fast. For GGUF (`F3b`, #177), prioritize native fast kernels for canonical quants (`Q4_K_M`, `Q5_K_M`, `Q6_K`, `Q8_0`, `Q4_0`, `MXFP4`) — do not block M3 on ~25 exotic IQ/K variants. Reserve a 1-week real-machine QA soak across 8/12/16/24/32 GB cards before launch.
 
@@ -207,7 +207,7 @@ Flagship consumer/prosumer NVIDIA launch: remaining core text model families, ca
 - [ ] Hummingbird for the recent MoE families, calibrated in Rust ([#429](https://github.com/surya-koritala/Glyd/issues/429))
 - [ ] F6 Long context past 40,960 tokens ([#181](https://github.com/surya-koritala/Glyd/issues/181))
 - [ ] F1c The remaining Gemma 4 sizes ([#168](https://github.com/surya-koritala/Glyd/issues/168))
-- [ ] P8 Fold Condor into glyd run ([#163](https://github.com/surya-koritala/Glyd/issues/163))
+- [ ] P8 Fold Ibis into glyd run ([#163](https://github.com/surya-koritala/Glyd/issues/163))
 - [ ] P3b Adapt to VRAM pressure at run time ([#247](https://github.com/surya-koritala/Glyd/issues/247))
 - [ ] P9 No Python on any install path ([#164](https://github.com/surya-koritala/Glyd/issues/164))
 - [ ] F7 Retire the vLLM plugin path ([#182](https://github.com/surya-koritala/Glyd/issues/182))
@@ -231,6 +231,10 @@ Flagship consumer/prosumer NVIDIA launch: remaining core text model families, ca
 - [ ] K6 Residual forms: streams with no comb matrix, normalise-and-interpolate, value residual ([#554](https://github.com/surya-koritala/Glyd/issues/554))
 - [ ] K7 Small kind options, one batch ([#555](https://github.com/surya-koritala/Glyd/issues/555))
 - [ ] K8 Parallel block ([#556](https://github.com/surya-koritala/Glyd/issues/556))
+- [ ] K9 A role read from a range of rows of a tensor ([#632](https://github.com/surya-koritala/Glyd/issues/632))
+- [ ] Run the described families on the executor and in the planner ([#641](https://github.com/surya-koritala/Glyd/issues/641))
+- [ ] Hummingbird and RAM offload for dense models: a dense model larger than the card runs ([#636](https://github.com/surya-koritala/Glyd/issues/636))
+- [ ] A routine for adding a model family: one intake command, one page, plain kinds first ([#617](https://github.com/surya-koritala/Glyd/issues/617))
 - [ ] GGUF architectures: metadata to a model description for every family the runtime serves ([#557](https://github.com/surya-koritala/Glyd/issues/557))
 - [ ] One table-driven tool-call and reasoning parser ([#558](https://github.com/surya-koritala/Glyd/issues/558))
 - [ ] Derive tool-call and reasoning markers from the chat template ([#559](https://github.com/surya-koritala/Glyd/issues/559))
@@ -367,6 +371,7 @@ Gate: Per device (NVIDIA T4; AMD RX 7900 XTX, RX 9070 XT, Strix Halo, MI300X), t
 - [ ] SageMaker, Vertex and KServe v2 routes ([#593](https://github.com/surya-koritala/Glyd/issues/593))
 - [ ] Save and restore a conversation's KV pages to a file ([#594](https://github.com/surya-koritala/Glyd/issues/594))
 - [ ] Stored Responses: retrieve, cancel and previous_response_id ([#595](https://github.com/surya-koritala/Glyd/issues/595))
+- [ ] K11 Layer kinds that single families need ([#637](https://github.com/surya-koritala/Glyd/issues/637))
 
 Gate: A documented stable surface with CI compatibility checks; `llm-d` routes to Glyd pods by prefix-cache hits; a Helm + LeaderWorkerSet install passes readiness on a GPU cluster; SBOM and provenance on every artifact; a comparison with vLLM and SGLang per quality tier (lossless against bf16, lossy levels against FP8 and NVFP4) on H100 (and B200 via `V8a` `sm_100` kernels), published with configs and logs whatever the result.
 
@@ -393,6 +398,7 @@ Work deferred until the single-node server and small clusters are adopted: prefi
 - [ ] Fleet capacity planner ([#599](https://github.com/surya-koritala/Glyd/issues/599))
 - [ ] Tensor parallel across machines over RDMA ([#600](https://github.com/surya-koritala/Glyd/issues/600))
 - [ ] Snapshot and restore of a loaded server ([#601](https://github.com/surya-koritala/Glyd/issues/601))
+- [ ] Text diffusion language models ([#639](https://github.com/surya-koritala/Glyd/issues/639))
 
 Revisited after 1.0, by demand.
 
@@ -400,4 +406,4 @@ Revisited after 1.0, by demand.
 
 - `glyd bench` (Rust) replaces the Python benchmarks; results in `benchmarks/`.
 - Python is ported or removed as each milestone replaces it (`glyd-gpu-py/`, `gpu/*.py`, `glyd-engine/tools/*.py`,
-  `condor/bench`, `scripts/*.py` → `cargo xtask`).
+  `ibis/bench`, `scripts/*.py` → `cargo xtask`).

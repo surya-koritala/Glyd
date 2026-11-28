@@ -1291,8 +1291,8 @@ def test_the_engine_takes_glyd_run_where_it_will_certainly_run_the_model():
             assert done is None and ran == [] and sent == [f"glyd run: {said}; using vLLM."], (said, sent)
         # a Gemma 4 or lossy glyd/ repo runs on the engine alone (vLLM cannot read its files): the reason and status 3, and no vLLM; a Qwen penguin repo (glyd-v4) still goes to vLLM's plugin
         said = "gemma-4-12B-penguin at the penguin level takes about 17.5 GiB of GPU memory at 4096 tokens of context, and the NVIDIA GeForce RTX 4080 SUPER has 15.1 GiB free"
-        done, sent, ran, *_ = go(["glyd/Qwen3.8-27B-swift"], preflight=3, text=f"glyd: {said}.\n  fix")
-        assert done == 3 and ran == [] and sent == [f"glyd run: {said}; glyd/Qwen3.8-27B-swift runs on Glyd's own engine alone."], sent
+        done, sent, ran, *_ = go(["glyd/Qwen3.8-27B-linnet"], preflight=3, text=f"glyd: {said}.\n  fix")
+        assert done == 3 and ran == [] and sent == [f"glyd run: {said}; glyd/Qwen3.8-27B-linnet runs on Glyd's own engine alone."], sent
         # Gemma 4 short of GPU memory (vLLM's bf16 takes more than penguin): the engine's reason and its fix lines (the wren repo first where it fits), status 3, no vLLM
         fix = "  glyd run glyd/gemma-4-12B-wren fits: the wren level, about 9.4 GiB at 4096 tokens of context (Google's QAT checkpoint, bit for bit)\n  Or close programs that use the GPU"
         for m in ("google/gemma-4-12B-it", "glyd/gemma-4-12B-penguin"):
@@ -1341,12 +1341,12 @@ def test_the_engine_takes_glyd_run_where_it_will_certainly_run_the_model():
             done, sent, ran, asked, exe = go([g, "--port", "8001"], cmd="serve")
             assert done == 0 and asked == [[exe, "preflight", g, "--port", "8001"]] and len(ran) == 1 and sent == [f"glyd serve: {g} on glyd-engine (GLYD_ENGINE=0: vLLM instead)."], (g, asked, sent)
         # so is a lossy glyd/ repo and a glyd-v7 directory (a level's save, which vLLM cannot load); a directory of another format is not
-        v7, v4 = os.path.join(d, "q-swift"), os.path.join(d, "q-v4")
+        v7, v4 = os.path.join(d, "q-linnet"), os.path.join(d, "q-v4")
         for p, fmt in ((v7, "glyd-v7"), (v4, "glyd-v4")):
             os.makedirs(p, exist_ok=True)
             with open(os.path.join(p, "glyd.json"), "w") as f:
                 json.dump({"format": fmt}, f)
-        assert engine.engine_only(v7) and not engine.engine_only(v4) and not engine.engine_only(d) and engine.engine_only("glyd/Qwen3.5-9B-swift") and not engine.engine_only("glyd/Qwen3.5-9B-penguin")
+        assert engine.engine_only(v7) and not engine.engine_only(v4) and not engine.engine_only(d) and engine.engine_only("glyd/Qwen3.5-9B-linnet") and not engine.engine_only("glyd/Qwen3.5-9B-penguin")
         done, sent, ran, *_ = go([v7], env={"GLYD_ENGINE": "0"}, cmd="serve")
         assert done == 3 and ran == [] and sent == [f"glyd serve: GLYD_ENGINE=0; {v7} runs on Glyd's own engine alone."], sent
         done, sent, ran, *_ = go([v4], env={"GLYD_ENGINE": ""}, cmd="serve")
@@ -1360,7 +1360,7 @@ def test_the_engine_takes_glyd_run_where_it_will_certainly_run_the_model():
                 done, sent, ran, asked, exe = go(["m"], env={"GLYD_ENGINE": value}, cmd="serve")
                 assert done == 0 and len(ran) == 1 and len(asked) == 1 and sent == [f"glyd serve: m on glyd-engine (GLYD_ENGINE=0: vLLM instead)."], (value, sent)
             # a level (a tag, --lossy), a lossy glyd/ repo and a glyd-v7 directory are served by the engine without GLYD_ENGINE=1: nothing else serves them
-            for argv in (["Qwen/Qwen3.5-9B:swift"], ["Qwen/Qwen3.8-27B", "--lossy"], ["glyd/Qwen3.5-9B-swift"], [v7]):
+            for argv in (["Qwen/Qwen3.5-9B:linnet"], ["Qwen/Qwen3.8-27B", "--lossy"], ["glyd/Qwen3.5-9B-linnet"], [v7]):
                 done, sent, ran, asked, exe = go([*argv, "--port", "8001"], env={"GLYD_ENGINE": ""}, cmd="serve")
                 assert done == 0 and asked == [[exe, "preflight", *argv, "--port", "8001"]] and ran[0][:2] == [exe, "serve"] and ran[0][4:] == [*argv, "--port", "8001"], (argv, asked, ran, sent)
             for value in ("", "auto", "1"):
@@ -1384,7 +1384,7 @@ def test_the_engine_takes_glyd_run_where_it_will_certainly_run_the_model():
 
 
 def test_the_level_tag_of_the_model_is_read_by_handoff():
-    """`glyd run MODEL:kestrel` and `MODEL:swift` are --lossy's case (the engine alone, never vLLM, the words as they were typed: the engine reads the tag); `MODEL:penguin` is the model without its tag, for
+    """`glyd run MODEL:kestrel` and `MODEL:linnet` are --lossy's case (the engine alone, never vLLM, the words as they were typed: the engine reads the tag); `MODEL:penguin` is the model without its tag, for
     the engine's preflight and run; glyd serve reads them the same way; a tag that is no level and --lossy with another level are refused (status 1, the
     engine's own words, nothing run); a model with no tag, or a path whose text after a ':' is more than letters, is as it was."""
     from glyd_gpu import engine
@@ -1395,14 +1395,15 @@ def test_the_level_tag_of_the_model_is_read_by_handoff():
         # the tag: the text after the model's last ':' when that is all ASCII letters (any case); the model alone is looked at, and the tag of a name that is no level is for handoff to refuse
         assert engine.level_of([M]) == ([M], None) and engine.level_of([]) == ([], None)
         assert engine.level_of([f"{M}:kestrel", "--prompt", "hi"]) == ([M, "--prompt", "hi"], "kestrel")
-        assert engine.level_of(["--context", "4096", f"{M}:Swift"]) == (["--context", "4096", M], "swift") and engine.level_of([f"{M}:PENGUIN"]) == ([M], "penguin")
-        assert engine.level_of(["a:b:kestrel"]) == (["a:b"], "kestrel") and engine.level_of(["/models/mine:swift"]) == (["/models/mine"], "swift")  # (the last ':')
+        assert engine.level_of(["--context", "4096", f"{M}:Linnet"]) == (["--context", "4096", M], "linnet") and engine.level_of([f"{M}:PENGUIN"]) == ([M], "penguin")
+        assert engine.level_of(["a:b:kestrel"]) == (["a:b"], "kestrel") and engine.level_of(["/models/mine:linnet"]) == (["/models/mine"], "linnet")  # (the last ':')
         assert engine.level_of([f"{M}:Wren"]) == ([M], "wren")
-        for plain in ("/mnt/disk:1/Qwen3", "./a:b/c", "/data/x:kestrel/model", "C:\\models\\Qwen", f"{M}:", "m:v2", "m:4bit", "m:ké", "m: swift", ":", "mine"):
+        assert engine.level_of([f"{M}:Swift"]) == ([M], "linnet")  # (the level's earlier name is read as the level)
+        for plain in ("/mnt/disk:1/Qwen3", "./a:b/c", "/data/x:kestrel/model", "C:\\models\\Qwen", f"{M}:", "m:v2", "m:4bit", "m:ké", "m: linnet", ":", "mine"):
             assert engine.level_of([plain]) == ([plain], None), plain
-        assert engine.level_of(["-p", "x:swift", M]) == (["-p", "x:swift", M], None) and engine.level_of([M, "--", "x:swift"]) == ([M, "--", "x:swift"], None)
-        assert engine.level_of(["--", "m:swift"]) == (["--", "m:swift"], None)
-        assert engine.level_of(["-p", f"{M}:swift", f"{M}:wren"]) == (["-p", f"{M}:swift", M], "wren")  # (the model word, not a prompt that reads the same)
+        assert engine.level_of(["-p", "x:linnet", M]) == (["-p", "x:linnet", M], None) and engine.level_of([M, "--", "x:linnet"]) == ([M, "--", "x:linnet"], None)
+        assert engine.level_of(["--", "m:linnet"]) == (["--", "m:linnet"], None)
+        assert engine.level_of(["-p", f"{M}:linnet", f"{M}:wren"]) == (["-p", f"{M}:linnet", M], "wren")  # (the model word, not a prompt that reads the same)
         assert engine.model_at(["-p", "x", M]) == 2 and engine.model_at(["-p", "x"]) is None and engine.model_of(["-p", "x", M]) == M
 
         def go(argv, env=None, cmd="run", **fake):
@@ -1420,8 +1421,8 @@ def test_the_level_tag_of_the_model_is_read_by_handoff():
             done = engine.handoff(cmd, list(argv), {"GLYD_ENGINE": exe, **(env or {})}, sent.append, run=run, start=start, stall=0.5, poll=0.05)
             return done, sent, ran, asked, exe
 
-        # kestrel, swift and hummingbird, in any case: the engine is asked, and run, with the words as they were typed
-        for tag in ("kestrel", "swift", "hummingbird", "Kestrel", "SWIFT", "Hummingbird"):
+        # kestrel, linnet and hummingbird, in any case: the engine is asked, and run, with the words as they were typed
+        for tag in ("kestrel", "linnet", "hummingbird", "Kestrel", "LINNET", "Hummingbird"):
             argv = [f"{M}:{tag}", "--prompt", "hi"]
             done, sent, ran, asked, exe = go(argv)
             assert done == 0 and asked == [[exe, "preflight", *argv]] and len(ran) == 1 and ran[0][4:] == argv, (tag, done, asked, ran)
@@ -1439,21 +1440,21 @@ def test_the_level_tag_of_the_model_is_read_by_handoff():
         assert done == 0 and asked == [[exe, "preflight", f"{M}:kestrel", "--lossy"]] and ran[0][4:] == [f"{M}:kestrel", "--lossy"], (asked, ran)
         done, sent, ran, *_ = go([f"{M}:kestrel", "--lossy"], preflight=3, text="glyd: no room.")
         assert done == 3 and sent == ["glyd run: no room; --lossy runs on Glyd's own engine alone."], sent  # (as typed: --lossy)
-        for tag in ("swift", "Penguin"):
+        for tag in ("linnet", "Penguin"):
             done, sent, ran, asked, _ = go([f"{M}:{tag}", "--lossy"])
             assert done == 1 and ran == [] and asked == [] and sent == [f"glyd: --lossy is :kestrel, not :{tag.lower()}.\n  Give one or the other"], (tag, sent)
         # a name that is no level: refused with the levels there are, whatever else is set; nothing runs, vLLM neither
         for tag, said in (("Sparrow", "not a level"), ("falcon", "not a level"), ("x", "not a level")):
             for env, argv in ((None, [f"{M}:{tag}"]), ({"GLYD_ENGINE": "0"}, [f"{M}:{tag}"]), (None, [f"{M}:{tag}", "--lossy"])):
                 done, sent, ran, asked, _ = go(argv, env=env)
-                assert done == 1 and ran == [] and asked == [] and sent == [f"glyd: :{tag.lower()} is {said}.\n  The levels available now: penguin, kestrel, swift, wren, hummingbird"], (tag, env, sent)
+                assert done == 1 and ran == [] and asked == [] and sent == [f"glyd: :{tag.lower()} is {said}.\n  The levels available now: penguin, kestrel, linnet, wren, hummingbird"], (tag, env, sent)
         # wren (every build since v0.34.0): the engine is asked with the tag as typed, and says which families run it
         for g in ("google/gemma-4-31B-it:wren", "google/gemma-4-12B-it:Wren", f"{M}:wren"):
             done, sent, ran, asked, exe = go([g, "--prompt", "hi"])
             assert done == 0 and asked == [[exe, "preflight", g, "--prompt", "hi"]] and ran[0][4:] == [g, "--prompt", "hi"], (g, asked, ran)
         # glyd serve takes the same tags: a lossy level goes to the engine with the words as typed (no GLYD_ENGINE=1: nothing else serves it), penguin is the lossless model (the speed bar's: vLLM unless
         # the engine is asked for), and a name that is no level built is refused as run refuses it
-        for tag in ("kestrel", "swift", "wren", "hummingbird", "SWIFT"):
+        for tag in ("kestrel", "linnet", "wren", "hummingbird", "LINNET"):
             argv = [f"{M}:{tag}", "--port", "8001"]
             done, sent, ran, asked, exe = go(argv, cmd="serve")
             assert done == 0 and asked == [[exe, "preflight", *argv]] and ran[0][:2] == [exe, "serve"] and ran[0][4:] == argv, (tag, done, asked, ran)
@@ -1464,7 +1465,7 @@ def test_the_level_tag_of_the_model_is_read_by_handoff():
         assert done is None and ran == [] and asked == [] and sent == ["glyd serve: the engine serves up to 8 users at once and vLLM more (GLYD_ENGINE=1 runs the engine); using vLLM."], sent
         for tag, said in (("falcon", "not a level"),):
             done, sent, ran, asked, _ = go([f"{M}:{tag}"], cmd="serve")
-            assert done == 1 and ran == [] and asked == [] and sent == [f"glyd: :{tag} is {said}.\n  The levels available now: penguin, kestrel, swift, wren, hummingbird"], (tag, sent)
+            assert done == 1 and ran == [] and asked == [] and sent == [f"glyd: :{tag} is {said}.\n  The levels available now: penguin, kestrel, linnet, wren, hummingbird"], (tag, sent)
         # penguin: the model without the tag is what the engine is asked and run with, and what the line says; where the engine will not run it, vLLM, which has the model without the tag too (run.main, below)
         done, sent, ran, asked, exe = go([f"{M}:penguin", "--prompt", "hi"])
         assert done == 0 and asked == [[exe, "preflight", M, "--prompt", "hi"]] and len(ran) == 1 and ran[0][4:] == [M, "--prompt", "hi"], (asked, ran)
@@ -1485,21 +1486,21 @@ def test_the_level_tag_of_the_model_is_read_by_handoff():
 
 
 def test_the_level_tag_as_a_process_and_the_vllm_path_never_sees_it():
-    """run.main (what `glyd run` is) gives the engine kestrel's and swift's tags as they were typed, and penguin's tag taken off; where the vLLM path goes on, its commands (and their parse) have the model without a
+    """run.main (what `glyd run` is) gives the engine kestrel's and linnet's tags as they were typed, and penguin's tag taken off; where the vLLM path goes on, its commands (and their parse) have the model without a
     tag; a refusal of a level is status 1 and the engine's words on stderr."""
     d = tempfile.mkdtemp()
     try:
         M = "Qwen/Qwen3.8-27B"
         fake_engine(d, ready=True, body='echo "engine: $cmd $@"')
-        for tag, said in (("swift", f"{M}:swift"), ("Kestrel", f"{M}:Kestrel"), ("penguin", M), ("PENGUIN", M)):
+        for tag, said in (("linnet", f"{M}:linnet"), ("Kestrel", f"{M}:Kestrel"), ("penguin", M), ("PENGUIN", M)):
             status, out, err = run_tool(d, "run", [f"{M}:{tag}", "-p", "hi"])
             assert (status, out, err) == (0, f"engine: run {said} -p hi\n", f"glyd run: {said} on glyd-engine (GLYD_ENGINE=0: vLLM instead).\n"), (tag, status, out, err)
         status, out, err = run_tool(d, "run", [f"{M}:wren"])
         assert (status, out, err) == (0, f"engine: run {M}:wren\n", f"glyd run: {M}:wren on glyd-engine (GLYD_ENGINE=0: vLLM instead).\n"), (status, out, err)
         status, out, err = run_tool(d, "run", [f"{M}:falcon"])
-        assert (status, out, err) == (1, "", "glyd: :falcon is not a level.\n  The levels available now: penguin, kestrel, swift, wren, hummingbird\n")
-        status, out, err = run_tool(d, "serve", [f"{M}:swift"])
-        assert (status, out, err) == (0, f"engine: serve {M}:swift\n", f"glyd serve: {M}:swift on glyd-engine (GLYD_ENGINE=0: vLLM instead).\n"), (status, out, err)
+        assert (status, out, err) == (1, "", "glyd: :falcon is not a level.\n  The levels available now: penguin, kestrel, linnet, wren, hummingbird\n")
+        status, out, err = run_tool(d, "serve", [f"{M}:linnet"])
+        assert (status, out, err) == (0, f"engine: serve {M}:linnet\n", f"glyd serve: {M}:linnet on glyd-engine (GLYD_ENGINE=0: vLLM instead).\n"), (status, out, err)
         fake_engine(d, preflight=3, text="glyd: no room.")  # (the engine says no: penguin goes on with vLLM, which is not here; kestrel does not)
         status, out, err = run_tool(d, "run", [f"{M}:kestrel"])
         assert (status, out, err) == (3, "", "glyd run: no room; :kestrel runs on Glyd's own engine alone.\n"), (status, out, err)

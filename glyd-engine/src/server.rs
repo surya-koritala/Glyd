@@ -5737,21 +5737,21 @@ pub(crate) mod tests {
     fn the_server_says_what_it_is_and_what_it_holds() {
         let held = crate::dev::Held { weights: 5 << 30, kv: 1 << 28, state: 1 << 20, kv_type: "bf16", state_type: "fp32" };
         let about = vec![
-            ("model", tools::obj(vec![("id", Value::from("Qwen/Qwen3.5-9B:swift"))])),
-            ("level", tools::obj(vec![("requested", Value::from("swift")), ("effective", Value::from("swift"))])),
+            ("model", tools::obj(vec![("id", Value::from("Qwen/Qwen3.5-9B:linnet"))])),
+            ("level", tools::obj(vec![("requested", Value::from("linnet")), ("effective", Value::from("linnet"))])),
         ];
         assert!(crate::runtime::context::Context::process()
             .info
             .set(Info { about, gpu: None, held: Some(held), concurrency: 1, window: 4096, refused: ONE_AT_A_TIME, started: 1.5 })
             .is_ok());
         let (tx, _rx) = std::sync::mpsc::channel();
-        let addr = listen("127.0.0.1:0", "Qwen/Qwen3.5-9B:swift", 4096, Some("k".into()), false, tx).unwrap();
+        let addr = listen("127.0.0.1:0", "Qwen/Qwen3.5-9B:linnet", 4096, Some("k".into()), false, tx).unwrap();
         assert_eq!(ask(addr, "GET", "/v1/glyd/info", &[("Host", "x")]).0, 401);
         let info = || json::parse(&ask(addr, "GET", "/v1/glyd/info", &[("Host", "x"), ("Authorization", "Bearer k")]).2).unwrap();
         let d = info();
         assert_eq!(
             (at(&d, &["object"]).as_str(), at(&d, &["api"]).as_str(), at(&d, &["model", "id"]).as_str(), at(&d, &["level", "effective"]).as_str()),
-            (Some("glyd.info"), Some(API), Some("Qwen/Qwen3.5-9B:swift"), Some("swift"))
+            (Some("glyd.info"), Some(API), Some("Qwen/Qwen3.5-9B:linnet"), Some("linnet"))
         );
         assert_eq!(at(&d, &["build", "version"]).as_str(), Some(env!("CARGO_PKG_VERSION")));
         assert_eq!((f64_of(at(&d, &["limits", "context_tokens"])), f64_of(at(&d, &["limits", "concurrency"]))), (4096.0, 1.0));

@@ -580,7 +580,7 @@ mod tests {
     }
 
     /// The host's ids are the CPU reference's (`reference::ngram::context`, `ids`) for every row of passes cut anywhere in a sequence, read as the GPU's hash
-    /// reads them (the sequence's last ids its state, + 1): Condor's trigrams, the end token inside the sequence cutting the n-grams after it, and Engram's
+    /// reads them (the sequence's last ids its state, + 1): Ibis's trigrams, the end token inside the sequence cutting the n-grams after it, and Engram's
     /// order 4 over its compressed vocabulary with no segments (the pad's own id before the sequence).
     #[test]
     fn the_hosts_ids_are_the_references() {

@@ -1,4 +1,4 @@
-//! Qwen3.8-Flash-Next (`Qwen4ExpForConditionalGeneration`, Condor's model) on the executor (R3d, #140): its config's layer kinds lowered to the shared operations
+//! Qwen3.8-Flash-Next (`Qwen4ExpForConditionalGeneration`, Ibis's model) on the executor (R3d, #140): its config's layer kinds lowered to the shared operations
 //! (`lower::qwen4x`) and loaded here: the matrices packed at the level asked (penguin's lossless packs where none is), the ones the library does not pack and the table of n-grams
 //! held as saved (bf16), the small tensors as saved but A_log in fp32 (the delta rule reads it so). Each layer's experts are the Moe kind's block of its roles
 //! (src/dynamic/experts.rs `block`): either all on the GPU at the level asked (`load`), or at the hummingbird level of a codes pack (src/cb_pack.rs: each expert
@@ -26,7 +26,7 @@ use std::path::Path;
 /// The executor description's family name.
 pub const FAMILY: &str = "Qwen3.8-Flash-Next";
 
-/// The executor's description of the model in `dir` for sequences of up to `ctx` positions: its kinds lowered (`lower::qwen4x`), held to Condor's own reading of
+/// The executor's description of the model in `dir` for sequences of up to `ctx` positions: its kinds lowered (`lower::qwen4x`), held to Ibis's own reading of
 /// the config (`ConfigQx::agrees`).
 pub fn lowered(dir: &Path, ctx: usize) -> Result<ModelDesc> {
     lowered_of(dir, &ModelConfig::load(dir)?, ctx)
@@ -181,9 +181,9 @@ pub struct Caching {
     pub pack: std::path::PathBuf,
     pub mode: PackMode,
     /// the sidecars whose copies of some experts the places hold in place of the pack's, a later one's over an earlier one's (`PackMode::side`'s by
-    /// default; Condor's server's `--side A,B`, none with `--no-side`: `Form`)
+    /// default; Ibis's server's `--side A,B`, none with `--no-side`: `Form`)
     pub sides: Vec<std::path::PathBuf>,
-    /// the layout of the attention blocks' own matrices and the LM head where it is not the stage's (`Placing::hi`: Condor's server's `--hi`)
+    /// the layout of the attention blocks' own matrices and the LM head where it is not the stage's (`Placing::hi`: Ibis's server's `--hi`)
     pub hi: Option<Layout>,
     /// places a layer (the plan's; None: what the GPU has free after the always-on matrices, less the reserve, over the layers, a development check's
     /// alone: `free_sized`)
@@ -201,13 +201,13 @@ impl Caching {
         Caching { pack: pack.to_path_buf(), mode, sides: mode.side(pack).into_iter().collect(), hi: None, places: None, offload, users }
     }
 
-    /// `new` as Condor's server's flags select it (`Form`): their sidecars and second layout.
+    /// `new` as Ibis's server's flags select it (`Form`): their sidecars and second layout.
     pub fn of_form(pack: &Path, f: &Form, users: usize) -> Caching {
         Caching { sides: f.sides.clone(), hi: f.hi, ..Caching::new(pack, f.mode, users) }
     }
 }
 
-/// What Condor's server's flags select, flag for flag as v0.34.2's engine read them: the pack's mode (`--precise`; else `best` where
+/// What Ibis's server's flags select, flag for flag as v0.34.2's engine read them: the pack's mode (`--precise`; else `best` where
 /// the pack's folder is named so, else `fast`: its skipping and the Monitor's name), the sidecars over the pack's experts (`--side A,B`; none with `--no-side`;
 /// else the mode's, `PackMode::side`), the always-on matrices' layout (`--layout`, four bits where none is given) and the layout of the attention blocks' own
 /// matrices and the LM head (`--hi i6 | i5 | i4 | none`; where none is given five bits beside a layout of four, else the layout's), None where it is the
@@ -423,7 +423,7 @@ pub fn open_planned(
     super::split::Run::new(c.layers, c.eos, cuts, devices, o, std::sync::Arc::new(make))
 }
 
-/// Condor's server's plan (`plan::sizing::codes_plan_with`, the planned route's rule): the model in `snap` with the pack `pack` served as the flags select
+/// Ibis's server's plan (`plan::sizing::codes_plan_with`, the planned route's rule): the model in `snap` with the pack `pack` served as the flags select
 /// (`Form`: its sidecars, the always-on matrices' layout and the attention's and the LM head's), `ctx` tokens of context for `users` at once in prompt chunks
 /// of `chunk`, on the GPUs `devs` (the layers cut over them in their order where there are several, at `--split CUT,..` where given), `--places N` a layer
 /// where given, `--host-memory` the experts' share of the computer's memory. Refused in the planner's words where it does not fit.
@@ -921,7 +921,7 @@ pub fn serve_check(a: &crate::args::Args) -> Result<()> {
 }
 
 /// `glyd-engine servescore CKPT PACK [--precise] [--layout L] [--hi L] [--side A,B | --no-side] --ids A,B,.. --from N --out FILE [--places N] [--ctx N] [--chunk N] [--passes N]`:
-/// the family's model as Condor's server loads it with those flags (`form_of`, `Caching::of_form`; its places `--places` a layer, else what the GPU has free),
+/// the family's model as Ibis's server loads it with those flags (`form_of`, `Caching::of_form`; its places `--places` a layer, else what the GPU has free),
 /// the ids before the N-th as a prompt, then each id after it a step: every scored position's whole row of logits (the prompt's last, then each step's) appended
 /// to FILE as little-endian f32, as v0.34.2's `qwenserve` wrote them for a request's `score_from` and `dump` (the rows a check holds the two engines to).
 #[cfg(feature = "dev")]
@@ -1176,7 +1176,7 @@ mod tests {
     /// queries and pools, its unweighted pick of 2 pools of 4 and the tail, the attention over the picks with its keys and values in states, the experts, and
     /// the final mixer on the last layer; every matrix and small tensor named is the checkpoint's, and every slot an operation reads is sized.
     #[test]
-    fn condors_tiny_model_lowers_to_the_shared_operations() {
+    fn ibis_tiny_model_lowers_to_the_shared_operations() {
         let d = describe(&tiny()).unwrap();
         let m = super::super::lower::qwen4x(&d, vec![2000], 1100).unwrap();
         assert!(matches!(m.first, Op::Streams));

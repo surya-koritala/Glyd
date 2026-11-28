@@ -3,7 +3,7 @@
 // and the attention over the tokens the indexer picked. bf16 in memory, fp32 inside; the rounding points are transformers 5.19.0's (modeling_qwen4_exp.py), which rounds every elementwise op of a bf16 tensor.
 // Reference: tools/qwen4x_ref.py (transformers' own modules).
 
-#define QX_HC 4  // residual streams of Condor's own kernels (the release's); the kernels the description executor runs take the count, 1 to 4 (`hc`)
+#define QX_HC 4  // residual streams of Ibis's own kernels (the release's); the kernels the description executor runs take the count, 1 to 4 (`hc`)
 
 __device__ __forceinline__ float qx_r(float x) { return b2f(f2b(x)); }  // a bf16 tensor op's rounding
 __device__ __forceinline__ float qx_sig(float x) { return 1.f / (1.f + expf(-x)); }
@@ -239,7 +239,7 @@ extern "C" __global__ void __launch_bounds__(128, 1) qx_gdn_rec_gn(const bf16* x
 }
 
 // ---- PLE (the n-gram embedding's injection) -----------------------------------------------------------------------------------------------------------------------------------------------
-// For a row: kv [n, 5 D] the products of its n-gram embedding (key: 4 D, value: D), x [n, 4 D] the streams. Condor's form (`engram` 0): key_s = bf16(norm(key_s) (1 + wk_s)), q_s = bf16(norm(x_s)
+// For a row: kv [n, 5 D] the products of its n-gram embedding (key: 4 D, value: D), x [n, 4 D] the streams. Ibis's form (`engram` 0): key_s = bf16(norm(key_s) (1 + wk_s)), q_s = bf16(norm(x_s)
 // (1 + wq_s)), g_s = bf16(bf16(sum bf16(key_s q_s)) / sqrt(D)), g_s = bf16(sign(g) sqrt(max(|g|, 1e-6))) (each op rounded as the reference's), gv_s = bf16(bf16(sigmoid(g_s)) value) into gv [n, 4 D], and
 // its norm per stream bf16(norm(gv_s) (1 + wc_s)) into gvn [n, 4 D] for qx_ple_conv. Engram's (`engram` 1, `kinds::NgramForm::Engram`): the weights fp32 and plain (key_s = norm(key_s) wk_s, q_s = norm(x_s)
 // wq_s), the gate in fp32 (a dot of 0 gives sqrt(1e-6)), and x_s = bf16(x_s + sigmoid(g_s) value) in one store: no convolution. A block of 1024 threads a row, a quarter a stream (D at most 256 *
@@ -357,7 +357,7 @@ extern "C" __global__ void qx_ple_conv_rows(const bf16* gvn, const bf16* gv, con
 
 // The n-gram embedding's rows of a call's n rows of one sequence (the description executor's `Op::NgramRows`, `kinds::Ngram`): row t's token and the `order` - 1 before it (the call's earlier rows, else the
 // sequence's state hist [order - 1], oldest first, each id + 1 and 0 before the sequence, which reads as `eos`); each token first mapped to its compressed vocabulary's id where `map` (int32 [vocabulary]:
-// Engram's, whose pad `eos` is mapped too). With `segments` (Condor's), a token past an `eos` reads as `eos` too. Order o's hash (2 <= o <= order <= 4) mixed_o = XOR over p < o of (token p back) mult[p] (unsigned 64-bit: each product is
+// Engram's, whose pad `eos` is mapped too). With `segments` (Ibis's), a token past an `eos` reads as `eos` too. Order o's hash (2 <= o <= order <= 4) mixed_o = XOR over p < o of (token p back) mult[p] (unsigned 64-bit: each product is
 // below 2^63, so as the reference's int64); table h of H (`per` an order, the bigrams' first) the row mixed_o mod sizes[h] + offsets[h]; e [n, H row] = those rows of the table [rows, row] bf16. mult [order],
 // sizes [H], offsets [H]: int64 words. Block a row.
 extern "C" __global__ void qx_ngram_rows(const int* tok, const int* hist, const unsigned long long* mult, const unsigned long long* sizes, const unsigned long long* offsets, const bf16* table, bf16* e, int H,

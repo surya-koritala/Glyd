@@ -18,11 +18,11 @@ nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16 at 2dc98e2a, packed by the engine 
 
 How to read it:
 - **It fits an 80 GB card with room for context:** 65.2 GiB of weights and 32,768 tokens of context in 67.2 GiB.
-- **The whole-model check** is the same as the swift run's (benchmarks/gpu/nh-run-check-2026-10-10): 160 tokens of one text against the
+- **The whole-model check** is the same as the linnet run's (benchmarks/gpu/nh-run-check-2026-10-10): 160 tokens of one text against the
   bf16 checkpoint run layer by layer on the same GPU. It is a correctness check, not the held-out quality measurement; on these 97
-  positions wren's KL (0.0016) is not above swift's (0.0022 on the H200), which says the text is too short to rank the two levels. The
+  positions wren's KL (0.0016) is not above linnet's (0.0022 on the H200), which says the text is too short to rank the two levels. The
   held-out measurement of four-bit experts is benchmarks/weights/moe-quality-2026-10-10/nemotron (int4: KL 0.0133 including a 0.0047 floor).
-- **Speed** is the A100's (2.0 TB/s): 71.1 tokens a second greedy for one user, against swift's 96.6 on the H200 (4.8 TB/s).
+- **Speed** is the A100's (2.0 TB/s): 71.1 tokens a second greedy for one user, against linnet's 96.6 on the H200 (4.8 TB/s).
 - **Answers** are coherent (run-prompt.log, run-chat.log, serve-chat.log).
 
 Files: steps.txt, summary.txt, moecheck.log, logits-check.log and logits-run.log, logits/, layers-check.log, layers-run.log and

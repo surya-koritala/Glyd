@@ -1,1 +1,0 @@
-- Anthropic API: a reply to a request for thinking begins with its thinking block, whole and streamed, empty where the model wrote no thinking; before, such a reply could have no content block at all.

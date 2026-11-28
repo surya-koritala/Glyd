@@ -62,7 +62,7 @@ use crate::gpu_ops::{Gemm, GpuOps};
 use crate::kern::embed_plan;
 use crate::kern::{norm_threads, Kern};
 use crate::kern::{pf_kib, KernG4, NextPf};
-use crate::kern::{KernMamba2, SsdWs};
+use crate::kern::{KernMamba2, KernShortConv, SsdWs};
 use crate::kern35::{Kern35, Mat};
 use crate::launch;
 use crate::runtime::config::ModelConfig;
@@ -262,6 +262,16 @@ pub enum Op {
         row: usize,
         di: usize,
         ng: usize,
+    },
+    /// The gated short convolution (`kinds::ShortConv`, LFM's conv layers; kernels/short_conv.cu): of Proj's rows, `row` wide (the input product's: B, C and x, `d`
+    /// columns each), u = B x through each channel's causal convolution of `taps` taps (small tensor `w`, bf16 [d, taps], the oldest tap first) over the
+    /// sequence's state `state` (fp32 [d, taps - 1]: the channel's last values of u, which it then takes), times C, into Xc; the output product reads Xc.
+    ShortConv {
+        w: usize,
+        state: usize,
+        d: usize,
+        taps: usize,
+        row: usize,
     },
     /// The mixture-of-experts kind (`Ffn::Moe`), the part's block's: see `MoeOp`.
     Moe(MoeOp),
@@ -597,6 +607,9 @@ pub struct Rope {
     pub pairs: usize,
     /// Each angle (fp32) through f64 trig, rounded to fp32 then bf16 (transformers' cos and sin in the activations' type, Muse Spark's); else fp32 trig.
     pub trig64: bool,
+    /// A scaled rotary's own frequency a pair and its factor on cos and sin (`kinds::RopeScaling` of a form that does not change with the sequence's length:
+    /// linear, yarn, llama3), as `runtime::reference::rope::inv_freq` makes them; None: theta's.
+    pub scaled: Option<(Vec<f32>, f32)>,
 }
 
 /// A layer's keys and values, `nk` heads of `d`: a ring of the window and a chunk where `window` > 0, else the whole context. `values` false: keys alone, in kc
@@ -773,6 +786,8 @@ pub struct Opts {
 pub enum SmallForm {
     /// `n` ones, no tensor read (a weightless norm's weight).
     Ones(usize),
+    /// `n` times the value, fp32, no tensor read (a scaled residual's two factors as a gated residual's: `Op::GatedResidual` of 1 and the scale).
+    Const(f32, usize),
     /// 1 + w (a centered norm's factors, as transformers adds them: `muse::plus_one`).
     PlusOne,
     /// A residual gate's two factors of its parameter (bf16 or fp32 as stored) at temperature T, in fp32 as transformers' fp32 gate makes them
@@ -857,7 +872,11 @@ impl Op {
 
     fn states(&self) -> Vec<usize> {
         match *self {
-            Op::GdnConv { state, .. } | Op::GdnDelta { state, .. } | Op::MambaConv { state, .. } | Op::MambaScan { state, .. } => vec![state],
+            Op::GdnConv { state, .. }
+            | Op::GdnDelta { state, .. }
+            | Op::MambaConv { state, .. }
+            | Op::MambaScan { state, .. }
+            | Op::ShortConv { state, .. } => vec![state],
             Op::Compress { state, .. } => vec![state, state + 1],
             Op::KdaConv { state, .. } | Op::KdaDelta { state, .. } => vec![state],
             Op::NgramRows(x) => vec![x.hist],
@@ -1015,7 +1034,7 @@ impl Part {
 /// Where a stage's packed matrices are held beyond its GPU's own memory. `across`: every layer across the thread's group of GPUs where it has one
 /// (src/dynamic/tp.rs), this GPU holding its slice of the rows of each matrix big enough to slice (a Hub-format directory's, packed here). `ram`: the layers
 /// whose packed matrices are in the computer's memory, copied into one slot on the GPU before each runs (src/dense_ram.rs). `hi`: the layout of the attention
-/// blocks' own matrices and the LM head (`Described::attention_and_head`), the others' the stage's (Condor's server's `--hi`).
+/// blocks' own matrices and the LM head (`Described::attention_and_head`), the others' the stage's (Ibis's server's `--hi`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Placing {
     pub across: bool,
@@ -1113,6 +1132,7 @@ fn read_at_least(d: &ModelDesc) -> Vec<(usize, usize)> {
                 Op::KdaDelta { a_log, dt_bias, heads, .. } => v.extend([(a_log, heads), (dt_bias, heads * kd)]),
                 Op::KdaConv { w, state, c, .. } => v.push((w, c + d.states.get(state).map_or(0, |b| b / 2))),
                 Op::KdaOut { w, .. } => v.push((w, kd)),
+                Op::ShortConv { w, d, taps, .. } => v.push((w, d * taps)),
                 _ => {}
             }
         }
@@ -1140,9 +1160,23 @@ fn rotary64(theta: f64, dim: usize, pairs: usize, max_pos: usize) -> (Vec<u16>, 
     (c, s)
 }
 
+/// cos and sin [positions, pairs] of a scaled rotary: each angle the position times the pair's own frequency `inv` (fp32), through f64 trig, times the factor
+/// `af`, to bf16: the arithmetic of the reference's rope (`runtime::reference::rope`, transformers' cos and sin times its attention factor).
+fn rotary_scaled(inv: &[f32], af: f32, max_pos: usize) -> (Vec<u16>, Vec<u16>) {
+    let (mut c, mut s) = (Vec::with_capacity(max_pos * inv.len()), Vec::with_capacity(max_pos * inv.len()));
+    for p in 0..max_pos {
+        for &f in inv {
+            let (s_, c_) = ((p as f32 * f) as f64).sin_cos();
+            c.push(crate::weights::bf16_bits(c_ as f32 * af));
+            s.push(crate::weights::bf16_bits(s_ as f32 * af));
+        }
+    }
+    (c, s)
+}
+
 /// Whether form `f` makes fp32 values (a residual gate's factors), not bf16.
 fn form_f32(f: SmallForm) -> bool {
-    matches!(f, SmallForm::GateAlpha(_) | SmallForm::GateBeta(_))
+    matches!(f, SmallForm::GateAlpha(_) | SmallForm::GateBeta(_) | SmallForm::Const(..))
 }
 
 /// Small tensor `name` made in form `f` from its checkpoint's values (bf16; a residual gate's parameter bf16 or fp32): its bytes, bf16 words or, where the
@@ -1159,6 +1193,7 @@ fn small_of(ck: &Checkpoint, name: &str, f: SmallForm) -> Result<Vec<u8>> {
     };
     let v = match f {
         SmallForm::Ones(n) => vec![1.0; n],
+        SmallForm::Const(c, n) => vec![c; n],
         SmallForm::PlusOne => crate::muse::plus_one(&vals()?),
         SmallForm::GateAlpha(t) => crate::runtime::reference::residual_gate(&vals()?, t).0,
         SmallForm::GateBeta(t) => crate::runtime::reference::residual_gate(&vals()?, t).1,
@@ -1507,6 +1542,7 @@ pub struct Dyn {
     kg: KernG4,
     k35: Kern35,
     kmamba: KernMamba2,
+    kconv: KernShortConv,
     /// The attention layer kind's kernels (`Op::Attn`) and the library's decode where its shapes take it; the latent attention kind's and the
     /// indexer's (`Op::Mla`, `Op::IdxPick`).
     ka: attn::KernAttn,
@@ -1781,7 +1817,7 @@ fn handed_over(d: &ModelDesc) -> Vec<(Slot, usize)> {
 }
 
 /// The most rows a verify pass takes (`Dyn::verify_rows`): a product of up to 8 rows runs the kernel a one-row step's does (the library's one m-tile product; the
-/// tiered layout's step kernel to 8 rows), so each row's sums are a step's. Checked bit for bit on swift only; the range worker refuses verify on other levels.
+/// tiered layout's step kernel to 8 rows), so each row's sums are a step's. Checked bit for bit on linnet only; the range worker refuses verify on other levels.
 pub const VERIFY_ROWS: usize = 8;
 
 /// A step of rows that decode as a graph: its rows (padded), the graph, the events in it (`--prof`), its attention's decode calls and its replays (`usercheck` counts them).
@@ -2148,7 +2184,11 @@ impl Dyn {
             .ropes
             .iter()
             .map(|r| {
-                let (c, s) = if r.trig64 { rotary64(r.theta, r.dim, r.pairs, mp) } else { rotary(r.theta, r.dim, r.pairs, mp) };
+                let (c, s) = match &r.scaled {
+                    Some((inv, af)) => rotary_scaled(&inv[..r.pairs.min(inv.len())], *af, mp),
+                    None if r.trig64 => rotary64(r.theta, r.dim, r.pairs, mp),
+                    None => rotary(r.theta, r.dim, r.pairs, mp),
+                };
                 Ok((upload_bytes(crate::weights::as_bytes(&c))?, upload_bytes(crate::weights::as_bytes(&s))?))
             })
             .collect::<Result<_>>()?;
@@ -2310,6 +2350,7 @@ impl Dyn {
         let kg = KernG4::load(&dev)?;
         let k35 = Kern35::load(&dev)?;
         let kmamba = KernMamba2::load(&dev)?;
+        let kconv = KernShortConv::load(&dev)?;
         let ka = attn::KernAttn::load(&dev)?;
         let skinny = crate::skinny::SkinnyKern::load(&dev)?;
         let ch = o.chunk.max(1);
@@ -2495,6 +2536,7 @@ impl Dyn {
             kg,
             k35,
             kmamba,
+            kconv,
             ka,
             ldec,
             km,
@@ -3147,6 +3189,12 @@ impl Dyn {
             Op::MambaNorm { w, row, di, ng } => {
                 self.kmamba.gated_norm(s, p.slot(Slot::Core), p.slot(Slot::Mix), row as i32, p.small[w].ptr, nu, di as i32, ng as i32, eps)?;
                 self.mark("Mamba-2: gated norm")
+            }
+            Op::ShortConv { w, state, d, taps, row } => {
+                // (in a pass over several sequences: this sequence's rows and its state)
+                let (x, y) = (p.slot(Slot::Proj) + self.rows_before(row), p.slot(Slot::Xc) + self.rows_before(d));
+                self.kconv.conv(s, x, row as i32, p.small[w].ptr, self.state(state), y, n as i32, d as i32, taps as i32)?;
+                self.mark("short convolution")
             }
             Op::Moe(ref m) => self.moe(p, m, n),
             Op::Streams => self.kres.streams(s, p.slot(Slot::X), p.slot(Slot::S), nu, hid, p.d.streams()),

@@ -20,6 +20,7 @@ pub(crate) fn attention(c: &ConfigG4, kind: KindG4, nq: usize, q_norm: usize, k_
         k_off: nq * d,
         v_off: (writes && has_v).then_some((nq + nk) * d),
         d,
+        dv: d,
         nq,
         nk,
         writes,
@@ -35,6 +36,9 @@ pub(crate) fn attention(c: &ConfigG4, kind: KindG4, nq: usize, q_norm: usize, k_
         round: true,
         sbf16: true,
         picked: false,
+        sinks: None,
+        v_scale: 1.0,
+        shards: 1,
     })
 }
 
@@ -79,8 +83,8 @@ pub fn describe(c: &ConfigG4) -> ModelDesc {
         small.len() - 1
     };
     let ropes = vec![
-        Rope { theta: c.sliding_theta, dim: c.head_dim, pairs: c.head_dim / 2, trig64: false },
-        Rope { theta: c.global_theta, dim: c.global_head_dim, pairs: c.global_rot, trig64: false },
+        Rope { theta: c.sliding_theta, dim: c.head_dim, pairs: c.head_dim / 2, trig64: false, scaled: None },
+        Rope { theta: c.global_theta, dim: c.global_head_dim, pairs: c.global_rot, trig64: false, scaled: None },
     ];
     let mut rings = Vec::new();
     let in_norms: Vec<usize> = (0..c.layers).map(|l| name(format!("{p}layers.{l}.input_layernorm.weight"))).collect();

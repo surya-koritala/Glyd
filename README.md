@@ -62,7 +62,7 @@ serving, tools and troubleshooting.
 | :--- | :--- | :--- | :--- |
 | **penguin** | about 10.8 | yes | the release's weights, bit for bit (an FP8 or FP4 release is kept as released) |
 | **kestrel** | 6.5 | no | 6-bit codes and a scale for every 32 weights |
-| **swift** | 5.5 | no | 5-bit codes |
+| **linnet** | 5.5 | no | 5-bit codes |
 | **wren** | 4.5 | no | 4-bit codes; exact on a quantization-aware checkpoint (Gemma 4 QAT) |
 | **hummingbird** | 2 to 3 on experts | no | mixture-of-experts layers: the busiest experts at 3 bits, the rest at 2 |
 
@@ -71,16 +71,17 @@ one with a tag: `glyd run google/gemma-4-12B-it:wren`. The KV cache is bf16 page
 
 ## Supported hardware
 
-| Platform | GPUs | Status |
-| :--- | :--- | :--- |
-| NVIDIA, Linux x86_64 | Ampere to Blackwell: RTX 30, 40 and 50 series, RTX A-series and Ada, A100, L4, L40S, H100, H200, B200 | Supported |
-| NVIDIA, Linux aarch64 | GH200, GB200, DGX Spark, Jetson Thor | Built, not yet measured |
-| NVIDIA, Windows | The same GPUs as Linux x86_64 | Preview |
-| AMD | RDNA 3 and 4 | Development build (`GLYD_HIP=1`) |
-| Apple Silicon | M-series Macs | Planned ([roadmap](ROADMAP.md)) |
-| CPU only | x86_64 and arm64 | Planned ([roadmap](ROADMAP.md)) |
+| Vendor | System | GPUs | Status |
+| :--- | :--- | :--- | :--- |
+| NVIDIA | Linux&nbsp;x86_64 | Ampere to Blackwell: RTX 30, 40 and 50 series, RTX A-series and Ada, A100, L4, L40S, H100, H200, B200 | Supported |
+| NVIDIA | Linux&nbsp;aarch64 | GH200, GB200, DGX Spark, Jetson Thor | Built, not&nbsp;measured |
+| NVIDIA | Windows&nbsp;x86_64 | The same GPUs as Linux x86_64 | Preview |
+| AMD | Linux&nbsp;x86_64 | RDNA 3 and 4 | Development&nbsp;build |
+| Apple | macOS | M-series Macs | [Planned](ROADMAP.md) |
+| None (CPU&nbsp;only) | x86_64, arm64 | | [Planned](ROADMAP.md) |
 
-NVIDIA GPUs need driver R535 or newer (R570 for Blackwell). `glyd doctor` checks a machine and says what to fix.
+NVIDIA GPUs need driver R535 or newer (R570 for Blackwell). The AMD build is made from source with `GLYD_HIP=1`. `glyd doctor` checks a
+machine and says what to fix.
 
 | Setup | What runs | Status |
 | :--- | :--- | :--- |
@@ -93,13 +94,26 @@ Glyd supports model families, not individual models: any size or fine-tune of th
 
 | Family | Levels |
 | :--- | :--- |
-| Gemma | penguin, kestrel, swift, wren |
-| Qwen | penguin, kestrel, swift, wren |
-| Nemotron-H | penguin, kestrel, swift, wren, hummingbird |
+| Gemma | penguin, kestrel, linnet, wren |
+| Qwen | penguin, kestrel, linnet, wren, hummingbird |
+| Llama | penguin, kestrel, linnet, wren |
+| Mistral | penguin, kestrel, linnet, wren |
+| Nemotron | penguin, kestrel, linnet, wren, hummingbird |
 | Kimi | penguin, hummingbird |
 | GLM | penguin, hummingbird |
 | DeepSeek | penguin, hummingbird |
 | Muse | penguin, hummingbird |
+| Domyn Edge | penguin, kestrel, linnet, wren |
+| Granite | penguin, kestrel, linnet, wren |
+| Mellum | penguin, kestrel, linnet, wren |
+| Aion | penguin, kestrel, linnet, wren |
+| LFM | penguin, kestrel, linnet, wren |
+
+The engine tells a family by a model's `config.json`, not by its name.
+
+**Planned families** ([roadmap](ROADMAP.md)): AliceAI, Beam, Cosmos, dots, ERNIE, Flint, Hunyuan, Inkling, Ling, MiMo, MiniMax, Mistral Large,
+Unlimited OCR. Glyd follows the families released in the last six months. A family joins the table when the
+engine runs it.
 
 ## Serving and tools
 

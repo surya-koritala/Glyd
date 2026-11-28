@@ -37,7 +37,7 @@
     "dense i5": {
       "files": {
         "config.json": "2d1adb217dc563f057e94b71cbc80dc15d119841b9ef4caabd7ddfc6b435dba3",
-        "glyd.json": "48d6cd87ddbdc62166297fb10e310b198c12086d9e3294629b98bdeccf5d0a0c",
+        "glyd.json": "d6ffb3d372b81837c8ca8ef7b2106cd183bb0b4a9f36b07f7b88c5da10b1b96d",
         "model.safetensors": "fd3757261e2e79a10b4b7f4cbfcfcdde592508f12d01a7066603f0bb16a33110",
         "tokenizer.json": "805b7b1cf166a484f0908f3c342fca1248cb8787d91c0833f3988ff2d6536ed4"
       },
@@ -78,7 +78,7 @@
     "qwen35 i5": {
       "files": {
         "config.json": "ac1696dc11ba966ef99b776afd53f4f95ad86a8dc9a1e7e0efff92a7220b63b0",
-        "glyd.json": "17ad9d6f9172dc76bc038f80e56ad9426ebdb4939e229fbe774e78cdcac785f1",
+        "glyd.json": "825c0a4a32d4285041bc0f213bc39a055224510b5a42821c29b84b27656d3dbe",
         "model.safetensors": "c00efdb199caa23ef0cf9777ef3906166fe3ac6eb0cbac6e366f3674b38eacd6"
       },
       "plan": "bd902dc8c0c133ce647c68ae15d87668ee233333f7b3454a472fe1c95a8c45ab"
@@ -116,7 +116,7 @@
     "qwen35-wide i5": {
       "files": {
         "config.json": "164952cbd37b190250fafcdfd05c26a51aa95e7e8aafd0fe61bba086c409ed6e",
-        "glyd.json": "c930d47f24274192340b4bec5324c5a36f1ae70677eb1087cd609c5479c450f9",
+        "glyd.json": "e9cf78fb091f1538b0a77e548d1326f5b534a8d088eb53928bfaaed9cde10434",
         "model.safetensors": "84c63104ada189ff2ceaf0d3fb10ae8af623e61b55ffba01acd5d4bd5d07c867"
       },
       "plan": "d0bb46efcff430d096cc4c315213c7142c20064c9b30574295739b332c588fb4"
@@ -154,7 +154,7 @@
     "qwen35moe i5": {
       "files": {
         "config.json": "19cd9cabc645664db80b6c561ac0757f8e6bce2cf8df614e2f749cb1e06e01b1",
-        "glyd.json": "9e94469b323df0a4f077c82d94322b6c3ab0263684dd12ee6c3604261d9b8bc5",
+        "glyd.json": "1af13b8f7679bb10065bb13ea8491ebea1a66e3b60555f8518ed88ee48c4cdd6",
         "model.safetensors": "5441ea9c9cbaae2b410f1694c9fcb6442a62766a5033e07eadfbaed4ceec85a1"
       },
       "plan": "a8eb2d7c77ae3d66a94d68850bf89f3f1a1b54a0897de7cf004d5e9b2a886873"
@@ -192,7 +192,7 @@
     "qwen35moe-st i5": {
       "files": {
         "config.json": "19cd9cabc645664db80b6c561ac0757f8e6bce2cf8df614e2f749cb1e06e01b1",
-        "glyd.json": "9e94469b323df0a4f077c82d94322b6c3ab0263684dd12ee6c3604261d9b8bc5",
+        "glyd.json": "1af13b8f7679bb10065bb13ea8491ebea1a66e3b60555f8518ed88ee48c4cdd6",
         "model.safetensors": "5441ea9c9cbaae2b410f1694c9fcb6442a62766a5033e07eadfbaed4ceec85a1"
       },
       "plan": "40383c255613886dc21f732ad1cc9edca9b9bd46b19e268081a3a9e71196eb7c"
@@ -235,7 +235,7 @@
     "gemma4 i5": {
       "files": {
         "config.json": "fd8213c42c022bcea5d60219f9e978b91a9ab7e948a2ee7a683c02bd98576a4f",
-        "glyd.json": "5ecbe8e0b9f29910687a8cc1052c099bbaf2b423e3aa8fbf4e0d963096d4ddcb",
+        "glyd.json": "1ebb4898ab34f0e4ad9a27864dc6ba33babecf91aed0dd499196b3d1a258b04b",
         "model.safetensors": "f4e204ef312b3a51bbb82a2ebe3a4aa7a0658518587a61be1c858f88cc7d8a9b"
       },
       "plan": "353b27eb9beeadcd3ba6c523a55cc3dae7dd17010031a8e1c96299d33e9b83a8"
@@ -278,7 +278,7 @@
     "gemma4-kv i5": {
       "files": {
         "config.json": "7f426722941afebecd3e26bb44a7393817f1111e7caff80fd153d4a3fcc9e27b",
-        "glyd.json": "bc62fa14e6695fe14001d96eef713c7471667d7fb112964f9fd845270f882957",
+        "glyd.json": "1f8e1bf66bbd32b4f1b04095a202f79e9b638745ea3dd4d2827a2ceb42d587c7",
         "model.safetensors": "e21ae56285f6342811497dbb5b05c31e7ec347970c350d3e8b20b28897f1c7c6"
       },
       "plan": "e3b5892e8a07ffe870a3a18a786141493afeb3edcf53474a3a9df95b60ab2915"
@@ -316,7 +316,7 @@
     "nemotron i5": {
       "files": {
         "config.json": "28dd9cb47d254b48997c1d793fbd0b4c5eb4a9d707471fb6d21f4457b3199056",
-        "glyd.json": "bdcef0d77bfa94e72b129b7363a7081bd1482727e17b98f13692b601b5aeca76",
+        "glyd.json": "773a91830346203a23c063a3f9942ae24540f2c6db654c172fddb608878f73c7",
         "model.safetensors": "5b87100a5a1c8f3b76538187764370fe938e5cf5e960e2a29fd69bfceab938d6"
       },
       "plan": "dd5f2c56fcfcfe60bb934bb382fb44febce65511322d49d1b47855a819836caf"
@@ -354,7 +354,7 @@
     "nemotron-latent i5": {
       "files": {
         "config.json": "bc73404fd1b6c259fd9e8d0ba529267fb78d96656095a54e6166a1b4699fc9a3",
-        "glyd.json": "6c71177abda226587ca31c46ba62febf569f5e5d99669999ad9a0c5a95063f90",
+        "glyd.json": "a32bd217a8ca0f22b7566846dbbdf563db662ced729d5be993e9f177915079f2",
         "model.safetensors": "01d9de7727b3f4f40414a162710832e9a984d4b9a61ca6d9b1c533742504e686"
       },
       "plan": "228f3ddf0c9ec22331680ebc9aaec8c2f1e9e422bc6dc68e042b0f60bedb3166"

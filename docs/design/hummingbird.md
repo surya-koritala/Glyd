@@ -22,7 +22,7 @@ layout (`codebook.rs`, tags c2r and c3r) unchanged: it takes any W in runs of 32
 3.53 and 2.51 at W = 4,096, 3.54 and 2.51 at Kimi-K3's 3,584.
 
 R = (I ⊗ H_b) diag(s): H_b the orthonormal Walsh-Hadamard matrix of order b in natural order, applied to each run of b values,
-b the largest power of two that divides W, at most 1,024; s the layer's signs. Condor already rotates Qwen3.8-Flash-Next's 2,560 in
+b the largest power of two that divides W, at most 1,024; s the layer's signs. Ibis already rotates Qwen3.8-Flash-Next's 2,560 in
 five blocks of 512 (`qx_cb_rot_in`); Nemotron 3 Super's latent of 1,024 is one block, the case `moe_hb.rs` runs.
 
 | model | W | b | blocks |

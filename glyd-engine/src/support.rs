@@ -42,6 +42,17 @@ pub enum Family {
     /// precise, best and fast packs' format: src/moe_cb.rs), every expert in the computer's memory and places of them on the GPU (`ExpertCache::Codes`).
     /// `qwenserve CKPT PACK --port` serves a pack from anywhere, on one GPU or `--gpus 0,1`.
     FlashNext,
+    /// The families whose description is the whole of them: layers of one attention and one feed-forward (a gated MLP or a mixture of experts) that the dense
+    /// lowering takes as described (`dynamic::lower::dense`), with no reader, loader or sizing of their own. Domyn Edge, Granite Swash and Mellum 2 are the
+    /// first (`runtime::describe::LAYERS`); a family joins by its description builder and its model type in that list. One GPU, at every block level: sized
+    /// from the description as every one-GPU row is (src/plan.rs `sizing::level_of`), loaded by the dense loader (`dynamic::dense::load_of`). LFM is one: a
+    /// layer's mixer the gated short convolution in the attention's place on most layers, whose state a sequence (each conv layer's channels' last values,
+    /// fp32) the description's lowering gives the plan and the scheduler; its convolution's biases, which no release has on, are refused by name. MiMo is
+    /// one in its layout (queries and keys of 192 with values of 128 times a factor, the three products one matrix in shards, sliding layers with sinks,
+    /// sigmoid-routed experts with a choice bias), in bf16: as released its fused matrices are FP8 whose block scales start again at every shard and its
+    /// experts packed 4-bit codes, two stored forms the lowering refuses by name, so `fit` and `run` of the release say what is missing; its draft layers
+    /// are not read.
+    Layers,
 }
 
 /// One family's row.
@@ -92,6 +103,9 @@ pub struct Lossy {
     /// Its config read as its family's reader reads it before a plan is made: the reader's words where the engine does not run the model (Ok where the
     /// description and its lowering are the whole reading: `described`).
     pub reads: fn(&ModelConfig, Option<&str>) -> crate::ffi::Result<()>,
+    /// Whether its loader holds a model's experts lossless at penguin, every one on the GPU (the dense engine's, src/dynamic/dense.rs): the planner then sizes
+    /// them at that level and plans none in the computer's memory there. Elsewhere experts are held at the block levels on this route.
+    pub lossless_experts: bool,
 }
 
 /// A config the description and its lowering read whole (they refuse in words what the engine does not run).
@@ -199,7 +213,7 @@ pub use crate::plan::LOSSY_CTX;
 pub const DEFAULT_CTX: usize = 8192;
 
 /// Lossless, or a block level of every weight.
-const PENGUIN_LOSSY: &[&str] = &["penguin", "kestrel", "swift", "wren"];
+const PENGUIN_LOSSY: &[&str] = &["penguin", "kestrel", "linnet", "wren"];
 const NONE: &[&str] = &[];
 const PENGUIN: &[&str] = &["penguin"];
 /// Lossless, or the routed experts at hummingbird's bits (a directory `glyd-engine pack --layout hummingbird --usage` makes: src/hb_pack.rs).
@@ -209,7 +223,7 @@ const HB: &[&str] = &["hummingbird"];
 /// else as released (src/dynamic/experts.rs `pack_into_host`).
 const FP4_PACKS: &[u32] = &[glyd_gpu::pack::FP4R_TAG, glyd_gpu::pack::FP4_TAG];
 
-pub static TABLE: [Support; 11] = [
+pub static TABLE: [Support; 12] = [
     Support {
         family: Family::Qwen3,
         name: "plain dense",
@@ -238,21 +252,29 @@ pub static TABLE: [Support; 11] = [
         drafts: false,
         route: Route { bf16_twelve: true, expert_cache: ExpertCache::Release, ..ONE_GPU },
         saves: Some(SAVED),
-        lossy: Some(Lossy { kind: Kind::Qwen35, chunk: LOSSY_CHUNK, page: 1, draft: 0, pack: None, reads: described }),
+        lossy: Some(Lossy { kind: Kind::Qwen35, chunk: LOSSY_CHUNK, page: 1, draft: 0, pack: None, reads: described, lossless_experts: false }),
     },
     Support {
         family: Family::NemotronH,
         name: "Nemotron-H",
-        levels: &["penguin", "kestrel", "swift", "wren", "hummingbird"],
+        levels: &["penguin", "kestrel", "linnet", "wren", "hummingbird"],
         hummingbird_packed_only: true,
         default_ctx: None,
         max_ctx: None,
         split_levels: PENGUIN,
-        experts_in_ram_levels: &["kestrel", "swift", "wren", "hummingbird"],
+        experts_in_ram_levels: &["kestrel", "linnet", "wren", "hummingbird"],
         drafts: false,
         route: ONE_GPU,
         saves: Some(Saves { rest_at_wren: Some(crate::weights::Layout::Int6), ..SAVED }),
-        lossy: Some(Lossy { kind: Kind::NemotronH, chunk: LOSSY_CHUNK, page: 1, draft: 0, pack: Some(crate::nemotron::pack_layout), reads: nemotron_reads }),
+        lossy: Some(Lossy {
+            kind: Kind::NemotronH,
+            chunk: LOSSY_CHUNK,
+            page: 1,
+            draft: 0,
+            pack: Some(crate::nemotron::pack_layout),
+            reads: nemotron_reads,
+            lossless_experts: false,
+        }),
     },
     Support {
         family: Family::Gemma4,
@@ -266,7 +288,15 @@ pub static TABLE: [Support; 11] = [
         drafts: false,
         route: ONE_GPU,
         saves: Some(Saves { penguin: true, by_layer: true, ..SAVED }),
-        lossy: Some(Lossy { kind: Kind::Gemma4, chunk: GEMMA_CHUNK, page: 16, draft: GEMMA_DRAFT_BYTES, pack: None, reads: gemma4_reads }),
+        lossy: Some(Lossy {
+            kind: Kind::Gemma4,
+            chunk: GEMMA_CHUNK,
+            page: 16,
+            draft: GEMMA_DRAFT_BYTES,
+            pack: None,
+            reads: gemma4_reads,
+            lossless_experts: false,
+        }),
     },
     Support {
         family: Family::Kimi,
@@ -372,6 +402,21 @@ pub static TABLE: [Support; 11] = [
         saves: None,
         lossy: None,
     },
+    Support {
+        family: Family::Layers,
+        name: "described layers",
+        levels: PENGUIN_LOSSY,
+        hummingbird_packed_only: false,
+        default_ctx: None,
+        max_ctx: None,
+        split_levels: NONE,
+        experts_in_ram_levels: NONE,
+        drafts: false,
+        route: ONE_GPU,
+        saves: Some(SAVED),
+        // (nothing of its own: the description and the dense lowering are the whole reading, the dense loader the engine)
+        lossy: Some(Lossy { kind: Kind::Qwen3, chunk: LOSSY_CHUNK, page: 1, draft: 0, pack: None, reads: described, lossless_experts: true }),
+    },
 ];
 
 /// The row of `family`.
@@ -422,7 +467,7 @@ impl Support {
         if now.is_empty() {
             return Some(Refusal::unsupported(
                 format!("{name} ({}) does not run with glyd run yet", self.name),
-                "Run it with Condor: condor/README.md (glyd run takes it with ROADMAP P8)",
+                "Run it with Ibis: ibis/README.md (glyd run takes it with ROADMAP P8)",
             ));
         }
         let fix = match now[0] {
@@ -441,7 +486,7 @@ impl Support {
     /// layout's level is its name's (`levels::name_of`); the three-bit layout, which is no level, packs where the family runs a block level (its codes are
     /// the block levels' at three bits).
     pub fn pack_refusal(&self, layout: Layout, model: &str, name: &str) -> Option<Refusal> {
-        if layout == Layout::Int3 && ["kestrel", "swift", "wren"].iter().any(|l| self.allows(l)) {
+        if layout == Layout::Int3 && ["kestrel", "linnet", "wren"].iter().any(|l| self.allows(l)) {
             return None;
         }
         self.refusal(model, name, crate::levels::name_of(layout))
@@ -595,24 +640,24 @@ mod tests {
         let r = check(DENSE, "org/dense", "dense", "hummingbird").unwrap_err();
         assert_eq!(
             (r.what.as_str(), r.fix.as_str()),
-            ("dense (plain dense) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird", "Run it lossless: glyd run org/dense")
+            ("dense (plain dense) runs at the penguin, kestrel, linnet and wren levels in this engine, not hummingbird", "Run it lossless: glyd run org/dense")
         );
-        assert!(check(DENSE, "org/dense", "dense", "penguin").is_ok() && check(DENSE, "org/dense", "dense", "swift").is_ok());
+        assert!(check(DENSE, "org/dense", "dense", "penguin").is_ok() && check(DENSE, "org/dense", "dense", "linnet").is_ok());
         let n = fixture("nemotron_h_config.json");
-        for l in ["penguin", "kestrel", "swift", "hummingbird"] {
+        for l in ["penguin", "kestrel", "linnet", "hummingbird"] {
             assert!(check(&n, "nvidia/N", "N", l).is_ok(), "{l}");
         }
         assert!(check(&n, "nvidia/N", "N", "wren").is_ok(), "wren runs in every build");
         // (the Qwen3.5 layout: penguin and every lossy level; never hummingbird, which is for experts)
         let q35: Value = json::parse(&fixture("qwen35_configs.json")).unwrap();
         let q38 = json::to_compact(q35.get("Qwen/Qwen3.8-27B").unwrap());
-        for l in ["penguin", "kestrel", "swift", "wren"] {
+        for l in ["penguin", "kestrel", "linnet", "wren"] {
             assert!(check(&q38, "Qwen/Qwen3.8-27B", "Qwen3.8-27B", l).is_ok(), "{l}");
         }
         assert!(check(&q38, "Qwen/Qwen3.8-27B", "Qwen3.8-27B", "hummingbird").is_err());
         assert_eq!(
             row(Family::Qwen35).split_levels,
-            ["penguin", "kestrel", "swift", "wren"],
+            ["penguin", "kestrel", "linnet", "wren"],
             "its layers cut over the GPUs at penguin and at every lossy level, as the dynamic route cuts them"
         );
         // (Qwen3.8-Flash-Next: penguin on the dynamic route, its layers cut over the GPUs as the route cuts them; hummingbird from the codes pack beside its weights,

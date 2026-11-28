@@ -14,7 +14,7 @@ glyd-engine rates [--dir DIR] [--mib N] [--reps N] [--no-gpu]                   
 curl -s -H "Authorization: Bearer $GLYD_API_KEY" http://127.0.0.1:8000/v1/glyd/info | jq .costs    # while serving
 ```
 
-MODEL is a directory, a Hub name with a level tag (`Qwen/Qwen3.5-9B:swift`: the pre-packed repo `glyd/Qwen3.5-9B-swift`, from the
+MODEL is a directory, a Hub name with a level tag (`Qwen/Qwen3.5-9B:linnet`: the pre-packed repo `glyd/Qwen3.5-9B-linnet`, from the
 cache where it is there, else the Hub by ranges: its small files and each shard's header, nothing more), or a pre-packed repo's own
 name. Families described: Qwen3.5 (9B, 27B; Qwen3.6, Qwen3.8) and Nemotron-H (Nemotron 3 Super). Gemma 4 is refused for now.
 The record: [benchmarks/gpu/rtx4080s-cost-profile-2026-10-20](../benchmarks/gpu/rtx4080s-cost-profile-2026-10-20/README.md).

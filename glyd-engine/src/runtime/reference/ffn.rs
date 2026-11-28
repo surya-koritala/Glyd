@@ -3,12 +3,13 @@
 
 use super::{gated, matvec_w, norm::norm, sigmoid, softmax, softplus, Params};
 use crate::ffi::{err, Result};
-use crate::runtime::kinds::{Mlp, Moe, Router, RouterScore};
+use crate::runtime::kinds::{Clamp, Mlp, Moe, Router, RouterScore};
 
-/// act(gate) * up, or act(up), from a gated MLP's two sums, with the SwiGLU limits.
+/// act(gate) * up, or act(up), from a gated MLP's two sums, with the SwiGLU limits (`Clamp`: the gate held before its activation, or the activated gate).
 fn activate(m: &Mlp, g: Option<f32>, u: f32) -> f32 {
     match (g, m.clamp) {
-        (Some(g), Some(l)) => gated(m.act, g.min(l), u.clamp(-l, l)),
+        (Some(g), Some(Clamp::Gate(l))) => gated(m.act, g.min(l), u.clamp(-l, l)),
+        (Some(g), Some(Clamp::Activated(l))) => super::act(m.act, g).min(l) * u.clamp(-l, l),
         (Some(g), None) => gated(m.act, g, u),
         (None, _) => super::act(m.act, u),
     }
@@ -96,14 +97,41 @@ pub fn route_margin(r: &Router, logits: &[f32], choice_bias: Option<&[f32]>, has
 /// in the router's order (by rank, so the router's own experts taken are the router's own sum), weighted by the router's rule on this token's
 /// scores; the margin and the ranks are the router's own choice's.
 pub fn route_taking(r: &Router, logits: &[f32], choice_bias: Option<&[f32]>, hash: Option<&[f32]>, take: Option<&[usize]>) -> Result<Routed> {
-    let n = logits.len();
+    route_scaled(r, logits, choice_bias, hash, take, None)
+}
+
+/// `route_taking` with the learned scale an expert `expert_scale` where the router has one (`Router::expert_scale`: each chosen expert's weight times its
+/// own, after the sum's division). `logits`: every router's of the experts, a router after another (`Router::routers`): each router's scores are made
+/// alone (a softmax over its own logits) and an expert's score is their sum, added in the routers' order.
+pub fn route_scaled(
+    r: &Router,
+    logits: &[f32],
+    choice_bias: Option<&[f32]>,
+    hash: Option<&[f32]>,
+    take: Option<&[usize]>,
+    expert_scale: Option<&[f32]>,
+) -> Result<Routed> {
+    let routers = r.routers.max(1);
+    let n = logits.len() / routers;
+    if n * routers != logits.len() || r.expert_scale != expert_scale.is_some() || expert_scale.is_some_and(|e| e.len() != n) {
+        return err(format!(
+            "a router of {} logits for {routers} routers, a scale an expert of {:?} values where the kind says {}",
+            logits.len(),
+            expert_scale.map(<[f32]>::len),
+            r.expert_scale
+        ));
+    }
     let mut gap = f32::INFINITY;
     let mut rank = Vec::new();
-    let mut s: Vec<f32> = logits.iter().map(|&l| l * r.logit_scale).collect();
-    match r.score {
-        RouterScore::Softmax => softmax(&mut s),
-        RouterScore::Sigmoid => s.iter_mut().for_each(|v| *v = sigmoid(*v)),
-        RouterScore::SqrtSoftplus => s.iter_mut().for_each(|v| *v = softplus(*v).sqrt()),
+    let mut s = vec![0f32; n];
+    for one in logits.chunks(n.max(1)) {
+        let mut t: Vec<f32> = one.iter().map(|&l| l * r.logit_scale).collect();
+        match r.score {
+            RouterScore::Softmax => softmax(&mut t),
+            RouterScore::Sigmoid => t.iter_mut().for_each(|v| *v = sigmoid(*v)),
+            RouterScore::SqrtSoftplus => t.iter_mut().for_each(|v| *v = softplus(*v).sqrt()),
+        }
+        s.iter_mut().zip(&t).for_each(|(a, b)| *a += b);
     }
     let mut ids: Vec<usize> = if let Some(h) = hash {
         h.iter().map(|&e| e as usize).collect()
@@ -147,7 +175,7 @@ pub fn route_taking(r: &Router, logits: &[f32], choice_bias: Option<&[f32]>, has
         }
     }
     let sum: f32 = ids.iter().map(|&e| s[e]).sum();
-    let w = ids.iter().map(|&e| if r.renorm { s[e] / (sum + 1e-20) } else { s[e] } * r.scale).collect();
+    let w = ids.iter().map(|&e| if r.renorm { s[e] / (sum + 1e-20) } else { s[e] } * r.scale * expert_scale.map_or(1.0, |x| x[e])).collect();
     Ok(Routed { ids, w, own, gap, rank })
 }
 
@@ -166,8 +194,8 @@ pub fn moe_routed(m: &Moe, p: &Params, x: &[f32], token: u32) -> Result<(Vec<f32
 /// input row (`logits::held_on_choices`).
 pub fn route_of(m: &Moe, p: &Params, x: &[f32], token: u32, take: Option<&[usize]>) -> Result<Routed> {
     let logits = p.prod("router", x)?;
-    if logits.len() != m.experts {
-        return err(format!("a router of {} logits for {} experts", logits.len(), m.experts));
+    if logits.len() != m.router.routers.max(1) * m.experts {
+        return err(format!("a router of {} logits for {} experts by {} routers", logits.len(), m.experts, m.router.routers));
     }
     let hash = if m.router.hash {
         let t = p.vec("hash")?;
@@ -181,7 +209,8 @@ pub fn route_of(m: &Moe, p: &Params, x: &[f32], token: u32, take: Option<&[usize
         None
     };
     let bias = if m.router.bias { Some(p.vec("choice_bias")?) } else { None };
-    route_taking(&m.router, &logits, bias, hash, take)
+    let scale = if m.router.expert_scale { Some(p.vec("expert_scale")?) } else { None };
+    route_scaled(&m.router, &logits, bias, hash, take, scale)
 }
 
 /// `moe` with the token's experts `take` in the place of the router's own choice where given (`route_taking`), and the token's routing.
@@ -249,7 +278,7 @@ mod tests {
     use crate::runtime::reference::Libm;
 
     fn r(score: RouterScore, top_k: usize) -> Router {
-        Router { score, logit_scale: 1.0, bias: false, groups: None, top_k, renorm: true, scale: 1.0, hash: false }
+        Router { score, logit_scale: 1.0, bias: false, groups: None, top_k, renorm: true, scale: 1.0, hash: false, routers: 1, expert_scale: false }
     }
 
     #[test]
@@ -276,6 +305,90 @@ mod tests {
 
     /// A choice's margin: the gap at the cut over the largest magnitude; nothing left out, infinite; a tie, 0. The router's is its rank's
     /// (the scores and the choice bias), a hash table's infinite.
+    /// Two routers whose sigmoid scores add, and a learned scale an expert (ERNIE's): the score of an expert is sigmoid(l) + sigmoid(l'), the choice by
+    /// the score plus the bias, the weights the chosen scores over their sum, each times its expert's own scale. By hand; and one router of the summed
+    /// form with scales of one is the router it was.
+    #[test]
+    fn routers_whose_scores_add_and_a_scale_an_expert() {
+        let two = Router { bias: true, routers: 2, expert_scale: true, ..r(RouterScore::Sigmoid, 2) };
+        let (a, b) = ([0.5f32, -1.0, 2.0, 0.0], [1.5f32, 3.0, -2.0, 0.25]);
+        let logits: Vec<f32> = a.iter().chain(&b).copied().collect();
+        let (bias, scale) = ([0.0f32, 0.0, 0.0, 1.0], [2.0f32, 0.5, 3.0, 0.25]);
+        let s: Vec<f32> = (0..4).map(|e| sigmoid(a[e]) + sigmoid(b[e])).collect();
+        // (ranks: s + bias; expert 3's bias lifts it to the first place, expert 0 follows: s_0 = 1.44, s_1 = 1.22, s_2 = 1.00, s_3 + 1 = 2.06)
+        let got = route_scaled(&two, &logits, Some(&bias), None, None, Some(&scale)).unwrap();
+        assert_eq!(got.ids, [3, 0]);
+        let sum = s[3] + s[0];
+        assert_eq!(got.w, [s[3] / (sum + 1e-20) * scale[3], s[0] / (sum + 1e-20) * scale[0]]);
+        assert_eq!(got.rank, (0..4).map(|e| s[e] + bias[e]).collect::<Vec<_>>());
+        // (the scores add: neither router's alone makes this choice's weights, and the order of the routers is no matter to the sum of two)
+        let swapped: Vec<f32> = b.iter().chain(&a).copied().collect();
+        assert_eq!(route_scaled(&two, &swapped, Some(&bias), None, None, Some(&scale)).unwrap().w, got.w);
+        let one = Router { routers: 1, ..two.clone() };
+        assert_ne!(route_scaled(&one, &a, Some(&bias), None, None, Some(&scale)).unwrap().w, got.w);
+        // (not renormed: the summed scores themselves, times the scales)
+        let raw = route_scaled(&Router { renorm: false, ..two.clone() }, &logits, Some(&bias), None, None, Some(&scale)).unwrap();
+        assert_eq!(raw.w, [s[3] * scale[3], s[0] * scale[0]]);
+        // (scores of nothing: no weight, not a division by nothing)
+        let none = route_scaled(&two, &[-200.0; 8], Some(&bias), None, None, Some(&scale)).unwrap();
+        assert_eq!(none.w, [0.0, 0.0]);
+        // (one router, scales of one: the router without the fields)
+        let plain = Router { bias: true, ..r(RouterScore::Sigmoid, 2) };
+        let ones = Router { expert_scale: true, ..plain.clone() };
+        let want = route_taking(&plain, &a, Some(&bias), None, None).unwrap();
+        let same = route_scaled(&ones, &a, Some(&bias), None, None, Some(&[1.0; 4])).unwrap();
+        assert_eq!((same.ids, same.w), (want.ids, want.w));
+        // (the kind and what it is given agree: logits of every router, a scale where the kind has one and only there)
+        assert!(route_scaled(&two, &logits[..7], Some(&bias), None, None, Some(&scale)).is_err());
+        assert!(route_scaled(&two, &logits, Some(&bias), None, None, None).is_err());
+        assert!(route_scaled(&plain, &a, Some(&bias), None, None, Some(&scale)).is_err());
+        // (said in a description's text only where set)
+        assert!(!format!("{plain:?}").contains("routers") && format!("{two:?}").ends_with("hash: false, routers: 2, expert_scale: true }"));
+    }
+
+    /// The experts' block reads the two routers as one stacked product and the scale as its role: the block's output is the hand-made sum of the chosen
+    /// experts' outputs by the routed weights.
+    #[test]
+    fn a_block_of_experts_with_two_routers() {
+        use crate::runtime::reference::{matvec, silu, testing::fill};
+        let (d, inter, ne) = (6, 4, 4);
+        let m = Moe {
+            router: Router { bias: true, routers: 2, expert_scale: true, ..r(RouterScore::Sigmoid, 2) },
+            experts: ne,
+            expert: Mlp { act: Act::Silu, gated: true, bias: false, clamp: None },
+            shared: None,
+            shared_gate: false,
+            latent: None,
+        };
+        let mut p = Params::new();
+        p.put("router", &[2 * ne, d], fill("two.router", 2 * ne * d, -1.0, 1.0));
+        p.put("choice_bias", &[ne], fill("two.bias", ne, -0.1, 0.1));
+        p.put("expert_scale", &[ne], fill("two.scale", ne, 0.5, 2.0));
+        p.put("experts_gate_up", &[ne, 2 * inter, d], fill("two.gu", ne * 2 * inter * d, -0.5, 0.5));
+        p.put("experts_down", &[ne, d, inter], fill("two.down", ne * d * inter, -0.5, 0.5));
+        let x = fill("two.x", d, -1.0, 1.0);
+        let (y, c) = moe_taking(&m, &p, &x, 0, None).unwrap();
+        let logits = p.prod("router", &x).unwrap();
+        let want = route_scaled(&m.router, &logits, p.opt("choice_bias"), None, None, p.opt("expert_scale")).unwrap();
+        assert_eq!((&c.ids, &c.w), (&want.ids, &want.w));
+        let (gu, down) = (p.vec("experts_gate_up").unwrap(), p.vec("experts_down").unwrap());
+        let mut acc = vec![0f64; d];
+        for (&e, &w) in c.ids.iter().zip(&c.w) {
+            let first = matvec(&gu[e * 2 * inter * d..][..2 * inter * d], d, &x);
+            let h: Vec<f32> = (0..inter).map(|i| silu(first[i]) * first[inter + i]).collect();
+            let o = matvec(&down[e * d * inter..][..d * inter], inter, &h);
+            acc.iter_mut().zip(&o).for_each(|(a, &v)| *a += w as f64 * v as f64);
+        }
+        assert_eq!(y, acc.into_iter().map(|v| v as f32).collect::<Vec<_>>());
+        // (a block without the scale's role, or with one router's rows, is refused)
+        let mut q = p.clone();
+        q.t.remove("expert_scale");
+        assert!(moe_taking(&m, &q, &x, 0, None).is_err());
+        q = p.clone();
+        q.put("router", &[ne, d], fill("two.router", ne * d, -1.0, 1.0));
+        assert!(moe_taking(&m, &q, &x, 0, None).is_err());
+    }
+
     #[test]
     fn margins() {
         assert_eq!(margin(&[1.0, 4.0, 2.0], 2), 0.25);
@@ -318,13 +431,41 @@ mod tests {
 
     #[test]
     fn activations() {
-        let m = Mlp { act: Act::Silu, gated: true, bias: false, clamp: Some(1.0) };
+        let m = Mlp { act: Act::Silu, gated: true, bias: false, clamp: Some(Clamp::Gate(1.0)) };
         assert_eq!(activate(&m, Some(3.0), -5.0), -super::super::silu(1.0));
+        // (the limit on the activated gate, Ling's: silu(3) is over 1 and held to it, where the gate held first gives silu(1); under the limit the two agree,
+        // and the up is held both ways in both)
+        let after = Mlp { clamp: Some(Clamp::Activated(1.0)), ..m };
+        assert_eq!(activate(&after, Some(3.0), -5.0), -1.0);
+        assert_eq!(activate(&after, Some(3.0), 0.25), 0.25);
+        assert_eq!(activate(&after, Some(0.5), 0.25), activate(&m, Some(0.5), 0.25));
+        assert_eq!(activate(&after, Some(-2.0), 7.0), super::super::silu(-2.0));
+        assert_eq!((format!("{:?}", m.clamp), format!("{:?}", after.clamp)), ("Some(1.0)".to_string(), "Some(Activated(1.0))".to_string()));
         let k = Mlp { act: Act::Situ { beta: 4.0, linear: 25.0 }, ..m };
         // the kimi_ref formula
         let want = 4.0 * (0.5f32 / 4.0).ltanh() * sigmoid(0.5) * 25.0 * (2.0f32 / 25.0).ltanh();
         assert!((activate(&Mlp { clamp: None, ..k }, Some(0.5), 2.0) - want).abs() < 1e-6);
         let r2 = Mlp { act: Act::Relu2, gated: false, ..m };
         assert_eq!((activate(&r2, None, -1.0), activate(&r2, None, 3.0)), (0.0, 9.0));
+        // (the gpt-oss SwiGLU, MiniMax M3's at alpha 1.702 and a limit of 7: min(g, 7) sigmoid(1.702 min(g, 7)) (clamp(u, -7, 7) + 1); the gate is held above
+        // only, the shifted up reaches -6 and 8, and an up of -1 gives nothing)
+        let oai = Mlp { act: Act::SwigluOai { alpha: 1.702 }, clamp: Some(Clamp::Gate(7.0)), ..m };
+        let half = |g: f32| g / (1.0 + (-1.702 * g).lexp());
+        for (g, u, want) in [
+            (0.5f32, 2.0f32, half(0.5) * 3.0),
+            (9.0, 2.0, half(7.0) * 3.0),
+            (-9.0, 2.0, half(-9.0) * 3.0),
+            (0.5, 20.0, half(0.5) * 8.0),
+            (0.5, -20.0, half(0.5) * -6.0),
+        ] {
+            let got = activate(&oai, Some(g), u);
+            assert!((got - want).abs() <= 1e-6 * want.abs().max(1.0), "gate {g}, up {u}: {got}, by hand {want}");
+        }
+        assert_eq!(activate(&oai, Some(3.0), -1.0), 0.0);
+        // (at alpha 1 its gate is SiLU's, and the shift is what is left: silu(g) (u + 1))
+        let one = Mlp { act: Act::SwigluOai { alpha: 1.0 }, clamp: None, ..m };
+        assert_eq!(activate(&one, Some(0.75), 2.0), super::super::silu(0.75) * 3.0);
+        assert_eq!((oai.not_run(), m.not_run()), (Some(Act::SWIGLU_OAI_NOT_RUN), None));
+        assert_eq!(oai.act.name(), "swigluoai");
     }
 }

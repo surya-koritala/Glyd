@@ -8,7 +8,7 @@ formula is given. Written 2026-11-20 against main ea26239f; revised the same day
 **Reading this document.** "Top gaps" and section 1 are the tree the design was written against (main ea26239f, 2026-11-20): the
 files, line numbers and limits they cite are that tree's. Since then the hand-written engines (`model.rs`, `model35.rs`,
 `model_gemma4.rs`, Nemotron-H's and the GLM development engine) have been deleted, and every family runs on the description executor
-through the one scheduler (Qwen3.8-Flash-Next's own engine, `model_qwen4x.rs`, is deleted too: `glyd run`, `serve` and `fit` take its release at penguin on one GPU or with its layers cut over several, and `qwenserve` serves Condor's packs of codebook experts on the executor). What was built is
+through the one scheduler (Qwen3.8-Flash-Next's own engine, `model_qwen4x.rs`, is deleted too: `glyd run`, `serve` and `fit` take its release at penguin on one GPU or with its layers cut over several, and `qwenserve` serves Ibis's packs of codebook experts on the executor). What was built is
 marked **As built** or **Built** where it differs from the text around it.
 
 **Scope.** What M2 tests and optimises for are the models released in the last six months (cutoff 2026-05-20): Qwen3.8 (27B dense,
@@ -19,11 +19,11 @@ to the recent families was the first priority; every family has them now (see "A
 
 ## Top gaps for the recent families (2026-11-20, when the design was written)
 
-1. **Qwen3.8 dense (27B) has no lossless level on the engine.** The Qwen3.5 code path it runs on accepts kestrel, swift and wren only
+1. **Qwen3.8 dense (27B) has no lossless level on the engine.** The Qwen3.5 code path it runs on accepts kestrel, linnet and wren only
    (`support.rs`, the `Qwen3.5` row: `levels: LOSSY`); penguin runs only through the frozen vLLM plugin. Its penguin pack is ~38 GiB
    (51.7 GiB bf16), so it needs the 40-80 GB cards or a split (#331).
 2. **No recent family batches or pages its KV.** Every one runs one sequence per engine: the description executor refuses more than one
-   for every family but Qwen3.5 (`dynamic/mod.rs:2352`), and Condor swaps sequences rather than batching them (R4a #138, R4b #141,
+   for every family but Qwen3.5 (`dynamic/mod.rs:2352`), and Ibis swaps sequences rather than batching them (R4a #138, R4b #141,
    #329).
 3. **The lossless KV format covers none of them.** `kv.rs` takes head dim 128 and GQA groups of at most 8 (`kv.rs:224-230`); the recent
    families use head dims 256 and 512 (Qwen3.8, Gemma 4), 64 (Muse), MLA latents (Kimi-K3, GLM-5.3) and DeepSeek-V4's compressed entries (#332).
@@ -75,7 +75,7 @@ heads of 128, 256 and 512 and the latent attention's rows (`kvshapes`, `kv12chec
 13. **Migration moves one family at a time** behind R7's logits test and R8's bench gate, no regression beyond the measured noise band,
     and deletes the old pipeline in the PR after the parity record. Order: the foundation (trait rename, context, kinds, the executor
     behind `ModelStep`), then the recent families with batching and paged KV (gemma-4-12B and Qwen3.8 dense with its lossless level,
-    then DeepSeek-V4, Kimi-K3, GLM-5.3, Muse with expert tiering, Condor last of them), then the standard families, then the legacy
+    then DeepSeek-V4, Kimi-K3, GLM-5.3, Muse with expert tiering, Ibis last of them), then the standard families, then the legacy
     pipelines (Qwen3 dense, Qwen3.5/3.6, Nemotron-H, gemma-4-31B) at parity only.
 
 ## 1. Inventory
@@ -85,11 +85,11 @@ heads of 128, 256 and 512 and the latent attention's rows (`kvshapes`, `kv12chec
 When the design was written a model ran on one of two kinds of code:
 
 - **Hand-written engines.** `model.rs` (Qwen3 dense), `model35.rs` (Qwen3.5/3.8), `model_gemma4.rs`,
-  `model_qwen4x.rs` (Condor's Qwen3.8-Flash-Next) and the GLM development engine (`model_glm.rs`, `mla_glm.rs`, `mtp_glm.rs`). Each has
+  `model_qwen4x.rs` (Ibis's Qwen3.8-Flash-Next) and the GLM development engine (`model_glm.rs`, `mla_glm.rs`, `mtp_glm.rs`). Each has
   its own step, cache and sampling. **As built (R3d, #140):** `model_qwen4x.rs` is deleted with its development checks; the family's loader is
   the executor's (`dynamic/qwen4x.rs`: `Dyn::new_with`, its experts the Moe kind's block, `dynamic/experts.rs`, at the hummingbird level of a codes pack `moe_cb.rs` `CbMoe`). **As built (R13, #234):** the GLM development engine is gone (`model_glm.rs`, `mla_glm.rs`, `mtp_glm.rs`,
   `kcheck_glm.rs`, `glm_serve.rs`, `glm_cb.rs`, `draft_loop.rs`, the codes block of `moe_glm_cb.rs`): GLM-5.3-Flash runs on the executor
-  alone; what the executor and Condor load GLM by is `kern/glm.rs` (the kernel table); since R3a (#136) its weights load by the executor's own
+  alone; what the executor and Ibis load GLM by is `kern/glm.rs` (the kernel table); since R3a (#136) its weights load by the executor's own
   loader from its lowered description and its experts are the layer kind's block (`dynamic/experts.rs`: FP8 as released, the block levels,
   hummingbird, the expert cache's places; `kern_glm.rs`'s weights loader and `moe_glm.rs` are gone). Its MTP drafting went with it:
   R6 (#145) puts the MtpHead kind on the executor (its CPU reference is `runtime/reference/mtp.rs`).
@@ -119,7 +119,7 @@ and the whole lossless KV cache (`kv_write`, `kv_gather`, `kv_decode`, ...) are 
 | family (code) | attention | position | norm and residual | FFN | other | KV and state | weights |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Qwen3.8 dense 27B** (also legacy Qwen3.5/3.6) (`dynamic/qwen35.rs`; `model35.rs` then, removed in R3b) | 3 of 4 layers Gated DeltaNet (conv 4, fp32 state [nv,128,128], chunk 64); 1 of 4 GQA hd 256 with sigmoid output gate | partial rope 64/256, θ 1e7; mrope read as plain for text | (1+w) RMSNorm | SiLU-gated (MoE refused) | MTP and vision not loaded | bf16 contiguous, 1 sequence (Qwen3.5 can hold several and select) | library layouts; penguin on the dynamic route (one GPU, or its layers cut over several), the lossy levels on one GPU or, where one does not hold it, in stages over several by the same rule |
-| **Qwen3.8-Flash-Next** (Condor; `dynamic/qwen4x.rs`, `model_qwen4x.rs` then, removed in R3d) | 36 GDN layers; 12 sparse attention layers (24 q / 2 kv heads, hd 256; indexer picks 2,048 tokens by 4-token blocks; sigmoid gate) | partial rope 64/256, θ 1e7; M-RoPE for images | four residual streams joined by gated residuals, (1+w); n-gram embedding at layer 1 | MoE: softmax top-10 of 512, SwiGLU, Hadamard-rotated input; gated shared expert 640 | 1 MTP layer (verifies up to 8 rows); vision tower (27 blocks) | bf16 KV, indexer keys, GDN state; sequences swapped, not batched (as built: the executor's rows through the scheduler) | Int6/5/4 dense, int8 shared and residual, codebook experts cb2/3/4/ternary decoded in `qx_cb_*` |
+| **Qwen3.8-Flash-Next** (Ibis; `dynamic/qwen4x.rs`, `model_qwen4x.rs` then, removed in R3d) | 36 GDN layers; 12 sparse attention layers (24 q / 2 kv heads, hd 256; indexer picks 2,048 tokens by 4-token blocks; sigmoid gate) | partial rope 64/256, θ 1e7; M-RoPE for images | four residual streams joined by gated residuals, (1+w); n-gram embedding at layer 1 | MoE: softmax top-10 of 512, SwiGLU, Hadamard-rotated input; gated shared expert 640 | 1 MTP layer (verifies up to 8 rows); vision tower (27 blocks) | bf16 KV, indexer keys, GDN state; sequences swapped, not batched (as built: the executor's rows through the scheduler) | Int6/5/4 dense, int8 shared and residual, codebook experts cb2/3/4/ternary decoded in `qx_cb_*` |
 | **gemma-4-12B** (also legacy 31B) (`dynamic/gemma4.rs`; `model_gemma4.rs` then, removed in R3b) | 5 of 6 sliding (hd 256, ring window+chunk); global hd 512, K=V option; q/k norm, weightless v norm | full θ 1e4 (sliding); proportional 64/256, θ 1e6 (global) | sandwich RMSNorm, per-layer scalar | GELU-tanh-gated | embed x sqrt(hidden), tied head, softcap 30, separate "assistant" draft model | bf16 contiguous, ring for sliding | library layouts; Int4-6 via `skinny.cu` for 1-16 rows |
 | **Kimi-K3** (`dynamic/kimi.rs`) | 69 of 93 layers Kimi delta attention (KDA, fp32 state 96x128x128, conv 4); 24 MLA (q 1536, kv 512, nope 128 + 64 shared, v 128, absorbed, sigmoid gate) | none (no rope anywhere) | KimiRMSNorm (two roundings); depth mix: each block's input is a softmax over the embedding and completed 12-layer blocks | layer 0 dense (situ); MoE: sigmoid + bias, top-16 of 896, latent 3584, situ; 2 shared experts as one MLP | - | MLA latent [ctx, 576] bf16 plus KDA state, contiguous | experts MXFP4 as released; rest lossless `Tiered`; expert cache with device-side plan (`dc_plan`, `dc_fill`) |
 | **GLM-5.3-Flash** (`dynamic/glm.rs`, `kern_glm.rs`, `kern/glm.rs`) | 34 of 45 KDA; 11 MLA (nope 256, v 256) with pooled-key indexer (top 2,048) | none (refused) | mHC: 4 streams, Sinkhorn mixing (20 iterations) | layers 0-2 dense SwiGLU clamp 10; MoE: sigmoid + bias, top-8 of 288, x2.5, 1 shared | 1 MTP head (not loaded; R6 #145) | latent 512 + indexer keys + KDA state, contiguous | FP8 128x128 blocks as released, the block levels and hummingbird (the experts the Moe kind's block: `dynamic/experts.rs`) |
@@ -144,7 +144,7 @@ The M2 standard families need fewer kinds than the seven above (from their `conf
 
 ### Layer kinds by family
 
-Recent: Q38 Qwen3.8 dense (and legacy Qwen3.5/3.6, same code), CO Qwen3.8-Flash-Next (Condor), G4 gemma-4-12B, KI Kimi-K3, GL GLM-5.3-Flash,
+Recent: Q38 Qwen3.8 dense (and legacy Qwen3.5/3.6, same code), CO Qwen3.8-Flash-Next (Ibis), G4 gemma-4-12B, KI Kimi-K3, GL GLM-5.3-Flash,
 DS DeepSeek-V4, MU Muse Spark. Then STD, the M2 standard families, and the legacy Q3 Qwen3 dense and NH Nemotron-H. "x" uses the kind; a
 word names the variant.
 
@@ -172,7 +172,7 @@ word names the variant.
 
 Read across, the interface needs four mixers (attention with variants, MLA, linear attention, Mamba-2), two feed-forward kinds (MLP and
 MoE with router variants), four residual rules (add, multi-stream mixing, depth mix, gated), and a handful of extras (draft heads,
-vision, embedding and head options). The variants that look family-specific today (Condor's gated residuals and GLM's and DeepSeek's mHC
+vision, embedding and head options). The variants that look family-specific today (Ibis's gated residuals and GLM's and DeepSeek's mHC
 streams, the three indexers) are each one kind with parameters.
 
 ## 2. The model step
@@ -289,7 +289,7 @@ passes in pieces took 0.7% more GPU time than eager; whether cuBLAS keeps its ea
 ```rust
 pub enum Mixer {
     Attention(Attn),     // MHA, GQA, MQA: heads, kv_heads, head_dim, v_head_dim, window, sinks, rope, qk/v norm, output gate,
-                         // softcap, bias, scale, K=V; indexer: Option<Indexer> (Condor's block indexer)
+                         // softcap, bias, scale, K=V; indexer: Option<Indexer> (Ibis's block indexer)
     Mla(Mla),            // q_lora, kv_lora, nope/rope/v dims, rope or none, absorbed, output gate; indexer: Option<Indexer> (GLM)
     Compressed(Comp),    // DeepSeek-V4: one latent KV head, a sliding window plus per-layer compressed entries (ratio), indexer, sink
     Linear(Linear),      // Gated DeltaNet, Kimi delta attention: heads, key/value dims, conv kernel, gate form, state dtype
@@ -305,7 +305,7 @@ pub enum Ffn {
 pub enum Residual {
     Add, AddScaled(f32),       // Granite's residual multiplier
     Gated(GateP),              // Muse: X = a X + b O
-    Streams(StreamsP),         // n residual streams mixed per block: mHC with Sinkhorn (GLM, DeepSeek-V4), gated residuals (Condor)
+    Streams(StreamsP),         // n residual streams mixed per block: mHC with Sinkhorn (GLM, DeepSeek-V4), gated residuals (Ibis)
     DepthMix(DepthMixP),       // Kimi-K3: softmax over the embedding and completed blocks of 12 layers
 }
 
@@ -520,19 +520,19 @@ each step's GPU work and the GPU's idle time before it from events at its first 
 The models that ran one request at a time through a loop of their own (`server::work_gen`) are the scheduler's steps of one slot: stages
 and layers across GPUs (`ModelStep for Run`: a prompt in one call, a token a step, the logits read for a draw) and a model with a draft
 model (`ModelStep::draft`: a decode step is a drafting round, `spec_round`, each of its tokens sent and added as a step's; a request that
-asks for log-probabilities or a least length has plain steps). Condor's own engine (`qwenserve`, `qwen4x_serve.rs`'s `Qx` over
+asks for log-probabilities or a least length has plain steps). Ibis's own engine (`qwenserve`, `qwen4x_serve.rs`'s `Qx` over
 `EngineQx`) was not the executor's and kept its loop. As built (R3d, #140): that engine is deleted. The family's description runs on the executor and through the
-scheduler: the release at penguin through `glyd run`, `serve` and `fit` (one GPU, or its layers cut over several), and Condor's packs through `qwenserve CKPT PACK --port` (`dynamic/qwen4x.rs` `http`:
+scheduler: the release at penguin through `glyd run`, `serve` and `fit` (one GPU, or its layers cut over several), and Ibis's packs through `qwenserve CKPT PACK --port` (`dynamic/qwen4x.rs` `http`:
 the chat page and the APIs, up to `--users` requests through `server::work_with`; `--gpus 0,1` cuts the layers over those cards through the generic split; the vision tower runs on the executor; not yet on the executor: the draft head over the expert cache).
 
-What the family's move was held to (`paritycheck` while Condor's engine existed, and `logitscheck` now it is deleted). The two engines gave the same bits
+What the family's move was held to (`paritycheck` while Ibis's engine existed, and `logitscheck` now it is deleted). The two engines gave the same bits
 through the first seven stages of layer 0 (the gated residual's norm, bottleneck, up product and mix; the linear attention's two products
 and its convolution) and parted at the delta rule, where they ran two kernels of one kind with different rounding points: the executor's is
-the kind's (the chunked kernel the Qwen3.5 layout runs: fp32 sums over normed q and k rounded to bf16), Condor's sums pairs of bf16 values
-in two passes. A layer kind has one kernel, so the executor's stays, and the family is held to the kind's CPU reference, not to Condor's
+the kind's (the chunked kernel the Qwen3.5 layout runs: fp32 sums over normed q and k rounded to bf16), Ibis's sums pairs of bf16 values
+in two passes. A layer kind has one kernel, so the executor's stays, and the family is held to the kind's CPU reference, not to Ibis's
 engine:
 
-1. the stages before the delta rule had the same bits on both engines (checked while Condor's engine existed);
+1. the stages before the delta rule had the same bits on both engines (checked while Ibis's engine existed);
 2. wherever the executor's router chose other experts than the reference's own, the reference's router (fp32) is run on the executor's own
    input for that token and layer (the block's normed input as the executor made it). Its choice there must be the executor's, or differ
    from it by less than `kindcheck::NEAR` (1e-2) by its ranks on that same input. A choice that differs by `NEAR` or more on the same input
@@ -552,13 +552,13 @@ body runs on the reference's own input, so a choice taken the other way can come
 later layer's router sees an input that already carries the earlier layers' bf16 roundings: on the first random case both of the family's
 engines are 2.3e-2 from fp32 at the fifth layer's output (its prompt), and on an A10 the executor's routers chose, against the reference's own input, experts
 1.2e-2 to 8.3e-2 apart by its ranks at 2 (`qwen4x`) and 11 (`qwen4x-s2`) tokens and layers, most of them in the long prompt's later
-layers (Condor's engine on `qwen4x`: 3, 1.7e-2 to 3.9e-2), while its logits on its own choices were within a KL of 3.2e-6 of the
+layers (Ibis's engine on `qwen4x`: 3, 1.7e-2 to 3.9e-2), while its logits on its own choices were within a KL of 3.2e-6 of the
 reference's. That margin measures the earlier layers' roundings, not the router. Given the same
 choices everything else is the reference's math (3); what is left to prove is the router itself, so it is held on the input it was given.
 On the same A10, on their own inputs the reference's router made the executor's choice at 25 of its 30 choices apart on `qwen4x` and 39
-of 40 on `qwen4x-s2`, the others near ties (1.7e-3 at most), and Condor's at 28 of its 35 (the rest near ties): every choice that was far
-from the reference's on the reference's own input, Condor's three among them, is the reference router's own on the engine's input.
-The figures against the reference's own choices and input are always printed beside them, and so are Condor's engine's by the same
+of 40 on `qwen4x-s2`, the others near ties (1.7e-3 at most), and Ibis's at 28 of its 35 (the rest near ties): every choice that was far
+from the reference's on the reference's own input, Ibis's three among them, is the reference router's own on the engine's input.
+The figures against the reference's own choices and input are always printed beside them, and so are Ibis's engine's by the same
 measures, its record from before it was deleted.
 
 An indexer's picks are choices of the same sort and are held by the same rule (`logits::held_on_choices`, a case's `on_choices`): GLM-5.3-Flash's
@@ -740,7 +740,7 @@ bit: with prompts one a pass every reply under preemption is the reply alone (`u
 
 ### What exists
 
-`offload.rs` is the expert store Condor runs on, and Nemotron-H and Kimi-K3 (`tp_cache.rs`) use parts of it:
+`offload.rs` is the expert store Ibis runs on, and Nemotron-H and Kimi-K3 (`tp_cache.rs`) use parts of it:
 
 - **Slots.** Each MoE layer has GPU places: the GPU memory the plan leaves (`plan::expert_cache_with`: every user's sequences first, the engine's work next, the places what is left) over the layers' places of an expert's bytes, replaced LRU among the
   experts the current call does not need (`offload.rs:62-110`); a call needing more experts than slots runs in waves (`offload.rs:241`).
@@ -759,7 +759,7 @@ bit: with prompts one a pass every reply under preemption is the reply alone (`u
   bits. That holds for two cases:
   - Kimi-K3 at penguin: the host adds a release-format expert's products in another fp32 order than the GPU's MMA. A pair stays
     within one bf16 last place, so the reply holds at the kind's bound.
-  - Condor's codes packs, in every mode.
+  - Ibis's codes packs, in every mode.
 
   `tiercheck --mode cpu` on an RTX 4080 SUPER (2026-11-26) measured this. Kimi-K3 at penguin: 11,907 of 20,480 logits differ
   (copy: 0). Every other family with experts gives 0, at penguin and at every lossy layout (Kimi's too): the Qwen3.5 layout,
@@ -770,11 +770,11 @@ bit: with prompts one a pass every reply under preemption is the reply alone (`u
   A check that holds one run to another to the bit holds the planner's times (`ExpertStore::hold_costs`,
   `offload::hold_costs_from_now`: no backlog, no measured cost). `usercheck`, the tier checks and `servecheck` do this; a server
   does not.
-- **Host and disk.** Condor's host tier is the memory-mapped pack (page cache, `will_need` read-ahead); an O_DIRECT pool with 16 reads
+- **Host and disk.** Ibis's host tier is the memory-mapped pack (page cache, `will_need` read-ahead); an O_DIRECT pool with 16 reads
   in flight (`disk.rs`) serves hummingbird and Nemotron-H layers kept on NVMe.
 - **Host compute.** AVX2/AVX-512/NEON kernels per format (`cpu_cb.rs`, `cpu_hb.rs`, `cpu_experts.rs`, which skips the ~92% zero relu^2
   activations of Nemotron-H).
-- **The graph.** A host-side plan needs the router's choices on the host. Condor runs one graph per stretch between host waits, one host
+- **The graph.** A host-side plan needs the router's choices on the host. Ibis runs one graph per stretch between host waits, one host
   wait a layer, polling a mapped flag (`run_parts_mapped`, `offload.rs:2558-2700`); the description executor does not capture a step
   with such a block at all (`dynamic/mod.rs:1201`). Kimi-K3's device path plans on the GPU (`dc_plan`, `dc_fill` in `kimi.cu`) and copies
   every miss, so the step stays one graph.
@@ -808,7 +808,7 @@ Two plan locations, one interface:
 - **Device plan** (Kimi-K3's `dc_plan`): the plan runs on the GPU from a placement table the host updates between steps; misses are
   copied by the GPU (mapped host memory) or computed by a host thread that polls a mapped ring. The step stays in one graph. This is
   the default where the link is fast enough to make copies the common choice (PCIe 4/5 x16 per GPU, NVLink-C2C).
-- **Host plan** (Condor's today): the host reads the choices per layer and plans with full costs. One wait a layer, which at 48 layers
+- **Host plan** (Ibis's today): the host reads the choices per layer and plans with full costs. One wait a layer, which at 48 layers
   and ~10-20 µs a wait is 0.5-1 ms a step; kept for consumer cards where host compute is the common choice.
 
 What changes for batching: with B rows a step touches far more experts than one row does. Under uniform routing Kimi-K3 (16 of 896)
@@ -942,7 +942,7 @@ Recent families first; the legacy pipelines move last, at parity, so they can be
 | 6 | lossless KV for head dims 256/512 and MLA latents | #332 | the 12-bit format reaches the recent families | - |
 | 7 | **DeepSeek-V4, Kimi-K3, GLM-5.3-Flash, Muse Spark**: batched rows, paged MLA latent and compressed-entry groups, KDA state slots, expert tiering on the MoE kind | R12 #232, #327, R13 #234 | the large recent families; single-user parity on their reference boxes first, then rows | `tp_cache.rs` special cases, the GLM development engine |
 | 8 | content-addressed blocks and the radix index; state snapshots for GDN/KDA | R4c #142 | needs paged KV on the recent families first | `Pager`'s 64-bit chain |
-| 9 | **Qwen3.8-Flash-Next (Condor)** | R3d #140 | the shipping consumer path; within 3% of v0.33.0 | `model_qwen4x.rs`, `Qx`, `qwen4x_serve.rs` sizing (deleted) |
+| 9 | **Qwen3.8-Flash-Next (Ibis)** | R3d #140 | the shipping consumer path; within 3% of v0.33.0 | `model_qwen4x.rs`, `Qx`, `qwen4x_serve.rs` sizing (deleted) |
 | 10 | recent releases not loaded on 2026-11-20 (GLM-5.3 and DeepSeek-V4.1 are loaded since, at penguin: `support.rs`): GLM-5.3, Qwen3.8-2.4T-A95B, Kimi-K3.1-Pro, DeepSeek-V4.1, DSpark drafters | #333 | descriptions on the kinds steps 5-9 built | - |
 | 11 | the standard families: Llama 3, Mistral, Qwen 2/2.5, Phi-4, Granite, OLMo, SmolLM (the M2 gate's list) | F1a #166, F1b #167, F1d #169, F1e #170, F1h #173 | one GQA + SwiGLU kind with parameters; proves "config only" | the vLLM plugin path for them (F7, later) |
 | 12 | legacy at parity: Qwen3.5/3.6 and gemma-4-31B (same code as step 5), Nemotron-3-Super/Nemotron-H, Qwen3 dense with its lossless paged KV | R3b #137, R3c #139 | pipelines deleted; no optimisation beyond parity | `model35.rs`, `model_gemma4.rs`, `model_nh.rs`, `model.rs` |
@@ -1010,7 +1010,7 @@ tokens: 1.62x decode on an RTX 4090 at 77% hits and 2.20x on an RTX 5090 at 89% 
 *Taken:* `supports` as the planner's question, host buffer types for pinned memory, mixing backends at a boundary for experts.
 *Different:* the seam is the layer kind, not the operator: Glyd's formats need fused per-format product kernels on every backend,
 and a per-operator graph would lose the fusions that set the fixed time (`docs/ceiling.md`). llama.cpp's expert cache is the closest
-thing to Condor's; R12 compares the two same-bits, same-GPU.
+thing to Ibis's; R12 compares the two same-bits, same-GPU.
 
 **TensorRT-LLM.** The PyTorch backend is now the only one; its `PyExecutor` loops fetch, schedule (capacity then micro-batch), forward,
 decode, respond, with resource managers that prepare and free per step and an overlap scheduler on by default
@@ -1167,7 +1167,7 @@ with expert parallelism across nodes (D4). That is a planner fact, not a runtime
    DeepSeek-class models. The step and the store support either; the choice is C2c's (#196), with a measured A/B on Kimi-K3.
 2. **Content hash function.** xxh3-128 (fast, not cryptographic) or BLAKE3 truncated to 128 bits (slower, collision-resistant against a
    tenant who chooses tokens). Matters once blocks are shared across tenants or announced to routers; decided in R4c with the event schema.
-3. **Draft tokens in the step.** `Sample::Each` verifies k drafts in one row; whether MTP heads run in the same step (Condor today) or in a
+3. **Draft tokens in the step.** `Sample::Each` verifies k drafts in one row; whether MTP heads run in the same step (Ibis today) or in a
    step of their own is R6's (#145) to settle with measurements.
 4. **Vision encoders.** An image's embeddings are computed before its prompt chunk; whether the encoder runs in the step or as a separate
    queue on the device is F2a's (#174).

@@ -21,6 +21,8 @@ pub enum KindRef {
     GatedDeltaNet,
     KimiDelta,
     Mamba2,
+    /// The gated short convolution (LFM's `conv` layers).
+    ShortConv,
     Mlp,
     Moe,
     /// A hashed n-gram embedding into the residual streams (Qwen3.8-Flash-Next's, DeepSeek-V4.1's Engram).
@@ -41,6 +43,7 @@ impl KindRef {
             Body::Mixer(Mixer::Linear(l)) if l.kind == LinearKind::GatedDeltaNet => KindRef::GatedDeltaNet,
             Body::Mixer(Mixer::Linear(_)) => KindRef::KimiDelta,
             Body::Mixer(Mixer::Mamba2(_)) => KindRef::Mamba2,
+            Body::Mixer(Mixer::ShortConv(_)) => KindRef::ShortConv,
             Body::Ffn(Ffn::Mlp(_)) => KindRef::Mlp,
             Body::Ffn(Ffn::Moe(_)) => KindRef::Moe,
             Body::Ngram(_) => KindRef::Ngram,
@@ -56,7 +59,7 @@ pub enum Format {
     F32,
     /// Glyd's lossless formats (10.75-12 bits).
     Lossless,
-    /// Int4-6 and codebook lossy levels, by name (kestrel, swift, wren, ...).
+    /// Int4-6 and codebook lossy levels, by name (kestrel, linnet, wren, ...).
     Lossy(String),
     /// FP8 with 128x128 block scales, as DeepSeek and GLM release them.
     Fp8Block,

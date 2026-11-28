@@ -1,0 +1,25 @@
+name: Ibis CI
+on:
+  push:
+    branches: [main]
+    paths: ['ibis/**', '.github/workflows/ibis-ci.yml']
+  pull_request:
+    paths: ['ibis/**', '.github/workflows/ibis-ci.yml']
+permissions:
+  contents: read
+# a pull request's older run is cancelled by its newer one; any other run is a group of its own, so none is cancelled or held back (as ci.yml)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ibis
+    steps:
+      - uses: actions/checkout@v7
+      - name: Shell scripts parse
+        run: for f in setup.sh tools/*.sh bench/*.sh; do bash -n "$f"; done
+      - name: Flowchart renderer
+        run: node tests/test_flow.js

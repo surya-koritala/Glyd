@@ -13,7 +13,7 @@ An API key or a token given as a flag (--api-key, --hf-token) is taken off the e
     GLYD_ENGINE=1      the engine on any GPU it runs on, measured or not, for glyd run and glyd serve (on, yes and true too; its checks of the GPU, the driver and the model still apply)
     GLYD_ENGINE=PATH   another engine program in place of the one beside the library (the PATH's glyd-engine otherwise); for glyd serve it asks for the engine as 1 does
 
-`glyd run MODEL:kestrel` (also `glyd run MODEL --lossy`: a Qwen3.5-family model at about 6.5 bits per weight) and `MODEL:swift` (about 5.5) run on the engine alone, as vLLM has no such path: where the engine
+`glyd run MODEL:kestrel` (also `glyd run MODEL --lossy`: a Qwen3.5-family model at about 6.5 bits per weight) and `MODEL:linnet` (about 5.5) run on the engine alone, as vLLM has no such path: where the engine
 does not run them, the reason is said and the command ends with status 3, and nothing runs on vLLM. The engine reads these two tags itself: they go to it as they were typed. `MODEL:penguin` is the lossless
 default: its tag is taken off before the engine and vLLM see the model (vLLM's path never sees a tag). `MODEL:wren` (about 4.5) and `MODEL:hummingbird` (Nemotron 3 Super's experts at about 3 bits, on a 16 to 32 GB card) are of these too. `glyd serve` takes
 the same tags and --lossy, and a level, a glyd-v7 directory and a glyd/ repo vLLM cannot read go to the engine without GLYD_ENGINE=1 (nothing else serves them). A tag that names no level and --lossy with another
@@ -39,7 +39,7 @@ ON = ("1", "on", "yes", "true", "auto")
 ASK = ("1", "on", "yes", "true")  # (of ON, what asks for the engine by name: `auto` and nothing leave it to the default)
 CANNOT = 3  # the engine's status for a model it will not run on this computer, from `preflight` and from `run` and `serve` until they are up
 PANIC = 101  # a Rust program's status where it panics
-LEVELS = ("penguin", "kestrel", "swift", "wren", "hummingbird")  # Glyd's levels, as a tag on the model names them; kestrel (which --lossy is), swift, wren and hummingbird are lossy, which the engine alone runs
+LEVELS = ("penguin", "kestrel", "linnet", "wren", "hummingbird")  # Glyd's levels, as a tag on the model names them; kestrel (which --lossy is), linnet, wren and hummingbird are lossy, which the engine alone runs
 WITH_VALUE = ("--prompt", "-p", "--context", "--ctx", "--port", "--host", "--temp", "--layout", "--users", "--tables", "--api-key", "--hf-token", "--allowed-origins", "--allowed-hosts", "--drain-timeout")
 # the flags that carry a secret, which go to the engine in its environment (a command line is in `ps` and in a log): (the flag's names, the variable, what it is)
 SECRETS = ((("--api-key", "--api_key"), "GLYD_API_KEY", "API key"), (("--hf-token", "--hf_token"), "HF_TOKEN", "Hugging Face token"))
@@ -107,7 +107,7 @@ def model_of(argv):
 
 
 def level_of(argv):
-    """(argv with the level tag taken off the model, the tag in lower case): `Qwen/Qwen3.8-27B:swift` has the tag `swift`. The tag is the text after the model's last ':' where that is all ASCII letters
+    """(argv with the level tag taken off the model, the tag in lower case): `Qwen/Qwen3.8-27B:linnet` has the tag `linnet`. The tag is the text after the model's last ':' where that is all ASCII letters
     (a Hub name has no ':'; in a path the text after one has a '/' or more); a model with none is as it is, and the tag is None. Whether the tag names a level is `handoff`'s to say."""
     i = model_at(argv)
     if i is None:
@@ -115,7 +115,10 @@ def level_of(argv):
     model, colon, tag = argv[i].rpartition(":")
     if not (colon and tag.isascii() and tag.isalpha()):
         return argv, None
-    return [*argv[:i], model, *argv[i + 1 :]], tag.lower()
+    return [*argv[:i], model, *argv[i + 1 :]], FORMER.get(tag.lower(), tag.lower())
+
+
+FORMER = {"swift": "linnet"}  # a level's earlier name and its name now: read from a command line, never written (the engine's levels::FORMER)
 
 
 def is_gemma4(model):
@@ -143,11 +146,11 @@ def engine_only(model):
             return False
     if not model or not model.startswith("glyd/") or model.count("/") != 1:
         return False
-    return is_gemma4(model) or model.lower().endswith(tuple(f"-{level}" for level in ("kestrel", "swift", "hummingbird", "wren")))
+    return is_gemma4(model) or model.lower().endswith(tuple(f"-{level}" for level in ("kestrel", "linnet", "hummingbird", "wren")))
 
 
 def packed_repo(model, level):
-    """The Hub repo of MODEL (`Qwen/Qwen3.8-27B`) at `level` (`swift`) packed ahead: `glyd/Qwen3.8-27B-swift`. The engine's rule too (cli.rs packed_repo), and the publish workflow's; the engine resolves it, the tag goes to it as typed."""
+    """The Hub repo of MODEL (`Qwen/Qwen3.8-27B`) at `level` (`linnet`) packed ahead: `glyd/Qwen3.8-27B-linnet`. The engine's rule too (cli.rs packed_repo), and the publish workflow's; the engine resolves it, the tag goes to it as typed."""
     name = model.rstrip('/').rsplit('/', 1)[-1]
     return f"glyd/{REPO_NAMES.get(name, name)}-{level}"
 
@@ -318,7 +321,7 @@ def launch(exe, cmd, argv, start=subprocess.Popen, stall=START_STALL, poll=POLL,
 
 def handoff(cmd, argv, environ=None, say=None, run=subprocess.run, start=subprocess.Popen, stall=START_STALL, poll=POLL):
     """None where the vLLM path goes on, after one line saying why. Where the engine will run the model, a line, and the engine run as this process's child: its exit status, which is the command's, once
-    it is up; and None again (the vLLM path too, with the reason as the line) where it does not get up, whatever the way. The model's level tag is read here, for run and serve alike: kestrel and swift are --lossy's case (they
+    it is up; and None again (the vLLM path too, with the reason as the line) where it does not get up, whatever the way. The model's level tag is read here, for run and serve alike: kestrel and linnet are --lossy's case (they
     go to the engine as they were typed), penguin's is taken off the words the engine is given (and the caller takes it off for vLLM's path, with level_of), and a tag that is no level built is refused."""
     env = os.environ if environ is None else environ
     say = say or (lambda text: print(text, file=sys.stderr, flush=True))
@@ -349,7 +352,7 @@ def handoff(cmd, argv, environ=None, say=None, run=subprocess.run, start=subproc
         return refuse(f"--lossy is :kestrel, not :{tag}", "Give one or the other")
     if tag == "penguin":  # (the engine's preflight and run, and vLLM, have the model without its tag)
         argv, model = words, model_of(words)
-    elif tag:  # (kestrel, swift or hummingbird: the engine is given them, and reads them)
+    elif tag:  # (kestrel, linnet or hummingbird: the engine is given them, and reads them)
         lossy = lossy or f":{tag}"
     if not wanted:
         return vllm("GLYD_ENGINE=0")

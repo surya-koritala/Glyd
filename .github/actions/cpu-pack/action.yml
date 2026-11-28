@@ -11,7 +11,7 @@ inputs:
     description: "plan or pack"
     required: true
   layout:
-    description: "The level: penguin (lossless), kestrel (6-bit) or swift (5-bit)"
+    description: "The level: penguin (lossless), kestrel (6-bit) or linnet (5-bit)"
     required: false
     default: penguin
   prebuilt:
@@ -53,7 +53,7 @@ runs:
       if: inputs.mode == 'pack'
       run: |
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/go /opt/hostedtoolcache/node /opt/hostedtoolcache/Ruby /opt/hostedtoolcache/PyPy \
-          /usr/local/share/boost /usr/local/.ghcup /usr/share/swift /usr/local/share/powershell /usr/local/share/chromium /usr/local/lib/node_modules /opt/az /opt/microsoft /opt/google
+          /usr/local/share/boost /usr/local/.ghcup /usr/share/linnet /usr/local/share/powershell /usr/local/share/chromium /usr/local/lib/node_modules /opt/az /opt/microsoft /opt/google
         sudo docker image prune --all --force > /dev/null 2>&1 || true
         df -h / /mnt 2>/dev/null || df -h /
         # the model's cache on the second disk where it has room for it (the save stays on /)

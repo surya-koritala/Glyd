@@ -237,9 +237,9 @@ fn print_report<T: serde::Serialize>(result: Result<T, &'static str>) -> ExitCod
 
 fn help() {
     println!("Run a model across two GPUs (docs/beta.md):");
-    println!("  starlings up --model glyd/Qwen3.8-27B-swift              one machine");
-    println!("  starlings up --model glyd/Qwen3.8-27B-swift --machines 2  first of two machines");
-    println!("  starlings join --model glyd/Qwen3.8-27B-swift            second machine");
+    println!("  starlings up --model glyd/Qwen3.8-27B-linnet              one machine");
+    println!("  starlings up --model glyd/Qwen3.8-27B-linnet --machines 2  first of two machines");
+    println!("  starlings join --model glyd/Qwen3.8-27B-linnet            second machine");
     println!(
         "  (options: --ctx N --sessions 1|2 --drafts N --host IP --engine FILE --gpu-lib FILE --yes)"
     );

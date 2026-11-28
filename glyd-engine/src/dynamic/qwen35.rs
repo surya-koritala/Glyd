@@ -147,6 +147,7 @@ pub(crate) fn attention(d: usize, nq: usize, nk: usize, rotary: usize, qk: (usiz
         k_off: nq * 2 * d,
         v_off: Some(nq * 2 * d + nk * d),
         d,
+        dv: d,
         nq,
         nk,
         writes: true,
@@ -158,10 +159,13 @@ pub(crate) fn attention(d: usize, nq: usize, nk: usize, rotary: usize, qk: (usiz
         q_scale: 1.0,
         scale: (d as f32).powf(-0.5),
         softcap: 0.0,
-        gate: Some(GateAt { off: d, step: 2 * d, norm: false }),
+        gate: Some(GateAt { off: d, step: 2 * d, norm: false, head: false }),
         round: false,
         sbf16: false,
         picked: false,
+        sinks: None,
+        v_scale: 1.0,
+        shards: 1,
     }
 }
 
@@ -275,7 +279,7 @@ pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
         mats,
         small,
         forms: Vec::new(),
-        ropes: vec![Rope { theta: c.rope_theta, dim: c.rotary_dim, pairs: c.rotary_dim / 2, trig64: false }],
+        ropes: vec![Rope { theta: c.rope_theta, dim: c.rotary_dim, pairs: c.rotary_dim / 2, trig64: false, scaled: None }],
         rings,
         // (a later stage never runs the first operation)
         first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, weight: NormW::PlusOne, eps: c.eps }),

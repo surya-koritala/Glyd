@@ -34,7 +34,7 @@ cargo build --release -p starlings-cli                  # cluster: target/releas
 On every pull request and push to main (`.github/workflows/`):
 
 - `ci.yml` on every pull request and push to main. Its `changes` job lists the files a pull request touches; a pull request that changes
-  only docs, benchmarks, research, condor, starlings, cards, tools or other workflows skips the code jobs below, so it reports in seconds; it still runs the
+  only docs, benchmarks, research, ibis, starlings, cards, tools or other workflows skips the code jobs below, so it reports in seconds; it still runs the
   Starlings job (tests, lint, dependency policy) where it changes `starlings/`, actionlint where it changes a workflow or an action, and Versions agree where it changes `tools/report/`.
   The jobs: Build & Test (the codec and store tests, regression floors, C ABI, a CLI round trip), Lint (`cargo fmt --check`,
   `cargo clippy -D warnings` over the workspace and the engine's release feature set, cargo-deny), Versions agree, the `glyd-gpu`
@@ -50,7 +50,7 @@ On every pull request and push to main (`.github/workflows/`):
   fixing it comes first. (`ci.yml`, `tree.yml` and `dco.yml` also run for a GitHub merge queue, `merge_group`, which main would use if the repository moved to an
   organization; a queue needs one.)
 - Only when their paths change: `python.yml` (the Python GPU package and vLLM plugin), `kernels.yml` (the engine's kernels
-  compile with nvcc 13 for sm_80 to sm_120, no GPU), `starlings-ci.yml` (the full matrix, macOS and Windows included: nightly, by hand, and on a pull request labeled `full-ci`; the Linux run of a pull request or push is a job of `ci.yml`), `condor-ci.yml`, `cpu-pack.yml`.
+  compile with nvcc 13 for sm_80 to sm_120, no GPU), `starlings-ci.yml` (the full matrix, macOS and Windows included: nightly, by hand, and on a pull request labeled `full-ci`; the Linux run of a pull request or push is a job of `ci.yml`), `ibis-ci.yml`, `cpu-pack.yml`.
 - Always: `tree.yml` (no large data files, `scripts/check_tree.sh`) and `dco.yml` (sign-off on every commit).
 
 GPU tests (`gpu.yml`) run on one self-hosted machine, the one `vars.GPU_RUNNER` names (`tools/ci/setup-gpu-runner.sh` registers

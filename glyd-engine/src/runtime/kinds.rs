@@ -196,9 +196,20 @@ pub enum Act {
         beta: f32,
         linear: f32,
     },
+    /// The SwiGLU of gpt-oss, the gate's sigmoid sharpened and the up shifted: a gated pair's act(g, u) = g sigmoid(alpha g) (u + 1); as a single
+    /// activation, its gate factor g sigmoid(alpha g) (alpha 1: SiLU). With an MLP's `Clamp::Gate(l)` the gate is min(g, l) and the up clamp(u, -l, l)
+    /// before both, so the shifted up is within 1 - l and 1 + l (MiniMax M3's `hidden_act` "swigluoai" with `swiglu_alpha` and `swiglu_limit`). In `Ref`.
+    SwigluOai {
+        alpha: f32,
+    },
 }
 
 impl Act {
+    /// The refusal of the gpt-oss SwiGLU: the CPU reference computes it (`reference::gated`), the executor's activations have no sharpened sigmoid and no
+    /// shifted up.
+    pub const SWIGLU_OAI_NOT_RUN: &'static str =
+        "the SwiGLU whose gate is g sigmoid(alpha g) and whose up is shifted by 1 (swigluoai), which the executor does not run yet";
+
     /// The name transformers' configs give the activation (`hidden_act`, `output_gate_type`).
     pub fn name(&self) -> &'static str {
         match self {
@@ -208,6 +219,7 @@ impl Act {
             Act::Gelu => "gelu",
             Act::Relu2 => "relu2",
             Act::Situ { .. } => "situ",
+            Act::SwigluOai { .. } => "swigluoai",
         }
     }
 }
@@ -219,7 +231,24 @@ pub enum GateFrom {
     Own,
     /// Interleaved with the queries in `q`: per head, head_dim query rows then head_dim gate rows (Qwen3.5/3.8 `q_proj`).
     InQuery,
+    /// Its own product of one value a head, role `g` [heads, hidden]: every channel of a head's output times the head's one gate (LFM's
+    /// `self_attn.gate_proj` on plain attention, Ling's `attention.g_proj` on the latent attention: its "head_wise" gate).
+    Head,
+    /// Its own product of the attention's normed query latent (the low rank the queries are made from), not of the block's input, role `g` (ERNIE's
+    /// `self_attn.gate_proj`). On a latent attention [heads v_dim, q_lora]: each channel of the heads' outputs times the activation of its value,
+    /// before the output product. On a compressed attention [o_groups o_lora, q_lora]: the grouped low-rank output (after `o_a`) times it, before
+    /// `o_b`. An attention with no query latent has no such gate.
+    Latent,
 }
+
+impl GateFrom {
+    /// The refusal of an output gate from the query latent: the CPU reference computes it, the executor's gates are products of the block's input.
+    pub const LATENT_NOT_RUN: &'static str = "an attention's output gate from the query latent, which the executor does not run yet";
+}
+
+/// The refusal of an attention whose heads' outputs are mixed with each other in a low rank (`Comp::head_mix`, `Mla::head_mix`): the CPU reference computes
+/// it, the executor's attentions hand each head's output on as it is.
+pub const HEAD_MIX_NOT_RUN: &str = "the low-rank mix of an attention's heads' outputs, which the executor does not run yet";
 
 /// An attention output gate: `o = norm(o_head) * act(gate)` per head before the output product.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -231,16 +260,19 @@ pub struct OutGate {
 }
 
 /// A sparse-attention indexer: per query, a score sum_h w_h relu(q_h . k) of each past key (one key a token, a pooled key a block of
-/// `block` tokens, or a compressed entry), the best kept. Condor's block indexer, GLM's pooled-key indexer and DeepSeek-V4's
+/// `block` tokens, or a compressed entry), the best kept. Ibis's block indexer, GLM's pooled-key indexer and DeepSeek-V4's
 /// compressed-entry indexer are this kind with parameters. In `Ref`: a latent attention's (`reference::mla`, GLM-5.3-Flash),
-/// DeepSeek-V4's (`reference::comp`) and Condor's on a GQA attention (`reference::attention`, `IndexForm::Mean`).
+/// DeepSeek-V4's (`reference::comp`), and on a GQA attention (`reference::attention`) Ibis's (`IndexForm::Mean`) and MiniMax M3's, whose score is not
+/// this sum: each index head keeps blocks of its own by the best dot product in each (`IndexForm::Max`). Hunyuan's compressed indexer is the form
+/// `IndexForm::Grouped` on a latent attention.
 #[derive(Clone, PartialEq)]
 pub struct Indexer {
     pub heads: usize,
     pub head_dim: usize,
     /// What a query keeps. A latent attention: `top_k` tokens, as the `top_k / block` best complete pools of `block` tokens and the tokens
-    /// of the incomplete last pool (GLM-5.3-Flash's `index_topk`; `block` 1: the best `top_k` tokens; Condor's `indexer_budget` in pools of
-    /// `indexer_compress_ratio`). DeepSeek-V4: `top_k` compressed entries (`block` is its ratio).
+    /// of the incomplete last pool (GLM-5.3-Flash's `index_topk`; `block` 1: the best `top_k` tokens; Ibis's `indexer_budget` in pools of
+    /// `indexer_compress_ratio`). DeepSeek-V4: `top_k` compressed entries (`block` is its ratio). The block-max form: the `top_k / block` best blocks of
+    /// `block` positions, the query's own among them (MiniMax M3's `sparse_topk_blocks` blocks of `sparse_block_size`).
     pub top_k: usize,
     /// Tokens a pooled key covers (GLM-5.3-Flash's `index_kpool`; 1: a key per token).
     pub block: usize,
@@ -249,12 +281,34 @@ pub struct Indexer {
     pub form: IndexForm,
     /// The gated form's rotary: the first `rope` channels of each query head and of each token's key rotated to their positions by the attention's rotary
     /// (the full-size GLM's indexer, its `qk_rope_head_dim`); 0: none (GLM-5.3-Flash, Kimi-K3.1, DeepSeek-V4). The mean form's
-    /// queries and pools are rotated as `IndexForm::Mean` says, whatever this is.
+    /// queries and pools are rotated as `IndexForm::Mean` says, whatever this is. The grouped form's: the TRAILING `rope` channels of each query head and
+    /// of each group's key (`IndexForm::Grouped`).
     pub rope: usize,
+    /// How the indexer's own rotary pairs its `rope` channels where that is not the attention's pairing (the same frequencies and positions): ERNIE's
+    /// latent attention turns interleaved pairs and its indexer halves, (i, i + rope / 2). None: as the attention's rotary.
+    pub rope_style: Option<RopeStyle>,
+    /// The gated form's queries from the block's input and not from the attention's query latent: the input through this norm (roles `indexer_q_norm`
+    /// [hidden], and a LayerNorm's bias `indexer_q_norm_bias`), then `indexer_wq_b` [heads head_dim, hidden] (Mistral Large's, whose attention has no query
+    /// latent). None: the query latent's (GLM's, Kimi's).
+    pub q_in: Option<Norm>,
+    /// The gated form's queries scaled by their position before their rotary: head h's values times `indexer_scale_s`[h] ln(pos + 1) + `indexer_scale_b`[h]
+    /// (roles [heads]; pos the query's position, the first token's 0), as `Mla::pos_scale` scales the attention's (Mistral Large's).
+    pub pos_scale: bool,
 }
 
-/// The derived form, with `form` said only where it is not the gated form with LayerNorm-ed keys (`IndexForm::LAYER_KEYS`) and `rope` only where it
-/// rotates: those indexers' descriptions read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
+impl Indexer {
+    /// The refusal of an indexer whose rotary pairs its channels otherwise than its attention's: the CPU reference computes it, the executor turns the
+    /// indexer's channels by the attention's table.
+    pub const ROPE_STYLE_NOT_RUN: &'static str = "an indexer's rotary of another pairing than its attention's, which the executor does not run yet";
+    /// The refusal of an indexer of the grouped form (`IndexForm::Grouped`): the CPU reference computes it, the executor's indexers pool a product of the
+    /// block's input and score every complete pool.
+    pub const GROUPED_NOT_RUN: &'static str =
+        "an indexer whose closed groups of tokens are each one key pooled from the tokens' normed keys, which the executor does not run yet";
+}
+
+/// The derived form, with `form` said only where it is not the gated form with LayerNorm-ed keys (`IndexForm::LAYER_KEYS`), `rope` only where it
+/// rotates, `rope_style` only where it is its own, `q_in` only where the queries are the block's input's and `pos_scale` only where they are scaled:
+/// those indexers' descriptions read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Indexer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Indexer");
@@ -264,6 +318,15 @@ impl std::fmt::Debug for Indexer {
         }
         if self.rope != 0 {
             s.field("rope", &self.rope);
+        }
+        if let Some(st) = &self.rope_style {
+            s.field("rope_style", st);
+        }
+        if let Some(n) = &self.q_in {
+            s.field("q_in", n);
+        }
+        if self.pos_scale {
+            s.field("pos_scale", &self.pos_scale);
         }
         s.finish()
     }
@@ -278,15 +341,46 @@ pub enum IndexForm {
     /// model's eps (Kimi-K3.1's `dsa_config.index_k_norm_type` rmsnorm, its LayerNorm otherwise; DeepSeek-V4's compressed entries, normed by
     /// their compressor's `idx_norm`).
     Gated { key: Norm },
-    /// Condor's Qwen Sparse Attention (Qwen3.8-Flash-Next): the `heads` queries and ONE key from one product of the block's input (role
+    /// Ibis's Qwen Sparse Attention (Qwen3.8-Flash-Next): the `heads` queries and ONE key from one product of the block's input (role
     /// `index_qk` [(heads + 1) head_dim, hidden]); each query head normed by `norm` (role `index_q_norm` [head_dim]) and rotated as the
     /// attention's queries (its rope, on the first `dim` channels of the head); the raw keys cached, a pool's key the mean of its tokens'
     /// raw keys, normed by `norm` (role `index_k_norm`) and rotated at the pool's first position; a pool's score sum_h relu(q_h . k) /
     /// sqrt(head_dim), the heads unweighted.
     Mean { norm: Norm },
+    /// Hunyuan's compressed indexer, on a latent attention. A key a token from its own product of the block's input (`indexer_wk`), normed by `key`
+    /// (role `indexer_k_norm`) and not turned. Each closed group of `block` tokens (tokens g block .. (g + 1) block of the sequence) is one key: the
+    /// softmax over the group's tokens, a channel at a time, of `indexer_pool_gate` of the token's normed key plus `indexer_pool_ape` [block,
+    /// head_dim] weighs `indexer_pool_value` of it (both [head_dim, head_dim]: products of the key, not of the block's input); the sum normed by
+    /// `pool` (role `indexer_pool_norm`), and its TRAILING `Indexer::rope` channels turned to the group's first token's position by the attention's
+    /// rotary. The queries are a product of the attention's query latent (`indexer_wq_b`), each head's trailing `rope` channels turned to the query's
+    /// position. A group's score is sum_h w_h relu(q_h . key), w the weights' product of the block's input (`indexer_weights`) times heads^-0.5
+    /// head_dim^-0.5. A query scores the groups closed before its own (g < its index / block), keeps the best `top_k / block` - 1 of them whole and,
+    /// whatever they score, every token of its own group up to itself, full or not: `top_k` tokens at most. A group's key is made once, when its last
+    /// token arrives.
+    ///
+    /// This is the f32 form. The family's readers round each token's key, each group's key (after its norm, and again after its rotary) and each
+    /// query (after its rotary) to bf16, then turn every key and query by an orthonormal Hadamard transform and quantize it to FP8 with a
+    /// power-of-two scale a vector before they score; and they leave the turned channels de-interleaved, the same order in keys and queries, which
+    /// moves no score.
+    Grouped { key: Norm, pool: Norm },
+    /// MiniMax M3's sparse attention: the `heads` queries from one product of the block's input (role `index_q` [heads head_dim, hidden]) and ONE key a
+    /// token from another (`index_k` [head_dim, hidden]); each query head normed by `norm` (role `index_q_norm` [head_dim]) and the key by `norm` (role
+    /// `index_k_norm`), each rotated at its own token's position by the attention's rope (on the first `dim` channels of the head); a token's normed and
+    /// rotated key is what the cache holds. Blocks are of `block` POSITIONS (a token at position p is in block p / block, whatever the cache holds before
+    /// it), the last one incomplete as often as not. Index head h scores a block by the largest q_h . k among the block's tokens at or before the query
+    /// (no relu, no factor, no sum over the heads), keeps the query's own block and the `local` - 1 before it whatever they score, and with them the best
+    /// up to `top_k / block` blocks in all. Each index head chooses for one KV head (`heads` is the attention's `kv_heads`): the query heads of KV head h
+    /// attend to the tokens of the blocks index head h kept, and to no other. While the blocks number no more than `top_k / block`, every token is
+    /// attended to. The indexer has no values and adds nothing to the output. Equal scores keep the earlier block.
+    Max { norm: Norm, local: usize },
 }
 
 impl IndexForm {
+    /// The refusal of an attention whose indexer keeps blocks by their best key, a choice an index head: the CPU reference computes it (`reference::attention`),
+    /// the executor's sparse attention is the mean-pooled one.
+    pub const MAX_NOT_RUN: &'static str =
+        "a sparse attention whose indexer keeps blocks by their best key, a choice a KV head (the block-max indexer), which the executor does not run yet";
+
     /// The gated form whose keys are LayerNorm-ed with a bias at 1e-6 (GLM-5.3-Flash's and the full-size GLM's).
     pub const LAYER_KEYS: IndexForm = IndexForm::Gated { key: Norm { kind: NormKind::Layer, weight: NormWeight::Plain, eps: 1e-6, rounding: Rounding::F32 } };
 }
@@ -313,7 +407,8 @@ pub enum AttnRounding {
 ///
 /// Roles: `q` [heads * head_dim (x2 with an `InQuery` gate), hidden], `k` [kv_heads * head_dim, hidden], `v` [kv_heads * v_head_dim,
 /// hidden] (absent with `k_eq_v`), `o` [hidden, heads * v_head_dim]; `q_bias`, `k_bias`, `v_bias` with `bias`; `q_norm`, `k_norm`
-/// [head_dim] where those norms have a weight; `g` with an `Own` gate; `sinks` [heads] with `sinks`. With `kv_from` no `k`, `v`, `k_norm`.
+/// [head_dim] where those norms have a weight; `g` with an `Own` gate ([heads, hidden] with a `Head` one); `sinks` [heads] with `sinks`. With
+/// `kv_from` no `k`, `v`, `k_norm`.
 #[derive(Clone, PartialEq)]
 pub struct Attn {
     pub heads: usize,
@@ -342,10 +437,12 @@ pub struct Attn {
     /// KV sharing (Gemma 4's `num_kv_shared_layers`): the queries attend to the keys and values that block `kv_from`'s attention (an earlier
     /// block of the same heads, window and rope) holds for the sequence; this attention has no keys or values of its own and no cache.
     pub kv_from: Option<usize>,
+    /// The values' factor: each value times it after its product, before it is cached and weighed (MiMo V2's `attention_value_scale`); 1 elsewhere.
+    pub v_scale: f32,
 }
 
-/// The derived form, with `kv_from` said only where it is set: the other attentions' descriptions read as they did before the field (the
-/// digests of tests/fixtures/descriptions.json are of this text).
+/// The derived form, with `kv_from` said only where it is set and `v_scale` only where it is not 1: the other attentions' descriptions read as
+/// they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Attn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Attn");
@@ -356,6 +453,9 @@ impl std::fmt::Debug for Attn {
         if let Some(j) = self.kv_from {
             s.field("kv_from", &j);
         }
+        if self.v_scale != 1.0 {
+            s.field("v_scale", &self.v_scale);
+        }
         s.finish()
     }
 }
@@ -364,9 +464,14 @@ impl std::fmt::Debug for Attn {
 ///
 /// Roles: `q` [heads * (nope + rope_dim), hidden] or with `q_lora` `q_a` [q_lora, hidden], `q_a_norm` [q_lora], `q_b` [heads * (nope +
 /// rope_dim), q_lora]; `kv_a` [kv_lora + rope_dim, hidden], `kv_a_norm` [kv_lora], `kv_b` [heads * (nope + v_dim), kv_lora], `o` [hidden,
-/// heads * v_dim]; `g` [heads * v_dim, hidden] with a gate. The cache holds per token the normed latent and the shared key part
-/// (kv_lora + rope_dim values); `absorbed` names how a backend computes it (the same function).
-#[derive(Clone, Debug, PartialEq)]
+/// heads * v_dim]; `g` [heads * v_dim, hidden] with a gate ([heads, hidden] with a `Head` one, [heads * v_dim, q_lora] with a `Latent` one).
+/// The cache holds per token the normed latent and the
+/// shared key part (kv_lora + rope_dim values); `absorbed` names how a backend computes it (the same function). With a `head_mix`, `mix_u` and `mix_v`
+/// [heads, head_mix]; with `sinks`, `sinks` [heads].
+///
+/// Mistral Large's forms of it: `pos_scale` (`q_scale_s`, `q_scale_b` [heads]), `kv_from` (no `kv_a`, no `kv_a_norm`, no cache of latents of its own) and
+/// `rope_learned` (`rope_alpha` [rope_dim / 2]).
+#[derive(Clone, PartialEq)]
 pub struct Mla {
     pub heads: usize,
     pub q_lora: Option<usize>,
@@ -382,6 +487,92 @@ pub struct Mla {
     pub scale: f32,
     pub absorbed: bool,
     pub indexer: Option<Indexer>,
+    /// The rank of the low-rank mix of the heads' outputs with each other, before the gate and the output product: o <- (I + V U^T) o over the head
+    /// axis, each head's output plus sum_r V[h][r] (sum_g U[g][r] o_g), channel by channel (ERNIE's `vha_postmix_U`, `vha_postmix_V`); 0: none.
+    pub head_mix: usize,
+    /// A learned logit a head that takes part in the softmax and attends to nothing (role `sinks`; ERNIE's `softmax_offset`): the value itself beside
+    /// the scaled scores, as `Attn::sinks`.
+    pub sinks: bool,
+    /// With an indexer of the layer's own: the query attends to its last `window` tokens whatever the indexer picks, and the indexer picks its
+    /// `top_k` among the tokens before them (ERNIE's latent layers: the model's `sliding_window`, so a query reads up to `top_k` + `window` tokens in
+    /// one softmax). With no indexer: the query attends to its last `window` tokens alone, itself the last of them (Hunyuan's sliding layers: a query
+    /// at p reads p - window + 1 ..= p, as `Attn::window`). None: the indexer picks among every token the query sees, or the query reads them all.
+    pub window: Option<usize>,
+    /// The queries scaled by their position ("scalable softmax"): each query head h, after its rotary, times `q_scale_s`[h] ln(pos + 1) + `q_scale_b`[h],
+    /// pos the query's own position (the first token's 0, whose factor is the bias alone); the keys are not scaled, so every score of the query, and the
+    /// sharpness of its softmax, moves with the logarithm of where the query stands, a factor a head. No state: a prompt's rows and a step's are the same.
+    pub pos_scale: bool,
+    /// Latent sharing (Mistral Large's `kv_source_layers`): the queries attend to the latents block `kv_from`'s latent attention (an earlier block of the
+    /// same latent width, shared key part and rotary) holds for the sequence, each token's normed latent and its shared key part as that block made and
+    /// turned them; this attention expands them by its OWN `kv_b`, has no `kv_a` and no `kv_a_norm`, and caches no latents. An indexer of its own
+    /// keeps its own keys.
+    pub kv_from: Option<usize>,
+    /// Learned rotary frequencies (Mistral Large's LeRoPE): angle i's inverse frequency, as the rotary's scaling makes it, times exp(`rope_alpha`[i])
+    /// (role [rope_dim / 2], one tensor of the model that every rotating layer reads; the indexer's rotary is the attention's and turns by them too).
+    pub rope_learned: bool,
+}
+
+impl Mla {
+    /// The refusal of a latent attention with sinks: the CPU reference computes them, the executor's latent attention has no sink.
+    pub const SINKS_NOT_RUN: &'static str = "a latent attention with sinks, which the executor does not run yet";
+    /// The refusal of a latent attention with a window (its last tokens attended beside the indexer's picks, or alone): the CPU reference computes it,
+    /// the executor's indexer picks among every token and its latent attention with no indexer reads them all.
+    pub const WINDOW_NOT_RUN: &'static str =
+        "a latent attention that reads a window of its last tokens (beside its indexer's picks, or alone), which the executor does not run yet";
+}
+
+/// The derived form, with `head_mix`, `sinks`, `window`, `pos_scale`, `kv_from` and `rope_learned` said only where they are set: the other latent
+/// attentions' descriptions read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Mla {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Mla");
+        s.field("heads", &self.heads).field("q_lora", &self.q_lora).field("kv_lora", &self.kv_lora).field("nope", &self.nope);
+        s.field("rope_dim", &self.rope_dim).field("v_dim", &self.v_dim).field("rope", &self.rope).field("q_norm", &self.q_norm);
+        s.field("kv_norm", &self.kv_norm).field("gate", &self.gate).field("scale", &self.scale).field("absorbed", &self.absorbed);
+        s.field("indexer", &self.indexer);
+        if self.head_mix != 0 {
+            s.field("head_mix", &self.head_mix);
+        }
+        if self.sinks {
+            s.field("sinks", &self.sinks);
+        }
+        if let Some(w) = &self.window {
+            s.field("window", w);
+        }
+        if self.pos_scale {
+            s.field("pos_scale", &self.pos_scale);
+        }
+        if let Some(j) = self.kv_from {
+            s.field("kv_from", &j);
+        }
+        if self.rope_learned {
+            s.field("rope_learned", &self.rope_learned);
+        }
+        s.finish()
+    }
+}
+
+impl Mla {
+    /// What of a latent attention the executor has no operation for yet (the CPU reference computes each), in words; None where it has none of them.
+    pub fn not_run(&self) -> Option<&'static str> {
+        if self.pos_scale {
+            Some(Mla::POS_SCALE_NOT_RUN)
+        } else if self.kv_from.is_some() {
+            Some(Mla::KV_FROM_NOT_RUN)
+        } else if self.rope_learned {
+            Some(Mla::ROPE_LEARNED_NOT_RUN)
+        } else if self.indexer.as_ref().is_some_and(|x| x.q_in.is_some() || x.pos_scale) {
+            Some(Mla::INDEX_INPUT_NOT_RUN)
+        } else {
+            None
+        }
+    }
+
+    pub const POS_SCALE_NOT_RUN: &'static str = "a latent attention whose queries are scaled by their position, which the executor does not run yet";
+    pub const KV_FROM_NOT_RUN: &'static str = "a latent attention that attends to another layer's latents, which the executor does not run yet";
+    pub const ROPE_LEARNED_NOT_RUN: &'static str = "a latent attention whose rotary's frequencies are learned, which the executor does not run yet";
+    pub const INDEX_INPUT_NOT_RUN: &'static str =
+        "a latent attention's indexer whose queries are the block's input's, scaled by their position, which the executor does not run yet";
 }
 
 /// DeepSeek-V4's attention: one KV head of `head_dim` whose keys are its values (K = V), `heads` query heads, rope on the trailing
@@ -395,7 +586,8 @@ pub struct Mla {
 /// `o_a` [o_groups o_lora, heads head_dim / o_groups], `o_b` [hidden, o_groups o_lora], `sinks` [heads]; with a ratio `comp_kv`,
 /// `comp_gate` [(1 + overlap) head_dim, hidden], `comp_ape` [ratio, (1 + overlap) head_dim], `comp_norm` [head_dim]; with an indexer
 /// the same four as `idx_kv`, `idx_gate`, `idx_ape`, `idx_norm` at the indexer's head dim, `idx_q_b` [heads head_dim, q_lora] and
-/// `idx_weights` [heads, hidden]. The query's per-head norm has no weight.
+/// `idx_weights` [heads, hidden]. The query's per-head norm has no weight. With a `gate` (`GateFrom::Latent`), `g` [o_groups o_lora, q_lora]; with a
+/// `head_mix`, `mix_u` and `mix_v` [heads, head_mix].
 ///
 /// DeepSeek-V4.1's form of it (CSA2): ratio 1 (each token its own entry, no gate) or 2 (windows of 2, no overlap), no position bias (`ape`
 /// false: no `comp_ape`), no per-head query norm (`q_head_norm` false), and the entries, the indexer's keys and its picks shared across
@@ -422,6 +614,12 @@ pub struct Comp {
     pub q_head_norm: bool,
     /// V4.1's sharing across layers; None: every part the layer's own (V4).
     pub share: Option<CompShare>,
+    /// An output gate from the query latent (`GateFrom::Latent`, the one source this attention has; no norm): the grouped low-rank output times the
+    /// activation of `g`'s product of the normed query latent, between `o_a` and `o_b` (ERNIE's); None: DeepSeek-V4's and V4.1's.
+    pub gate: Option<OutGate>,
+    /// The rank of the low-rank mix of the heads' outputs with each other (`Mla::head_mix`: the same rule), on the heads' outputs before they are
+    /// rotated back and grouped (the mix is over the heads and the rotation is each head's own, the same for all: the two commute); 0: none.
+    pub head_mix: usize,
 }
 
 /// Where a V4.1 compressed attention's parts come from: None, the layer's own; Some(b), block b's of the description (the most recent source
@@ -444,8 +642,8 @@ pub struct CompShare {
     pub publish: Option<(usize, usize)>,
 }
 
-/// The derived form, with V4.1's fields said only where they differ from DeepSeek-V4's: V4's descriptions read as they did before them (the
-/// digests of tests/fixtures/descriptions.json are of this text).
+/// The derived form, with V4.1's fields said only where they differ from DeepSeek-V4's and `gate` and `head_mix` only where there is one: V4's descriptions
+/// read as they did before them (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Comp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Comp");
@@ -463,6 +661,12 @@ impl std::fmt::Debug for Comp {
         if !self.ape || !self.q_head_norm || self.share.is_some() {
             s.field("ape", &self.ape).field("q_head_norm", &self.q_head_norm).field("share", &self.share);
         }
+        if let Some(g) = &self.gate {
+            s.field("gate", g);
+        }
+        if self.head_mix != 0 {
+            s.field("head_mix", &self.head_mix);
+        }
         s.finish()
     }
 }
@@ -470,7 +674,7 @@ impl std::fmt::Debug for Comp {
 /// Which delta rule a linear-attention layer runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinearKind {
-    /// Gated DeltaNet (Qwen3.5/3.8, Condor): one decay per value head.
+    /// Gated DeltaNet (Qwen3.5/3.8, Ibis): one decay per value head.
     GatedDeltaNet,
     /// Kimi delta attention (Kimi-K3, GLM-5.3): one decay per key channel.
     KimiDelta,
@@ -528,6 +732,27 @@ pub struct Mamba2 {
     pub norm_eps: f32,
 }
 
+/// The gated short convolution (LFM's `conv` layers): one product of the block's input gives three vectors of the hidden width, B, C and x, in that
+/// order; u = B x, channel by channel; each channel of u through its own causal convolution of `taps` taps over the sequence (a token reads its own u
+/// and the `taps` - 1 before it, zeros before the sequence's first; no activation); y = C conv(u); then the output product. No state but the
+/// convolution's.
+///
+/// Roles: `in` [3 hidden, hidden] (the rows of B, then C, then x), `conv` [hidden, taps] (each channel's taps, oldest first), `o` [hidden, hidden]; with
+/// `bias`, `in_bias` [3 hidden], `conv_bias` [hidden] and `o_bias` [hidden]. The state is the last `taps` - 1 values of u (the gated product, not the
+/// input) a channel, per sequence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShortConv {
+    pub taps: usize,
+    pub bias: bool,
+}
+
+impl ShortConv {
+    /// The values a sequence's state holds in a layer of `hidden` channels: the last `taps` - 1 gated products of each.
+    pub fn state(&self, hidden: usize) -> usize {
+        hidden * self.taps.saturating_sub(1)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Mixer {
     Attention(Attn),
@@ -535,6 +760,7 @@ pub enum Mixer {
     Compressed(Comp),
     Linear(Linear),
     Mamba2(Mamba2),
+    ShortConv(ShortConv),
 }
 
 /// A dense MLP: `down(act(gate x) * (up x))` when gated, `down(act(up x))` otherwise.
@@ -546,8 +772,57 @@ pub struct Mlp {
     pub act: Act,
     pub gated: bool,
     pub bias: bool,
-    /// SwiGLU limits: the gate clamped above and the up both ways (DeepSeek-V4).
-    pub clamp: Option<f32>,
+    /// SwiGLU limits: the gate held to the limit above and the up both ways (`Clamp`: where the gate is held).
+    pub clamp: Option<Clamp>,
+}
+
+impl Mlp {
+    /// What of an MLP the executor has no operation for yet (the CPU reference computes it), in words; None where it has none of them.
+    pub fn not_run(&self) -> Option<&'static str> {
+        matches!(self.act, Act::SwigluOai { .. }).then_some(Act::SWIGLU_OAI_NOT_RUN)
+    }
+}
+
+/// A gated MLP's SwiGLU limit l: the up is clamp(up, -l, l) in both forms; the gate is held to l before its activation or after it, which are two
+/// functions (silu(l) is under l).
+#[derive(Clone, Copy, PartialEq)]
+pub enum Clamp {
+    /// act(min(gate, l)): the gate before its activation (DeepSeek-V4's `swiglu_limit`, GLM-5.3-Flash's).
+    Gate(f32),
+    /// min(act(gate), l): the activated gate (Ling's `expert_swiglu_limit_list` and `share_expert_swiglu_limit_list`).
+    Activated(f32),
+}
+
+impl Clamp {
+    /// The limit, whichever value of the gate it holds.
+    pub fn limit(&self) -> f32 {
+        match *self {
+            Clamp::Gate(l) | Clamp::Activated(l) => l,
+        }
+    }
+
+    /// The limit of the form the executor's kernels compute (the gate before its activation); the other form is refused by its name.
+    pub fn before(c: Option<Clamp>) -> crate::ffi::Result<Option<f32>> {
+        match c {
+            None => Ok(None),
+            Some(Clamp::Gate(l)) => Ok(Some(l)),
+            Some(Clamp::Activated(l)) => crate::ffi::err(format!("{}: {l}", Clamp::ACTIVATED_NOT_RUN)),
+        }
+    }
+
+    /// The refusal of a SwiGLU whose limit holds the activated gate: the CPU reference computes it, the executor's kernels hold the gate before its activation.
+    pub const ACTIVATED_NOT_RUN: &'static str = "a SwiGLU limit on the activated gate (min(silu(gate), limit)), which the executor does not run yet";
+}
+
+/// The limit alone where the gate is held before its activation: descriptions of that form read as they did when the limit was a number (the digests of
+/// tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Clamp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Clamp::Gate(l) => write!(f, "{l:?}"),
+            Clamp::Activated(l) => write!(f, "Activated({l:?})"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -558,9 +833,10 @@ pub enum RouterScore {
     SqrtSoftplus,
 }
 
-/// How a MoE layer picks a token's experts and weighs them. Roles `router` [experts, hidden]; `choice_bias` [experts] with `bias`;
-/// `hash` [vocab, top_k] (expert ids as values) with `hash`.
-#[derive(Clone, Debug, PartialEq)]
+/// How a MoE layer picks a token's experts and weighs them. Roles `router` [experts, hidden] ([routers experts, hidden] with several routers, each
+/// router's rows together); `choice_bias` [experts] with `bias`; `hash` [vocab, top_k] (expert ids as values) with `hash`; `expert_scale` [experts]
+/// with `expert_scale`.
+#[derive(Clone, PartialEq)]
 pub struct Router {
     pub score: RouterScore,
     /// The logits' factor before the score (Muse: its output multiplier).
@@ -575,6 +851,47 @@ pub struct Router {
     pub scale: f32,
     /// Hash routing (DeepSeek-V4's first layers): the token id picks the experts from the table, the scores still weigh them.
     pub hash: bool,
+    /// Routers that score the same experts, each its own product of the block's input: an expert's score is the sum of the routers' scores of it
+    /// (ERNIE's two, sigmoid(`gate.weight` x) + sigmoid(`gate.weight_1` x)); 1 elsewhere.
+    pub routers: usize,
+    /// A learned factor an expert (role `expert_scale`): each chosen expert's weight times its own, after the chosen scores are divided by their sum
+    /// (ERNIE's `gate.routed_scaling_factor_param`, where the others' weights take the one `scale`).
+    pub expert_scale: bool,
+}
+
+impl Router {
+    /// The refusal of several routers whose scores add: the CPU reference computes them, the executor's routers score an expert by one product.
+    pub const ROUTERS_NOT_RUN: &'static str = "routers whose scores of the same experts add, which the executor does not run yet";
+    /// The refusal of a learned scale an expert: the CPU reference computes it, the executor's routers weigh by one factor.
+    pub const EXPERT_SCALE_NOT_RUN: &'static str = "a router's learned scale an expert, which the executor does not run yet";
+
+    /// The router as the executor's operations take one (one product's scores, one factor), or the refusal of the form they do not run, by its name.
+    pub fn one_scored(&self) -> crate::ffi::Result<()> {
+        if self.routers != 1 {
+            return crate::ffi::err(format!("{}: {}", Router::ROUTERS_NOT_RUN, self.routers));
+        }
+        if self.expert_scale {
+            return crate::ffi::err(Router::EXPERT_SCALE_NOT_RUN);
+        }
+        Ok(())
+    }
+}
+
+/// The derived form, with `routers` said only where there are several and `expert_scale` only where it is set: the other routers' descriptions read as
+/// they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Router {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Router");
+        s.field("score", &self.score).field("logit_scale", &self.logit_scale).field("bias", &self.bias).field("groups", &self.groups);
+        s.field("top_k", &self.top_k).field("renorm", &self.renorm).field("scale", &self.scale).field("hash", &self.hash);
+        if self.routers != 1 {
+            s.field("routers", &self.routers);
+        }
+        if self.expert_scale {
+            s.field("expert_scale", &self.expert_scale);
+        }
+        s.finish()
+    }
 }
 
 /// A latent MoE: experts run in a smaller space between two projections. Roles `latent_down` [dim, hidden], `latent_up` [hidden, dim],
@@ -592,7 +909,7 @@ pub struct Latent {
 
 /// A mixture of experts. Roles: the router's; `experts_gate_up` [experts, 2 inter, in] (or `experts_up` [experts, inter, in] when the
 /// expert MLP is not gated), `experts_down` [experts, out, inter]; the shared expert's `shared_*`; with `shared_gate`, `shared_router`
-/// [1, hidden] (the shared output times sigmoid of it: Qwen3.5/3.8 MoE, Condor).
+/// [1, hidden] (the shared output times sigmoid of it: Qwen3.5/3.8 MoE, Ibis).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Moe {
     pub router: Router,
@@ -609,7 +926,7 @@ pub enum Ffn {
     Moe(Moe),
 }
 
-/// A hashed n-gram embedding added to the residual streams (Condor's per-layer embedding, Qwen3.8-Flash-Next's `ple`).
+/// A hashed n-gram embedding added to the residual streams (Ibis's per-layer embedding, Qwen3.8-Flash-Next's `ple`).
 ///
 /// Per position, for each order n of 2..=`order`, the token and the n - 1 tokens before it inside its segment (a segment ends at the
 /// token `eos`; a token before the segment's start, or before the sequence, reads as `eos`) hashed: mixed = XOR over p < n of
@@ -623,7 +940,8 @@ pub enum Ffn {
 /// hidden, dim], `value` [hidden, dim], `norm_key` and `norm_conv` [streams hidden] (their kind `norm`, a stream at a time), `conv`
 /// [streams hidden, conv]; and the hash's own int64 tensors, what the parameters make: `ngram_mult` [order], `ngram_sizes`,
 /// `ngram_offsets` [(order - 1) heads]. A sequence's state: its last `order` - 1 tokens and the convolution's last (conv - 1) dilation
-/// inputs. `form` says where a family's differs (DeepSeek-V4.1's Engram: `NgramForm::Engram`); `table` where the tables are held.
+/// inputs. `form` says where a family's differs (DeepSeek-V4.1's Engram: `NgramForm::Engram`; Hunyuan's: `NgramForm::EngramNormed`); `table` where the
+/// tables are held.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Ngram {
     pub order: usize,
@@ -664,6 +982,22 @@ pub enum NgramForm {
     /// segments: a position before the sequence reads as `eos` (its pad id) and the end token is a token like another; no convolution (`conv`
     /// 0): the output is g. The key and the value may be one product, role `kv` [(streams + 1) hidden, dim], the keys' rows first.
     Engram,
+    /// Hunyuan's n-gram memory: `Engram`'s hash, gate and stream-by-stream add (compressed ids, numpy's multipliers, no segments, no convolution), with
+    /// these of its own. The compressed vocabulary is a tensor of the checkpoint (role `ngram_map`, int32 [its length]: a token past its length is its
+    /// own id), and the multipliers' bound is of its largest id plus one, (2^63 - 1) / (largest + 1) / 2, not of `vocab`, which is the model's vocabulary;
+    /// `seed` is the config's seed plus 10007 times the layer's number counted from 1. A position whose token is `eos` (the pad id) adds nothing to the
+    /// streams, and is a token like another in the n-grams of the positions after it. Each table's row is RMS-normed on its own before the products, r
+    /// w / sqrt(mean r^2 + f32's epsilon) (role `ngram_norm` [tables row], a table's weights in turn). The keys and the value are products with a bias
+    /// (`kv` and `kv_bias` [(streams + 1) hidden], the keys' first). The gate is `Engram`'s on the keys normed by `norm` (`norm_key`) and the streams normed
+    /// by the block's `norm_in`, its signed root of 0 being 0. The value is normed with a weight: signal = `value_gamma` v / sqrt(mean v^2 + f32's
+    /// epsilon) (role [hidden]); stream s adds (sigmoid(gate_s) + `stream_scale`_s) signal, the scale a value a channel (role [streams hidden]).
+    EngramNormed,
+}
+
+impl Ngram {
+    /// The refusal of Hunyuan's form of the n-gram memory: the CPU reference computes it, the executor's n-gram operations are the other two forms'.
+    pub const NORMED_NOT_RUN: &'static str =
+        "an n-gram memory whose rows and value are normed, with a compressed vocabulary from the checkpoint, which the executor does not run yet";
 }
 
 /// The derived form, with `form` said only where it is not `Segmented` and `table` only where it is not `Gpu`: descriptions of that form read as they did
@@ -732,9 +1066,11 @@ impl Body {
         Some(match self {
             Body::Mixer(Mixer::Attention(_)) => &[&["q", "k", "v"], &["o"]],
             Body::Mixer(Mixer::Linear(l)) if l.kind == LinearKind::GatedDeltaNet => &[&["qkv", "gate"], &["beta", "decay"], &["o"]],
-            Body::Mixer(Mixer::Linear(_)) => &[&["q", "k", "v"], &["o"], &["decay_a"], &["decay_b"], &["gate"], &["gate_a"], &["gate_b"], &["beta"]],
+            Body::Mixer(Mixer::Linear(_)) => {
+                &[&["q", "k", "v"], &["o"], &["decay"], &["decay_a"], &["decay_b"], &["gate"], &["gate_a"], &["gate_b"], &["beta"]]
+            }
             Body::Mixer(Mixer::Mla(_)) => &[&["q_a"], &["q_b"], &["q"], &["kv_a"], &["kv_b"], &["g"], &["o"]],
-            Body::Mixer(Mixer::Mamba2(_)) => &[&["in"], &["o"]],
+            Body::Mixer(Mixer::Mamba2(_) | Mixer::ShortConv(_)) => &[&["in"], &["o"]],
             Body::Ffn(Ffn::Mlp(_)) => &[&["gate", "up"], &["down"]],
             Body::Ffn(Ffn::Moe(_)) => &[&["latent_down"], &["latent_up"], &["shared_gate", "shared_up"], &["shared_down"]],
             Body::Mixer(Mixer::Compressed(_)) | Body::Ngram(_) | Body::PerLayer(_) => return None,
@@ -750,7 +1086,8 @@ pub struct GateP {
 
 /// n residual streams mixed per block: mHC (GLM-5.3, DeepSeek-V4). The block's input is a weighted sum of the streams; its output is
 /// spread back over them with the Sinkhorn-projected mixing of the streams. Roles `hc_fn` [(2 + n) n, n hidden], `hc_base` [(2 + n) n],
-/// `hc_scale` [3]. Condor's gated residuals are the other rule of several streams (`GatedStreamsP`).
+/// `hc_scale` [3]. Ibis's gated residuals are the other rule of several streams (`GatedStreamsP`). Streams that keep apart (`apart`: Hunyuan's) are
+/// this kind without the mixing: `hc_fn` [2 n, n hidden], `hc_base` [2 n], `hc_scale` [2].
 #[derive(Clone, Copy, PartialEq)]
 pub struct StreamsP {
     pub streams: usize,
@@ -769,9 +1106,37 @@ pub struct StreamsP {
     /// projection makes go to the next block (the model's last ones to the head: `Collapse::LastPre`). Its output's weights and the streams'
     /// mixing are its own, as mHC's.
     pub lagged: bool,
+    /// The weightless norm's epsilon outside the root: the flattened streams times 1 / (sqrt(mean x^2) + norm_eps), where the others' is
+    /// 1 / sqrt(mean x^2 + norm_eps) (ERNIE's residual streams, in its blocks and in its hyper-head: `Collapse::Weighted` norms as the model's streams do).
+    pub eps_outside: bool,
+    /// Streams that do not mix with each other (Hunyuan's independent hyper-connections): no mixing matrix and no Sinkhorn pass (`sinkhorn_iters` 0),
+    /// so the roles hold an input weight and an output weight a stream and two scales. With w = (`hc_fn` x) r, x the token's flattened streams and r
+    /// their weightless norm's factor (the product first, then the factor): the block's input is sum_i pre_i x_i, pre_i = sigmoid(w[i] scale[0] +
+    /// base[i]) + eps, as mHC's; stream i then adds post_i times the block's output to itself, post_i = this magnitude times sigmoid(w[n + i] scale[1]
+    /// + base[n + i]) + eps (mHC's is 2 sigmoid, no eps, beside the mix of the streams). None: mHC's.
+    pub apart: Option<f32>,
 }
 
-/// The derived form, with `lagged` said only where it is set: the other blocks' descriptions read as before the field (the digests of
+impl StreamsP {
+    /// The refusal of streams that do not mix: the CPU reference computes them, the executor's kernels read mHC's roles and mix.
+    pub const APART_NOT_RUN: &'static str = "residual streams that do not mix with each other, which the executor does not run yet";
+
+    /// The refusal of streams whose norm has its epsilon outside the root: the CPU reference computes it, the executor's kernels the other form.
+    pub const EPS_OUTSIDE_NOT_RUN: &'static str =
+        "residual streams whose norm has its epsilon outside the root (1 / (rms + eps)), which the executor does not run yet";
+
+    /// The factor of the streams' weightless norm for one token's flattened streams `x` (`eps_outside`).
+    pub fn norm_factor(&self, x: &[f32]) -> f32 {
+        let mean = x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32;
+        if self.eps_outside {
+            1.0 / (mean.sqrt() + self.norm_eps)
+        } else {
+            1.0 / (mean + self.norm_eps).sqrt()
+        }
+    }
+}
+
+/// The derived form, with `lagged`, `eps_outside` and `apart` said only where they are set: the other blocks' descriptions read as before the fields (the digests of
 /// tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for StreamsP {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -783,6 +1148,12 @@ impl std::fmt::Debug for StreamsP {
             .field("rounding", &self.rounding);
         if self.lagged {
             s.field("lagged", &self.lagged);
+        }
+        if self.eps_outside {
+            s.field("eps_outside", &self.eps_outside);
+        }
+        if let Some(m) = &self.apart {
+            s.field("apart", m);
         }
         s.finish()
     }
@@ -797,7 +1168,7 @@ pub struct DepthMixP {
     pub starts: bool,
 }
 
-/// Condor's gated residuals (Qwen3.8-Flash-Next's `GatedResidual`): `streams` copies of the hidden width, flattened. The block's `norm_in`
+/// Ibis's gated residuals (Qwen3.8-Flash-Next's `GatedResidual`): `streams` copies of the hidden width, flattened. The block's `norm_in`
 /// (role [streams hidden], a weight a stream) norms each stream on its own (n), and there is no other pre-norm; the block's input is the
 /// mean over the streams of m_s n_s, m = sigmoid(`mix_up` silu(`mix_down` n / streams)) a value per stream and channel; after the block
 /// each stream s adds w_s o, w = 2 sigmoid(`inject` n / streams). No mixing of the streams with each other (mHC's has). Roles `mix_down`
@@ -888,16 +1259,29 @@ pub struct Head {
     /// (the division, the tanh, the product) rounded (Gemma 4 as released: models/gemma4/modeling_gemma4.py takes `lm_head`'s bf16 output through
     /// `/ cap`, `tanh`, `* cap`; vLLM's head in the model's type does the same).
     pub rounding: Rounding,
+    /// The logits' four-part correction (ERNIE's `multimax` on its head), after the scale and the soft-cap, with the model's roles `logit_ranges` [4]
+    /// (r) and `logit_ts` [4] (t): y = x + t0 relu(r0 - x) + t1 relu(x - r1) + t2 relu(r2 - x)^2 + t3 relu(x - r3)^2, the four terms added in that
+    /// order. Where the head rounds `Twice` every operation of it rounds to bf16: each relu, each square, each product by a t, each sum (a bf16
+    /// tensor between operations, as the family's one reader computes it). A draft head's logits take it too, before its own biases.
+    pub correction: bool,
 }
 
-/// The derived form, with `rounding` said only where the logits round: the other heads' descriptions read as they did before the field (the
-/// digests of tests/fixtures/descriptions.json are of this text).
+impl Head {
+    /// The refusal of a head whose logits take the four-part correction: the CPU reference computes it, the executor's head is the product, its scale and its cap.
+    pub const CORRECTION_NOT_RUN: &'static str = "the logits' four-part correction, which the executor does not run yet";
+}
+
+/// The derived form, with `rounding` said only where the logits round and `correction` only where they are corrected: the other heads' descriptions
+/// read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Head {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Head");
         s.field("tied", &self.tied).field("softcap", &self.softcap).field("scale", &self.scale).field("collapse", &self.collapse);
         if self.rounding != Rounding::F32 {
             s.field("rounding", &self.rounding);
+        }
+        if self.correction {
+            s.field("correction", &self.correction);
         }
         s.finish()
     }
@@ -913,9 +1297,11 @@ pub enum Collapse {
     /// The depth mix of every source with the model's roles `out_mix_norm`, `out_mix_proj` (Kimi-K3).
     DepthMix,
     /// DeepSeek-V4's hyper-head: a weighted sum of the streams, the weights sigmoid(`out_hc_fn` rms(streams) `out_hc_scale` +
-    /// `out_hc_base`) + eps (roles [n, n hidden], [1], [n]).
+    /// `out_hc_base`) + eps (roles [n, n hidden], [1], [n]); rms the weightless norm of the flattened streams at `norm_eps`, its epsilon where the model's
+    /// streams have theirs (`StreamsP::eps_outside`). Over streams that keep apart (`StreamsP::apart`) the product is of the streams as they are and the
+    /// norm's factor multiplies it after, as their blocks' weights are made.
     Weighted { eps: f32, norm_eps: f32 },
-    /// Condor's final mixer: the gated residuals' input mix (`GatedStreamsP`) with the model's roles `out_mix_down`, `out_mix_up`, each stream
+    /// Ibis's final mixer: the gated residuals' input mix (`GatedStreamsP`) with the model's roles `out_mix_down`, `out_mix_up`, each stream
     /// normed by the final norm (its weight [n hidden], a stream's each) before the mix, and no norm after it.
     GatedMix,
     /// Lagged mHC's (DeepSeek-V4.1, no hyper-head): the streams weighed by the last block's own input weights (`StreamsP::lagged`).
@@ -974,13 +1360,35 @@ impl std::fmt::Debug for MtpHead {
 /// `final_norm`, the model's head: the base logits. Sequentially, position j's logits add `markov_head` [vocab, rank] `markov_embed`[prev]
 /// ([vocab, rank]: the Markov embedding of the token before it, the anchor at j = 0) and the token is chosen; with `confidence`,
 /// sigmoid(`confidence` [1, hidden + rank] [pre-norm hidden, Markov embedding]) estimates its acceptance.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct DSpark {
     pub block: usize,
     pub noise: u32,
     pub targets: Vec<usize>,
     pub markov_rank: usize,
     pub confidence: bool,
+    /// Where a target layer's features are read, the mean over the streams either way: false, the streams the layer's attention reads (before the
+    /// layer: DeepSeek's); true, the streams the layer leaves (after its feed-forward: ERNIE's).
+    pub after: bool,
+}
+
+impl DSpark {
+    /// The refusal of a drafter whose targets are read after their layers: the CPU reference's taps read them there, the executor's at a layer's input.
+    pub const AFTER_NOT_RUN: &'static str = "a drafter whose targets are read after their layers, which the executor does not run yet";
+}
+
+/// The derived form, with `after` said only where it is set: the other drafters' descriptions read as they did before the field (the digests of
+/// tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for DSpark {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("DSpark");
+        s.field("block", &self.block).field("noise", &self.noise).field("targets", &self.targets).field("markov_rank", &self.markov_rank);
+        s.field("confidence", &self.confidence);
+        if self.after {
+            s.field("after", &self.after);
+        }
+        s.finish()
+    }
 }
 
 /// A vision tower: the Qwen-VL vision transformer (Qwen3.8-Flash-Next's `Qwen4ExpVisionModel`). An image's patches of `channels` x `frames` x `patch` x `patch`

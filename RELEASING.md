@@ -12,7 +12,7 @@ versions, no separate model versions.
 | Site | version badge, the models table, install.sh from the tag byte for byte |
 
 New models ship through `glyd run` only (`glyd run glyd/gemma-4-31B-wren`). Model repos are `glyd/<model>-<level>`, the level a
-bird: penguin, kestrel, swift, wren, hummingbird.
+bird: penguin, kestrel, linnet, wren, hummingbird.
 
 ## Before the release
 
@@ -40,10 +40,12 @@ bird: penguin, kestrel, swift, wren, hummingbird.
    - `release-gpu.yml`: the GPU library (for the Python package), the engine, the `glyd-gpu` wheels to PyPI, and the engine bundles
      (`glyd-engine-vX.Y.Z-linux-*.tar.gz` and their `.sha256`: `glyd` with the engine linked, `glyd-engine` as a link to it, LICENSE; the engine loads
      no GPU library, so none is in them; and, where its job succeeded, `glyd-engine-vX.Y.Z-windows-x86_64.zip` with its `.sha256`) attached to the same
-     GitHub release (`attach-engine`), which `install.sh` and `condor/tools/install.sh` download.
+     GitHub release (`attach-engine`), which `install.sh` and `ibis/tools/install.sh` download.
    PyPI's trusted publisher for `glyd-gpu` must name this repository and `release-gpu.yml` (environment `pypi`).
 4. Check the release page has the CLI tarballs, the wheels and the engine bundles (the Linux tarballs, and the Windows zip where its job succeeded), each tarball's `.sigstore.json`, `SHA256SUMS`, `SHA256SUMS-engine` and the two SBOMs
    (`*.spdx.json`), and verify one tarball as a user would (docs/verify-releases.md).
+   Then run the site's workflow by hand on main, so that the guide of this tag is published at `/guide/vX.Y.Z/`:
+   `gh workflow run pages.yml --ref main` (the release's own run builds the site and does not deploy it: a tag may not deploy to Pages).
 5. getglyd.com: the owner puts the tag's `scripts/install.sh` and `scripts/install.ps1` at the site's root (content type
    `text/plain`, `Cache-Control: no-cache`) and invalidates `/install.sh` and `/install.ps1` in its CDN; the site does not follow
    the repository, so `curl -LsSf https://getglyd.com/install.sh | sh` installs the last version uploaded. Then check both:

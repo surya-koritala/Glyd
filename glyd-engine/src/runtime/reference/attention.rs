@@ -1,15 +1,16 @@
 //! MHA, GQA and MQA attention (`kinds::Attn`): full or sliding window, optional q/k/v norms, rope (full, partial, proportional or none),
-//! learned sinks, a score soft-cap, an output gate, and the rounding points of `kinds::AttnRounding`. Query head h reads KV head
-//! h / (heads / kv_heads). One token at a time against the sequence's cache; a prompt is its tokens in order. With Condor's indexer
-//! (`IndexForm::Mean`) a query attends only to the tokens it picks (`mean_picks`).
+//! learned sinks, a score soft-cap, a factor on the values, an output gate (a value a channel, or one a head), and the rounding points of `kinds::AttnRounding`. Query head h reads KV head
+//! h / (heads / kv_heads). One token at a time against the sequence's cache; a prompt is its tokens in order. With Ibis's indexer
+//! (`IndexForm::Mean`) a query attends only to the tokens it picks (`mean_picks`); with MiniMax M3's (`IndexForm::Max`) each KV head's queries attend
+//! only to the tokens of the blocks that head's index query keeps (`max_picks`).
 
 use super::Libm;
 use super::{act, bf16, dot, norm::norm, rope, softmax, Params};
 use crate::ffi::{err, Result};
 use crate::runtime::kinds::{Attn, AttnRounding, GateFrom, IndexForm, Indexer, Norm, Rope};
 
-/// A sequence's keys and values in one layer, each after its norm and rope, with their positions; with an indexer, each token's raw
-/// indexer key, and how near the last query's picks were to another (`ffn::margin`).
+/// A sequence's keys and values in one layer, each after its norm and rope, with their positions; with an indexer, each token's indexer key (Ibis's:
+/// raw; the block-max indexer's: normed and rotated at the token's position), and how near the last query's picks were to another (`ffn::margin`).
 #[derive(Default)]
 pub struct KvCache {
     pub pos: Vec<u32>,
@@ -22,7 +23,7 @@ pub struct KvCache {
 /// A rope and its angles at a step (`rope::inv_freq_at`).
 type Rot<'a> = Option<(&'a Rope, (Vec<f32>, f32))>;
 
-/// Which of the cache entries `seen` (in order, the sequence's first token first) a query attends to with Condor's indexer: while the complete
+/// Which of the cache entries `seen` (in order, the sequence's first token first) a query attends to with Ibis's indexer: while the complete
 /// pools of `block` tokens number no more than the `top_k / block` it keeps, every one; else the pools of the best scores, each pool's key
 /// the mean of its tokens' raw keys (rounded where the attention rounds), normed by `knorm` (role `index_k_norm`) and rotated at the
 /// pool's first position, a pool's score sum_h relu(q_h . key) / sqrt(head_dim) with `q` the normed and rotated index queries; then the
@@ -74,6 +75,49 @@ pub fn mean_picks(
     Ok((out, super::ffn::margin(&score, keep)))
 }
 
+/// Which of the cache entries `seen` (in order) each KV head's queries attend to with the block-max indexer (`IndexForm::Max`; `q` the normed and rotated
+/// index queries of the token at `pos`, the cache's `ikey` each token's normed and rotated key): a token is in block position / `block`; while the blocks seen
+/// number no more than the `top_k / block` kept, every head attends to every token; else index head h scores a block by the largest q_h . key among its
+/// tokens seen, keeps the query's own block and the `local` - 1 before it, and fills its `top_k / block` with the best of the others (transformers'
+/// `MiniMaxM3VLIndexer`: the local blocks' scores set to infinity before the top-k; SGLang's kernel adds 1e29 to them). Equal scores keep the earlier block.
+/// With the picks, a list a head, how near the nearest head's choice was to another.
+pub fn max_picks(ix: &Indexer, local: usize, c: &KvCache, seen: &[usize], q: &[f32], pos: u32) -> Result<(Vec<Vec<usize>>, f32)> {
+    let (b, dim) = (ix.block.max(1), ix.head_dim);
+    let keep = ix.top_k / b;
+    if c.ikey.len() != c.pos.len() || q.len() != ix.heads * dim || local > keep {
+        return err(format!(
+            "attention: a block-max indexer of {} query values for {} heads of {dim}, {} keys for {} tokens, {local} local blocks in the {keep} kept",
+            q.len(),
+            ix.heads,
+            c.ikey.len(),
+            c.pos.len()
+        ));
+    }
+    let block_of = |t: usize| c.pos[t] as usize / b;
+    let mut blocks: Vec<usize> = seen.iter().map(|&t| block_of(t)).collect();
+    blocks.sort_unstable();
+    blocks.dedup();
+    if blocks.len() <= keep {
+        return Ok((vec![seen.to_vec(); ix.heads], f32::INFINITY));
+    }
+    let own = pos as usize / b;
+    let forced = |j: usize| j <= own && own - j < local;
+    let mut margin = f32::INFINITY;
+    let mut picks = Vec::with_capacity(ix.heads);
+    for qh in q.chunks(dim) {
+        let score: Vec<f32> =
+            blocks.iter().map(|&j| seen.iter().filter(|&&t| block_of(t) == j).map(|&t| dot(qh, &c.ikey[t])).fold(f32::NEG_INFINITY, f32::max)).collect();
+        let mut ord: Vec<usize> = (0..blocks.len()).collect();
+        ord.sort_by(|&x, &y| forced(blocks[y]).cmp(&forced(blocks[x])).then(score[y].total_cmp(&score[x])).then(x.cmp(&y)));
+        let kept: Vec<usize> = ord[..keep].iter().map(|&i| blocks[i]).collect();
+        // (how near: among the blocks that are kept by their scores)
+        let free: Vec<f32> = (0..blocks.len()).filter(|&i| !forced(blocks[i])).map(|i| score[i]).collect();
+        margin = margin.min(super::ffn::margin(&free, keep - (blocks.len() - free.len())));
+        picks.push(seen.iter().copied().filter(|&t| kept.contains(&block_of(t))).collect());
+    }
+    Ok((picks, margin))
+}
+
 /// The rope on `x` at `pos`: in bf16 arithmetic where `rope16`, else in f32 then rounded by `r16`.
 fn turn(r: &Rope, inv: &[f32], af: f32, x: &mut [f32], pos: u32, r16: &dyn Fn(f32) -> f32, rope16: bool) {
     if rope16 {
@@ -106,6 +150,12 @@ pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>,
         (matches!(a.rounding, Eager | Sdpa), a.rounding == Eager, matches!(a.rounding, Flash | Eager), a.rounding == Sdpa);
     let prod = |role: &str| -> Result<Vec<f32>> { Ok(p.prod(role, h)?.into_iter().map(r16).collect()) };
     let raw_q = prod("q")?;
+    if a.indexer.as_ref().is_some_and(|ix| ix.rope_style.is_some()) {
+        return err("attention: its indexer turns as the attention does: a pairing of its own is a latent attention's indexer's");
+    }
+    if a.gate.is_some_and(|g| g.from == GateFrom::Latent) {
+        return err("attention: an output gate from the query latent, where the queries are one product of the block's input (no latent)");
+    }
     let in_q = a.gate.is_some_and(|g| g.from == GateFrom::InQuery);
     let (mut q, gate) = if in_q {
         let (mut q, mut g) = (Vec::with_capacity(nh * hd), Vec::with_capacity(nh * hd));
@@ -121,6 +171,11 @@ pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>,
         };
         (raw_q, g)
     };
+    // (a gate of one value a head: `g` is [heads, hidden])
+    let per_head = a.gate.is_some_and(|g| g.from == GateFrom::Head);
+    if let Some(g) = gate.as_ref().filter(|g| g.len() != if per_head { nh } else { nh * vd }) {
+        return err(format!("attention: an output gate of {} values for {nh} heads of {vd} ({:?})", g.len(), a.gate.map(|g| g.from)));
+    }
     let raw_k = if store.is_some() { vec![0.0; nk * hd] } else { prod("k")? };
     let mut v = if a.k_eq_v || store.is_some() { raw_k.clone() } else { prod("v")? };
     let mut k = raw_k;
@@ -154,13 +209,48 @@ pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>,
     if store.is_none() {
         prep(&mut k, &a.k_norm, "k_norm", hd, true, 1.0);
         prep(&mut v, &a.v_norm, "v_norm", vd, false, 1.0);
+        // (the values' factor, on the values the cache holds)
+        if a.v_scale != 1.0 {
+            v.iter_mut().for_each(|x| *x = r16(*x * a.v_scale));
+        }
     }
+    // (the block-max indexer's queries and this token's key, each from its own product, normed and rotated at this token's position; a choice a KV head)
+    let imax = match &a.indexer {
+        Some(ix @ Indexer { form: IndexForm::Max { norm: inorm, local }, .. }) => {
+            let dim = ix.head_dim;
+            let (mut q, mut key) = (prod("index_q")?, prod("index_k")?);
+            if ix.heads != nk || q.len() != nk * dim || key.len() != dim {
+                return err(format!(
+                    "attention: a block-max indexer of {} heads ({} query values, {} key values of {dim}) for {nk} KV heads: an index head a KV head, one key",
+                    ix.heads,
+                    q.len(),
+                    key.len()
+                ));
+            }
+            for (x, role) in [(&mut q, "index_q_norm"), (&mut key, "index_k_norm")] {
+                let w = p.vec(role)?;
+                for head in x.chunks_mut(dim) {
+                    let y = norm(inorm, head, Some(w), None);
+                    head.iter_mut().zip(y).for_each(|(h, y)| *h = r16(y));
+                    if let Some((r, (inv, af))) = &rot {
+                        turn(r, inv, *af, head, pos, &r16, rope16);
+                    }
+                }
+            }
+            c.ikey.push(key);
+            Some((ix, *local, q))
+        }
+        _ => None,
+    };
     // (the indexer's queries, normed and rotated as the attention's, and this token's raw key, from one product)
     let iq = match &a.indexer {
         None => None,
+        Some(_) if imax.is_some() => None,
         Some(ix) => {
             let IndexForm::Mean { norm: inorm } = ix.form else {
-                return err("attention: an indexer of the gated form (GLM-5.3-Flash's, DeepSeek-V4's) is a latent or compressed attention's; on GQA the reference has Condor's");
+                return err(
+                    "attention: an indexer of the gated form is a latent or compressed attention's; on GQA the reference has Ibis's and the block-max one",
+                );
             };
             let qk = prod("index_qk")?;
             let dim = ix.head_dim;
@@ -189,9 +279,14 @@ pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>,
         None => &*c,
     };
     let seen: Vec<usize> = (0..src.pos.len()).filter(|&j| src.pos[j] <= pos && a.window.is_none_or(|w| pos - src.pos[j] < w as u32)).collect();
-    let (seen, margin) = match iq {
-        Some((ix, inorm, q)) => mean_picks(ix, &inorm, p, src, &seen, &q, &rot, &r16, rope16)?,
-        None => (seen, f32::INFINITY),
+    // (the tokens attended to: one list for every head, or with the block-max indexer a list a KV head)
+    let (picked, margin) = match (iq, imax) {
+        (Some((ix, inorm, q)), _) => {
+            let (seen, margin) = mean_picks(ix, &inorm, p, src, &seen, &q, &rot, &r16, rope16)?;
+            (vec![seen], margin)
+        }
+        (None, Some((ix, local, q))) => max_picks(ix, local, src, &seen, &q, pos)?,
+        (None, None) => (vec![seen], f32::INFINITY),
     };
     let sinks = if a.sinks { Some(p.vec("sinks")?) } else { None };
     // (eager: the score the bf16 of the product, then of its scale, then of the cap)
@@ -200,6 +295,7 @@ pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>,
     let mut out = Vec::with_capacity(nh * vd);
     for head in 0..nh {
         let kv = head / (nh / nk);
+        let seen = &picked[if picked.len() == 1 { 0 } else { kv }];
         let qh = &q[head * hd..][..hd];
         let mut s: Vec<f32> = seen
             .iter()
@@ -228,7 +324,13 @@ pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>,
             }
             // (SDPA: the gate's activation rounded too)
             let ga = |z: f32| if prescale { r16(act(g.act, z)) } else { act(g.act, z) };
-            o.iter_mut().zip(&gv[head * vd..][..vd]).for_each(|(x, &z)| *x = r16(*x * ga(z)));
+            if per_head {
+                // (the head's one gate on each of its channels)
+                let z = ga(gv[head]);
+                o.iter_mut().for_each(|x| *x = r16(*x * z));
+            } else {
+                o.iter_mut().zip(&gv[head * vd..][..vd]).for_each(|(x, &z)| *x = r16(*x * ga(z)));
+            }
         }
         out.extend(o);
     }
@@ -264,6 +366,7 @@ mod tests {
             indexer: None,
             rounding: AttnRounding::F32,
             kv_from: None,
+            v_scale: 1.0,
         };
         let mut p = Params::new();
         let bfv = |v: Vec<f32>| v.into_iter().map(bf16).collect::<Vec<_>>();
@@ -359,13 +462,24 @@ mod tests {
         assert_ne!(want, bf16((bf16(f[0]) as f64 + bf16(f[1]) as f64 * 3.0) as f32));
     }
 
-    /// An attention of 2 query heads over one KV head of 16 (a rotary of 8) with Condor's indexer of 2 heads of 16 keeping 4 tokens in pools of
+    /// An attention of 2 query heads over one KV head of 16 (a rotary of 8) with Ibis's indexer of 2 heads of 16 keeping 4 tokens in pools of
     /// 2, its roles from the generator.
     fn qsa() -> (Attn, Params) {
         let (mut a, mut p) = layer(2, 1, 16, 32);
         let n = Norm::rms_plus_one(1e-6);
         (a.rope, a.q_norm, a.k_norm, a.v_norm) = (Some(Rope::plain(1e4, 8)), Some(n), Some(n), None);
-        a.indexer = Some(Indexer { heads: 2, head_dim: 16, top_k: 4, block: 2, shared: false, form: IndexForm::Mean { norm: n }, rope: 0 });
+        a.indexer = Some(Indexer {
+            heads: 2,
+            head_dim: 16,
+            top_k: 4,
+            block: 2,
+            shared: false,
+            form: IndexForm::Mean { norm: n },
+            rope: 0,
+            q_in: None,
+            pos_scale: false,
+            rope_style: None,
+        });
         p.put("index_qk", &[48, 32], fill("qsa.qk", 48 * 32, -0.5, 0.5));
         p.put("index_q_norm", &[16], fill("qsa.qn", 16, -0.3, 0.3));
         p.put("index_k_norm", &[16], fill("qsa.kn", 16, -0.3, 0.3));
@@ -375,7 +489,7 @@ mod tests {
     /// While a query sees no more complete pools than the indexer keeps (2 pools: 5 tokens, the fifth a tail), it attends to every token: the
     /// attention without the indexer, to the bit; past that it does not.
     #[test]
-    fn condors_indexer_keeps_everything_until_its_pools_run_out() {
+    fn ibis_indexer_keeps_everything_until_its_pools_run_out() {
         let (a, p) = qsa();
         let plain = Attn { indexer: None, ..a.clone() };
         let (x, y) = (run(&a, &p, 32, 9), run(&plain, &p, 32, 9));
@@ -392,7 +506,7 @@ mod tests {
     /// The picks by hand for the ninth token: its queries normed and rotated, the four complete pools' keys (the mean of the raw keys, normed,
     /// rotated at the pool's first position), their scores, the best two pools' tokens and the tail token 8.
     #[test]
-    fn condors_indexer_picks_by_hand() {
+    fn ibis_indexer_picks_by_hand() {
         let (a, p) = qsa();
         let mut c = KvCache::default();
         let xs = fill("attn.input", 9 * 32, -1.0, 1.0);
@@ -429,6 +543,145 @@ mod tests {
         assert!(c.margin.is_finite() && c.margin > 0.0);
     }
 
+    /// The block-max indexer's choice on keys of one channel, by hand: blocks of 2 positions, 2 kept, the query's own among them. Head 0 (q = 1) scores
+    /// the four blocks 5, 1, 9 and -8 and keeps its own (the worst) and block 2; head 1 (q = -1) scores them 0, 6, 3 and 9 and keeps its own and block 1.
+    #[test]
+    fn the_block_max_indexer_keeps_the_own_block_and_the_best_by_hand() {
+        let ix = |keep: usize| Indexer {
+            heads: 2,
+            head_dim: 1,
+            top_k: 2 * keep,
+            block: 2,
+            shared: false,
+            form: IndexForm::Max { norm: Norm::rms_plus_one(1e-6), local: 1 },
+            rope: 0,
+            rope_style: None,
+            q_in: None,
+            pos_scale: false,
+        };
+        let cache = |pos: &[u32], keys: &[f32]| KvCache { pos: pos.to_vec(), ikey: keys.iter().map(|&k| vec![k]).collect(), ..KvCache::default() };
+        let keys = [5.0, 0.0, -6.0, 1.0, 9.0, -3.0, -8.0, -9.0];
+        let c = cache(&[0, 1, 2, 3, 4, 5, 6, 7], &keys);
+        let all: Vec<usize> = (0..8).collect();
+        let (got, margin) = max_picks(&ix(2), 1, &c, &all, &[1.0, -1.0], 7).unwrap();
+        assert_eq!(got, vec![vec![4, 5, 6, 7], vec![2, 3, 6, 7]]);
+        // (the blocks kept by their scores: head 0's 9 over 5 and 1, a gap of 4 in 9; head 1's 6 over 3 and 0, 3 in 6: the nearer choice is head 0's)
+        assert_eq!(margin, 4.0 / 9.0);
+        // (a query in the middle of its block sees the part of it up to itself: token 6 alone; head 1's own block then scores 8, and is kept as its own)
+        let (mid, _) = max_picks(&ix(2), 1, &c, &all[..7], &[1.0, -1.0], 6).unwrap();
+        assert_eq!(mid, vec![vec![4, 5, 6], vec![2, 3, 6]]);
+        // (three kept: the best two besides the own)
+        assert_eq!(max_picks(&ix(3), 1, &c, &all, &[1.0, -1.0], 7).unwrap().0, vec![vec![0, 1, 4, 5, 6, 7], vec![2, 3, 4, 5, 6, 7]]);
+        // (two local blocks: the own and the one before it, and nothing else in two kept; three local in two kept is no indexer)
+        assert_eq!(max_picks(&ix(2), 2, &c, &all, &[1.0, -1.0], 7).unwrap().0, vec![vec![4, 5, 6, 7]; 2]);
+        assert!(max_picks(&ix(2), 3, &c, &all, &[1.0, -1.0], 7).is_err());
+        // (no more blocks than are kept: every token, whatever the scores)
+        let (few, far) = max_picks(&ix(4), 1, &c, &all, &[1.0, -1.0], 7).unwrap();
+        assert_eq!((few, far), (vec![all.clone(); 2], f32::INFINITY));
+        // (a block is its positions': tokens at 0, 1, 8, 9, 10 and 11 are blocks 0, 4 and 5, the query at 11 in block 5)
+        let gap = cache(&[0, 1, 8, 9, 10, 11], &[2.0, 0.0, 1.0, 0.0, -4.0, -4.0]);
+        assert_eq!(max_picks(&ix(2), 1, &gap, &[0, 1, 2, 3, 4, 5], &[1.0, -1.0], 11).unwrap().0, vec![vec![0, 1, 4, 5], vec![0, 1, 4, 5]]);
+        // (equal scores keep the earlier block)
+        let tie = cache(&[0, 1, 2, 3, 4, 5], &[3.0, 0.0, 3.0, 0.0, 0.0, 0.0]);
+        assert_eq!(max_picks(&ix(2), 1, &tie, &[0, 1, 2, 3, 4, 5], &[1.0, 0.0], 5).unwrap().0, vec![vec![0, 1, 4, 5], vec![0, 1, 4, 5]]);
+    }
+
+    /// An attention of 4 query heads over 2 KV heads of 16 (a rotary of 8, q and k norms times 1 + w) with the block-max indexer of 2 heads of 16 keeping 3
+    /// blocks of 4 positions, its roles from the generator.
+    fn msa() -> (Attn, Params) {
+        let (mut a, mut p) = layer(4, 2, 16, 32);
+        let n = Norm::rms_plus_one(1e-6);
+        (a.rope, a.q_norm, a.k_norm, a.v_norm) = (Some(Rope::plain(1e7, 8)), Some(n), Some(n), None);
+        a.indexer = Some(Indexer {
+            heads: 2,
+            head_dim: 16,
+            top_k: 12,
+            block: 4,
+            shared: false,
+            form: IndexForm::Max { norm: n, local: 1 },
+            rope: 0,
+            rope_style: None,
+            q_in: None,
+            pos_scale: false,
+        });
+        p.put("index_q", &[32, 32], fill("msa.q", 32 * 32, -0.5, 0.5));
+        p.put("index_k", &[16, 32], fill("msa.k", 16 * 32, -0.5, 0.5));
+        p.put("index_q_norm", &[16], fill("msa.qn", 16, -0.3, 0.3));
+        p.put("index_k_norm", &[16], fill("msa.kn", 16, -0.3, 0.3));
+        (a, p)
+    }
+
+    /// While a query sees no more blocks than the indexer keeps (3 blocks of 4: 12 tokens), it attends to every token: the attention without the indexer,
+    /// to the bit; from the fourth block on it does not.
+    #[test]
+    fn the_block_max_indexer_keeps_everything_until_its_blocks_run_out() {
+        let (a, p) = msa();
+        let plain = Attn { indexer: None, ..a.clone() };
+        let (x, y) = (run(&a, &p, 32, 24), run(&plain, &p, 32, 24));
+        for t in 0..24 {
+            let (g, w) = (&x[t * 32..][..32], &y[t * 32..][..32]);
+            assert_eq!(g == w, t < 12, "token {t}");
+        }
+        // (an index head a KV head: another count is refused)
+        let mut odd = a.clone();
+        odd.indexer.as_mut().unwrap().heads = 1;
+        assert!(step(&odd, &p, &mut KvCache::default(), &fill("attn.input", 32, -1.0, 1.0), 0).is_err());
+    }
+
+    /// The twenty-third token (position 22, in block 5 of 6) by hand: the index queries and every token's index key normed (1 + w) and rotated at their own
+    /// positions, a block's score the largest dot product of its tokens', the own block and the best two others a head; then each query head's output the
+    /// softmax over its KV head's picks alone.
+    #[test]
+    fn the_block_max_indexer_by_hand() {
+        let (a, p) = msa();
+        let (mut c, hidden, last) = (KvCache::default(), 32, 22usize);
+        let xs = fill("attn.input", (last + 1) * hidden, -1.0, 1.0);
+        let mut got = Vec::new();
+        for t in 0..=last {
+            got = step(&a, &p, &mut c, &xs[t * hidden..][..hidden], t as u32).unwrap();
+        }
+        let (n, r) = (Norm::rms_plus_one(1e-6), a.rope.clone().unwrap());
+        let (inv, af) = rope::inv_freq_at(&r, last as u32 + 1);
+        let prep = |role: &str, w: &str, t: usize| -> Vec<f32> {
+            let mut out = Vec::new();
+            for h in p.prod(role, &xs[t * hidden..][..hidden]).unwrap().chunks(16) {
+                let mut h = norm(&n, h, p.opt(w), None);
+                rope::apply(&r, &inv, af, &mut h, t as u32);
+                out.extend(h);
+            }
+            out
+        };
+        let iq = prep("index_q", "index_q_norm", last);
+        let keys: Vec<Vec<f32>> = (0..=last).map(|t| prep("index_k", "index_k_norm", t)).collect();
+        assert_eq!(c.ikey, keys);
+        let mut picks = Vec::new();
+        for h in 0..2 {
+            let score: Vec<f32> = (0..5).map(|j| (4 * j..4 * j + 4).map(|t| dot(&iq[16 * h..][..16], &keys[t])).fold(f32::NEG_INFINITY, f32::max)).collect();
+            let mut best: Vec<usize> = (0..5).collect();
+            best.sort_by(|&x, &y| score[y].total_cmp(&score[x]));
+            assert!(score[best[1]] - score[best[2]] > 1e-4, "head {h}: the second and third blocks are too near to tell: {score:?}");
+            let mut want: Vec<usize> = best[..2].iter().flat_map(|&j| 4 * j..4 * j + 4).collect();
+            want.sort_unstable();
+            want.extend(20..=last);
+            picks.push(want);
+        }
+        let all: Vec<usize> = (0..=last).collect();
+        let (chosen, margin) = max_picks(a.indexer.as_ref().unwrap(), 1, &c, &all, &iq, last as u32).unwrap();
+        assert_eq!(chosen, picks);
+        assert!(picks[0] != picks[1], "the two heads chose the same blocks: {picks:?}");
+        assert!(c.margin == margin && margin.is_finite() && margin > 0.0);
+        // (the attention: query head h over the picks of KV head h / 2)
+        let q = prep("q", "q_norm", last);
+        let mut o = Vec::new();
+        for h in 0..4 {
+            let (kv, qh) = (h / 2, &q[16 * h..][..16]);
+            let mut s: Vec<f32> = picks[kv].iter().map(|&j| dot(qh, &c.k[j][16 * kv..][..16]) * a.scale).collect();
+            softmax(&mut s);
+            o.extend((0..16).map(|ch| picks[kv].iter().zip(&s).map(|(&j, &pj)| pj as f64 * c.v[j][16 * kv + ch] as f64).sum::<f64>() as f32));
+        }
+        assert_eq!(got, p.prod("o", &o).unwrap());
+    }
+
     /// The output gate's form, its norm and the rounding after each: Muse's own gate with a weightless norm, and Qwen3.5's in-query gate.
     #[test]
     fn the_gate_after_the_rounded_output() {
@@ -450,5 +703,25 @@ mod tests {
         let in_q = run(&q, &pq, hidden, tokens);
         let own_no_norm = run(&Attn { gate: Some(OutGate { norm: None, ..a.gate.unwrap() }), ..a.clone() }, &p, hidden, tokens);
         assert_eq!(in_q, own_no_norm, "an in-query gate is the own gate of the same rows");
+    }
+
+    /// A gate of one value a head (`GateFrom::Head`, LFM's): each head's output times sigmoid of the head's row of `g` on the layer's input. It moves the
+    /// output; it is the own gate whose rows are the head's row for every channel of the head, bit for bit; a `g` of another size is refused.
+    #[test]
+    fn a_gate_a_head_scales_the_whole_head() {
+        let (hidden, tokens, nh, hd) = (64, 7, 4, 128);
+        let (mut a, mut p) = layer(nh, 2, hd, hidden);
+        a.gate = Some(OutGate { act: crate::runtime::kinds::Act::Sigmoid, from: GateFrom::Head, norm: None });
+        let g = fill("attn.g_head", nh * hidden, -1.0, 1.0);
+        p.put("g", &[nh, hidden], g.clone());
+        let gated = run(&a, &p, hidden, tokens);
+        assert!(rel(&gated, &run(&Attn { gate: None, ..a.clone() }, &p, hidden, tokens)) > 0.05);
+        let mut own = p.clone();
+        own.put("g", &[nh * hd, hidden], (0..nh).flat_map(|h| g[h * hidden..][..hidden].repeat(hd)).collect());
+        let per_channel = Attn { gate: Some(OutGate { from: GateFrom::Own, ..a.gate.unwrap() }), ..a.clone() };
+        assert_eq!(gated, run(&per_channel, &own, hidden, tokens));
+        // (a `g` of a value a channel under a gate of a value a head)
+        let mut c = KvCache::default();
+        assert!(step(&a, &own, &mut c, &fill("attn.input", hidden, -1.0, 1.0), 0).unwrap_err().msg.contains("output gate"));
     }
 }

@@ -75,6 +75,69 @@ pub const GEMMA: Convention = Convention {
 pub const MUSE: Convention =
     Convention { name: "Muse Spark", unread: &["model.audio_tower.", "model.vision_tower.", "model.vision_adapter.", "model.vision_projection."], ..HF };
 
+/// MiMo V2's: Hugging Face's, with its audio encoder, the speech codes' embeddings and the vision tower, which the text model does not run. Its draft
+/// layers (`model.mtp.layers.`) are read as draft heads.
+pub const MIMO: Convention = Convention { name: "MiMo V2", unread: &["audio_encoder.", "speech_embeddings.", "visual."], ..HF };
+
+/// MiniMax M3's (its vision-language wrapper `minimax_m3_vl`): the text model under `language_model.model.`, its head beside it at `language_model.lm_head`;
+/// the vision tower and its two projectors into the text model's width, which the text model does not run; and an expert matrix's `input_global_scale`,
+/// the scale of a static 4-bit quantization of the matrix's input that the release's quantization does not use (its activations are quantized by their own
+/// size, `activation_scheme` "dynamic") and that the weights' reconstruction does not read.
+pub const MINIMAX: Convention = Convention {
+    name: "MiniMax M3",
+    layers: "language_model.model.layers.",
+    embed: "language_model.model.embed_tokens.weight",
+    final_norm: "language_model.model.norm.weight",
+    head: "language_model.lm_head.weight",
+    extra: &[],
+    unread: &["vision_tower.", "multi_modal_projector.", "patch_merge_mlp.", "*.input_global_scale"],
+};
+
+/// LFM's: Hugging Face's, the norm after the last layer under the name `embedding_norm` (it norms no embedding: the head reads it), and no towers.
+pub const LFM: Convention = Convention { name: "LFM", final_norm: "{p}embedding_norm.weight", unread: &[], ..HF };
+
+/// Ling's (the `bailing_hybrid` text model under `model.`, in its vision-language wrapper too): Hugging Face's, the embedding under the name
+/// `word_embeddings`; the vision tower and its projector into the text model's width, which the text model does not run. Its draft layers follow the
+/// model's under the same names (`model.layers.{L}.`) and are read as draft heads.
+pub const LING: Convention = Convention { name: "Ling", embed: "{p}word_embeddings.weight", unread: &["model.visual.", "linear_proj."], ..HF };
+
+/// ERNIE 5.5's: Hugging Face's layout under `model.`, with the hyper-head's roles (`mhc_contract`: its matrix stored transposed) and the logits'
+/// correction's two (`model.lm_head.multimax_*`, beside the head `lm_head.weight`). Its drafter is under `model.mtp.` and is read (`part::ERNIE_DRAFT`).
+pub const ERNIE: Convention = Convention {
+    name: "ERNIE",
+    extra: &[
+        ("out_hc_fn", "^mhc_contract.hc_head_fn"),
+        ("out_hc_base", "mhc_contract.hc_head_base"),
+        ("out_hc_scale", "mhc_contract.hc_head_scale"),
+        ("logit_ranges", "lm_head.multimax_ranges"),
+        ("logit_ts", "lm_head.multimax_ts"),
+    ],
+    unread: &[],
+    ..HF
+};
+
+/// Hunyuan's: Hugging Face's layout under `model.`, with the hyper-head's roles (`model.hc_head`). Its drafter (`model.dfly_layers.`) and its vision
+/// tower with the adapter into the text model's width (`vit.`) are parts the description leaves: the text model runs without either.
+pub const HUNYUAN: Convention = Convention {
+    name: "Hunyuan",
+    extra: &[("out_hc_fn", "hc_head.hc_head_fn"), ("out_hc_base", "hc_head.hc_head_base"), ("out_hc_scale", "hc_head.hc_head_scale")],
+    unread: &["vit.", "model.dfly_layers."],
+    ..HF
+};
+
+/// Mistral's own names, as its consolidated checkpoints hold them (Mistral Large's release, whose config's `transformers_weights` points transformers at
+/// that checkpoint): no prefix, the embedding `tok_embeddings`, the head `output`; the vision encoder, its norm, patch merger and adapter into the text
+/// model's width, and the draft model (`mtp_dspark.`), which the text model does not run.
+pub const MISTRAL: Convention = Convention {
+    name: "Mistral (consolidated)",
+    layers: "layers.",
+    embed: "tok_embeddings.weight",
+    final_norm: "norm.weight",
+    head: "output.weight",
+    extra: &[],
+    unread: &["vision_encoder.", "pre_mm_projector_norm.", "patch_merger.", "vision_language_adapter.", "mtp_dspark."],
+};
+
 /// Kimi-K3's (the `kimi_linear` text model under `language_model.`), with the depth mix's output roles.
 pub const KIMI: Convention = Convention {
     name: "Kimi linear",
@@ -117,7 +180,7 @@ pub const DEEPSEEK_HF: Convention = Convention {
     ..DEEPSEEK
 };
 
-/// Qwen3.8-Flash-Next's (Condor's model): Hugging Face's, with no final norm of its own (its final mixer's per-stream norm is the final
+/// Qwen3.8-Flash-Next's (Ibis's model): Hugging Face's, with no final norm of its own (its final mixer's per-stream norm is the final
 /// norm, the mixer's bottleneck the model's own roles).
 pub const QWEN4X: Convention = Convention {
     name: "Qwen3.8-Flash-Next",
@@ -159,6 +222,122 @@ pub mod part {
     pub const MLP: Roles =
         &[("norm_in", "post_attention_layernorm.weight"), ("gate", "mlp.gate_proj.weight"), ("up", "mlp.up_proj.weight"), ("down", "mlp.down_proj.weight")];
 
+    // ---- Granite Swash: Llama-style names, and a learned sink a head beside the attention's matrices
+    pub const GRANITE_SINKS: Roles = &[("sinks", "self_attn.sinks")];
+
+    // ---- MiMo V2: the query, key and value products one matrix, a sink a head where a layer sort has them, a tensor an expert's matrix
+    /// Attention with its three products fused (`attention_projection_layout` "fused_qkv"): `qkv` is cut into the kind's `q`, `k` and `v` by the builder
+    /// (`describe::mimo_v2`: the matrix holds them a shard at a time, not q then k then v).
+    pub const MIMO_ATTN: Roles = &[
+        ("norm_in", "input_layernorm.weight"),
+        ("qkv", "self_attn.qkv_proj.weight"),
+        ("o", "self_attn.o_proj.weight"),
+        ("sinks", "self_attn.attention_sink_bias"),
+    ];
+    /// The same with a matrix a product (`attention_projection_layout` "split" or unsaid).
+    pub const MIMO_ATTN_SPLIT: Roles = &[
+        ("norm_in", "input_layernorm.weight"),
+        ("q", "self_attn.q_proj.weight"),
+        ("k", "self_attn.k_proj.weight"),
+        ("v", "self_attn.v_proj.weight"),
+        ("o", "self_attn.o_proj.weight"),
+        ("sinks", "self_attn.attention_sink_bias"),
+    ];
+    /// Sigmoid-routed experts with a choice bias and no shared expert.
+    pub const MIMO_MOE: Roles = &[
+        ("norm_in", "post_attention_layernorm.weight"),
+        ("router", "mlp.gate.weight"),
+        ("choice_bias", "mlp.gate.e_score_correction_bias"),
+        ("experts_gate_up", "mlp.experts.{E}.gate_proj.weight|mlp.experts.{E}.up_proj.weight"),
+        ("experts_down", "mlp.experts.{E}.down_proj.weight"),
+    ];
+    /// A draft layer's MLP (under `model.mtp.layers.{j}`): the dense one, its norm under the draft layer's name.
+    pub const MIMO_MTP_MLP: Roles =
+        &[("norm_in", "pre_mlp_layernorm.weight"), ("gate", "mlp.gate_proj.weight"), ("up", "mlp.up_proj.weight"), ("down", "mlp.down_proj.weight")];
+    /// A draft head's own roles (`kinds::MtpInput::Joined`).
+    pub const MIMO_MTP: Roles =
+        &[("eh_proj", "eh_proj.weight"), ("norm_embed", "enorm.weight"), ("norm_hidden", "hnorm.weight"), ("final_norm", "final_layernorm.weight")];
+
+    // ---- MiniMax M3: Llama-style attention with the block indexer's products and norms beside it; Mixtral's names for the experts
+    /// Attention with q and k norms a head and, on a sparse layer, the indexer's queries, its one key and their norms.
+    pub const MINIMAX_ATTN: Roles = &[
+        ("norm_in", "input_layernorm.weight"),
+        ("q", "self_attn.q_proj.weight"),
+        ("k", "self_attn.k_proj.weight"),
+        ("v", "self_attn.v_proj.weight"),
+        ("o", "self_attn.o_proj.weight"),
+        ("q_norm", "self_attn.q_norm.weight"),
+        ("k_norm", "self_attn.k_norm.weight"),
+        ("index_q", "self_attn.index_q_proj.weight"),
+        ("index_k", "self_attn.index_k_proj.weight"),
+        ("index_q_norm", "self_attn.index_q_norm.weight"),
+        ("index_k_norm", "self_attn.index_k_norm.weight"),
+    ];
+    /// Sigmoid-routed experts (`w1` the gate, `w3` the up, `w2` the down) with a choice bias beside the router and one shared expert.
+    pub const MINIMAX_MOE: Roles = &[
+        ("norm_in", "post_attention_layernorm.weight"),
+        ("router", "block_sparse_moe.gate.weight"),
+        ("choice_bias", "block_sparse_moe.e_score_correction_bias"),
+        ("experts_gate_up", "block_sparse_moe.experts.{E}.w1.weight|block_sparse_moe.experts.{E}.w3.weight"),
+        ("experts_down", "block_sparse_moe.experts.{E}.w2.weight"),
+        ("shared_gate", "block_sparse_moe.shared_experts.gate_proj.weight"),
+        ("shared_up", "block_sparse_moe.shared_experts.up_proj.weight"),
+        ("shared_down", "block_sparse_moe.shared_experts.down_proj.weight"),
+    ];
+
+    // ---- Domyn Edge: Llama-style parts under its own names, a norm after each part as well as before it
+    /// Attention between its two norms; the q norm has no weight.
+    pub const DOMYN_ATTN: Roles = &[
+        ("norm_in", "pre_attention_norm.weight"),
+        ("q", "attention.q_proj.weight"),
+        ("k", "attention.k_proj.weight"),
+        ("v", "attention.v_proj.weight"),
+        ("o", "attention.o_proj.weight"),
+        ("k_norm", "attention.k_norm.weight"),
+        ("norm_out", "post_attention_norm.weight"),
+    ];
+    /// The gated MLP between its two norms.
+    pub const DOMYN_MLP: Roles = &[
+        ("norm_in", "pre_feedforward_norm.weight"),
+        ("gate", "feedforward.gate_proj.weight"),
+        ("up", "feedforward.up_proj.weight"),
+        ("down", "feedforward.down_proj.weight"),
+        ("norm_out", "post_feedforward_norm.weight"),
+    ];
+
+    // ---- LFM: a layer's mixer (a gated short convolution or an attention) and its MLP, each between two norms where the config has the second
+    /// The gated short convolution (`kinds::ShortConv`), its biases where the config has them.
+    pub const LFM_CONV: Roles = &[
+        ("norm_in", "operator_norm.weight"),
+        ("in", "conv.in_proj.weight"),
+        ("in_bias", "conv.in_proj.bias"),
+        ("conv", "conv.conv.weight"),
+        ("conv_bias", "conv.conv.bias"),
+        ("o", "conv.out_proj.weight"),
+        ("o_bias", "conv.out_proj.bias"),
+        ("norm_out", "post_operator_norm.weight"),
+    ];
+    /// Attention with normed queries and keys and the gate of one value a head (`g` [heads, hidden]).
+    pub const LFM_ATTN: Roles = &[
+        ("norm_in", "operator_norm.weight"),
+        ("q", "self_attn.q_proj.weight"),
+        ("k", "self_attn.k_proj.weight"),
+        ("v", "self_attn.v_proj.weight"),
+        ("o", "self_attn.o_proj.weight"),
+        ("q_norm", "self_attn.q_norm.weight"),
+        ("k_norm", "self_attn.k_norm.weight"),
+        ("g", "self_attn.gate_proj.weight"),
+        ("norm_out", "post_operator_norm.weight"),
+    ];
+    /// The gated MLP: `w1` the gate, `w3` the up projection, `w2` the down.
+    pub const LFM_MLP: Roles = &[
+        ("norm_in", "ffn_norm.weight"),
+        ("gate", "feed_forward.w1.weight"),
+        ("up", "feed_forward.w3.weight"),
+        ("down", "feed_forward.w2.weight"),
+        ("norm_out", "post_ffn_norm.weight"),
+    ];
+
     // ---- Qwen3.5 / 3.8
     /// Gated DeltaNet.
     pub const QWEN_LINEAR: Roles = &[
@@ -198,7 +377,7 @@ pub mod part {
         ("shared_router", "mlp.shared_expert_gate.weight"),
     ];
 
-    // ---- Qwen3.8-Flash-Next (Condor): the gated residuals around each block, the indexer, the experts stacked, the n-gram embedding
+    // ---- Qwen3.8-Flash-Next (Ibis): the gated residuals around each block, the indexer, the experts stacked, the n-gram embedding
     pub const QX_GR_ATTN: Roles = &[
         ("norm_in", "attn_hyper_connection.hc_norm.weight"),
         ("mix_down", "attn_hyper_connection.input_mix_weight_down.weight"),
@@ -380,6 +559,91 @@ pub mod part {
         ("shared_down", "block_sparse_moe.shared_experts.down_proj.weight"),
     ];
 
+    // ---- Ling: a layer's mixer under `attention` (the Kimi delta attention or the latent attention), the experts' choice bias `expert_bias`
+    /// Kimi delta attention with every product at its full rank: q, k, v, o, the forget gate `f_proj`, the output gate `g_proj`, beta, the three
+    /// convolutions, A_log, dt_bias and the gated norm.
+    pub const LING_KDA: Roles = &[
+        ("q", "attention.q_proj.weight"),
+        ("k", "attention.k_proj.weight"),
+        ("v", "attention.v_proj.weight"),
+        ("o", "attention.o_proj.weight"),
+        ("decay", "attention.f_proj.weight"),
+        ("gate", "attention.g_proj.weight"),
+        ("beta", "attention.b_proj.weight"),
+        ("conv", "attention.q_conv1d.weight|attention.k_conv1d.weight|attention.v_conv1d.weight"),
+        ("a_log", "attention.A_log"),
+        ("dt_bias", "attention.dt_bias"),
+        ("norm", "attention.o_norm.weight"),
+    ];
+    /// The latent attention: q as one product (or in a low rank), the key-value latent, the output gate (`g` [heads, hidden] where it is a value a
+    /// head), and the output product under the name `dense`.
+    pub const LING_MLA: Roles = &[
+        ("q_a", "attention.q_a_proj.weight"),
+        ("q_a_norm", "attention.q_a_layernorm.weight"),
+        ("q_b", "attention.q_b_proj.weight"),
+        ("q", "attention.q_proj.weight"),
+        ("kv_a", "attention.kv_a_proj_with_mqa.weight"),
+        ("kv_a_norm", "attention.kv_a_layernorm.weight"),
+        ("kv_b", "attention.kv_b_proj.weight"),
+        ("g", "attention.g_proj.weight"),
+        ("o", "attention.dense.weight"),
+    ];
+    /// Sigmoid-routed experts with a choice bias and one shared MLP (the shared one before the routed ones, as `MOE`).
+    pub const LING_MOE: Roles = &[
+        ("router", "mlp.gate.weight"),
+        ("choice_bias", "mlp.gate.expert_bias"),
+        ("shared_gate", "mlp.shared_experts.gate_proj.weight"),
+        ("shared_up", "mlp.shared_experts.up_proj.weight"),
+        ("shared_down", "mlp.shared_experts.down_proj.weight"),
+        ("experts_gate_up", "mlp.experts.{E}.gate_proj.weight|mlp.experts.{E}.up_proj.weight"),
+        ("experts_down", "mlp.experts.{E}.down_proj.weight"),
+    ];
+    /// A draft head's own roles in a layer after the model's (`kinds::MtpInput::Joined`).
+    pub const LING_MTP: Roles =
+        &[("eh_proj", "eh_proj.weight"), ("norm_embed", "enorm.weight"), ("norm_hidden", "hnorm.weight"), ("final_norm", "final_layernorm.weight")];
+
+    // ---- Mistral Large (Mistral's names): the latent attention with its queries' scale by position, the indexer on the layer's input, the experts
+    /// The latent attention: the queries one product (`wq`), the key-value latent (absent on a layer that shares another's), the queries' scale by
+    /// position (`ssmax_scaling.s`, `.b`, a value a head each), the output product.
+    pub const MISTRAL_MLA: Roles = &[
+        ("norm_in", "attention_norm.weight"),
+        ("q", "attention.wq.weight"),
+        ("kv_a", "attention.wkv_a_with_mqa.weight"),
+        ("kv_a_norm", "attention.kv_a_norm.weight"),
+        ("kv_b", "attention.wkv_b.weight"),
+        ("o", "attention.wo.weight"),
+        ("q_scale_s", "attention.ssmax_scaling.s"),
+        ("q_scale_b", "attention.ssmax_scaling.b"),
+    ];
+    /// The indexer of a layer that has its own: the LayerNorm of the layer's input its queries read, their product and their scale by position, the keys'
+    /// product and LayerNorm, the heads' weights.
+    pub const MISTRAL_INDEXER: Roles = &[
+        ("indexer_q_norm", "attention.indexer.q_input_norm.weight"),
+        ("indexer_q_norm_bias", "attention.indexer.q_input_norm.bias"),
+        ("indexer_wq_b", "attention.indexer.wq_b.weight"),
+        ("indexer_scale_s", "attention.indexer.ssmax_scaling.s"),
+        ("indexer_scale_b", "attention.indexer.ssmax_scaling.b"),
+        ("indexer_wk", "attention.indexer.wk.weight"),
+        ("indexer_k_norm", "attention.indexer.k_norm.weight"),
+        ("indexer_k_norm_bias", "attention.indexer.k_norm.bias"),
+        ("indexer_weights", "attention.indexer.weights_proj.weight"),
+    ];
+    /// The learned factors of the rotary's frequencies: one tensor of the model, read by every layer that rotates.
+    pub const MISTRAL_ROPE_ALPHA: &str = "lerope.alpha";
+    /// The gated MLP: `w1` the gate, `w3` the up projection, `w2` the down.
+    pub const MISTRAL_MLP: Roles =
+        &[("norm_in", "ffn_norm.weight"), ("gate", "feed_forward.w1.weight"), ("up", "feed_forward.w3.weight"), ("down", "feed_forward.w2.weight")];
+    /// Softmax-routed experts with one shared MLP, a tensor an expert's matrix (the shared one before the routed ones, as `MOE`).
+    pub const MISTRAL_MOE: Roles = &[
+        ("norm_in", "ffn_norm.weight"),
+        ("router", "gate.weight"),
+        ("shared_gate", "shared_experts.w1.weight"),
+        ("shared_up", "shared_experts.w3.weight"),
+        ("shared_down", "shared_experts.w2.weight"),
+        ("experts_gate_up", "experts.{E}.w1.weight|experts.{E}.w3.weight"),
+        ("experts_down", "experts.{E}.w2.weight"),
+    ];
+
     // ---- Muse Spark: gated residuals, the gated attention output, the latent experts stacked
     pub const MUSE_ATTN: Roles = &[
         ("norm_in", "input_layernorm.weight"),
@@ -456,6 +720,170 @@ pub mod part {
         ("shared_down", "ffn.shared_experts.w2.weight"),
     ];
 
+    // ---- ERNIE 5.5: a layer's attention under `self_attn` (the compressed attention's products under names of its own, the latent attention's as
+    // DeepSeek-V3's), its parts that are no product under `self_attn.core_attention`; the experts under `block_sparse_moe` as Kimi's. `^`: a matrix stored
+    // transposed; `|`: tensors stacked, or scalars joined
+    /// The compressed attention: the query latent and its norm, the queries, the one key-value product and its norm, the grouped low-rank output
+    /// (`linear_o_group_proj`, a tensor with no `.weight`) and the output product, the output gate of the query latent, the heads' mix, the sinks.
+    pub const ERNIE_COMP_ATTN: Roles = &[
+        ("norm_in", "input_layernorm.weight"),
+        ("q_a", "self_attn.linear_q_down_proj.weight"),
+        ("q_a_norm", "self_attn.q_layernorm.weight"),
+        ("q_b", "self_attn.linear_q_up_proj.weight"),
+        ("kv", "self_attn.linear_kv_proj.weight"),
+        ("kv_norm", "self_attn.kv_layernorm.weight"),
+        ("o_a", "self_attn.linear_o_group_proj"),
+        ("o_b", "self_attn.o_proj.weight"),
+        ("g", "self_attn.gate_proj.weight"),
+        ("mix_u", "self_attn.vha_postmix_U"),
+        ("mix_v", "self_attn.vha_postmix_V"),
+        ("sinks", "self_attn.core_attention.attn_sink"),
+    ];
+    /// A compressing layer's compressor.
+    pub const ERNIE_COMP: Roles = &[
+        ("comp_kv", "self_attn.core_attention.compressor.linear_wkv.weight"),
+        ("comp_gate", "self_attn.core_attention.compressor.linear_wgate.weight"),
+        ("comp_ape", "self_attn.core_attention.compressor.ape"),
+        ("comp_norm", "self_attn.core_attention.compressor.norm.weight"),
+    ];
+    /// The latent attention: its products, the output gate of the query latent, the heads' mix, the sinks (`softmax_offset`), and its indexer's tensors.
+    pub const ERNIE_MLA: Roles = &[
+        ("norm_in", "input_layernorm.weight"),
+        ("q_a", "self_attn.q_a_proj.weight"),
+        ("q_a_norm", "self_attn.q_a_layernorm.weight"),
+        ("q_b", "self_attn.q_b_proj.weight"),
+        ("kv_a", "self_attn.kv_a_proj_with_mqa.weight"),
+        ("kv_a_norm", "self_attn.kv_a_layernorm.weight"),
+        ("kv_b", "self_attn.kv_b_proj.weight"),
+        ("o", "self_attn.o_proj.weight"),
+        ("g", "self_attn.gate_proj.weight"),
+        ("mix_u", "self_attn.vha_postmix_U"),
+        ("mix_v", "self_attn.vha_postmix_V"),
+        ("sinks", "self_attn.core_attention.softmax_offset"),
+        ("indexer_wq_b", "self_attn.core_attention.indexer.wq_b.weight"),
+        ("indexer_wk", "self_attn.core_attention.indexer.wk.weight"),
+        ("indexer_k_norm", "self_attn.core_attention.indexer.k_norm.weight"),
+        ("indexer_k_norm_bias", "self_attn.core_attention.indexer.k_norm.bias"),
+        ("indexer_weights", "self_attn.core_attention.indexer.weights_proj.weight"),
+    ];
+    /// The residual streams around a block: the mixing matrix stored transposed, its bias, and its three scales as scalars apart (the input's, the
+    /// output's, the streams' mixing's, in `hc_scale`'s order).
+    pub const ERNIE_HC_ATTN: Roles = &[
+        ("hc_fn", "^self_attention_hyper_connection.mapping_proj.weight"),
+        ("hc_base", "self_attention_hyper_connection.bias"),
+        ("hc_scale", "self_attention_hyper_connection.alpha_pre|self_attention_hyper_connection.alpha_post|self_attention_hyper_connection.alpha_res"),
+    ];
+    pub const ERNIE_HC_FFN: Roles = &[
+        ("hc_fn", "^mlp_hyper_connection.mapping_proj.weight"),
+        ("hc_base", "mlp_hyper_connection.bias"),
+        ("hc_scale", "mlp_hyper_connection.alpha_pre|mlp_hyper_connection.alpha_post|mlp_hyper_connection.alpha_res"),
+    ];
+    /// The experts in a latent: the two routers' rows stacked, the choice bias, the learned scale an expert, the latent's two projections and its norm,
+    /// the experts (w1 the gate, w3 the up, w2 the down) and the shared expert named as they are.
+    pub const ERNIE_MOE: Roles = &[
+        ("norm_in", "post_attention_layernorm.weight"),
+        ("router", "block_sparse_moe.gate.weight|block_sparse_moe.gate.weight_1"),
+        ("choice_bias", "block_sparse_moe.e_score_correction_bias"),
+        ("expert_scale", "block_sparse_moe.gate.routed_scaling_factor_param"),
+        ("latent_down", "block_sparse_moe.fc1_latent_proj.weight"),
+        ("latent_up", "block_sparse_moe.fc2_latent_proj.weight"),
+        ("latent_norm_out", "block_sparse_moe.latent_norm.weight"),
+        ("shared_gate", "block_sparse_moe.shared_experts.w1.weight"),
+        ("shared_up", "block_sparse_moe.shared_experts.w3.weight"),
+        ("shared_down", "block_sparse_moe.shared_experts.w2.weight"),
+        ("experts_gate_up", "block_sparse_moe.experts.{E}.w1.weight|block_sparse_moe.experts.{E}.w3.weight"),
+        ("experts_down", "block_sparse_moe.experts.{E}.w2.weight"),
+    ];
+    /// The drafter's own roles under `model.mtp`: main_x's product and norm, the Markov head's two factors (the embedding stored transposed), the
+    /// confidence head, the final norm and the drafter's hyper-head.
+    pub const ERNIE_DRAFT: Roles = &[
+        ("main_proj", "feature_projection.weight"),
+        ("main_norm", "feature_norm.weight"),
+        ("markov_embed", "^markov_head.markov_w1.weight"),
+        ("markov_head", "markov_head.markov_w2.weight"),
+        ("confidence", "confidence_head.projection.weight"),
+        ("final_norm", "norm.weight"),
+        ("out_hc_fn", "^mhc_contract.hc_head_fn"),
+        ("out_hc_base", "mhc_contract.hc_head_base"),
+        ("out_hc_scale", "mhc_contract.hc_head_scale"),
+    ];
+
+    // ---- Hunyuan: DeepSeek-V3's names for the latent attention, with its gate, sinks and the norm after it; the compressed indexer under
+    // `self_attn.compressed_indexer`; the streams' weights under `hc_attn_layer.hc_pre` and `hc_mlp_layer.hc_pre`; the experts stacked a layer; the
+    // n-gram memory under `engram_layer`
+    /// The latent attention: its products, the output gate of the block's input, the sinks, and the norm of its output (`norm_out`, where the layer has it).
+    pub const HY_MLA: Roles = &[
+        ("norm_in", "input_layernorm.weight"),
+        ("q_a", "self_attn.q_a_proj.weight"),
+        ("q_a_norm", "self_attn.q_a_layernorm.weight"),
+        ("q_b", "self_attn.q_b_proj.weight"),
+        ("kv_a", "self_attn.kv_a_proj_with_mqa.weight"),
+        ("kv_a_norm", "self_attn.kv_a_layernorm.weight"),
+        ("kv_b", "self_attn.kv_b_proj.weight"),
+        ("g", "self_attn.linear_gate.weight"),
+        ("o", "self_attn.o_proj.weight"),
+        ("sinks", "self_attn.learnable_sink_param"),
+        ("norm_out", "self_attn.post_proj_norm.weight"),
+    ];
+    /// The compressed indexer (`IndexForm::Grouped`): a token's key and its norm, a group's value and gate products of the key, its position term and
+    /// its norm, the queries' product of the query latent, the heads' weights.
+    pub const HY_INDEXER: Roles = &[
+        ("indexer_wk", "self_attn.compressed_indexer.token_key_projection.weight"),
+        ("indexer_k_norm", "self_attn.compressed_indexer.token_key_norm.weight"),
+        ("indexer_pool_value", "self_attn.compressed_indexer.key_value_projection.weight"),
+        ("indexer_pool_gate", "self_attn.compressed_indexer.key_gate_projection.weight"),
+        ("indexer_pool_ape", "self_attn.compressed_indexer.intra_group_ape"),
+        ("indexer_pool_norm", "self_attn.compressed_indexer.key_norm.weight"),
+        ("indexer_wq_b", "self_attn.compressed_indexer.query_projection.weight"),
+        ("indexer_weights", "self_attn.compressed_indexer.head_weight_projection.weight"),
+    ];
+    /// The streams that do not mix, around a block (`StreamsP::apart`).
+    pub const HY_HC_ATTN: Roles =
+        &[("hc_fn", "hc_attn_layer.hc_pre.hc_fn"), ("hc_base", "hc_attn_layer.hc_pre.hc_base"), ("hc_scale", "hc_attn_layer.hc_pre.hc_scale")];
+    pub const HY_HC_FFN: Roles =
+        &[("hc_fn", "hc_mlp_layer.hc_pre.hc_fn"), ("hc_base", "hc_mlp_layer.hc_pre.hc_base"), ("hc_scale", "hc_mlp_layer.hc_pre.hc_scale")];
+    /// The dense MLP with the norm of its output.
+    pub const HY_MLP: Roles = &[
+        ("norm_in", "post_attention_layernorm.weight"),
+        ("gate", "mlp.gate_proj.weight"),
+        ("up", "mlp.up_proj.weight"),
+        ("down", "mlp.down_proj.weight"),
+        ("norm_out", "mlp.post_fc2_norm.weight"),
+    ];
+    /// The experts in a latent: the router and its choice bias, the latent's two projections, the shared expert on the full vector, a layer's routed
+    /// experts stacked in two tensors (`experts_gate_up` [experts, 2 inter, latent], the gate's rows first; `experts_down` [experts, latent, inter]),
+    /// and the norm of the sum.
+    pub const HY_MOE: Roles = &[
+        ("norm_in", "post_attention_layernorm.weight"),
+        ("router", "mlp.gate.weight"),
+        ("choice_bias", "mlp.gate.e_score_correction_bias"),
+        ("latent_down", "mlp.routed_expert_down_proj.weight"),
+        ("latent_up", "mlp.routed_expert_up_proj.weight"),
+        ("shared_gate", "mlp.shared_experts.gate_proj.weight"),
+        ("shared_up", "mlp.shared_experts.up_proj.weight"),
+        ("shared_down", "mlp.shared_experts.down_proj.weight"),
+        ("experts_gate_up", "mlp.experts.gate_up_proj"),
+        ("experts_down", "mlp.experts.down_proj"),
+        ("norm_out", "mlp.combine_output_norm.weight"),
+    ];
+    /// The n-gram memory (`NgramForm::EngramNormed`): its tables as one tensor, the compressed vocabulary, the value's weight. The roles that are a
+    /// tensor a table or a stream are the patterns below, `{S}` the table's or the stream's number (`hy_memory`).
+    pub const HY_MEMORY: Roles = &[
+        ("ngram", "engram_layer.multi_head_embedding.embedding.weight"),
+        ("ngram_map", "engram_layer.lookup_table"),
+        ("value_gamma", "engram_layer.unified_pre_gamma"),
+    ];
+    /// (role, a tensor a table) and (role, a tensor a stream, the tensor after the streams'): the rows' norms; the streams' norm, the keys' norm and the
+    /// streams' scales; the keys' products then the value's, and their biases.
+    pub const HY_MEMORY_TABLES: Roles = &[("ngram_norm", "engram_layer.lookup_per_head_norms.{S}.weight")];
+    pub const HY_MEMORY_STREAMS: &[(&str, &str, &str)] = &[
+        ("norm_in", "engram_layer.norm_query.{S}.weight", ""),
+        ("norm_key", "engram_layer.norm_key.{S}.weight", ""),
+        ("stream_scale", "engram_layer.unified_per_hc_scales.{S}", ""),
+        ("kv", "engram_layer.key_projs.{S}.weight", "engram_layer.value_proj.weight"),
+        ("kv_bias", "engram_layer.key_projs.{S}.bias", "engram_layer.value_proj.bias"),
+    ];
+
     // ---- Nemotron-H: a layer is one block, `norm` then the mixer
     pub const NH_MAMBA: Roles = &[
         ("norm_in", "norm.weight"),
@@ -483,7 +911,8 @@ pub mod part {
     ];
 }
 
-/// The roles of `table` that `keep` keeps, named under the path `at` (`experts` of them where a role is each expert's).
+/// The roles of `table` that `keep` keeps, named under the path `at` (`experts` of them where a role is each expert's). A pattern says its source's
+/// form: `{E}`, a tensor an expert; `a|b`, tensors stacked by rows (vectors joined); `^a`, a matrix stored transposed; else one tensor.
 pub fn roles(table: Roles, at: &str, experts: usize, keep: impl Fn(&str) -> bool) -> Vec<(String, Source)> {
     let name = |m: &str| if at.is_empty() { m.to_string() } else { format!("{at}.{m}") };
     table
@@ -494,6 +923,8 @@ pub fn roles(table: Roles, at: &str, experts: usize, keep: impl Fn(&str) -> bool
                 Source::Experts((0..experts).map(|e| pat.split('|').map(|m| name(&m.replace("{E}", &e.to_string()))).collect()).collect())
             } else if pat.contains('|') {
                 Source::Rows(pat.split('|').map(name).collect())
+            } else if let Some(turned) = pat.strip_prefix('^') {
+                Source::Transposed(name(turned))
             } else {
                 Source::Tensor(name(pat))
             };
@@ -505,6 +936,21 @@ pub fn roles(table: Roles, at: &str, experts: usize, keep: impl Fn(&str) -> bool
 /// One tensor saved in `n` shards along its rows (`{S}` in `pat` the shard's number), under the path `at`: the shards stacked.
 pub fn shards(pat: &str, at: &str, n: usize) -> Source {
     Source::Rows((0..n).map(|s| format!("{at}.{}", pat.replace("{S}", &s.to_string()))).collect())
+}
+
+/// Hunyuan's n-gram memory's roles under the layer's path `at`, for `tables` tables and `streams` streams (`part::HY_MEMORY` and its two patterns): a
+/// role that is a tensor a table or a stream is those joined in order, the value's after the streams' where the role has one.
+pub fn hy_memory(at: &str, tables: usize, streams: usize) -> Vec<(String, Source)> {
+    let mut r = roles(part::HY_MEMORY, at, 0, all);
+    r.extend(part::HY_MEMORY_TABLES.iter().map(|&(role, pat)| (role.to_string(), shards(pat, at, tables))));
+    for &(role, pat, last) in part::HY_MEMORY_STREAMS {
+        let Source::Rows(mut v) = shards(pat, at, streams) else { unreachable!("shards are rows") };
+        if !last.is_empty() {
+            v.push(format!("{at}.{last}"));
+        }
+        r.push((role.to_string(), Source::Rows(v)));
+    }
+    r
 }
 
 /// Every role of `table`.

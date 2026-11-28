@@ -132,6 +132,7 @@ const BY_COMMAND: &[(&str, &str, bool)] = &[
     ("dsv4gen", "score", true),
     ("stackcheck", "load", true),
     ("usercheck", "record", true),
+    ("intake", "record", true),
     ("usercheck", "floor", false),
     ("storecheck", "floor", false),
     ("floortrace", "sequence", true),

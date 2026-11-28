@@ -804,7 +804,7 @@ pub(crate) mod tests {
         assert!(odd.kept().iter().any(|t| t.name == l(1, "mixer.shared_experts.up_proj.weight") && t.shape == [5400, 4096]));
     }
 
-    /// The layout of each pack at each level, on the pinned checkpoint's config: at kestrel and swift every pack is the level's, but for the routed experts' down matrices (20,480 packs), which are in the level's row
+    /// The layout of each pack at each level, on the pinned checkpoint's config: at kestrel and linnet every pack is the level's, but for the routed experts' down matrices (20,480 packs), which are in the level's row
     /// layout; at wren the routed experts (40,960 packs, 112.7 billion weights) alone are four-bit codes (their down matrices in the four-bit row layout), and the other 258 packs (Mamba-2's, attention's, the latent
     /// projections', the shared experts', the embedding and the head: 7.84 billion weights) are six-bit ones. The model comes to about 70 GB, as the plan sizes it (a row layout's bytes are its block layout's).
     #[test]
@@ -965,8 +965,8 @@ pub(crate) mod tests {
         assert_eq!((of.len(), of), (c.layers_of(NhKind::Moe), want));
     }
 
-    /// An expert is 3,784,704 bytes at swift, 4,472,832 at kestrel and 3,096,576 at wren (the codes and scales of its two matrices), and a budget buys places a layer
-    /// of 512 by them: at swift 14.95, 22.99 and 34 GiB are 106, 163 and 241; fewer than the choices of a step (22) are none.
+    /// An expert is 3,784,704 bytes at linnet, 4,472,832 at kestrel and 3,096,576 at wren (the codes and scales of its two matrices), and a budget buys places a layer
+    /// of 512 by them: at linnet 14.95, 22.99 and 34 GiB are 106, 163 and 241; fewer than the choices of a step (22) are none.
     #[test]
     fn an_expert_is_a_few_megabytes_and_a_budget_buys_places() {
         let cache_plan =

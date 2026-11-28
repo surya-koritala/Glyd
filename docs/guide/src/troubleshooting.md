@@ -41,7 +41,7 @@ These are exit 3 unless noted. The message says what to do; the usual ones:
 | Message starts | What it means | What to do |
 | :--- | :--- | :--- |
 | `X is a ...ForCausalLM model, which this engine has no description of yet` | The model's kind is not one of the [Models](models.md) families. | Pick a listed family, or run it with another engine. |
-| `GLM-5.3-Flash (GLM-5.3-Flash) runs at the penguin and hummingbird levels in this engine, not swift` | The family does not run that level. | Use the level the message offers, or see [Models](models.md). |
+| `GLM-5.3-Flash (GLM-5.3-Flash) runs at the penguin and hummingbird levels in this engine, not linnet` | The family does not run that level. | Use the level the message offers, or see [Models](models.md). |
 | `it needs ... GiB of GPU memory` | The model does not fit at the level and context asked. | A lower level, a smaller `--context`, another GPU, or for a mixture of experts more of the computer's memory (`--host-memory`). `glyd fit MODEL` shows each level's size first. |
 | `no GPU was found: the engine's CPU backend is not built yet` | No usable GPU. | See [Install](install.md). |
 | `AMD GPUs run in development builds only (GLYD_HIP=1)` | AMD is a development build. | `GLYD_HIP=1 cargo build --release -p glyd-engine`. |
@@ -54,5 +54,5 @@ These are exit 3 unless noted. The message says what to do; the usual ones:
 ## Still stuck
 
 Run `glyd doctor` and `glyd preflight MODEL` and put what they print in an
-[issue](https://github.com/surya-koritala/Glyd/issues) with the model, the command and the GPU. For Condor, choose "Condor:
+[issue](https://github.com/surya-koritala/Glyd/issues) with the model, the command and the GPU. For Ibis, choose "Ibis:
 something went wrong".

@@ -102,7 +102,7 @@ impl Own {
 
 /// What a save of the model `d` (of `layers` layers, its blocks as many a layer) holds, layer by layer and then the model's own tensors (`Group`), from its
 /// description alone. The matrices: each block's products (`kinds::Body::products`: q, k and v one pack; gate and up), at the place its weight map names
-/// the first of them, and a block of experts' routed experts, expert by expert, each expert's matrices as its roles name them (its gate and up one pack
+/// the first of them (a product whose roles are cut from one stored matrix's rows is that matrix), and a block of experts' routed experts, expert by expert, each expert's matrices as its roles name them (its gate and up one pack
 /// where its roles stack them); after the last layer the embedding and the head. Every other tensor a block's roles name is kept as saved: a layer's
 /// blocks' norms (`norm_in`, `norm_out`), then the residual streams' mixing tensors (`hc_*`), then each block's other tensors in its roles' order and the
 /// parts of its matrices the library does not pack (`Pack35::packable`), each after its own block's tensors or, `parts_last`, after all of them; the
@@ -183,7 +183,9 @@ pub(crate) fn walk(
                 match product(r) {
                     // (a product at its first role's place: every role of it the block has, stacked)
                     Some(k) if !std::mem::replace(&mut made[k], true) => {
-                        let members: Vec<String> = products[k].iter().filter_map(|x| names(x)).flatten().collect();
+                        // (roles cut from one stored matrix's rows, MiMo's fused q, k and v: that matrix once, as the lowering's product is)
+                        let mut members: Vec<String> = products[k].iter().filter_map(|x| names(x)).flatten().collect();
+                        members.dedup();
                         match pack(&members)? {
                             p if p.packable() => packs.push((p, Own::Rest)),
                             p => bp.extend(parts_of(&p)),
@@ -691,7 +693,7 @@ mod tests {
         assert!(all.iter().all(|n| names.contains(n.as_str()) && !crate::nemotron::skipped(n)), "a tensor the checkpoint lacks, or the MTP head's");
     }
 
-    /// The plan at each level on the pinned checkpoint's config: at kestrel and swift no linear names a layout (the save's holds every pack, the plan as it was); at wren the 40,960 experts' matrices (112.7 billion
+    /// The plan at each level on the pinned checkpoint's config: at kestrel and linnet no linear names a layout (the save's holds every pack, the plan as it was); at wren the 40,960 experts' matrices (112.7 billion
     /// weights) are the save's, four-bit codes, and the other 258 packs (7.84 billion) say \"i6\": six-bit codes. Qwen3.5's plan names no layout at any level.
     #[test]
     fn nemotron_plan_puts_the_experts_in_four_bit_codes_and_the_rest_in_six_at_wren() {
@@ -711,7 +713,7 @@ mod tests {
             let named = linears.iter().filter(|l| l.1.is_some()).count();
             let down = |name: &str| name.contains(".mixer.experts.") && name.ends_with(".down_proj");
             if level != Layout::Int4 {
-                // (kestrel and swift: the level's layout for every pack but the experts' down matrices, whose plan names the row layout of the level's bits)
+                // (kestrel and linnet: the level's layout for every pack but the experts' down matrices, whose plan names the row layout of the level's bits)
                 let rows = level.row_of().unwrap().name();
                 assert_eq!(named, 20_480, "{level:?}");
                 assert!(linears.iter().all(|(name, own)| *own == if down(name) { Some(rows) } else { None }), "{level:?}");
@@ -745,7 +747,7 @@ mod tests {
 
     /// A tiny NemotronH checkpoint (the random tiny model's config: Mamba-2, attention and mixture-of-experts layers, every matrix in whole blocks; with a tensor of the MTP head) packed by `run_with` at each of
     /// the three levels the engine runs: a glyd-v7 directory under the source's names, whose packs the loader's checks accept and `read_pack` reads as the packer makes them of the bf16 tensors (the fused q, k, v too),
-    /// each in the layout `pack_layout` gives it (the level's layout at kestrel and swift but for the experts' down matrices, in the row layout of its bits; at wren the experts four-bit, their down matrices in the
+    /// each in the layout `pack_layout` gives it (the level's layout at kestrel and linnet but for the experts' down matrices, in the row layout of its bits; at wren the experts four-bit, their down matrices in the
     /// four-bit row layout, and the rest six-bit, the entries naming them), and which glyd-gpu's verify decodes to the sha256 of its glyd.json. A reader that takes the level's layout for every pack refuses the packs of
     /// another layout by their tag.
     #[test]
@@ -787,7 +789,7 @@ mod tests {
                 assert!(got.data == want.data && got.b1 == want.b1 && got.b2 == want.b2 && (got.rows, got.cols) == (want.rows, want.cols), "{}", p.key);
                 assert!(matches!((got.words, want.words), (Words::Tiered { tiers: a, .. }, Words::Tiered { tiers: b, .. }) if a == b), "{}", p.key);
             }
-            // (the level's layout and the row layout of its bits at kestrel and swift, the experts' four-bit layout, its row layout and the six-bit one at wren)
+            // (the level's layout and the row layout of its bits at kestrel and linnet, the experts' four-bit layout, its row layout and the six-bit one at wren)
             assert_eq!(layouts.len(), if asked == Layout::Int4 { 3 } else { 2 }, "{layouts:?}");
             for t in c.kept() {
                 assert_eq!(saved.get(&t.name).unwrap().1.dtype, "BF16", "{}", t.name);
@@ -1229,7 +1231,7 @@ mod tests {
         crate::logits::random_model("glm", &glm).unwrap();
         crate::logits::random_model("dense", &dense).unwrap();
         let row = crate::support::row(Family::Glm);
-        for (layout, level) in [(Layout::Int6, "kestrel"), (Layout::Int5, "swift"), (Layout::Int4, "wren"), (Layout::Int4H, "wren"), (Layout::Int3, "i3")] {
+        for (layout, level) in [(Layout::Int6, "kestrel"), (Layout::Int5, "linnet"), (Layout::Int4, "wren"), (Layout::Int4H, "wren"), (Layout::Int3, "i3")] {
             let out = root.join(format!("glm-{}", layout.name()));
             let e = run_with(glm.to_str().unwrap(), &out, 2, layout, true).unwrap_err().msg;
             let want = format!(
@@ -1403,6 +1405,38 @@ mod tests {
         for n in &d.small {
             assert_eq!(ck.get(n).unwrap_or_else(|| panic!("no {n}")).1.dtype, "BF16", "{n}");
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// MiMo's small model (the logits checks' random one) packed at kestrel is a glyd-v7 save the executor's lowering reads as saved: each layer's fused q-k-v
+    /// matrix, which the description cuts into the three roles, is one pack under its own name at its stored rows (once, not a time a role), and every
+    /// other matrix of the lowered description a pack under its first member's name; each routed expert's two packs are there too.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_fused_matrix_cut_in_shards_is_saved_once_as_stored() {
+        let dir = std::env::temp_dir().join(format!("glyd-pack-mimo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (src, out) = (dir.join("src"), dir.join("out"));
+        crate::logits::mimo_random(&src).unwrap();
+        run_with(src.to_str().unwrap(), &out, 2, Layout::Int6, true).unwrap();
+        let (layout, m) = crate::weights::v7_manifest(&out).unwrap().expect("a glyd-v7 save");
+        assert_eq!(layout, Layout::Int6);
+        let d = crate::dynamic::dense::lowered(&out).unwrap();
+        let ck = Checkpoint::open(&out).unwrap();
+        let mut fused = Vec::new();
+        for it in &d.mats {
+            let key = it.members[0].trim_end_matches(".weight");
+            // (a merge of two tensors, the dense MLP's gate and up, is one pack under the first's name)
+            let p = crate::weights::read_v7(&ck, &m, Layout::Int6, &[(key, it.rows)], it.cols).unwrap_or_else(|e| panic!("{key}: {}", e.msg));
+            assert_eq!((p.rows, p.cols), (it.rows, it.cols), "{key}");
+            if key.ends_with("qkv_proj") {
+                fused.push(it.rows);
+            }
+        }
+        assert_eq!(fused, [2176, 2816, 2816, 2176]);
+        let packs = m.get("packs").and_then(|p| p.as_object()).unwrap();
+        assert_eq!(packs.iter().filter(|(k, _)| k.contains("qkv_proj")).count(), 4);
+        assert_eq!(packs.iter().filter(|(k, _)| k.contains(".mlp.experts.")).count(), 3 * 8 * 2);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

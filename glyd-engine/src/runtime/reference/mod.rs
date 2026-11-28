@@ -38,13 +38,13 @@
 //! Each comparison runs the CUDA backend's entry point of its kind (`runtime::cuda`: the executor's own operations through `Dyn::op`). The
 //! embedding (its rows, scale, norm and streams, with the residual's operations into the first block) is held at the residual's bound; the
 //! head (the LM head's product of the GPU's own final-normed row, rounded into the bf16 logits, and its soft-cap) at the MLP's, the same
-//! arithmetic of one product. Not compared kind by kind: MTP heads (their blocks are the kinds above). Condor's kinds (Qwen3.8-Flash-Next: the gated residuals and the final
+//! arithmetic of one product. Not compared kind by kind: MTP heads (their blocks are the kinds above). Ibis's kinds (Qwen3.8-Flash-Next: the gated residuals and the final
 //! mixer, the indexer on GQA, the n-gram embedding) are `kindcheck`'s cases `qwen4x` and `qwen4x-s2`: on an A10 its Gated DeltaNet
 //! 1.3e-2, its attention over the indexer's picks 4.7e-3, its experts 6.6e-3, the residuals 9.8e-3; the n-gram embedding, which adds its
 //! output into the streams in place, is compared by the streams it leaves (8.2e-3; its own output, the streams' change, 9.8e-3 of its
 //! largest magnitude, printed and not judged). The family's two random models whole are held too: the executor's logits against `Ref`'s on
-//! the executor's own routers' choices (`logitscheck`, `paritycheck`: `logits::held_on_choices`), and `Ref` against Condor's own engine's
-//! rows (`describe_tests::condors_model_on_the_reference_against_condors_engine`: KL mean 8.5e-6, max 5.0e-5).
+//! the executor's own routers' choices (`logitscheck`, `paritycheck`: `logits::held_on_choices`), and `Ref` against Ibis's own engine's
+//! rows (`describe_tests::ibis_model_on_the_reference_against_ibis_engine`: KL mean 8.5e-6, max 5.0e-5).
 //!
 //! A mixture of experts' router can be told the experts to take (`RefLayer::take`, `ffn::route_taking`): a check then holds an engine to
 //! `Ref` on the engine's own choices, where a near tie taken the other way would move a row by more than arithmetic does. The choice's
@@ -61,6 +61,7 @@ pub mod mtp;
 pub mod ngram;
 pub mod norm;
 pub mod rope;
+pub mod short_conv;
 pub mod vision;
 
 #[cfg(test)]
@@ -183,13 +184,15 @@ pub fn act(a: Act, x: f32) -> f32 {
             r * r
         }
         Act::Situ { beta, .. } => beta * (x / beta).ltanh() * sigmoid(x),
+        Act::SwigluOai { alpha } => x * sigmoid(alpha * x),
     }
 }
 
-/// A gated pair: act(g) u, with situ's cap on the up (u -> linear tanh(u / linear)).
+/// A gated pair: act(g) u, with situ's cap on the up (u -> linear tanh(u / linear)) and the gpt-oss SwiGLU's shift of it (u -> u + 1).
 pub fn gated(a: Act, g: f32, u: f32) -> f32 {
     match a {
         Act::Situ { linear, .. } => act(a, g) * linear * (u / linear).ltanh(),
+        Act::SwigluOai { .. } => act(a, g) * (u + 1.0),
         _ => act(a, g) * u,
     }
 }
@@ -531,10 +534,12 @@ impl WeightSource for Params {
 fn roles(b: &Block) -> Vec<String> {
     let prods: &[&str] = match &b.body {
         Body::Mixer(Mixer::Attention(_)) => &["q", "k", "v", "o", "g"],
-        Body::Mixer(Mixer::Mla(_)) => &["q", "q_a", "q_b", "kv_a", "kv_b", "o", "g", "indexer_wq_b", "indexer_wk", "indexer_weights", "indexer_pool_gate"],
+        Body::Mixer(Mixer::Mla(_)) => {
+            &["q", "q_a", "q_b", "kv_a", "kv_b", "o", "g", "indexer_wq_b", "indexer_wk", "indexer_weights", "indexer_pool_gate", "indexer_pool_value"]
+        }
         Body::Mixer(Mixer::Linear(_)) => &["qkv", "q", "k", "v", "beta", "decay", "gate", "o"],
-        Body::Mixer(Mixer::Compressed(_)) => &["q_a", "q_b", "kv", "o_a", "o_b", "comp_kv", "comp_gate", "idx_kv", "idx_gate", "idx_q_b", "idx_weights"],
-        Body::Mixer(Mixer::Mamba2(_)) => &["in", "o"],
+        Body::Mixer(Mixer::Compressed(_)) => &["q_a", "q_b", "kv", "o_a", "o_b", "g", "comp_kv", "comp_gate", "idx_kv", "idx_gate", "idx_q_b", "idx_weights"],
+        Body::Mixer(Mixer::Mamba2(_) | Mixer::ShortConv(_)) => &["in", "o"],
         Body::Ngram(_) => &["key", "value"],
         Body::PerLayer(_) => &["gate", "proj"],
         Body::Ffn(_) => &[
@@ -573,6 +578,14 @@ fn roles(b: &Block) -> Vec<String> {
         "indexer_k_norm",
         "indexer_k_norm_bias",
         "indexer_pool_ape",
+        "indexer_pool_norm",
+        "indexer_q_norm",
+        "indexer_q_norm_bias",
+        "indexer_scale_s",
+        "indexer_scale_b",
+        "q_scale_s",
+        "q_scale_b",
+        "rope_alpha",
         "index_qk",
         "index_q_norm",
         "index_k_norm",
@@ -582,6 +595,9 @@ fn roles(b: &Block) -> Vec<String> {
         "ngram",
         "norm_key",
         "norm_conv",
+        "mix_u",
+        "mix_v",
+        "expert_scale",
     ];
     let mut r: Vec<String> = Vec::new();
     for p in prods {
@@ -609,7 +625,7 @@ pub fn norm_groups(n: &crate::runtime::kinds::Norm, x: &[f32], w: Option<&[f32]>
     x.chunks(group).enumerate().flat_map(|(i, c)| norm::norm(n, c, w.map(|w| &w[i * group..][..group]), None)).collect()
 }
 
-/// Condor's gated residual on one token's `n` streams `xt` [n hidden]: each stream normed by `norm` (its weight `w`) into nx; the mix m =
+/// Ibis's gated residual on one token's `n` streams `xt` [n hidden]: each stream normed by `norm` (its weight `w`) into nx; the mix m =
 /// sigmoid(up silu(down nx / n)); the block's input the mean over the streams of m_s nx_s; and with `inject`, the streams' weights of the
 /// block's output 2 sigmoid(inject nx / n) (the final mixer has none).
 pub fn gated_mix(
@@ -640,6 +656,28 @@ pub fn gated_mix(
     Ok((input, inj))
 }
 
+/// The low-rank mix of an attention's heads' outputs with each other (`Comp::head_mix`, `Mla::head_mix`): `o` [heads, width] becomes (I + V U^T) o over the
+/// head axis, each head's output plus sum_r V[h][r] (sum_g U[g][r] o_g), channel by channel; `u` and `v` [heads, rank]. The sums in f64, the result f32.
+pub fn head_mix(u: &[f32], v: &[f32], heads: usize, rank: usize, o: &mut [f32]) -> Result<()> {
+    let w = o.len() / heads.max(1);
+    if rank == 0 || u.len() != heads * rank || v.len() != heads * rank || w * heads != o.len() {
+        return err(format!("a mix of the heads' outputs: U of {}, V of {} values for {heads} heads at rank {rank}, on {} values", u.len(), v.len(), o.len()));
+    }
+    let mut low = vec![0f64; rank * w];
+    for (r, row) in low.chunks_mut(w.max(1)).enumerate() {
+        for (ch, l) in row.iter_mut().enumerate() {
+            *l = (0..heads).map(|g| u[g * rank + r] as f64 * o[g * w + ch] as f64).sum();
+        }
+    }
+    for h in 0..heads {
+        for ch in 0..w {
+            let add: f64 = (0..rank).map(|r| v[h * rank + r] as f64 * low[r * w + ch]).sum();
+            o[h * w + ch] = (o[h * w + ch] as f64 + add) as f32;
+        }
+    }
+    Ok(())
+}
+
 /// mHC's weights for one token: the input's weights over the streams (pre), the output's (post) and the streams' mixing comb[j][k]
 /// (from stream j into stream k), from the streams x [n, hidden] (transformers' `DeepseekV4HyperConnection`).
 /// mHC's collapse of a token's streams `xt` (n of `d`) into a block's input by the weights `w`: the fp32 sum, rounded once where the streams round (`Once`, the
@@ -651,7 +689,20 @@ pub fn collapse(s: &crate::runtime::kinds::StreamsP, w: &[f32], xt: &[f32], d: u
 
 pub fn hc_weights(s: &crate::runtime::kinds::StreamsP, p: &Params, x: &[f32]) -> Result<(Vec<f32>, Vec<f32>, Vec<Vec<f32>>)> {
     let n = s.streams;
-    let r = 1.0 / (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32 + s.norm_eps).sqrt();
+    let r = s.norm_factor(x);
+    // (streams that keep apart, `StreamsP::apart`: an input and an output weight a stream, the product of the streams as they are times the norm's
+    // factor after, as the family's readers compute it (`hc_fn(x_flat) * rsqrt`); the mixing is the identity: stream k's own value and no other's)
+    if let Some(magnitude) = s.apart {
+        let (f, base, scale) = (p.vec("hc_fn")?, p.vec("hc_base")?, p.vec("hc_scale")?);
+        if f.len() != 2 * n * x.len() || base.len() != 2 * n || scale.len() != 2 {
+            return err(format!("weights of {}, {} and {} values for {n} streams of {} that do not mix", f.len(), base.len(), scale.len(), x.len() / n.max(1)));
+        }
+        let w: Vec<f32> = matvec(f, x.len(), x).into_iter().map(|v| v * r).collect();
+        let pre = (0..n).map(|i| sigmoid(w[i] * scale[0] + base[i]) + s.eps).collect();
+        let post = (0..n).map(|i| magnitude * sigmoid(w[n + i] * scale[1] + base[n + i]) + s.eps).collect();
+        let own = (0..n).map(|j| (0..n).map(|k| if j == k { 1.0 } else { 0.0 }).collect()).collect();
+        return Ok((pre, post, own));
+    }
     let xn: Vec<f32> = x.iter().map(|v| v * r).collect();
     let (f, base, scale) = (p.vec("hc_fn")?, p.vec("hc_base")?, p.vec("hc_scale")?);
     if f.len() != (2 + n) * n * x.len() || base.len() != (2 + n) * n || scale.len() != 3 {
@@ -711,6 +762,7 @@ pub enum SeqState {
     Linear(linear::LinearState),
     Comp(comp::CompState),
     Mamba(mamba::MambaState),
+    ShortConv(short_conv::ConvState),
     Ngram(ngram::NgramState),
 }
 
@@ -753,6 +805,10 @@ impl RefLayer {
             Some(SeqState::Mla(c)) => {
                 let keep = c.pos.iter().take_while(|&&q| q < pos).count();
                 (c.pos.truncate(keep), c.lat.truncate(keep), c.ikey.truncate(keep), c.igate.truncate(keep));
+                // (a grouped indexer's keys of the groups that are still whole)
+                if let Body::Mixer(Mixer::Mla(m)) = &self.block.body {
+                    c.pool.truncate(keep / m.indexer.as_ref().map_or(1, |ix| ix.block.max(1)));
+                }
             }
             _ => {}
         }
@@ -784,9 +840,18 @@ impl RefLayer {
                 y
             }
             Body::Mixer(Mixer::Mla(m)) => {
+                // (a layer that shares an earlier block's latents reads that block's cache of the sequence)
+                let shared = match (m.kv_from, store) {
+                    (None, _) => None,
+                    (Some(j), Some(s)) => match s.seqs.get(&seq) {
+                        Some(SeqState::Mla(c)) => Some(c),
+                        _ => return err(format!("sequence {seq}: no latents in block {j}, which this one shares")),
+                    },
+                    (Some(j), None) => return err(format!("a latent attention that shares block {j}'s latents runs with that block (`body_with`)")),
+                };
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Mla(mla::LatentCache::default()));
                 let SeqState::Mla(c) = st else { return err("a sequence's state is not a latent cache") };
-                let y = mla::step(m, p, c, h, pos);
+                let y = mla::step_with(m, p, c, shared, h, pos);
                 self.margin = c.margin;
                 y
             }
@@ -806,6 +871,11 @@ impl RefLayer {
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Mamba(mamba::MambaState::new(m)));
                 let SeqState::Mamba(s) = st else { return err("a sequence's state is not a Mamba-2 state") };
                 mamba::step(m, p, s, h)
+            }
+            Body::Mixer(Mixer::ShortConv(c)) => {
+                let st = self.seqs.entry(seq).or_insert_with(|| SeqState::ShortConv(short_conv::ConvState::new(c, h.len())));
+                let SeqState::ShortConv(s) = st else { return err("a sequence's state is not a short convolution's") };
+                short_conv::step(c, p, s, h)
             }
             Body::PerLayer(pl) => err(format!("the per-layer input {}'s branch reads its token's input: it runs in the model (`RefModel::body`)", pl.layer)),
             Body::Ngram(n) => {
@@ -947,10 +1017,11 @@ impl RefLayer {
         Ok(self.norm_out(o))
     }
 
-    /// The block whose keys and values this one's attention shares (`Attn::kv_from`).
+    /// The block whose keys and values this one's attention shares (`Attn::kv_from`), or whose latents its latent attention does (`Mla::kv_from`).
     pub fn kv_from(&self) -> Option<usize> {
         match &self.block.body {
             Body::Mixer(Mixer::Attention(a)) => a.kv_from,
+            Body::Mixer(Mixer::Mla(m)) => m.kv_from,
             _ => None,
         }
     }
@@ -1004,7 +1075,7 @@ impl Backend for Ref {
     }
 
     /// Every kind, in any format a source decodes to f32, at the speed of plain Rust (DeepSeek-V4's compressed attention too: `comp.rs`; a latent
-    /// attention's indexer: `mla.rs`; Condor's on GQA: `attention.rs`; its n-gram embedding: `ngram.rs`). The match names each kind, so that a kind added
+    /// attention's indexer: `mla.rs`; Ibis's on GQA: `attention.rs`; its n-gram embedding: `ngram.rs`). The match names each kind, so that a kind added
     /// to `KindRef` is decided here. (A gated-form indexer on plain attention is not in the reference: such a layer says so where it would pick. A latent
     /// attention's `shared` indexer attends to the picks of the layer before it, which the model lends: `RefModel::share_into`.)
     fn supports(&self, kind: &KindRef, _: &Format) -> Support {
@@ -1017,6 +1088,7 @@ impl Backend for Ref {
             | KindRef::GatedDeltaNet
             | KindRef::KimiDelta
             | KindRef::Mamba2
+            | KindRef::ShortConv
             | KindRef::Mlp
             | KindRef::Moe
             | KindRef::Ngram
@@ -1064,7 +1136,38 @@ mod tests {
     use super::*;
     use crate::runtime::kinds::{Decay, Linear, LinearKind, Norm};
 
-    /// Condor's gated residual by hand on one token of two streams of 4 (a rank of 3): each stream normed with its own part of the weight, the
+    /// The low-rank mix of the heads' outputs (`head_mix`): o <- (I + V U^T) o over the head axis. By hand for two heads at rank 1; against the second
+    /// formulation, the heads' matrix I + V U^T made first and applied to each channel's column, for three heads at rank 2; nothing with a V of zero, to
+    /// the bit; and U and V of other shapes than the heads' are refused.
+    #[test]
+    fn the_heads_mix_is_one_plus_v_u_transposed() {
+        use super::testing::fill;
+        let mut o = vec![1.0f32, 2.0, 3.0, 4.0];
+        head_mix(&[0.5, -1.0], &[2.0, 0.25], 2, 1, &mut o).unwrap();
+        // (U^T o = 0.5 [1, 2] - [3, 4] = [-2.5, -3]; head 0 adds twice it, head 1 a quarter of it)
+        assert_eq!(o, [-4.0, -4.0, 2.375, 3.25]);
+        let (h, r, w) = (3usize, 2usize, 5usize);
+        let (u, v, x) = (fill("mix.u", h * r, -0.7, 0.7), fill("mix.v", h * r, -0.7, 0.7), fill("mix.o", h * w, -2.0, 2.0));
+        let mut got = x.clone();
+        head_mix(&u, &v, h, r, &mut got).unwrap();
+        let m: Vec<f64> =
+            (0..h * h).map(|i| ((i / h == i % h) as u32) as f64 + (0..r).map(|k| v[(i / h) * r + k] as f64 * u[(i % h) * r + k] as f64).sum::<f64>()).collect();
+        for a in 0..h {
+            for ch in 0..w {
+                let want = (0..h).map(|b| m[a * h + b] * x[b * w + ch] as f64).sum::<f64>() as f32;
+                assert!((got[a * w + ch] - want).abs() <= 4.0 * f32::EPSILON * want.abs().max(1.0), "head {a}, channel {ch}: {} {want}", got[a * w + ch]);
+            }
+        }
+        assert_ne!(got, x);
+        let mut same = x.clone();
+        head_mix(&u, &vec![0.0; h * r], h, r, &mut same).unwrap();
+        assert_eq!(same, x);
+        assert!(
+            head_mix(&u[..5], &v, h, r, &mut same).is_err() && head_mix(&u, &v, h, 0, &mut same).is_err() && head_mix(&u, &v, h, r, &mut same[..14]).is_err()
+        );
+    }
+
+    /// Ibis's gated residual by hand on one token of two streams of 4 (a rank of 3): each stream normed with its own part of the weight, the
     /// bottleneck's mix, the mean over the streams, the streams' weights of the output; a block between gated residuals takes no other norm and
     /// adds w_s o to stream s; the final mixer (`Collapse::GatedMix`) is the mix without the weights.
     #[test]

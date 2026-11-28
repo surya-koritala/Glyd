@@ -394,7 +394,7 @@ fn load(path: &str, schema: &str) -> Result<Value> {
 /// or a format given with --level for another engine's). Refused, with the reasons: a figure past the bar, a text or task the candidate lacks, a reference that is not lossless.
 pub fn card(reference: &Value, cand: &Value, level: &str, bar_level: &str) -> Result<Value> {
     let bar =
-        levels::by_name(bar_level).and_then(|l| l.bar).ok_or_else(|| Error(format!("{bar_level}: no quality bar (kestrel, swift, wren or hummingbird)")))?;
+        levels::by_name(bar_level).and_then(|l| l.bar).ok_or_else(|| Error(format!("{bar_level}: no quality bar (kestrel, linnet, wren or hummingbird)")))?;
     let mut reasons = Vec::new();
     if let Some(l) = reference["model"]["level"].as_str().filter(|l| *l != "penguin") {
         return err(format!("the reference is at {l}: a card is taken against the lossless level (penguin)"));
@@ -534,20 +534,20 @@ pub fn table(cards: &[Value]) -> String {
 const CARDS: &[(&str, &str)] = &[
     ("nemotron-3-hummingbird", include_str!("../../cards/nemotron-3-hummingbird.json")),
     ("Qwen3.5-0.8B-kestrel", include_str!("../../cards/Qwen3.5-0.8B-kestrel.json")),
-    ("Qwen3.5-0.8B-swift", include_str!("../../cards/Qwen3.5-0.8B-swift.json")),
+    ("Qwen3.5-0.8B-linnet", include_str!("../../cards/Qwen3.5-0.8B-linnet.json")),
     ("Qwen3.5-27B-kestrel", include_str!("../../cards/Qwen3.5-27B-kestrel.json")),
-    ("Qwen3.5-27B-swift", include_str!("../../cards/Qwen3.5-27B-swift.json")),
+    ("Qwen3.5-27B-linnet", include_str!("../../cards/Qwen3.5-27B-linnet.json")),
     ("Qwen3.5-2B-kestrel", include_str!("../../cards/Qwen3.5-2B-kestrel.json")),
-    ("Qwen3.5-2B-swift", include_str!("../../cards/Qwen3.5-2B-swift.json")),
+    ("Qwen3.5-2B-linnet", include_str!("../../cards/Qwen3.5-2B-linnet.json")),
     ("Qwen3.5-4B-kestrel", include_str!("../../cards/Qwen3.5-4B-kestrel.json")),
-    ("Qwen3.5-4B-swift", include_str!("../../cards/Qwen3.5-4B-swift.json")),
+    ("Qwen3.5-4B-linnet", include_str!("../../cards/Qwen3.5-4B-linnet.json")),
     ("Qwen3.5-9B-kestrel", include_str!("../../cards/Qwen3.5-9B-kestrel.json")),
     ("Qwen3.5-9B-penguin", include_str!("../../cards/Qwen3.5-9B-penguin.json")),
-    ("Qwen3.5-9B-swift", include_str!("../../cards/Qwen3.5-9B-swift.json")),
+    ("Qwen3.5-9B-linnet", include_str!("../../cards/Qwen3.5-9B-linnet.json")),
     ("Qwen3.6-27B-kestrel", include_str!("../../cards/Qwen3.6-27B-kestrel.json")),
-    ("Qwen3.6-27B-swift", include_str!("../../cards/Qwen3.6-27B-swift.json")),
+    ("Qwen3.6-27B-linnet", include_str!("../../cards/Qwen3.6-27B-linnet.json")),
     ("Qwen3.8-27B-kestrel", include_str!("../../cards/Qwen3.8-27B-kestrel.json")),
-    ("Qwen3.8-27B-swift", include_str!("../../cards/Qwen3.8-27B-swift.json")),
+    ("Qwen3.8-27B-linnet", include_str!("../../cards/Qwen3.8-27B-linnet.json")),
 ];
 
 /// A level's quality figures for MODEL where any were measured: the suite's card (glyd-quality-card/1) of a local pack (MODEL a directory of that level, or the
@@ -767,22 +767,22 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         // the lossless level needs no card; a lossy one without one is refused
         assert!(publishable("penguin", &dir).is_ok());
-        assert!(publishable("swift", &dir).unwrap_err().msg.contains("quality card"));
+        assert!(publishable("linnet", &dir).unwrap_err().msg.contains("quality card"));
         let reference = result(Some("penguin"), 0.0, 36);
         let write = |c: &Value| std::fs::write(dir.join("quality.json"), c.to_string()).unwrap();
-        write(&card(&reference, &result(Some("swift"), 0.0, 36), "swift", "swift").unwrap());
-        assert!(publishable("swift", &dir).is_ok());
+        write(&card(&reference, &result(Some("linnet"), 0.0, 36), "linnet", "linnet").unwrap());
+        assert!(publishable("linnet", &dir).is_ok());
         assert!(publishable("wren", &dir).unwrap_err().msg.contains("the card is of"));
-        write(&card(&reference, &result(Some("swift"), 0.35, 36), "swift", "swift").unwrap());
-        assert!(publishable("swift", &dir).unwrap_err().msg.contains("under its quality bar"));
+        write(&card(&reference, &result(Some("linnet"), 0.35, 36), "linnet", "linnet").unwrap());
+        assert!(publishable("linnet", &dir).unwrap_err().msg.contains("under its quality bar"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn fit_shows_each_levels_figures_or_that_none_were_measured() {
-        let (text, j) = fit_block("Qwen/Qwen3.5-9B", &["penguin", "kestrel", "swift", "wren"]);
+        let (text, j) = fit_block("Qwen/Qwen3.5-9B", &["penguin", "kestrel", "linnet", "wren"]);
         assert!(text.contains("penguin      lossless"), "{text}");
-        assert!(text.contains("swift        KL 0.0373 from bf16 (WikiText-2) · GSM8K 94.8% (bf16 95.5%) (cards/Qwen3.5-9B-swift.json"), "{text}");
+        assert!(text.contains("linnet       KL 0.0373 from bf16 (WikiText-2) · GSM8K 94.8% (bf16 95.5%) (cards/Qwen3.5-9B-linnet.json"), "{text}");
         assert!(text.contains("wren         not measured"), "{text}");
         assert_eq!(j["penguin"]["lossless"], true);
         assert!(j["wren"].is_null() && j["kestrel"]["source"] == "cards/Qwen3.5-9B-kestrel.json");

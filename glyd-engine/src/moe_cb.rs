@@ -774,7 +774,18 @@ mod tests {
     fn the_kind_the_codes_block_takes() {
         use crate::runtime::kinds::{Latent, Mlp, Moe, Router, RouterScore};
         let mlp = Mlp { act: kinds::Act::Silu, gated: true, bias: false, clamp: None };
-        let router = Router { score: RouterScore::Softmax, logit_scale: 1.0, bias: false, groups: None, top_k: 10, renorm: true, scale: 1.0, hash: false };
+        let router = Router {
+            score: RouterScore::Softmax,
+            logit_scale: 1.0,
+            bias: false,
+            groups: None,
+            top_k: 10,
+            renorm: true,
+            scale: 1.0,
+            hash: false,
+            routers: 1,
+            expert_scale: false,
+        };
         let m = Moe { router, experts: 512, expert: mlp, shared: Some(mlp), shared_gate: true, latent: None };
         let c = cfg_of(&m, 2560, 640).unwrap();
         assert_eq!((c.experts, c.hidden, c.inter, c.router.top_k, c.act), (512, 2560, 640, 10, Act::SwiGlu { limit: None }));
@@ -789,7 +800,7 @@ mod tests {
         refused(&|x| x.router.bias = true, (2560, 640), "choice bias");
         refused(
             &|x| {
-                x.expert.clamp = Some(7.0);
+                x.expert.clamp = Some(kinds::Clamp::Gate(7.0));
                 x.shared = Some(x.expert);
             },
             (2560, 640),

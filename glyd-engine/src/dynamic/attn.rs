@@ -7,7 +7,8 @@
 //! one for both caches: over bf16 rings or pages `glyd_gpu_kv_prefill_bf16`, over 12-bit pages `glyd_gpu_kv_prefill`, the same tiles and sums, so the same
 //! bits. A decode row likewise (`LibDecode`): over 12-bit pages `kv_decode_from`, over a bf16 cache `glyd_gpu_kv_decode_bf16`, one kernel, plan and merge, where
 //! the shape is the pages' (heads of 128 to 512, up to 8 query heads a kv head or one kv head, no soft-cap); others (heads of 64, or more than 8 query heads over several kv heads) the
-//! engine's parts kernel.
+//! engine's parts kernel. An attention with sinks, heads of 192, or values narrower than its queries and keys (`AttnOp::warp_only`) takes the kind's warp kernel
+//! for a prompt chunk and the parts kernel for a decode row, and its ring stays bf16.
 //!
 //! One arithmetic for every family: the preparation, the decode and the gate are the kind's own kernels, a prompt chunk's sums the library's kernel, and
 //! Muse Spark's decode the parts kernel.
@@ -125,16 +126,19 @@ pub struct RopeAt {
 }
 
 /// An output gate o = norm(o) sigmoid(g): head h's gate values at column `off` + h `step` of the projection's rows; the head's weightless norm first where `norm`.
+/// `head`: one value a head there (`kinds::GateFrom::Head`), every dim of the head's output times its sigmoid; else a value a dim.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GateAt {
     pub off: usize,
     pub step: usize,
     pub norm: bool,
+    pub head: bool,
 }
 
 /// `Op::Attn`: the preparation of the projection's rows (slot `src`, rows `stride` wide: query head h at h `q_step`, the key heads from `k_off`, the value heads
-/// from `v_off` or none: K = V, the keys' projection normed without a weight), then the causal attention of the queries over ring `ring` (`window` 0: every
-/// position) into Att, gated where `gate`. `writes`: the layer writes its keys and values (a draft model's layers read the big model's ring and write none).
+/// from `v_off`, each `dv` wide, or none: K = V, the keys' projection normed without a weight), then the causal attention of the queries over ring `ring`
+/// (`window` 0: every position) into Att (head h at h `dv`), gated where `gate`. `writes`: the layer writes its keys and values (a draft model's layers read
+/// the big model's ring and write none).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AttnOp {
     pub src: Slot,
@@ -143,6 +147,9 @@ pub struct AttnOp {
     pub k_off: usize,
     pub v_off: Option<usize>,
     pub d: usize,
+    /// The values' head width (`kinds::Attn::v_head_dim`): `d`, or narrower (MiMo's 128 under 192). The ring holds a value head in a key head's room (`d`), zeros
+    /// after its `dv` values, so the ring's layout and the kernels' reads of it are one width's; the output's heads are `dv` apart, which the output product reads.
+    pub dv: usize,
     pub nq: usize,
     pub nk: usize,
     pub writes: bool,
@@ -160,6 +167,15 @@ pub struct AttnOp {
     /// The attention over the tokens the indexer's pick before it took (`Op::IdxPick`, its picks' run: src/dynamic/picked.rs), its keys and values in its ring as
     /// any attention's: a sparse attention (`Attn::indexer`). Heads of 256, the gate in the query.
     pub picked: bool,
+    /// The kind's sinks (`kinds::Attn::sinks`): the small tensor of a logit a query head that joins every row's softmax and attends to nothing. Such an attention
+    /// runs on the kind's warp kernels and the parts kernel with its merge, which add the sink to a row's sum: not on the prompt kernel nor the GPU library's.
+    pub sinks: Option<usize>,
+    /// The values' factor (`kinds::Attn::v_scale`; 1: none): the preparation multiplies each value by it as it writes the cache, in fp32, rounded once to the
+    /// bf16 the cache holds, where the CPU reference multiplies. Every path reads the cache, so every path takes it.
+    pub v_scale: f32,
+    /// The projection's rows are stored in this many shards, `stride` / `shards` apart, each its query heads, then its key heads, then its value heads (a fused
+    /// q-k-v matrix as MiMo stores it, `sharded`): `k_off` and `v_off` are then into a shard. 1: every query head, then every key head, then every value head.
+    pub shards: usize,
 }
 
 impl AttnOp {
@@ -169,28 +185,48 @@ impl AttnOp {
     /// products and of their scale (`sbf16`), Sdpa's scale on the queries before the rope (the scores then unscaled); Flash's one rounding at the end of each.
     /// F32 (transformers in float32) runs as Flash: the executor's activations are bf16.
     pub fn of(a: &kinds::Attn, src: Slot, ring: usize, table: Option<usize>, qk: Option<(usize, usize)>) -> Result<AttnOp> {
-        let (d, nq, nk) = (a.head_dim, a.heads, a.kv_heads);
-        if ![64, 128, 256, 512].contains(&d) || a.v_head_dim != d {
-            return err(format!("attention heads of {d} (values {}): the kernels take 64, 128, 256 or 512, the values as wide", a.v_head_dim));
+        let (d, dv, nq, nk) = (a.head_dim, a.v_head_dim, a.heads, a.kv_heads);
+        if !a.v_scale.is_finite() || a.v_scale == 0.0 {
+            return err(format!("attention whose values are scaled by {}: not a factor", a.v_scale));
+        }
+        if ![64, 128, 192, 256, 512].contains(&d) || dv == 0 || dv > d {
+            return err(format!("attention heads of {d} (values {dv}): the kernels take 64, 128, 192, 256 or 512, the values as wide or narrower"));
+        }
+        // (values narrower than the head: the gate's kernels and the keys' projection as the values are one width's)
+        if dv != d && (a.gate.is_some() || a.k_eq_v) {
+            return err(format!("attention heads of {d} with values of {dv} and an output gate, or the keys as the values: not an operation of this executor"));
         }
         if nk == 0 || nq % nk != 0 || nq / nk > MAX_G {
             return err(format!("{nq} query heads over {nk} key-value heads: the kernels take up to {MAX_G} a key-value head"));
         }
+        if a.indexer.as_ref().is_some_and(|x| matches!(x.form, kinds::IndexForm::Max { .. })) {
+            return err(kinds::IndexForm::MAX_NOT_RUN);
+        }
         if a.sinks || a.bias || a.indexer.is_some() {
             return err("attention with sinks, a bias or an indexer: not an operation of this executor");
+        }
+        if a.gate.is_some_and(|g| g.from == kinds::GateFrom::Latent) {
+            return err(format!("attention: {}", kinds::GateFrom::LATENT_NOT_RUN));
         }
         let in_query = a.gate.is_some_and(|g| g.from == kinds::GateFrom::InQuery);
         let q_step = if in_query { 2 * d } else { d };
         let k_off = nq * q_step;
         let v_off = (!a.k_eq_v).then_some(k_off + nk * d);
-        let after = k_off + nk * d * if a.k_eq_v { 1 } else { 2 };
+        let after = k_off + nk * d + if a.k_eq_v { 0 } else { nk * dv };
         let gate = match a.gate {
             None => None,
             Some(g) if g.act != kinds::Act::Sigmoid => return err(format!("an output gate of {:?}: the kernels take sigmoid", g.act)),
-            Some(g) if g.from == kinds::GateFrom::InQuery => Some(GateAt { off: d, step: 2 * d, norm: g.norm.is_some() }),
-            Some(g) => Some(GateAt { off: after, step: d, norm: g.norm.is_some() }),
+            Some(g) if g.from == kinds::GateFrom::InQuery => Some(GateAt { off: d, step: 2 * d, norm: g.norm.is_some(), head: false }),
+            // (a value a head, LFM's: its product's `nq` rows after the values', a head's one value each)
+            Some(g) if g.from == kinds::GateFrom::Head => Some(GateAt { off: after, step: 1, norm: g.norm.is_some(), head: true }),
+            Some(g) => Some(GateAt { off: after, step: d, norm: g.norm.is_some(), head: false }),
         };
-        let stride = after + if matches!(a.gate, Some(g) if g.from == kinds::GateFrom::Own) { nq * d } else { 0 };
+        let stride = after
+            + match a.gate.map(|g| g.from) {
+                Some(kinds::GateFrom::Own) => nq * d,
+                Some(kinds::GateFrom::Head) => nq,
+                _ => 0,
+            };
         let rms = |n: &Option<kinds::Norm>| -> Result<()> {
             match n {
                 Some(n) if n.kind != kinds::NormKind::Rms => err(format!("a q, k or v norm of {:?}: the kernels take RMS norms", n.kind)),
@@ -202,12 +238,15 @@ impl AttnOp {
         rms(&a.v_norm)?;
         let norm = match (a.q_norm.map(|n| n.weight), qk) {
             (None, _) => QkNorm::None,
+            // (queries normed with no weight and keys with one, as Domyn Edge's: the weighted norm, the queries' weight the tensor of ones the lowering names)
+            (Some(kinds::NormWeight::None), Some((q, k))) if a.k_norm.map(|n| n.weight) == Some(kinds::NormWeight::Plain) => QkNorm::Weight { q, k },
             (Some(kinds::NormWeight::None), _) => QkNorm::Plain,
             (Some(kinds::NormWeight::Plain), Some((q, k))) => QkNorm::Weight { q, k },
             (Some(kinds::NormWeight::PlusOne), Some((q, k))) => QkNorm::Plus1 { q, k },
             (w, _) => return err(format!("q and k norms of {w:?} (weights {qk:?}): not an operation of this executor")),
         };
-        if a.k_norm.map(|n| n.weight) != a.q_norm.map(|n| n.weight) || a.v_norm.is_some_and(|n| n.weight != kinds::NormWeight::None) {
+        let q_bare_k_weighted = matches!(norm, QkNorm::Weight { .. }) && a.q_norm.map(|n| n.weight) == Some(kinds::NormWeight::None);
+        if (a.k_norm.map(|n| n.weight) != a.q_norm.map(|n| n.weight) && !q_bare_k_weighted) || a.v_norm.is_some_and(|n| n.weight != kinds::NormWeight::None) {
             return err("q and k norms of different kinds, or a v norm with a weight: not an operation of this executor");
         }
         let rope = match (&a.rope, table) {
@@ -231,6 +270,7 @@ impl AttnOp {
             k_off,
             v_off,
             d,
+            dv,
             nq,
             nk,
             writes: true,
@@ -246,12 +286,47 @@ impl AttnOp {
             round,
             sbf16,
             picked: false,
+            sinks: None,
+            v_scale: a.v_scale,
+            shards: 1,
         })
     }
 
-    /// The operation of a sparse attention (`a` with an indexer: Condor's, `IndexForm::Mean`) whose keys and values are ring `ring`, over the indexer's picks
+    /// This operation reading a product stored in `shards` shards, each shard its query heads' rows, then its key heads', then its value heads' (the fused
+    /// matrix as its checkpoint holds it, multiplied as it is: the preparation finds each head in its shard, so no row of the stored matrix is moved). Each
+    /// shard holds whole heads of each sort; a gate, whose values the kernels find by one step, and values that are the keys' projection are refused.
+    pub fn sharded(mut self, shards: usize) -> Result<AttnOp> {
+        if shards == 0 || self.nq % shards != 0 || self.nk % shards != 0 {
+            return err(format!(
+                "a fused q, k and v product of {shards} shards for {} query heads over {} key-value heads: whole heads a shard are wanted",
+                self.nq, self.nk
+            ));
+        }
+        if self.gate.is_some() || self.v_off.is_none() || self.q_step != self.d {
+            return err("a fused q, k and v product stored in shards with an output gate, or with the keys as the values: not an operation of this executor");
+        }
+        self.k_off = self.nq / shards * self.d;
+        self.v_off = Some(self.k_off + self.nk / shards * self.d);
+        self.shards = shards;
+        Ok(self)
+    }
+
+    /// `of` for a kind with sinks, the small tensor `sinks` holding them [heads].
+    pub fn of_sinks(a: &kinds::Attn, src: Slot, ring: usize, table: Option<usize>, qk: Option<(usize, usize)>, sinks: usize) -> Result<AttnOp> {
+        if !a.sinks {
+            return err("sinks named for an attention that has none");
+        }
+        let mut op = AttnOp::of(&kinds::Attn { sinks: false, ..a.clone() }, src, ring, table, qk)?;
+        op.sinks = Some(sinks);
+        Ok(op)
+    }
+
+    /// The operation of a sparse attention (`a` with an indexer: Ibis's, `IndexForm::Mean`) whose keys and values are ring `ring`, over the indexer's picks
     /// (`picked`); the rest as `of`. The kernel of the picks takes heads of 256 and an in-query gate.
     pub fn picked(a: &kinds::Attn, src: Slot, ring: usize, table: Option<usize>, qk: Option<(usize, usize)>) -> Result<AttnOp> {
+        if a.indexer.as_ref().is_some_and(|x| matches!(x.form, kinds::IndexForm::Max { .. })) {
+            return err(kinds::IndexForm::MAX_NOT_RUN);
+        }
         if a.head_dim != 256 || !a.gate.is_some_and(|g| g.from == kinds::GateFrom::InQuery && g.norm.is_none()) || a.window.is_some() || a.softcap.is_some() {
             return err(format!(
                 "a sparse attention of heads of {} (a window {:?}, a soft-cap {:?}): the kernel of the picks takes heads of 256 and an in-query gate",
@@ -263,6 +338,17 @@ impl AttnOp {
         Ok(x)
     }
 
+    /// Where head `j` of `heads` starts in the product's row (`off` + j `step`, or the same within its shard): kernels/attn.cu's at_head, line for line, which
+    /// the tests hold to the description's cuts of a fused matrix.
+    #[cfg(test)]
+    pub(crate) fn head_at(&self, j: usize, heads: usize, off: usize, step: usize) -> usize {
+        if self.shards <= 1 {
+            return off + j * step;
+        }
+        let per = heads / self.shards;
+        (j / per) * (self.stride / self.shards) + off + (j % per) * step
+    }
+
     /// The kernels' arguments of this operation on n rows, the pointers null (`Dyn::attn` sets them).
     pub(crate) fn args(&self, n: usize, eps: f32) -> AttnArgs {
         let norm = match self.norm {
@@ -271,7 +357,7 @@ impl AttnOp {
             QkNorm::Plus1 { .. } => 2,
             QkNorm::Plain => 3,
         };
-        let g = self.gate.unwrap_or(GateAt { off: 0, step: 0, norm: false });
+        let g = self.gate.unwrap_or(GateAt { off: 0, step: 0, norm: false, head: false });
         AttnArgs {
             d: self.d as i32,
             stride: self.stride as i32,
@@ -286,10 +372,13 @@ impl AttnOp {
             nq: self.nq as i32,
             nk: self.nk as i32,
             window: self.window as i32,
-            os: (self.nq * self.d) as i32,
+            os: (self.nq * self.dv) as i32,
             gs: self.stride as i32,
             g_step: g.step as i32,
             gnorm: g.norm as i32,
+            g_head: g.head as i32,
+            dv: self.dv as i32,
+            shards: self.shards as i32,
             round: self.round as i32,
             sbf16: self.sbf16 as i32,
             S: SPLITS as i32,
@@ -298,6 +387,7 @@ impl AttnOp {
             scale: self.scale,
             sl2: sl2(self.scale),
             softcap: self.softcap,
+            v_scale: self.v_scale,
             ..AttnArgs::default()
         }
     }
@@ -306,7 +396,14 @@ impl AttnOp {
     /// (its query heads in calls of 8), no soft-cap; the shapes the 12-bit pages take.
     pub(crate) fn lib_decode(&self) -> bool {
         let g = self.nq / self.nk;
-        self.d % 128 == 0 && self.d <= 512 && self.d != 384 && (g <= MAX_DG || (self.nk == 1 && g % MAX_DG == 0)) && self.softcap == 0.0
+        self.d % 128 == 0 && self.d <= 512 && self.d != 384 && (g <= MAX_DG || (self.nk == 1 && g % MAX_DG == 0)) && self.softcap == 0.0 && !self.warp_only()
+    }
+
+    /// Whether this attention runs on the kind's warp kernel (a prompt chunk) and its parts kernel with their merge (a decode row) alone: one with sinks, which
+    /// those add to a row's sum; heads of 192, which only those have an instance for; values narrower than the head, whose output those write `dv` apart. Not
+    /// the prompt kernel on the tensor cores, not the GPU library's decode, and its ring is not held in 12-bit pages (`kv12::shapes`).
+    pub(crate) fn warp_only(&self) -> bool {
+        self.sinks.is_some() || self.d == 192 || self.dv != self.d
     }
 
     /// The decode's calls a row's query heads take (8 at most each).
@@ -349,6 +446,8 @@ pub(crate) struct AttnArgs {
     pub part: u64,
     /// Each row's M-RoPE position (t, h, w) at 6 r i32s (src/dynamic/images.rs `Dyn::rope3`); 0: the row's position alone.
     pub rpos: u64,
+    /// The sinks, a bf16 logit a query head (`AttnOp::sinks`); 0: none.
+    pub sink: u64,
     /// Row t's table at tab + t tstride entries (a step's rows that decode, each its sequence's: `rows::RowTabs`); 0: one table for every row.
     pub tstride: i64,
     /// Two bits an angle: the position of `rpos` its M-RoPE section turns by.
@@ -371,6 +470,12 @@ pub(crate) struct AttnArgs {
     pub gs: i32,
     pub g_step: i32,
     pub gnorm: i32,
+    /// The gate is one value a head (`GateAt::head`).
+    pub g_head: i32,
+    /// The values' head width (`AttnOp::dv`); 0: `d`.
+    pub dv: i32,
+    /// The shards the projection's rows are stored in (`AttnOp::shards`); 0 or 1: none.
+    pub shards: i32,
     pub round: i32,
     pub sbf16: i32,
     pub S: i32,
@@ -379,20 +484,25 @@ pub(crate) struct AttnArgs {
     pub scale: f32,
     pub sl2: f32,
     pub softcap: f32,
+    /// The values' factor as the cache takes them (`AttnOp::v_scale`); 0 or 1: none.
+    pub v_scale: f32,
 }
 
 /// kernels/attn.cu's kernels, each by its type (`crate::kt`).
 pub(crate) struct KernAttn {
     prep64: crate::kt::attn_prep64,
     prep128: crate::kt::attn_prep128,
+    prep192: crate::kt::attn_prep192,
     prep256: crate::kt::attn_prep256,
     prep512: crate::kt::attn_prep512,
     rows64: crate::kt::attn_rows64,
     rows128: crate::kt::attn_rows128,
+    rows192: crate::kt::attn_rows192,
     rows256: crate::kt::attn_rows256,
     rows512: crate::kt::attn_rows512,
     parts64: crate::kt::attn_parts64,
     parts128: crate::kt::attn_parts128,
+    parts192: crate::kt::attn_parts192,
     parts256: crate::kt::attn_parts256,
     parts512: crate::kt::attn_parts512,
     merge: crate::kt::attn_merge,
@@ -409,14 +519,17 @@ impl KernAttn {
         let k = KernAttn {
             prep64: dev.typed()?,
             prep128: dev.typed()?,
+            prep192: dev.typed()?,
             prep256: dev.typed()?,
             prep512: dev.typed()?,
             rows64: dev.typed()?,
             rows128: dev.typed()?,
+            rows192: dev.typed()?,
             rows256: dev.typed()?,
             rows512: dev.typed()?,
             parts64: dev.typed()?,
             parts128: dev.typed()?,
+            parts192: dev.typed()?,
             parts256: dev.typed()?,
             parts512: dev.typed()?,
             merge: dev.typed()?,
@@ -434,7 +547,16 @@ impl KernAttn {
                 on
             },
         };
-        for (kern, d) in [(&*k.rows256, 256), (&*k.parts256, 256), (&*k.rows512, 512), (&*k.parts512, 512), (&*k.rows128, 128), (&*k.parts128, 128)] {
+        for (kern, d) in [
+            (&*k.rows256, 256),
+            (&*k.parts256, 256),
+            (&*k.rows512, 512),
+            (&*k.parts512, 512),
+            (&*k.rows128, 128),
+            (&*k.parts128, 128),
+            (&*k.rows192, 192),
+            (&*k.parts192, 192),
+        ] {
             kern.allow_smem(rows_smem(d, MAX_G))?;
         }
         Ok(k)
@@ -451,6 +573,7 @@ impl KernAttn {
         match d {
             64 => launch!(self.prep64, grid, block, s; *a, pf.0),
             128 => launch!(self.prep128, grid, block, s; *a, pf.0),
+            192 => launch!(self.prep192, grid, block, s; *a, pf.0),
             256 => launch!(self.prep256, grid, block, s; *a, pf.0),
             512 => launch!(self.prep512, grid, block, s; *a, pf.0),
             _ => err(format!("attention heads of {d}")),
@@ -468,6 +591,7 @@ impl KernAttn {
         let parts = match d {
             64 => self.parts64.sig(),
             128 => self.parts128.sig(),
+            192 => self.parts192.sig(),
             256 => self.parts256.sig(),
             512 => self.parts512.sig(),
             _ => return err(format!("attention heads of {d}")),
@@ -489,7 +613,9 @@ impl KernAttn {
     /// As `prep`; the rows are at positions `start` .. `start + a.n` (`a.kpos` holds them).
     pub(crate) unsafe fn prompt(&self, lib: &crate::ffi::Lib, s: Stream, a: &AttnArgs, start: usize) -> Result<()> {
         let (n, d, g, nk) = (a.n as usize, a.d as usize, (a.nq / a.nk) as usize, a.nk as i64);
-        if !self.fa {
+        // (an attention with sinks: the warp kernels, which add the sink to each row's sum; heads of 192, and values narrower than the head: theirs alone too,
+        // `AttnOp::warp_only`)
+        if !self.fa || a.sink != 0 || a.d == 192 || (a.dv != 0 && a.dv != a.d) {
             return self.rows(s, a);
         }
         if KernAttn::own_prompt(d) {
@@ -525,6 +651,7 @@ impl KernAttn {
         let rows = match d {
             64 => self.rows64.sig(),
             128 => self.rows128.sig(),
+            192 => self.rows192.sig(),
             256 => self.rows256.sig(),
             512 => self.rows512.sig(),
             _ => return err(format!("attention heads of {d}")),
@@ -625,6 +752,7 @@ impl Dyn {
         if let Some(g) = a.gate {
             x.gate = p.slot(a.src) + (g.off * 2) as u64;
         }
+        x.sink = self.sink_of(p, a)?;
         if let Some(rp) = self.pages12(p, a.ring) {
             self.kv12_decode_at(a.ring, k, a.nq, x.qo, x.out, (tab, dup / rp.parts * t), 0)?;
             self.ka.gate(s, &x)?;
@@ -676,16 +804,29 @@ impl Dyn {
         self.mark("attention: preparation (norms, rotary, cache write)")
     }
 
+    /// The sinks of `a` for its kernels' arguments (0: none). The 12-bit pages' decode and prompt attention are the GPU library's, which has no sink: an
+    /// attention with sinks over such a ring is refused, named.
+    fn sink_of(&self, p: &Part, a: &AttnOp) -> Result<u64> {
+        match a.sinks {
+            None => Ok(0),
+            Some(_) if self.pages12(p, a.ring).is_some() => {
+                err("attention with sinks over 12-bit pages: the pages' attention has no sink (serve it with bf16 pages)")
+            }
+            Some(i) => Ok(p.small[i].ptr),
+        }
+    }
+
     /// The attention of the prepared queries over the ring into Att: a decode row's (n up to the step's rows, or a verify pass's) in parts, a prompt chunk's whole.
     unsafe fn attn_read(&self, p: &Part, a: &AttnOp, n: usize, pos: (u64, u64)) -> Result<()> {
         let s = self.dev.stream;
         let mut x = a.args(n, p.d.eps);
         x.qo = p.slot(Slot::Qo) + self.rows_before(a.nq * a.d);
-        x.out = p.slot(Slot::Att) + self.rows_before(a.nq * a.d);
+        x.out = p.slot(Slot::Att) + self.rows_before(a.nq * a.dv);
         x.kpos = pos.1;
         if let Some(g) = a.gate {
             x.gate = p.slot(a.src) + self.rows_before(a.stride) + (g.off * 2) as u64;
         }
+        x.sink = self.sink_of(p, a)?;
         let decode = n <= self.split_rows || self.verifying.get();
         // (a ring of 12-bit pages: decode rows read the pages, then the gate; a prompt chunk's are unpacked to a bf16 ring the kernels below read, with no table)
         let twelve = self.pages12(p, a.ring).is_some();
@@ -1157,6 +1298,7 @@ mod tests {
             indexer: None,
             rounding: AttnRounding::Flash,
             kv_from: None,
+            v_scale: 1.0,
         }
     }
 
@@ -1177,12 +1319,12 @@ mod tests {
     fn the_projections_layout_follows_the_kind() {
         let q = AttnOp::of(&kind(256, Some(GateFrom::InQuery)), Slot::Mix, 0, Some(0), Some((2, 3))).unwrap();
         assert_eq!((q.q_step, q.k_off, q.v_off, q.stride), (512, 8 * 512, Some(8 * 512 + 2 * 256), 8 * 512 + 4 * 256));
-        assert_eq!(q.gate, Some(GateAt { off: 256, step: 512, norm: false }));
+        assert_eq!(q.gate, Some(GateAt { off: 256, step: 512, norm: false, head: false }));
         assert_eq!(q.norm, QkNorm::Plus1 { q: 2, k: 3 });
         assert_eq!(q.rope, Some(RopeAt { table: 0, span: 64, pairs: 32 }));
         let m = AttnOp::of(&Attn { rounding: AttnRounding::Sdpa, ..kind(64, Some(GateFrom::Own)) }, Slot::Mix, 0, Some(0), Some((2, 3))).unwrap();
         assert_eq!((m.q_step, m.k_off, m.v_off, m.stride), (64, 8 * 64, Some(10 * 64), 20 * 64));
-        assert_eq!(m.gate, Some(GateAt { off: 12 * 64, step: 64, norm: false }));
+        assert_eq!(m.gate, Some(GateAt { off: 12 * 64, step: 64, norm: false, head: false }));
         // (Sdpa: the scale on the queries, before the rope; the scores unscaled)
         assert_eq!((m.q_scale, m.scale, m.round, m.sbf16), (0.125, 1.0, true, false));
         assert_eq!((q.q_scale, q.scale, q.round, q.sbf16), (1.0, 1.0 / 16.0, false, false));
@@ -1193,18 +1335,83 @@ mod tests {
         assert_eq!((g.v_off, g.stride), (None, 10 * 512));
         // (a head the kernels have no instance for, and more query heads to a key-value head than a block takes, are refused)
         assert!(AttnOp::of(&kind(96, None), Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
+        // (heads of 192 with values of 128, MiMo's: a value head 128 of the product's rows, the output's heads 128 apart; the warp kernels' alone, as an attention
+        // with sinks is, and so is a head of 192 whose values are as wide, and a head of 128 with narrower values; values wider than the head, and narrower ones
+        // under a gate or as the keys' projection, are refused)
+        let narrow = AttnOp::of(&Attn { v_head_dim: 128, ..kind(192, None) }, Slot::Mix, 0, Some(0), Some((2, 3))).unwrap();
+        assert_eq!((narrow.d, narrow.dv, narrow.k_off, narrow.v_off, narrow.stride), (192, 128, 8 * 192, Some(10 * 192), 10 * 192 + 2 * 128));
+        let x = narrow.args(3, 1e-5);
+        assert_eq!((x.d, x.dv, x.os, narrow.warp_only(), narrow.lib_decode()), (192, 128, 8 * 128, true, false));
+        let even = AttnOp::of(&kind(192, None), Slot::Mix, 0, Some(0), Some((2, 3))).unwrap();
+        assert_eq!((even.dv, even.stride, even.args(3, 1e-5).os, even.warp_only()), (192, 12 * 192, 8 * 192, true));
+        let under = AttnOp::of(&Attn { v_head_dim: 64, ..kind(128, None) }, Slot::Mix, 0, Some(0), Some((2, 3))).unwrap();
+        assert_eq!(
+            (under.stride, under.warp_only(), under.lib_decode(), q.warp_only(), q.lib_decode(), q.dv),
+            (10 * 128 + 2 * 64, true, false, false, true, 256)
+        );
+        assert!(AttnOp::of(&Attn { v_head_dim: 256, ..kind(192, None) }, Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
+        let Err(gated) = AttnOp::of(&Attn { v_head_dim: 128, ..kind(192, Some(GateFrom::Own)) }, Slot::Mix, 0, Some(0), Some((2, 3))) else {
+            panic!("a gate on narrower values, and taken")
+        };
+        assert!(gated.msg.contains("values of 128 and an output gate"), "{}", gated.msg);
+        assert!(AttnOp::of(&Attn { v_head_dim: 128, k_eq_v: true, ..kind(192, None) }, Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
+        // (the product stored in shards, MiMo's fused matrix: 8 query heads over 2 in 2 shards, each 4 query heads, a key head and a value head; the rows as
+        // wide, the keys' and values' places into a shard. Heads that do not divide into the shards, and a gate, are refused)
+        let fused = narrow.clone().sharded(2).unwrap();
+        assert_eq!((fused.shards, fused.stride, fused.k_off, fused.v_off), (2, 10 * 192 + 2 * 128, 4 * 192, Some(5 * 192)));
+        assert_eq!((fused.args(3, 1e-5).shards, narrow.args(3, 1e-5).shards, narrow.clone().sharded(1).unwrap()), (2, 1, narrow.clone()));
+        assert!(narrow.clone().sharded(4).is_err() && narrow.clone().sharded(0).is_err());
+        let Err(gated) = m.clone().sharded(2) else { panic!("a gate on a product in shards, and taken") };
+        assert!(gated.msg.contains("stored in shards with an output gate"), "{}", gated.msg);
         let mut wide = kind(128, None);
         (wide.heads, wide.kv_heads) = (64, 2);
         assert!(AttnOp::of(&wide, Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
+        // (a gate of one value a head, LFM's: its product's rows, one a query head, after the values'; the kernels read a head's one value for every dim)
+        let head = AttnOp::of(&kind(128, Some(GateFrom::Head)), Slot::Mix, 0, Some(0), Some((2, 3))).unwrap();
+        assert_eq!((head.stride, head.gate), ((8 + 2 * 2) * 128 + 8, Some(GateAt { off: 12 * 128, step: 1, norm: false, head: true })));
+        let x = head.args(3, 1e-5);
+        assert_eq!((x.gs, x.g_step, x.g_head, x.gnorm), (head.stride as i32, 1, 1, 0));
+        assert_eq!(m.args(3, 1e-5).g_head, 0);
+        // (a factor on the values, MiMo's: the preparation's, as it writes the cache; no factor is 1, and a factor of 0 or not finite is refused)
+        let scaled = AttnOp::of(&Attn { v_scale: 0.707, ..kind(128, None) }, Slot::Mix, 0, Some(0), Some((2, 3))).unwrap();
+        assert_eq!((scaled.v_scale, scaled.args(3, 1e-5).v_scale, m.v_scale, m.args(3, 1e-5).v_scale), (0.707, 0.707, 1.0, 1.0));
+        let Err(zero) = AttnOp::of(&Attn { v_scale: 0.0, ..kind(128, None) }, Slot::Mix, 0, Some(0), Some((2, 3))) else { panic!("values times 0, and taken") };
+        assert!(zero.msg.contains("values are scaled by 0"), "{}", zero.msg);
+        // (the block-max indexer, a choice a KV head: refused by its name, as an attention and as the attention of an indexer's picks)
+        let form = kinds::IndexForm::Max { norm: Norm::rms_plus_one(1e-6), local: 1 };
+        let ix =
+            kinds::Indexer { heads: 2, head_dim: 128, top_k: 2048, block: 128, shared: false, form, rope: 0, rope_style: None, q_in: None, pos_scale: false };
+        let sparse = Attn { indexer: Some(ix), ..kind(128, None) };
+        for got in [AttnOp::of(&sparse, Slot::Mix, 0, Some(0), Some((2, 3))), AttnOp::picked(&sparse, Slot::Mix, 0, Some(0), Some((2, 3)))] {
+            let Err(e) = got else { panic!("a block-max indexer, and taken") };
+            assert_eq!(e.msg, kinds::IndexForm::MAX_NOT_RUN);
+        }
     }
 
-    /// kernels/attn.cu's AttnArgs: 15 pointers, a long long and an unsigned long long, 21 ints, 5 floats, no padding.
+    /// kernels/attn.cu's AttnArgs: 16 pointers, a long long and an unsigned long long, 24 ints, 6 floats, no padding.
     #[test]
     fn the_arguments_are_the_kernels_struct() {
-        assert_eq!(std::mem::size_of::<AttnArgs>(), 17 * 8 + 26 * 4);
+        assert_eq!(std::mem::size_of::<AttnArgs>(), 18 * 8 + 30 * 4);
         assert_eq!(
-            (std::mem::offset_of!(AttnArgs, rpos), std::mem::offset_of!(AttnArgs, tstride), std::mem::offset_of!(AttnArgs, rax)),
-            (14 * 8, 15 * 8, 16 * 8)
+            (
+                std::mem::offset_of!(AttnArgs, gnorm),
+                std::mem::offset_of!(AttnArgs, g_head),
+                std::mem::offset_of!(AttnArgs, dv),
+                std::mem::offset_of!(AttnArgs, shards),
+                std::mem::offset_of!(AttnArgs, round),
+                std::mem::offset_of!(AttnArgs, softcap),
+                std::mem::offset_of!(AttnArgs, v_scale)
+            ),
+            (18 * 8 + 17 * 4, 18 * 8 + 18 * 4, 18 * 8 + 19 * 4, 18 * 8 + 20 * 4, 18 * 8 + 21 * 4, 18 * 8 + 28 * 4, 18 * 8 + 29 * 4)
+        );
+        assert_eq!(
+            (
+                std::mem::offset_of!(AttnArgs, rpos),
+                std::mem::offset_of!(AttnArgs, sink),
+                std::mem::offset_of!(AttnArgs, tstride),
+                std::mem::offset_of!(AttnArgs, rax)
+            ),
+            (14 * 8, 15 * 8, 16 * 8, 17 * 8)
         );
     }
 }

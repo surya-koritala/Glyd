@@ -5,7 +5,7 @@ packed byte as one), and how to load and check it.
     python model_card.py [--numbers NUMBERS.json] SAVE_DIR PLAN.json OUT/README.md
     python model_card.py [--numbers NUMBERS.json] hub:ORG/NAME PLAN.json OUT/README.md      (a published save: its glyd.json and safetensors headers, from the Hub)
 
-The level (penguin, kestrel or swift) is the save's glyd.json "level", or from its "layout" (i6, i5, or mma for penguin). A "calibration" there (glyd-gpu pack --codes) is on the card's first lines. NUMBERS.json holds what was
+The level (penguin, kestrel or linnet) is the save's glyd.json "level", or from its "layout" (i6, i5, or mma for penguin). A "calibration" there (glyd-gpu pack --codes) is on the card's first lines. NUMBERS.json holds what was
 measured, and only that is on the card: {"size_gb", "gpus": [{"name", "tok_s", "first_token_ms", "mem_gib_4k", "fits_32k"}], "kl_bf16", "kl_fp8_ref", "date", "versions": {...},
 "evals": [{"dataset", "task_id", "value", "n", "harness": {"inspect_ai", "inspect_evals"}, "notes", "date"}], "evals_bf16": [the same on the bf16 model]} (tools/cards/evals.sh)
 With "evals" the card has a Benchmarks table and OUT/.eval_results/glyd.yaml is written beside the README (the Hub's model-index replacement).
@@ -49,8 +49,8 @@ def save_facts(save):
     return json.loads((save / "glyd.json").read_text()), sum(f.stat().st_size for f in save.glob("*.safetensors")), tensors
 
 
-LEVELS = ("penguin", "kestrel", "swift")
-LAYOUT_LEVEL = {"i6": "kestrel", "i5": "swift"}
+LEVELS = ("penguin", "kestrel", "linnet")
+LAYOUT_LEVEL = {"i6": "kestrel", "i5": "linnet"}
 CALIBRATION = {"gptq-act": "GPTQ"}  # glyd.json's "calibration": {"method": ...}
 
 

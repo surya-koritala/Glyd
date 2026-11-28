@@ -55,4 +55,4 @@ previous=
 activated=false
 echo "installed: $bin/starlings ($version)"
 case ":$PATH:" in *":$bin:"*) ;; *) echo "add $bin to PATH" ;; esac
-echo "start: starlings up --model glyd/Qwen3.8-27B-swift"
+echo "start: starlings up --model glyd/Qwen3.8-27B-linnet"

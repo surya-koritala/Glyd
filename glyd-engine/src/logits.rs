@@ -454,9 +454,9 @@ pub fn level_layout(level: &str) -> Result<Option<Layout>> {
     match level {
         "penguin" => Ok(None),
         "kestrel" => Ok(Some(Layout::Int6)),
-        "swift" => Ok(Some(Layout::Int5)),
+        "linnet" => Ok(Some(Layout::Int5)),
         "wren" => Ok(Some(Layout::Int4)),
-        other => err(format!("level {other}: penguin, kestrel, swift or wren")),
+        other => err(format!("level {other}: penguin, kestrel, linnet or wren")),
     }
 }
 
@@ -837,12 +837,12 @@ fn ref_model(d: &Path) -> Result<crate::runtime::reference::model::RefModel> {
 
 /// `ref_model` of the description `edit` changes (a test's: another rounding point, say).
 fn ref_model_with(d: &Path, edit: fn(&mut crate::runtime::describe::Described)) -> Result<crate::runtime::reference::model::RefModel> {
-    use crate::runtime::reference::model::{checkpoint_tensor, RefModel};
+    use crate::runtime::reference::model::{described_source, RefModel};
     let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(d.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
     let mut desc = crate::runtime::describe::describe(&cfg)?;
     edit(&mut desc);
     let ck = io(glyd_gpu::safetensors::Checkpoint::open(d))?;
-    let mut m = RefModel::load(&desc, &|n: &str| checkpoint_tensor(&ck, n))?;
+    let mut m = RefModel::load(&desc, &described_source(&ck, &desc))?;
     put_token_map(&mut m, d)?;
     Ok(m)
 }
@@ -1475,8 +1475,8 @@ pub fn gemma4_kv_random(out: &Path) -> Result<()> {
 }
 
 /// Qwen3.8-Flash-Next on the description executor (src/dynamic/qwen4x.rs) at every level, as the other cases' engines: the matrices at the level (penguin's lossless
-/// packs where none is), the experts lossless at penguin and in a lossy level's codes at the others. Condor's own engine (deleted in R3d) ran no level of the case: the family is held to
-/// the CPU reference of the kinds, not to that engine's bits (its kestrel rows on an RTX 4080 SUPER are its record, tests/fixtures/qwen4x_condor_rows.json.gz, which
+/// packs where none is), the experts lossless at penguin and in a lossy level's codes at the others. Ibis's own engine (deleted in R3d) ran no level of the case: the family is held to
+/// the CPU reference of the kinds, not to that engine's bits (its kestrel rows on an RTX 4080 SUPER are its record, tests/fixtures/qwen4x_ibis_rows.json.gz, which
 /// the reference's own test reads), and `paritycheck` holds the executor to the reference alone. The penguin fixture's bound is the kind's (the Qwen3.5
 /// layout's fixture's: KL mean 1e-4, max 2.5e-4), and the case asks to be held on its routers' choices (`Case::on_choices`): the random model's 16 experts, 4 a token,
 /// leave choices within 1e-2 of the next expert (`reference::ffn::margin`), which a bf16 engine may take either way, and one taken the other way moves its row and
@@ -1993,12 +1993,12 @@ pub struct HeadRef {
 /// sequence: a row at a position the head has run before takes its place, `RefMtp::step_streams` or `RefMtp::step` by the head's form).
 pub fn ref_head(dir: &Path, rows: &[HeadRow], edit: fn(&mut crate::runtime::describe::Described)) -> Result<HeadRef> {
     use crate::runtime::kinds::{Body, Ffn, Mixer, MtpInput};
-    use crate::runtime::reference::{mla::LatentCache, model::checkpoint_tensor, mtp::RefMtp, SeqState};
+    use crate::runtime::reference::{mla::LatentCache, model::described_source, mtp::RefMtp, SeqState};
     let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(dir.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
     let mut desc = crate::runtime::describe::describe(&cfg)?;
     edit(&mut desc);
     let ck = io(glyd_gpu::safetensors::Checkpoint::open(dir))?;
-    let src = |n: &str| checkpoint_tensor(&ck, n);
+    let src = described_source(&ck, &desc);
     let m = crate::runtime::reference::model::RefModel::load(&desc, &src)?;
     let mut h = RefMtp::load(&desc, 0, &src)?;
     let moe: Vec<usize> = (0..h.blocks.len()).filter(|&b| matches!(h.blocks[b].block.body, Body::Ffn(Ffn::Moe(_)))).collect();
@@ -2009,7 +2009,6 @@ pub fn ref_head(dir: &Path, rows: &[HeadRow], edit: fn(&mut crate::runtime::desc
     let idx: Vec<usize> = (0..h.blocks.len())
         .filter(|&b| matches!(&h.blocks[b].block.body, Body::Mixer(Mixer::Mla(x)) if x.indexer.as_ref().is_some_and(|i| !i.shared)))
         .collect();
-    let d = desc.desc.hidden;
     let mut out = HeadRef { logits: Vec::new(), states: Vec::new(), routes: Vec::new(), picks: Vec::new() };
     for r in rows {
         for &b in &moe {
@@ -2031,9 +2030,7 @@ pub fn ref_head(dir: &Path, rows: &[HeadRow], edit: fn(&mut crate::runtime::desc
                 (y.clone(), y)
             }
         };
-        out.logits.push(
-            crate::runtime::reference::matvec_w(m.head_w(), d, &y).into_iter().map(|z| crate::runtime::reference::model::logit(&desc.desc.head, z)).collect(),
-        );
+        out.logits.push(m.logits_of(&y)?);
         out.states.push(x);
         let c = moe.first().and_then(|&b| h.blocks[b].routed.as_mut().and_then(Vec::pop));
         out.routes.push(c.map_or((Vec::new(), Vec::new()), |c| (c.own, c.ids)));
@@ -2049,26 +2046,36 @@ pub fn ref_head(dir: &Path, rows: &[HeadRow], edit: fn(&mut crate::runtime::desc
 /// The DSpark drafter of the model in `dir` (its description's first draft head) on the CPU reference of the kinds (`RefDSpark::load`), and the model's
 /// embedding and LM head (f32 [vocab, hidden]) its block reads.
 pub fn ref_dspark(dir: &Path) -> Result<(Vec<f32>, Vec<f32>, crate::runtime::reference::mtp::RefDSpark)> {
-    use crate::runtime::reference::{model::checkpoint_tensor, mtp::RefDSpark};
+    use crate::runtime::reference::{model::described_source, mtp::RefDSpark};
     let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(dir.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
     let desc = crate::runtime::describe::describe(&cfg)?;
     let ck = io(glyd_gpu::safetensors::Checkpoint::open(dir))?;
-    let src = |n: &str| checkpoint_tensor(&ck, n);
+    let src = described_source(&ck, &desc);
     let t = |n: &str| src(n).map(|x| x.1).ok_or_else(|| Error(format!("the checkpoint has no tensor {n}")));
     let (embed, head) = (t(&desc.embed)?, t(desc.head.as_deref().unwrap_or(&desc.embed))?);
     Ok((embed, head, RefDSpark::load(&desc, &src)?))
 }
 
 /// The CPU reference of the kinds on the model in `dir` over `tokens` (one sequence from position 0): each position's taps for its DSpark drafter
-/// (`kinds::DSpark::targets`), the mean of the streams each target layer's attention reads (after an n-gram block before it), the targets' side by side.
+/// (`kinds::DSpark::targets`), the mean of the streams each target layer's attention reads (after an n-gram block before it), or of the streams the
+/// layer leaves where the drafter reads its targets after them (`DSpark::after`: the next layer's input, the model's last streams after the last
+/// layer), the targets' side by side.
 pub fn ref_taps(dir: &Path, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
     let mut m = ref_model(dir)?;
     let ds = m.desc.mtp.first().and_then(|h| h.dspark.clone()).ok_or_else(|| Error("the description has no DSpark drafter".into()))?;
     // (the block of each target layer's attention: a layer's mixer the l-th of the blocks')
     let mixers: Vec<usize> =
         m.desc.blocks.iter().enumerate().filter(|(_, b)| matches!(b.body, crate::runtime::kinds::Body::Mixer(_))).map(|(i, _)| i).collect();
-    let at: Vec<usize> =
-        ds.targets.iter().map(|&t| mixers.get(t).copied().ok_or_else(|| Error(format!("target layer {t} of {}", mixers.len())))).collect::<Result<_>>()?;
+    let blocks = m.desc.blocks.len();
+    let at: Vec<usize> = ds
+        .targets
+        .iter()
+        .map(|&t| match (mixers.get(t), ds.after) {
+            (Some(&a), false) => Ok(a),
+            (Some(_), true) => Ok(mixers.get(t + 1).copied().unwrap_or(blocks)),
+            (None, _) => err(format!("target layer {t} of {}", mixers.len())),
+        })
+        .collect::<Result<_>>()?;
     let (n, d) = (m.desc.embed.streams.max(1), m.desc.hidden);
     let mut out = vec![vec![0f32; at.len() * d]; tokens.len()];
     let mut b = 0usize;
@@ -2094,6 +2101,47 @@ pub fn deepseek_v4_dspark_random(out: &Path) -> Result<()> {
 /// queries and keys, a vocabulary of 4096): the kind's case, no release's.
 pub fn dense_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/dense_tiny_manifest.json"), out, 0x2026_1120_0000_0006, true, "plain dense model")
+}
+
+/// Domyn Edge's small model (the plain dense kind with a norm after each block as well as before it, queries normed with no weight and keys with one: four
+/// layers, the first and last over the whole context with heads of 256 and no positions, the two between windowed to 9 positions with heads of 64 and rotary
+/// positions; 8 query and 4 key-value heads, a vocabulary of 4096): the family's case, no release's.
+pub fn domynedge_random(out: &Path) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/domynedge_tiny_manifest.json"), out, 0x2026_1127_0000_0041, true, "Domyn Edge model")
+}
+
+/// Granite Swash's small model, dense (the plain dense kind with Granite's multipliers: the embedding times 12, each block's output times 0.28 before it is
+/// added, the scores times 1/128, the logits over 10; a sink a head on every layer; four layers, the two in the middle windowed to 8 positions; 4 query and 2
+/// key-value heads of 128, a vocabulary of 4096): the family's case, no release's.
+pub fn granite_swa_random(out: &Path) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/granite_swa_tiny_manifest.json"), out, 0x2026_1127_0000_0042, true, "Granite Swash model")
+}
+
+/// Mellum 2's small model (Qwen3-style attention, queries and keys normed with a weight; four layers, two windowed to 8 positions with the plain rotary and two
+/// over the whole context with a yarn rotary; three of them a mixture of 8 experts, the best 2 of the router's softmax divided by their sum, and one a gated
+/// MLP; 4 query and 2 key-value heads of 128, a head of its own, a vocabulary of 4096): the family's case, no release's.
+pub fn mellum_random(out: &Path) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/mellum_tiny_manifest.json"), out, 0x2026_1127_0000_0043, true, "Mellum model")
+}
+
+/// LFM's small model (six layers, each a mixer then the gated MLP between two norms: four of the gated short convolution of 7 taps, one of attention over
+/// the whole context with half the head's pairs turned, one of attention windowed to 9 positions with the plain rotary; the attentions' queries and keys
+/// normed with a weight and each head's output gated by one value; 4 query and 2 key-value heads of 128, 512 wide, the head the embedding, a vocabulary of
+/// 4096): the family's case, no release's. Its embedding, which is its head, is drawn at half a head's width (the manifest's `head`): at a whole one the
+/// case's noise floor was past a tenth of its bound (KL mean 1.44e-5 against 1.0e-5, `every_case_held_to_a_reference_is_well_conditioned`), a gated
+/// convolution's products carrying a rounding further than a dense layer's.
+pub fn lfm3_random(out: &Path) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/lfm3_tiny_manifest.json"), out, 0x2026_1127_0000_0051, true, "LFM model")
+}
+
+/// MiMo's small model (four layers 512 wide, a vocabulary of 4096, the head its own matrix; queries and keys of 192 with their first 64 channels turned,
+/// values of 128 times 0.707, the three products one matrix stored in 2 shards: the first and last layers attend over the whole context, 8 query heads over
+/// 2, the rotary's base 1e7; the middle two slide over 8 positions and the query's own, 8 over 4, a sink a head, base 1e4; the first layer's feed-forward a
+/// gated MLP of 1024, the others' 8 experts of 256, sigmoid scores with a choice bias (fp32, as released), the best 2 renormalised, no shared expert): the
+/// family's case, no release's. Every matrix is bf16: the release's FP8 fused matrices and packed 4-bit experts are forms the loader refuses by name. No draft
+/// layer: the executor does not run the family's.
+pub fn mimo_random(out: &Path) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/mimo_tiny_manifest.json"), out, 0x2026_1128_0000_0061, true, "MiMo model")
 }
 
 /// A small Qwen3.5-family text model (Qwen3_5ForCausalLM: three Gated DeltaNet layers and a gated full-attention one, 1024 wide, a vocabulary of 4096): the layout of Qwen3.8-27B and the releases of its family at 0.8B's widths.
@@ -2492,7 +2540,7 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
         v
     };
     let on_grid = m["experts"] != OFF_GRID;
-    // (the Gated DeltaNet's dt_bias about N(`dt_bias`, 1), and the LM head's scale times `head`: the manifest's, else 0 and 1)
+    // (the Gated DeltaNet's dt_bias about N(`dt_bias`, 1), and the LM head's scale times `head`, an embedding's that is the head too: the manifest's, else 0 and 1)
     let (dt_bias, head) = (m["dt_bias"].as_f64().unwrap_or(0.0), m["head"].as_f64().unwrap_or(1.0));
     let tied = !m["tensors"].as_array().is_some_and(|t| t.iter().any(|e| e[0] == "lm_head.weight"));
     let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
@@ -2516,15 +2564,22 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
             (0..n).map(|_| (u01() * 15.0 + 1.0).ln() as f32).collect()
         } else if name.ends_with("dt_bias") {
             (0..n).map(|_| (gauss(&mut u01) + dt_bias) as f32).collect()
-        } else if name.contains("conv1d") {
+        } else if name.contains("conv1d") || name.ends_with(".conv.conv.weight") {
+            // (a convolution's taps a channel: a linear attention's, Mamba-2's, the gated short convolution's)
             (0..n).map(|_| (gauss(&mut u01) * 0.4) as f32).collect()
         } else if on_grid && (name.contains("experts.gate_up_proj") || name.contains("experts.down_proj")) {
             (0..shape[0]).flat_map(|_| grid(shape[1] as usize, shape[2] as usize, &mut u01, &mut gauss)).collect()
         } else if on_grid && name.contains("shared_expert.") {
             grid(shape[0] as usize, shape[1] as usize, &mut u01, &mut gauss)
+        } else if name.ends_with(".sinks") || name.ends_with(".attention_sink_bias") {
+            // (a sink a head: a logit beside the keys' scores, about theirs in size)
+            (0..n).map(|_| gauss(&mut u01) as f32).collect()
+        } else if name.ends_with("e_score_correction_bias") {
+            // (a router's choice bias an expert: beside sigmoid scores, a tenth of their range)
+            (0..n).map(|_| (gauss(&mut u01) * 0.1) as f32).collect()
         } else if name.contains("ngram_embedding") || name.contains("embed_tokens") {
             // (an embedding that is the head too, as Qwen3.5's tied one is, is as wide as a head's rows: else its logits are tens apart and the softmax a point)
-            let std = if tied && name.contains("embed_tokens") { 1.0 / (cols as f64).sqrt() } else { 1.0 };
+            let std = if tied && name.contains("embed_tokens") { head / (cols as f64).sqrt() } else { 1.0 };
             (0..n).map(|_| (gauss(&mut u01) * std) as f32).collect()
         } else if shape.len() == 2 || name.contains("experts.") {
             let s = if name == "lm_head.weight" { head } else { 1.0 } / (cols as f64).sqrt();
@@ -2532,6 +2587,12 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
         } else {
             return err(format!("no rule for {name} {shape:?}"));
         };
+        // (bf16; a router's choice bias fp32 where the manifest says the release holds it so. The other manifests' fp32 tensors are drawn as bf16, as they
+        // always were: their models' fixtures are of those bytes)
+        if e[1] == "F32" && name.ends_with("e_score_correction_bias") {
+            tensors.push((name, "F32", shape, vals.iter().flat_map(|&x| x.to_le_bytes()).collect()));
+            continue;
+        }
         tensors.push((name, "BF16", shape, vals.iter().flat_map(|&x| bf(x).to_le_bytes()).collect()));
     }
     io(std::fs::create_dir_all(out))?;
@@ -2670,6 +2731,56 @@ pub fn cases() -> Vec<Case> {
             id: "dense",
             family: "the plain dense kind (a pre-norm decoder of one attention and one gated MLP a layer, on the executor)",
             weights: Weights::Random(dense_random),
+            engine: dense_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            on_choices: None,
+            also: None,
+        },
+        Case {
+            id: "domynedge",
+            family: "Domyn Edge (the plain dense kind with a norm after each block, a head width and a rotary of the layer's own, on the executor)",
+            weights: Weights::Random(domynedge_random),
+            engine: dense_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            on_choices: None,
+            also: None,
+        },
+        Case {
+            id: "granite-swa",
+            family: "Granite Swash, dense (the plain dense kind with a scaled embedding, residual and logits, and a sink a head, on the executor)",
+            weights: Weights::Random(granite_swa_random),
+            engine: dense_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            on_choices: None,
+            also: None,
+        },
+        Case {
+            id: "mellum",
+            family: "Mellum 2 (Llama-style attention with a rotary a layer type, scaled on some, and a mixture of experts a layer, on the executor)",
+            weights: Weights::Random(mellum_random),
+            engine: dense_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            on_choices: None,
+            also: None,
+        },
+        Case {
+            id: "lfm3",
+            family: "LFM (the gated short convolution and attention gated a head, each between two norms, on the executor)",
+            weights: Weights::Random(lfm3_random),
+            engine: dense_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            on_choices: None,
+            also: None,
+        },
+        Case {
+            id: "mimo",
+            family: "MiMo (heads of 192 with values of 128 times a factor, a fused product in shards, sinks, sigmoid-routed experts with a choice bias)",
+            weights: Weights::Random(mimo_random),
             engine: dense_engine,
             cpu: Some(described_cpu),
             vocab: 4096,
@@ -3120,7 +3231,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
 // ---- the description path against the CPU reference on its own choices, layer by layer (R3b, #137; R3d, #140)
 
 /// The cases `paritycheck` takes: (case, the description path). (R3b retired Qwen3.5's, Gemma 4's and Nemotron-H's hand-written engines on their parity
-/// records, #410 and the R3b pull requests; R3d Condor's, the last, once the executor served its model.)
+/// records, #410 and the R3b pull requests; R3d Ibis's, the last, once the executor served its model.)
 type ParityCase = (&'static str, fn(&Path, &str) -> Result<Box<dyn Run>>);
 
 fn parity_cases() -> Vec<ParityCase> {
@@ -3149,8 +3260,8 @@ fn qwen4x_desc(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 /// Printed beside them and not required: each row's KL against the reference's own choices (never left out); its residual after each layer against the
 /// reference's; and what the executor's first choice apart leaves in the rows after it, by the kind of state that carries it (`carry_lines`). Exit 1
 /// where a requirement fails. With `--choice ROW:LAYER` no engine runs: the reference alone takes the nearest other choice in that row's pass and layer,
-/// and the same lines say what it leaves (any machine, no GPU). (Condor's own engine ran beside it here until it was deleted: its record is
-/// tests/fixtures/qwen4x_condor_rows.json.gz, which `runtime::describe_tests` holds the reference to.)
+/// and the same lines say what it leaves (any machine, no GPU). (Ibis's own engine ran beside it here until it was deleted: its record is
+/// tests/fixtures/qwen4x_ibis_rows.json.gz, which `runtime::describe_tests` holds the reference to.)
 pub fn parity(a: &crate::args::Args) -> Result<()> {
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
     let pairs: Vec<ParityCase> = parity_cases().into_iter().filter(|p| want.is_empty() || want.contains(&p.0)).collect();
@@ -3417,11 +3528,11 @@ fn carry_lines(dir: &Path, fx: &Fixture, own: &RefRun, d: &Apart) -> Result<()> 
 
 /// The CPU f32 reference's residual after each layer of a prompt of the model in `dir` (from its description).
 fn cpu_layers(dir: &Path, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
-    use crate::runtime::reference::model::{checkpoint_tensor, RefModel};
+    use crate::runtime::reference::model::{described_source, RefModel};
     let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(dir.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
     let desc = crate::runtime::describe::describe(&cfg)?;
     let ck = io(glyd_gpu::safetensors::Checkpoint::open(dir))?;
-    let mut m = RefModel::load(&desc, &|n: &str| checkpoint_tensor(&ck, n))?;
+    let mut m = RefModel::load(&desc, &described_source(&ck, &desc))?;
     m.record = Some(Vec::new());
     m.forward(tokens, 0)?;
     Ok(m.record.take().unwrap_or_default())
@@ -3444,11 +3555,11 @@ fn layer_lines(new: &[Vec<f32>], cpu: &[Vec<f32>]) {
 /// The per-level KL thresholds of a lossy level from the lossless one (mean, max over rows), per family's random model: Qwen3.5's and
 /// Nemotron-H's are the bounds the qwen35 fixture holds for the engine against transformers in bf16 (tests/logits/qwen35.json.gz, about
 /// twice a measured run); Gemma 4's random model moved more under every rounding, kestrel too (its levels have shipped since v0.30), so
-/// its thresholds are about twice its own first measured run (RTX 4080 SUPER, 2026-11-21: mean/max KL kestrel 2.15e-2/1.03e-1, swift
+/// its thresholds are about twice its own first measured run (RTX 4080 SUPER, 2026-11-21: mean/max KL kestrel 2.15e-2/1.03e-1, linnet
 /// 3.70e-2/1.01e-1, wren 9.55e-2/2.27e-1; Nemotron-H's wren 8.5e-4/6.2e-3, its experts alone four-bit). (Measured on the draw before
 /// `gemma4_shaped_random`'s, whose scores and head are well conditioned: they hold this one as upper bounds.)
-pub const LEVEL_KL: [(&str, f64, f64); 3] = [("kestrel", 0.006, 0.015), ("swift", 0.025, 0.05), ("wren", 0.09, 0.14)];
-pub const LEVEL_KL_GEMMA4: [(&str, f64, f64); 3] = [("kestrel", 0.045, 0.21), ("swift", 0.075, 0.21), ("wren", 0.19, 0.46)];
+pub const LEVEL_KL: [(&str, f64, f64); 3] = [("kestrel", 0.006, 0.015), ("linnet", 0.025, 0.05), ("wren", 0.09, 0.14)];
+pub const LEVEL_KL_GEMMA4: [(&str, f64, f64); 3] = [("kestrel", 0.045, 0.21), ("linnet", 0.075, 0.21), ("wren", 0.19, 0.46)];
 
 /// The kind's lossless bound against the CPU reference of the layer kinds, the one every described case's fixture holds at penguin
 /// (`tests::the_kinds_bound_is_every_described_fixtures`): KL mean 1e-4, max 2.5e-4 (`BESIDE_KL`), the best token the reference's at 85% of the rows
@@ -3467,7 +3578,7 @@ pub fn level_bound(case: &str, level: &str) -> Result<Bound> {
         .iter()
         .find(|x| x.0 == level)
         .map(|&(_, mean, max)| Bound::Kl { mean, max, top1: 0.0 })
-        .ok_or_else(|| Error(format!("{level}: no bound of the level (penguin, kestrel, swift or wren)")))
+        .ok_or_else(|| Error(format!("{level}: no bound of the level (penguin, kestrel, linnet or wren)")))
 }
 
 /// A bound in words, as `logitscheck` prints it.
@@ -3484,6 +3595,8 @@ pub fn case_of_dir(dir: &Path) -> Result<&'static str> {
     let text = io(std::fs::read_to_string(dir.join("config.json"))).map_err(|e| Error(format!("{}: {}", dir.display(), e.msg)))?;
     Ok(match crate::runtime::config::family_of(&text) {
         Some(F::Qwen3) => "dense",
+        // (every family the description is the whole of loads by the dense loader, as this case's does)
+        Some(F::Layers) => "domynedge",
         Some(F::Qwen35) => "qwen35",
         Some(F::NemotronH) => "nemotron",
         Some(F::Gemma4) => "gemma4",
@@ -3512,7 +3625,7 @@ pub const LEVEL_KL_HB: [(&str, f64, f64); 4] = [("deepseek-v4", 0.19, 0.26), ("m
 /// check with its figures, to be given a threshold in `LEVEL_KL_HB` and taken out of here.
 pub const LEVEL_HB_OPEN: [(&str, &str); 0] = [];
 
-/// The families held at the block levels of every weight (kestrel, swift, wren: `LEVEL_KL`); `LEVEL_KL_HB`'s are held at hummingbird.
+/// The families held at the block levels of every weight (kestrel, linnet, wren: `LEVEL_KL`); `LEVEL_KL_HB`'s are held at hummingbird.
 const LEVEL_BLOCK_CASES: [&str; 3] = ["qwen35", "gemma4", "nemotron-h"];
 
 /// A mixture-of-experts case's model in `dir` with every matrix as `dir` holds it: the release's lossless, or a hummingbird directory's
@@ -3539,7 +3652,7 @@ fn hummingbird_dir(dir: &Path, out: &Path) -> Result<()> {
 
 /// `levelcheck [CASE...] [--level L] [--scratch DIR]`: each family on its random model at penguin and at each lossy level it runs, the
 /// same tokens as its R7 fixture, and the KL of the lossy level's rows from penguin's against the level's threshold: Qwen3.5, Gemma 4 and
-/// the state-space case at kestrel, swift and wren (`LEVEL_KL`, `LEVEL_KL_GEMMA4` for Gemma 4); DeepSeek-V4, Muse Spark, Kimi-K3 and
+/// the state-space case at kestrel, linnet and wren (`LEVEL_KL`, `LEVEL_KL_GEMMA4` for Gemma 4); DeepSeek-V4, Muse Spark, Kimi-K3 and
 /// GLM-5.3-Flash at hummingbird (`LEVEL_KL_HB`, the directory made here). Exit 1 where one is past its threshold, or does not load: a
 /// level that does not run is not one within its threshold. A family of `LEVEL_HB_OPEN` (none now) is printed as not held, with what
 /// stops it, and fails the day it runs without a threshold.
@@ -4749,7 +4862,18 @@ mod tests {
     fn picks_apart_are_judged_on_the_engines_inputs() {
         use crate::runtime::kinds::{IndexForm, Indexer};
         use crate::runtime::reference::mla::{choose, Picked};
-        let ix = Indexer { heads: 2, head_dim: 4, top_k: 2, block: 1, shared: false, form: IndexForm::LAYER_KEYS, rope: 0 };
+        let ix = Indexer {
+            heads: 2,
+            head_dim: 4,
+            top_k: 2,
+            block: 1,
+            shared: false,
+            form: IndexForm::LAYER_KEYS,
+            rope: 0,
+            q_in: None,
+            pos_scale: false,
+            rope_style: None,
+        };
         // (a key a token, scores rising with its first channel: tokens 3 and 4 the best two of 0..=4, token 2 near token 3 where `near`)
         let row = |near: bool, picks: Vec<usize>| {
             let s = [0.1f32, 0.2, if near { 0.6999 } else { 0.3 }, 0.7, 0.9];
@@ -5569,7 +5693,7 @@ mod tests {
         let (moe, dense) = (Fixture::read(&dir.join("qwen35moe.json.gz")).unwrap(), Fixture::read(&dir.join("qwen35.json.gz")).unwrap());
         let levels = |f: &Fixture| f.bounds.iter().map(|b| (b.level.clone(), format!("{:?}", b.bound))).collect::<Vec<_>>();
         assert_eq!(levels(&moe), levels(&dense));
-        assert_eq!(moe.bounds.iter().map(|b| b.level.as_str()).collect::<Vec<_>>(), ["penguin", "kestrel", "swift", "wren"]);
+        assert_eq!(moe.bounds.iter().map(|b| b.level.as_str()).collect::<Vec<_>>(), ["penguin", "kestrel", "linnet", "wren"]);
     }
 
     #[test]
@@ -5660,7 +5784,18 @@ mod tests {
         use crate::dynamic::{Choice, ChoiceFrom, ChoiceKind, RowRoute};
         use crate::runtime::kinds::{Act, Mlp, Moe, Router, RouterScore};
         let m = Moe {
-            router: Router { score: RouterScore::Softmax, logit_scale: 1.0, bias: false, groups: None, top_k: 1, renorm: true, scale: 1.0, hash: false },
+            router: Router {
+                score: RouterScore::Softmax,
+                logit_scale: 1.0,
+                bias: false,
+                groups: None,
+                top_k: 1,
+                renorm: true,
+                scale: 1.0,
+                hash: false,
+                routers: 1,
+                expert_scale: false,
+            },
             experts: 2,
             expert: Mlp { act: Act::Silu, gated: true, bias: false, clamp: None },
             shared: None,
@@ -5754,7 +5889,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
             Dyn::new(dir, &crate::runtime::config::ModelConfig::load(dir)?, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
         "qwen35" | "qwen35-wide" | "qwen35moe" => crate::dynamic::qwen35::load(dir, o)?,
-        "dense" => crate::dynamic::dense::load(dir, o)?,
+        "dense" | "domynedge" | "granite-swa" | "mellum" | "lfm3" | "mimo" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" | "kimi-dsa" => crate::dynamic::kimi::load(dir, o)?,
         "glm-dsa" | "glm-dsa-f8" => crate::dynamic::glm::load_plain(dir, o)?,
@@ -5837,6 +5972,11 @@ fn random_model_of(case: &str, dir: &Path) -> Result<()> {
         "qwen35moe" => qwen35moe_random(dir),
         "qwen35moe-st" => qwen35moe_stacked(dir, None),
         "dense" => dense_random(dir),
+        "domynedge" => domynedge_random(dir),
+        "granite-swa" => granite_swa_random(dir),
+        "mellum" => mellum_random(dir),
+        "lfm3" => lfm3_random(dir),
+        "mimo" => mimo_random(dir),
         "muse" => crate::muse_ref::random(dir),
         "kimi" => crate::kimi_ref::random(dir, 1, true, 8),
         "kimi-dsa" => crate::kimi_ref::random_dsa(dir),
@@ -8018,7 +8158,7 @@ fn replies_digest(tokens: &[Vec<u32>], logits: &[Vec<u32>]) -> String {
 }
 
 /// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device-plan] | --ctx plan]] | --ctx C] [--prompt-tokens P] [--stagger D] [--pack P [--precise]]` (gemma4, qwen35, muse, kimi, glm, qwen4x, qwen4x-s2): the case's random model on the
-/// description executor (or the model in DIR, with `--places` its experts in the expert cache, with `--ctx plan` as `serve --users N` plans and loads it (a model larger than the GPU: its experts in the expert cache, every user's keys, values and states first), with `--pack` Condor's from its pack of codebook experts; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
+/// description executor (or the model in DIR, with `--places` its experts in the expert cache, with `--ctx plan` as `serve --users N` plans and loads it (a model larger than the GPU: its experts in the expert cache, every user's keys, values and states first), with `--pack` Ibis's from its pack of codebook experts; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
 /// bits: `roundcheck` measures the logits); their tokens and sample logits are printed as one digest, which runs held to the same bits compare (GLYD_TABLES=gpu against
@@ -8192,7 +8332,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         }
         (Some(d), _) => {
             let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout };
-            // (--pack P [--precise]: Condor's experts from its pack of codebook rows in the expert cache)
+            // (--pack P [--precise]: Ibis's experts from its pack of codebook rows in the expert cache)
             let e = match a.flag("pack") {
                 Some(p) if case == "qwen4x" => crate::dynamic::qwen4x::load_pack(Path::new(d), Path::new(p), a.has("precise"), users, &o)?,
                 Some(_) => return err("--pack: the qwen4x case's pack of experts"),

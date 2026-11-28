@@ -56,6 +56,7 @@ fn bf16_round(x: f32) -> f32 {
 /// Gemma 4 (dense): pairs of blocks, sliding or global attention with sandwich norms, then the gated MLP with its sandwich norms and the per-layer scalar; the
 /// embedding scaled and normed into the first layer, the tied and soft-capped head. `eos` and `max_pos` are the generation config's and the config's.
 pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     let m = &d.desc;
     if m.embed.per_layer.is_some() {
         return err("Gemma 4: per-layer inputs (E2B, E4B): not an operation of the executor yet");
@@ -102,7 +103,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         let sliding = a.window.is_some();
         let slot = if sliding { &mut sliding_rope } else { &mut global_rope };
         let r = *slot.get_or_insert_with(|| {
-            ropes.push(Rope { theta: rope.theta, dim: rope.dim, pairs: rope.freqs, trig64: false });
+            ropes.push(Rope { theta: rope.theta, dim: rope.dim, pairs: rope.freqs, trig64: false, scaled: None });
             ropes.len() - 1
         });
         let (dh, nk, has_v) = (a.head_dim, a.kv_heads, !a.k_eq_v);
@@ -210,13 +211,23 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
     })
 }
 
-/// The pre-norm dense decoder (the description builder's `llama` reading): pairs of blocks, an attention of the kind's parameters
-/// (its q and k norms where the kind has them, a window where it slides) and the gated SiLU MLP, each `x + block(rmsnorm(x) w)`; the final norm on the last rows,
+/// The dense decoder of one attention and one gated SiLU MLP a layer (the description builder's `llama` reading, and Domyn Edge's): pairs of blocks, an
+/// attention of the kind's parameters (its q and k norms where the kind has them, the queries' with no weight where the kind says: a weight of ones; a window
+/// where it slides; a head width and a rotary of the layer's own, or no rotary) and the gated SiLU MLP, each `x + block(rmsnorm(x) w)`, or, where every block
+/// has a norm after it as well (Domyn Edge), `x + rmsnorm(block(rmsnorm(x) w)) post` (`Op::AddNorm`, the sandwich residual); the final norm on the last rows,
 /// the head the embedding's matrix where tied. Each matrix of a layer is its checkpoint tensors stacked (q, k and v; gate and up), sized by the shapes the
-/// description gives. The products are the library's at every row count, a long chunk's decoded and multiplied dense where its route says so: the products,
-/// norms, activation, embedding and head of the dense engine this replaces, kernel for kernel. A kind this lowering does not take (a bias, a rope with
-/// scaling, a norm or activation of another kind) is refused, named.
+/// description gives. A layer's experts are the Moe kind's block as its loader takes them (`experts::block`: a softmax router, or sigmoid scores with a
+/// choice bias, the best kept and renormalised, with or without a shared expert; MiMo's as released, packed 4-bit codes, are refused by name). The products
+/// are the library's at every row count, a long chunk's decoded and multiplied dense where its route says so: the products,
+/// norms, activation, embedding and head of the dense engine this replaces, kernel for kernel. A layer's mixer may be the gated short convolution in the
+/// attention's place (LFM's conv layers: its input product into Proj, `Op::ShortConv` over the sequence's state into Xc, its output product; a state a
+/// layer, fp32, in `states`), and an attention's gate one value a head (LFM's: its matrix stacked after q, k and v, the rows padded to rows that pack). An
+/// attention's values may be narrower than its queries and keys and times a factor, and its q, k and v one stored matrix cut in shards (MiMo's: the matrix as
+/// stored is the product's, `AttnOp::sharded`; stored in FP8 it is refused by name). A
+/// kind this lowering does not take (a bias, a rope with scaling, a norm or activation of another kind) is refused, named.
 pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
+    super::split::runs(d)?;
+    use super::SmallForm;
     use crate::runtime::kinds::{Act, Collapse, NormKind, NormWeight, Residual, RopeScaling};
     let m = &d.desc;
     let what = super::dense::FAMILY;
@@ -231,11 +242,11 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         Ok(())
     };
     plain(&m.final_norm, "the final norm")?;
-    if m.embed.scale != 1.0 || m.embed.norm.is_some() || m.embed.streams != 1 {
-        return err(format!("{what}: an embedding of {:?}, where the executor's reads the rows as they are", m.embed));
+    if m.embed.norm.is_some() || m.embed.streams != 1 || m.embed.per_layer.is_some() {
+        return err(format!("{what}: an embedding of {:?}, where the executor's reads the rows as they are, or times a scale", m.embed));
     }
-    if m.head.softcap.is_some() || m.head.scale != 1.0 || m.head.collapse != Collapse::None {
-        return err(format!("{what}: a head of {:?}, where the executor's is the product alone", m.head));
+    if m.head.collapse != Collapse::None {
+        return err(format!("{what}: a head of {:?}, where the executor's is the product, then its scale and its cap", m.head));
     }
     let one = |roles: &[(String, Source)], r: &str| -> Result<String> {
         match role(roles, r) {
@@ -250,80 +261,291 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         small.push(n);
         small.len() - 1
     };
-    let (mut proj_w, mut q_w, mut inter_w, mut first) = (0, 0, 0, None);
+    // (the widest first product's rows, queries, attention output (its heads the values' width) and MLP)
+    let (mut proj_w, mut q_w, mut att_w, mut inter_w, mut first) = (0, 0, 0, 0, None);
+    let mut n_moe = 0usize;
+    // (a short convolution's state a sequence, a layer: `Op::ShortConv`)
+    let mut states: Vec<usize> = Vec::new();
+    // (a norm after each block as well as before it: the sandwich residual, every layer's or none's)
+    let sandwich = m.blocks[0].norm_out.is_some();
+    // (a block's output times a scale before it is added, Granite's: the gated residual x = 1 x + scale y, its two factors made once, fp32 a column)
+    let scaled = match m.blocks[0].residual {
+        Residual::Add => None,
+        Residual::AddScaled(s) => Some(s),
+        ref r => return err(format!("{what}: a residual of {r:?}, where the executor's dense layer adds its output, or its output times a scale")),
+    };
+    // (a weightless norm's weight: a small tensor of ones a head width, made once a width)
+    let mut forms: Vec<(usize, super::SmallForm)> = Vec::new();
+    let mut ones: Vec<(usize, usize)> = Vec::new();
+    // (the final norm's weight is named where it is first read: by the last layer where that layer's operations take it, else after every layer's, as the
+    // plain add's lowering has always listed it)
+    let mut final_at: Option<usize> = None;
+    let gate = match scaled {
+        None => None,
+        Some(s) => {
+            let (alpha, beta) = (name(&mut small, String::new()), name(&mut small, String::new()));
+            forms.extend([(alpha, SmallForm::Const(1.0, m.hidden)), (beta, SmallForm::Const(s, m.hidden))]);
+            Some((alpha, beta))
+        }
+    };
+    // (the first operation: the embedding's rows times its scale where it has one, and the first block's norm)
+    let begin = |norm: usize| {
+        if m.embed.scale == 1.0 {
+            Op::RmsNorm { x: Slot::X, w: norm, y: Slot::H, weight: NormW::Plain, eps }
+        } else {
+            Op::EmbedNorm { scale: bf16_round(m.embed.scale), norm }
+        }
+    };
     for l in 0..layers {
         let (ab, fb) = (&m.blocks[2 * l], &m.blocks[2 * l + 1]);
         let (ar, fr) = (&d.blocks[2 * l], &d.blocks[2 * l + 1]);
         let a = match &ab.body {
-            Body::Mixer(Mixer::Attention(a)) => a,
-            b => return err(format!("{what}: layer {l}'s first block is {b:?}, not attention")),
+            Body::Mixer(Mixer::Attention(a)) => Some(a),
+            Body::Mixer(Mixer::ShortConv(_)) => None,
+            b => return err(format!("{what}: layer {l}'s first block is {b:?}, not attention nor a short convolution")),
         };
-        match &fb.body {
-            Body::Ffn(Ffn::Mlp(mlp)) if mlp.act == Act::Silu && mlp.gated && !mlp.bias && mlp.clamp.is_none() => {}
-            b => return err(format!("{what}: layer {l}'s second block is {b:?}, where the executor's is the gated SiLU MLP")),
-        }
+        // (the feed-forward: the gated SiLU MLP, or a mixture of experts, the layer's block of them in `Op::Moe`'s order: `experts::of_layers`)
+        let experts = match &fb.body {
+            Body::Ffn(Ffn::Mlp(mlp)) if mlp.act == Act::Silu && mlp.gated && !mlp.bias && mlp.clamp.is_none() => false,
+            Body::Ffn(Ffn::Mlp(mlp)) if mlp.not_run().is_some() => return err(format!("{what}: layer {l}'s MLP: {}", mlp.not_run().unwrap_or_default())),
+            Body::Ffn(Ffn::Moe(_)) => true,
+            b => return err(format!("{what}: layer {l}'s second block is {b:?}, where the executor's is the gated SiLU MLP or a mixture of experts")),
+        };
         for b in [ab, fb] {
             plain(&b.norm_in, &format!("layer {l}"))?;
-            if b.norm_out.is_some() || b.residual != Residual::Add {
-                return err(format!("{what}: layer {l}'s block has a norm after it or a residual of {:?}, where the executor's adds its output", b.residual));
+            if let Some(n) = &b.norm_out {
+                plain(n, &format!("layer {l}'s norm after a block"))?;
+            }
+            if b.norm_out.is_some() != sandwich || b.residual != m.blocks[0].residual || (sandwich && scaled.is_some()) {
+                return err(format!(
+                    "{what}: layer {l}'s block has a residual of {:?} or a norm after it, where every block of a model has the first one's (a plain add, a scaled add, or a norm after each block with a plain add)",
+                    b.residual
+                ));
             }
         }
-        if a.q_norm.is_some_and(|n| n.eps != eps) {
-            return err(format!("{what}: layer {l}'s q and k norms have eps {:?}, where the model's is {eps}", a.q_norm.map(|n| n.eps)));
-        }
-        let table = match &a.rope {
-            None => None,
-            Some(r) if r.scaling != RopeScaling::None || r.mrope.is_some() || r.freq_dim != r.dim => {
-                return err(format!("{what}: layer {l}'s rope is {r:?}, where the executor's tables are the plain rotary's"));
-            }
-            Some(r) => {
-                let t = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false };
-                Some(match ropes.iter().position(|x| (x.theta, x.dim, x.pairs) == (t.theta, t.dim, t.pairs)) {
-                    Some(i) => i,
-                    None => {
-                        ropes.push(t);
-                        ropes.len() - 1
-                    }
-                })
-            }
-        };
         let (norm_in, post) = (name(&mut small, one(ar, "norm_in")?), name(&mut small, one(fr, "norm_in")?));
-        let qk = match a.q_norm {
-            Some(_) => Some((name(&mut small, one(ar, "q_norm")?), name(&mut small, one(ar, "k_norm")?))),
-            None => None,
-        };
-        let ring = rings.len();
-        rings.push(Ring::kv(a.head_dim, a.kv_heads, a.window.unwrap_or(0)));
-        let attn = AttnOp::of(a, Slot::Proj, ring, table, qk)?;
         let w = mats.len();
-        let qkv = item(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?], &shape)?;
-        let stride = qkv.rows;
-        if stride != attn.stride {
-            return err(format!("{what}: layer {l}'s q, k and v product is {stride} wide, where its attention reads {}", attn.stride));
-        }
-        mats.push(qkv);
-        mats.push(item(vec![one(ar, "o")?], &shape)?);
-        let gate_up = item(vec![one(fr, "gate")?, one(fr, "up")?], &shape)?;
-        let inter = gate_up.rows / 2;
-        mats.push(gate_up);
-        mats.push(item(vec![one(fr, "down")?], &shape)?);
+        // (the mixer's operations, from the block's normed input in H to its output in O; the width of its first product's rows, of its queries, and of its
+        // attention's output)
+        let (mixer, stride, heads_w, out_w): (Vec<Op>, usize, usize, usize) = if let Some(a) = a {
+            if a.q_norm.is_some_and(|n| n.eps != eps) {
+                return err(format!("{what}: layer {l}'s q and k norms have eps {:?}, where the model's is {eps}", a.q_norm.map(|n| n.eps)));
+            }
+            let table = match &a.rope {
+                None => None,
+                Some(r) if r.mrope.is_some() || r.freq_dim != r.dim || matches!(r.scaling, RopeScaling::DynamicNtk { .. } | RopeScaling::LongRope { .. }) => {
+                    return err(format!(
+                    "{what}: layer {l}'s rope is {r:?}, where the executor's tables are the plain rotary's or one scaled the same at every length (linear, yarn, llama3)"
+                ));
+                }
+                Some(r) => {
+                    // (a scaled rotary: the frequencies and the factor the reference makes of the kind, a table of them)
+                    let scaled = (r.scaling != RopeScaling::None).then(|| crate::runtime::reference::rope::inv_freq(r));
+                    let t = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false, scaled };
+                    Some(match ropes.iter().position(|x| (x.theta, x.dim, x.pairs) == (t.theta, t.dim, t.pairs) && x.scaled == t.scaled) {
+                        Some(i) => i,
+                        None => {
+                            ropes.push(t);
+                            ropes.len() - 1
+                        }
+                    })
+                }
+            };
+            let qk = match (a.q_norm.map(|n| n.weight), a.k_norm.map(|n| n.weight)) {
+                (None, _) => None,
+                // (the queries' norm has no weight and the keys' has one: the queries' is ones)
+                (Some(NormWeight::None), Some(NormWeight::Plain)) => {
+                    let q = match ones.iter().find(|(hd, _)| *hd == a.head_dim) {
+                        Some(&(_, at)) => at,
+                        None => {
+                            let at = name(&mut small, String::new());
+                            forms.push((at, super::SmallForm::Ones(a.head_dim)));
+                            ones.push((a.head_dim, at));
+                            at
+                        }
+                    };
+                    Some((q, name(&mut small, one(ar, "k_norm")?)))
+                }
+                (Some(NormWeight::None), _) => None,
+                (Some(_), _) => Some((name(&mut small, one(ar, "q_norm")?), name(&mut small, one(ar, "k_norm")?))),
+            };
+            // (the ring's heads are the keys' width: a narrower value head is held in a key head's room, zeros after its values, `AttnOp::dv`)
+            let ring = rings.len();
+            rings.push(Ring::kv(a.head_dim, a.kv_heads, a.window.unwrap_or(0)));
+            let mut attn = match a.sinks {
+                false => AttnOp::of(a, Slot::Proj, ring, table, qk)?,
+                true => AttnOp::of_sinks(a, Slot::Proj, ring, table, qk, name(&mut small, one(ar, "sinks")?))?,
+            };
+            // (a gate of one value a head, LFM's: its matrix's rows, one a query head, stacked after q, k and v, the product's rows then padded with zero rows to
+            // rows the library packs; the attention reads its rows that far apart)
+            let head_gate = a.gate.is_some_and(|g| g.from == crate::runtime::kinds::GateFrom::Head);
+            // (q, k and v cut from one stored matrix's rows, MiMo's fused one: the matrix as stored, which the attention reads by its shards)
+            let fused = match (role(ar, "q"), role(ar, "k"), role(ar, "v")) {
+                (Some(Source::RowsOf(w, q)), Some(Source::RowsOf(wk, k)), Some(Source::RowsOf(wv, v))) if w == wk && w == wv => Some((w, [q, k, v])),
+                (Some(Source::RowsOf(..)), _, _) | (_, Some(Source::RowsOf(..)), _) | (_, _, Some(Source::RowsOf(..))) => {
+                    return err(format!("{what}: layer {l}'s q, k and v are cut from rows of more than one matrix, where one fused matrix holds the three"));
+                }
+                _ => None,
+            };
+            let qkv = match (&fused, head_gate) {
+                (Some((w, cuts)), _) => {
+                    let it = item(vec![(*w).clone()], &shape)?;
+                    // (shard i: its query heads' rows, then its key heads', then its value heads'; the kernels find a head so, and in no other order)
+                    let shards = cuts[0].len();
+                    let widths = [a.heads * a.head_dim, a.kv_heads * a.head_dim, a.kv_heads * a.v_head_dim];
+                    let each = it.rows / shards.max(1);
+                    let mut at = 0;
+                    let in_shards = shards > 0
+                        && it.rows == widths.iter().sum::<usize>()
+                        && widths.iter().all(|w| w % shards == 0)
+                        && cuts.iter().zip(widths).all(|(cut, w)| {
+                            let ok = cut.len() == shards && cut.iter().enumerate().all(|(i, &r)| r == (i * each + at, i * each + at + w / shards));
+                            at += w / shards;
+                            ok
+                        });
+                    if !in_shards {
+                        return err(format!(
+                            "{what}: layer {l}'s q, k and v are rows {cuts:?} of {w} ({} rows), where the executor reads a fused matrix in shards, each its query heads' rows, then its key heads', then its value heads'",
+                            it.rows
+                        ));
+                    }
+                    // (FP8 as released: a fused matrix's block scales start again at every shard, a grid no reader of the engine's takes)
+                    if d.scales.contains_key(*w) {
+                        return err(format!(
+                            "{what}: layer {l}'s fused q, k and v matrix {w} is stored in FP8 with block scales that start again at each of its {shards} shards, which the loader does not read yet"
+                        ));
+                    }
+                    attn = attn.sharded(shards).map_err(|e| e.context(&format!("{what}: layer {l}")))?;
+                    it
+                }
+                (None, false) => item(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?], &shape)?,
+                (None, true) => padded(vec![one(ar, "q")?, one(ar, "k")?, one(ar, "v")?, one(ar, "g")?], &shape, 64)?,
+            };
+            let stride = qkv.rows;
+            if head_gate && stride >= attn.stride {
+                attn.stride = stride;
+            }
+            if stride != attn.stride {
+                return err(format!("{what}: layer {l}'s q, k and v product is {stride} wide, where its attention reads {}", attn.stride));
+            }
+            mats.push(qkv);
+            mats.push(item(vec![one(ar, "o")?], &shape)?);
+            let ops = vec![
+                Op::Linear { w, x: Slot::H, y: Slot::Proj, name: "attention: qkv product" },
+                Op::Attn(attn),
+                Op::Linear { w: w + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
+            ];
+            (ops, stride, a.heads * a.head_dim, a.heads * a.v_head_dim)
+        } else {
+            let Body::Mixer(Mixer::ShortConv(c)) = &ab.body else { unreachable!() };
+            // (the kind's biases are on its two products as well as its convolution: the executor's products have none)
+            if c.bias {
+                return err(format!(
+                    "{what}: layer {l}'s short convolution has biases (on its products and its convolution), which the executor does not run yet"
+                ));
+            }
+            if c.taps == 0 || c.taps > crate::kern::SHORT_CONV_TAPS {
+                return err(format!("{what}: layer {l}'s short convolution has {} taps, where the kernel takes 1 to {}", c.taps, crate::kern::SHORT_CONV_TAPS));
+            }
+            let taps = name(&mut small, one(ar, "conv")?);
+            let into = item(vec![one(ar, "in")?], &shape)?;
+            if (into.rows, into.cols) != (3 * m.hidden, m.hidden) {
+                return err(format!(
+                    "{what}: layer {l}'s short convolution's input product is {} x {}, where B, C and x are {} rows each",
+                    into.rows, into.cols, m.hidden
+                ));
+            }
+            mats.push(into);
+            mats.push(item(vec![one(ar, "o")?], &shape)?);
+            // (a sequence's state: each channel's last taps - 1 values of the gated product, fp32)
+            let state = states.len();
+            states.push(c.state(m.hidden) * 4);
+            let ops = vec![
+                Op::Linear { w, x: Slot::H, y: Slot::Proj, name: "short convolution: in product" },
+                Op::ShortConv { w: taps, state, d: m.hidden, taps: c.taps, row: 3 * m.hidden },
+                Op::Linear { w: w + 1, x: Slot::Xc, y: Slot::O, name: "short convolution: out product" },
+            ];
+            (ops, 3 * m.hidden, 0, 0)
+        };
+        let inter = if experts {
+            // (experts stored as packed 4-bit codes with a byte's scale a run, MiMo's as released: the description names their scales, which are not an FP8
+            // matrix's block scales; the loader of this lowering's experts reads bf16 and FP8 matrices)
+            let packed = fr.iter().filter(|(r, _)| r.starts_with("experts_")).flat_map(|(_, s)| s.names()).find_map(|w| {
+                let s = d.scales.get(&w).filter(|s| !s.ends_with("_scale_inv"))?;
+                Some((w.clone(), s.clone()))
+            });
+            if let Some((w, s)) = packed {
+                return err(format!("{what}: layer {l}'s experts are stored as packed 4-bit codes ({w}, its scales {s}), which the loader does not read yet"));
+            }
+            0
+        } else {
+            let gate_up = item(vec![one(fr, "gate")?, one(fr, "up")?], &shape)?;
+            let inter = gate_up.rows / 2;
+            mats.push(gate_up);
+            mats.push(item(vec![one(fr, "down")?], &shape)?);
+            inter
+        };
+        // (the feed-forward's operations, its output into `y`: H through the MLP's two products, or through the layer's experts)
+        let mut feed = |y: Slot| -> Vec<Op> {
+            if experts {
+                n_moe += 1;
+                vec![Op::Moe(MoeOp { y, ..MoeOp::of(n_moe - 1) })]
+            } else {
+                vec![Op::GateUpSilu { w: w + 2, inter }, Op::Linear { w: w + 3, x: Slot::M, y, name: "MLP: down product" }]
+            }
+        };
         let mut layer = Vec::with_capacity(8);
+        if sandwich {
+            // (each block's output normed, then added; the add leaves the next block's input normed in H: the next layer's, or the final norm's on the last)
+            let (post_attn, post_mlp) = (name(&mut small, one(ar, "norm_out")?), name(&mut small, one(fr, "norm_out")?));
+            let next = if l + 1 < layers {
+                name(&mut small, one(&d.blocks[2 * (l + 1)], "norm_in")?)
+            } else {
+                *final_at.insert(name(&mut small, d.final_norm.clone()))
+            };
+            if l == 0 {
+                first = Some(begin(norm_in));
+            }
+            layer.extend(mixer);
+            layer.push(Op::AddNorm { y: Slot::O, post: post_attn, scalar: None, next: post });
+            layer.extend(feed(Slot::D));
+            layer.push(Op::AddNorm { y: Slot::D, post: post_mlp, scalar: None, next });
+            ops.push(layer);
+            (proj_w, q_w, att_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), att_w.max(out_w), inter_w.max(inter));
+            continue;
+        }
+        if let Some((alpha, beta)) = gate {
+            // (each block: its norm of the residual, its body into O, the residual plus the scale times O; the final norm after the last, into H for the head)
+            match l {
+                0 => first = Some(begin(norm_in)),
+                _ => layer.push(Op::RmsNorm { x: Slot::X, w: norm_in, y: Slot::H, weight: NormW::Plain, eps }),
+            }
+            layer.extend(mixer);
+            layer.extend([Op::GatedResidual { alpha, beta }, Op::RmsNorm { x: Slot::X, w: post, y: Slot::H, weight: NormW::Plain, eps }]);
+            layer.extend(feed(Slot::O));
+            layer.push(Op::GatedResidual { alpha, beta });
+            if l + 1 == layers {
+                let w = *final_at.insert(name(&mut small, d.final_norm.clone()));
+                layer.push(Op::RmsNorm { x: Slot::X, w, y: Slot::H, weight: NormW::Plain, eps });
+            }
+            ops.push(layer);
+            (proj_w, q_w, att_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), att_w.max(out_w), inter_w.max(inter));
+            continue;
+        }
         match l {
-            0 => first = Some(Op::RmsNorm { x: Slot::X, w: norm_in, y: Slot::H, weight: NormW::Plain, eps }),
+            0 => first = Some(begin(norm_in)),
             _ => layer.push(Op::NormAdd { y: Slot::D, w: norm_in, plus1: false }),
         }
-        layer.extend([
-            Op::Linear { w, x: Slot::H, y: Slot::Proj, name: "attention: qkv product" },
-            Op::Attn(attn),
-            Op::Linear { w: w + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
-            Op::NormAdd { y: Slot::O, w: post, plus1: false },
-            Op::GateUpSilu { w: w + 2, inter },
-            Op::Linear { w: w + 3, x: Slot::M, y: Slot::D, name: "MLP: down product" },
-        ]);
+        layer.extend(mixer);
+        layer.push(Op::NormAdd { y: Slot::O, w: post, plus1: false });
+        layer.extend(feed(Slot::D));
         ops.push(layer);
-        (proj_w, q_w, inter_w) = (proj_w.max(stride), q_w.max(a.heads * a.head_dim), inter_w.max(inter));
+        (proj_w, q_w, att_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), att_w.max(out_w), inter_w.max(inter));
     }
-    let final_norm = name(&mut small, d.final_norm.clone());
+    let final_norm = match final_at {
+        Some(at) => at,
+        None => name(&mut small, d.final_norm.clone()),
+    };
     let embed = mats.len();
     mats.push(item(vec![d.embed.clone()], &shape)?);
     let lm = match (&d.head, m.head.tied) {
@@ -340,11 +562,13 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         (Slot::H, m.hidden),
         (Slot::Proj, proj_w),
         (Slot::Qo, q_w),
-        (Slot::Att, q_w),
+        (Slot::Att, att_w),
         (Slot::O, m.hidden),
         (Slot::Gu, 2 * inter_w),
         (Slot::M, inter_w),
         (Slot::D, m.hidden),
+        // (a short convolution's output, which its second product reads)
+        (Slot::Xc, if states.is_empty() { 0 } else { m.hidden }),
         (Slot::Hlast, m.hidden),
     ] {
         widths[s as usize] = w;
@@ -358,35 +582,38 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         widths,
         mats,
         small,
-        forms: Vec::new(),
+        forms,
         ropes,
         rings,
         first: first.ok_or_else(|| Error(format!("{what}: no layers")))?,
         layers: ops,
-        states: Vec::new(),
-        final_norm: Some((final_norm, Slot::D, false)),
+        states,
+        // (the sandwich residual's last add leaves the final norm's output in H, which the head reads)
+        final_norm: (!sandwich && scaled.is_none()).then_some((final_norm, Slot::D, false)),
         decoded: true,
         skinny: false,
         embed,
         lm,
-        softcap: 0.0,
+        softcap: m.head.softcap.unwrap_or(0.0),
         eos,
         post: None,
         v4: None,
         hc: (0.0, 0),
-        logit_mult: 0.0,
+        // (the head's scale: 0 where there is none, which the head's kernel takes as nothing to do)
+        logit_mult: if m.head.scale == 1.0 { 0.0 } else { m.head.scale },
         host: Vec::new(),
         context: Vec::new(),
     })
 }
 
-/// Qwen3.8-Flash-Next (`qwen4_exp_text`, Condor's model) on the shared operations, from its layer kinds alone: every block inside the gated residuals (`Op::StreamsPre`
+/// Qwen3.8-Flash-Next (`qwen4_exp_text`, Ibis's model) on the shared operations, from its layer kinds alone: every block inside the gated residuals (`Op::StreamsPre`
 /// with `StreamsMix::Gated`, `Op::StreamsPost` gated) over the four streams the embedding row becomes (`Op::Streams`), the final mixer (`HeadMix::Gated`); Gated DeltaNet
 /// with the sigmoid gate (`Op::GatedNorm` `sigmoid`); the sparse attention (`Op::IdxMean`, `Op::IdxPick` of `IdxKeys::Pools` unweighted, `Op::Attn` `picked`); the experts
 /// (`Op::Moe`, block k the k-th layer's); the n-gram embedding before its layer (`Op::NgramRows`, its product, `Op::NgramAdd`). The matrices are the checkpoint's by
 /// name (the table of n-grams held as saved, on the GPU or on the host as its kind says, the embedding too: `tables::held`); the small tensors as saved (A_log fp32, as the delta rule reads it: `dynamic::qwen4x`). `max_pos`: the positions
 /// each sequence's states hold (the indexer's keys and pools, the sparse attention's keys and values: a row a position).
 pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     use crate::runtime::kinds::{Act, Collapse, IndexForm, Ngram, NormWeight, Residual, RopeScaling};
     let m = &d.desc;
     let what = "Qwen3.8-Flash-Next";
@@ -462,6 +689,9 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         match &b.body {
             Body::Ngram(n) => {
                 let Ngram { order, heads, dim, conv, dilation, streams, eos: end, .. } = *n;
+                if n.form == crate::runtime::kinds::NgramForm::EngramNormed {
+                    return err(format!("{what}: {}", Ngram::NORMED_NOT_RUN));
+                }
                 if (order, conv, dilation, streams, hc) != (3, 4, 3, 4, 4)
                     || n.form != crate::runtime::kinds::NgramForm::Segmented
                     || n.norm.weight != NormWeight::PlusOne
@@ -527,6 +757,9 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                     }
                     Mixer::Attention(a) => {
                         let ix = a.indexer.as_ref().ok_or_else(|| Error(format!("{what}: an attention with no indexer")))?;
+                        if let IndexForm::Max { .. } = ix.form {
+                            return err(format!("{what}: {}", IndexForm::MAX_NOT_RUN));
+                        }
                         let IndexForm::Mean { norm: inorm } = ix.form else {
                             return err(format!("{what}: an indexer of {:?}, where the model's pools are mean-pooled", ix.form));
                         };
@@ -543,7 +776,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                                 "{what}: a rotary of {r:?} and an indexer of {ix:?}: the kernels take the plain rotary within the index heads, of a multiple of 32 up to 1,024"
                             ));
                         }
-                        let rt = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false };
+                        let rt = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false, scaled: None };
                         let table = match ropes.iter().position(|x| (x.theta, x.dim, x.pairs) == (rt.theta, rt.dim, rt.pairs)) {
                             Some(i) => i,
                             None => {
@@ -899,6 +1132,7 @@ fn block_head<L: Lowered>(d: &Described, eos: Vec<i64>, max_pos: usize, blocks: 
 /// hand-written `dynamic::qwen35::describe`); stage `st` of a model split across GPUs. A layer whose feed-forward is a mixture of experts (the layout's with experts: a softmax router, the gated shared expert)
 /// runs `Op::Moe` in the MLP's place, block k the stage's k-th such layer's (`dynamic::experts`), and names no MLP matrices.
 pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     use super::qwen35::per_layer;
     use crate::qwen35::Kind;
     let m = &d.desc;
@@ -1084,7 +1318,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
         mats,
         small,
         forms: Vec::new(),
-        ropes: vec![Rope { theta: rope.theta, dim: rotary, pairs: rotary / 2, trig64: false }],
+        ropes: vec![Rope { theta: rope.theta, dim: rotary, pairs: rotary / 2, trig64: false, scaled: None }],
         rings,
         first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, weight: NormW::PlusOne, eps }),
         layers: ops_all,
@@ -1112,6 +1346,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
 /// in and out products, an attention layer's q, k and v as one and o; the embedding, then the head where it is not the embedding. A layer's experts are its
 /// block's, read apart.
 pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     use super::nemotron::per_layer;
     use crate::kern::{MAMBA2_HEAD, MAMBA2_STATE};
     use crate::nemotron::NhKind;
@@ -1276,6 +1511,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
 /// Every matrix and small tensor is named from the description's roles, in the order the operations index them, a small tensor made from its values where its
 /// operation reads it so (`SmallForm`): the executor's loader reads them (`dynamic::muse`), each layer's experts its kind's block (`dynamic::experts`).
 pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     let m = &d.desc;
     if m.blocks.len() % 2 != 0 {
         return err(format!("Muse Spark: {} blocks, where each layer is an attention block and an experts block", m.blocks.len()));
@@ -1412,7 +1648,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         mats,
         small,
         forms,
-        ropes: vec![Rope { theta: atts.iter().find_map(|a| a.rope.as_ref()).map_or(0.0, |r| r.theta), dim: hd, pairs: hd / 2, trig64: true }],
+        ropes: vec![Rope { theta: atts.iter().find_map(|a| a.rope.as_ref()).map_or(0.0, |r| r.theta), dim: hd, pairs: hd / 2, trig64: true, scaled: None }],
         rings,
         first: Op::RmsNorm { x: Slot::X, w: ones, y: Slot::X, weight: NormW::Plain, eps },
         layers: ops_all,
@@ -1442,6 +1678,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
 /// and beta; a latent layer's q_a, q_b, kv_a and o; a dense MLP's gate and up as one, and down; then the embedding and, on the last stage, the head. A layer's
 /// experts are its block's, read apart (`dynamic::experts`).
 pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     use super::glm::{dense_ops, glm_desc, kda_ops, per_layer};
     use crate::glm::GlmKind;
     use crate::kern::GM_D;
@@ -1463,6 +1700,8 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
     }
     let layers = m.blocks.len() / 2;
     let (hc, round) = match &m.blocks[0].residual {
+        Residual::Streams(s) if s.eps_outside => return err(format!("GLM-5.3-Flash: {}", crate::runtime::kinds::StreamsP::EPS_OUTSIDE_NOT_RUN)),
+        Residual::Streams(s) if s.apart.is_some() => return err(format!("GLM-5.3-Flash: {}", crate::runtime::kinds::StreamsP::APART_NOT_RUN)),
         Residual::Streams(s) if !s.lagged => ((s.eps, s.sinkhorn_iters as i32), s.rounding),
         r => return err(format!("GLM-5.3-Flash: a residual of {r:?}, not mHC's streams")),
     };
@@ -1497,7 +1736,9 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
                     g => return err(format!("GLM-5.3-Flash: layer {l}'s MLP gate is {g:?}")),
                 };
                 inter = d.shapes.get(gate).map(|s| s[0]).ok_or_else(|| Error(format!("GLM-5.3-Flash: no shape for {gate}")))?;
-                limit = mlp.clamp.ok_or_else(|| Error(format!("GLM-5.3-Flash: layer {l}'s MLP has no SwiGLU limit: this engine runs the clamped SwiGLU")))?;
+                limit = crate::runtime::kinds::Clamp::before(mlp.clamp)
+                    .map_err(|e| e.context(&format!("GLM-5.3-Flash: layer {l}'s MLP")))?
+                    .ok_or_else(|| Error(format!("GLM-5.3-Flash: layer {l}'s MLP has no SwiGLU limit: this engine runs the clamped SwiGLU")))?;
                 false
             }
             Body::Ffn(Ffn::Moe(_)) => true,
@@ -1637,6 +1878,7 @@ pub(crate) fn split_apart_picks(l: usize) -> String {
 /// norm and kv_b, then its own indexer's (`MlaIndexer::at`'s order); the last stage's final norm. Matrices: a layer's q_a, q_b, kv_a, o, then a dense MLP's
 /// gate and up as one and its down (a layer of experts holds its own); the embedding, then the head where it is not the embedding.
 pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     use super::mla::{MlaIn, MlaOp};
     use crate::moe::Act;
     use crate::runtime::kinds::{Collapse, NormKind, NormWeight, Residual, Rounding};
@@ -1686,7 +1928,7 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
         let table = match (&x.rope, ropes.first()) {
             (None, _) => None,
             (Some(r), None) => {
-                ropes.push(Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false });
+                ropes.push(Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false, scaled: None });
                 Some(0)
             }
             (Some(r), Some(t)) if (r.theta, r.dim, r.freqs) == (t.theta, t.dim, t.pairs) => Some(0),
@@ -1861,6 +2103,7 @@ fn padded(members: Vec<String>, shape: Shape, to: usize) -> Result<Item> {
 /// checkpoint holds them, `early` whether the cached experts are guessed ahead. Every matrix and small tensor the operations use is named from the
 /// description's roles (`kimi_names`); the blocks of experts are read apart, in the layers' order.
 pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32: &[(bool, bool)], early: bool) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     use super::kimi::{kimi_desc, KimiDims, KimiLayer};
     use crate::runtime::kinds::{Act, Decay, Residual};
     let m = &d.desc;
@@ -2639,6 +2882,257 @@ mod tests {
         assert!(twice.len() == 4 * 43 + 1 && twice.iter().all(|&r| r == Rounding::Twice));
     }
 
+    /// LFM's layers lower by the dense lowering, which the planner's lowering sends them to: a conv layer's input product, `Op::ShortConv` and output product
+    /// in the attention's place, a state a conv layer (each channel's last taps - 1 values of the gated product, fp32); an attention layer's gate one value a
+    /// head, its matrix stacked after q, k and v and the rows padded to rows that pack; every block the sandwich residual. What the executor's short
+    /// convolution does not run is refused by its name: the kind's biases, and more taps than the kernel takes.
+    #[test]
+    fn a_short_convolution_and_a_gate_a_head_lower() {
+        use super::super::attn::GateAt;
+        let config = |sorts: &[&str], extra: serde_json::Value| {
+            let mut c = serde_json::json!({"model_type": "lfm3", "hidden_size": 256, "num_hidden_layers": sorts.len(), "vocab_size": 1024, "intermediate_size": 512,
+                "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 64, "layer_types": sorts, "sliding_window": 16, "max_position_embeddings": 4096});
+            c.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            crate::runtime::describe::describe(&c).unwrap_or_else(|e| panic!("{}", e.msg))
+        };
+        let lfm = |sorts: &[&str]| config(sorts, serde_json::json!({}));
+        let conv = lfm(&["conv", "full_attention", "sliding_attention"]);
+        let d = super::super::split::lowered_described(&conv, 3, 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert_eq!(format!("{d:?}"), format!("{:?}", dense(&conv, Vec::new(), 4096).unwrap()), "the planner's lowering is the dense one");
+        // (one state: 256 channels' last 6 values, fp32; the convolution's output in Xc, the input product's rows in Proj beside the attention's)
+        assert_eq!((d.states.clone(), d.rings.len(), d.ropes.len(), d.final_norm.is_none()), (vec![256 * 6 * 4], 2, 2, true));
+        assert_eq!((d.width(Slot::Xc), d.width(Slot::Proj)), (256, 3 * 256));
+        let [Op::Linear { w: into, x: Slot::H, y: Slot::Proj, .. }, Op::ShortConv { w, state: 0, d: 256, taps: 7, row: 768 }, product, add, ..] =
+            &d.layers[0][..]
+        else {
+            panic!("{:?}", d.layers[0])
+        };
+        let (Op::Linear { w: out, x: Slot::Xc, y: Slot::O, .. }, Op::AddNorm { y: Slot::O, .. }) = (product, add) else { panic!("{:?}", d.layers[0]) };
+        assert!(d.small[*w].ends_with("layers.0.conv.conv.weight"), "{}", d.small[*w]);
+        assert_eq!((d.mats[*into].members.clone(), d.mats[*into].rows), (vec!["model.layers.0.conv.in_proj.weight".to_string()], 768));
+        assert_eq!((d.mats[*out].members.clone(), d.mats[*out].rows), (vec!["model.layers.0.conv.out_proj.weight".to_string()], 256));
+        assert!(super::super::read_at_least(&d).contains(&(*w, 256 * 7)));
+        // (an attention layer: q, k, v and the gate's four rows, 516, padded to 576; the gate a head's one value at its row after the values')
+        for (l, window) in [(1, 0), (2, 16)] {
+            let [Op::Linear { w: qkv, .. }, Op::Attn(a), Op::Linear { x: Slot::Att, y: Slot::O, .. }, ..] = &d.layers[l][..] else {
+                panic!("{:?}", d.layers[l])
+            };
+            assert_eq!((a.stride, a.window, a.gate), (576, window, Some(GateAt { off: 512, step: 1, norm: false, head: true })), "layer {l}");
+            let it = &d.mats[*qkv];
+            assert_eq!((it.rows, it.members.len(), it.members.last().map(String::as_str)), (576, 5, Some(crate::weights::ZERO_ROWS)), "layer {l}");
+            assert!(it.members[3].ends_with(&format!("layers.{l}.self_attn.gate_proj.weight")), "{:?}", it.members);
+        }
+        // (the full layers' rotary turns half the head's pairs at exponents over the whole head, the sliding layers' every pair: a table each)
+        let rope = |l: usize| d.layers[l].iter().find_map(|o| if let Op::Attn(a) = o { a.rope } else { None }).unwrap();
+        let (full, sliding) = (rope(1), rope(2));
+        assert_eq!(((full.span, full.pairs), (sliding.span, sliding.pairs)), ((64, 16), (64, 32)));
+        assert_eq!((d.ropes[full.table].theta, d.ropes[full.table].dim, d.ropes[full.table].pairs), (1e6, 64, 16));
+        assert_eq!((d.ropes[sliding.table].theta, d.ropes[sliding.table].dim, d.ropes[sliding.table].pairs), (1e4, 64, 32));
+        // (the description has no loader of the dynamic route: it is the one-GPU route's, as every family the dense lowering takes)
+        assert!(super::super::split::loader(&conv).is_err());
+        // (a model of attention layers alone holds no state)
+        let gated = lfm(&["full_attention", "sliding_attention"]);
+        let g = super::super::split::lowered_described(&gated, 2, 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert!(g.states.is_empty() && g.width(Slot::Xc) == 0 && g.layers.iter().flatten().any(|o| matches!(o, Op::Attn(a) if a.gate.is_some_and(|x| x.head))));
+        // (without the norm after each block: the plain add, the same mixers)
+        let bare = config(&["conv", "full_attention"], serde_json::json!({"use_sandwich_norm": false}));
+        let b = dense(&bare, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert!(b.final_norm.is_some() && matches!(b.layers[0][1], Op::ShortConv { .. }) && matches!(b.layers[0][3], Op::NormAdd { .. }), "{:?}", b.layers[0]);
+        // (refused by name: the kind's biases; more taps than the kernel takes)
+        let e = dense(&config(&["conv"], serde_json::json!({"conv_bias": true})), vec![2], 4096).unwrap_err().msg;
+        assert!(e.contains("layer 0's short convolution has biases") && e.contains("does not run yet"), "{e}");
+        let e = dense(&config(&["conv"], serde_json::json!({"conv_L_cache": 17})), vec![2], 4096).unwrap_err().msg;
+        assert!(e.contains("17 taps, where the kernel takes 1 to 16"), "{e}");
+        assert!(dense(&config(&["conv"], serde_json::json!({"conv_L_cache": 16})), vec![2], 4096).is_ok());
+    }
+
+    /// LFM's small model (the logits checks' random one): the description reads every tensor of its manifest at the manifest's shape, and the dense lowering
+    /// names every one of them, a matrix's member or a small tensor (the head is the embedding); four conv layers' states, 512 channels' last 6 values in fp32
+    /// each; a ring for each of the two attention layers, the second's a window of 9; and it is a family the description is the whole of.
+    #[test]
+    fn the_random_lfm_lowers_with_every_tensor_named() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/lfm3_tiny_manifest.json")).unwrap()).unwrap();
+        let text = manifest["config"].as_str().unwrap();
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap_or_else(|e| panic!("{}", e.msg));
+        let have: std::collections::BTreeSet<String> = manifest["tensors"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
+        kinds.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+        for t in manifest["tensors"].as_array().unwrap() {
+            let shape: Vec<usize> = t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+            assert_eq!(kinds.shapes.get(t[0].as_str().unwrap()), Some(&shape), "{}", t[0]);
+        }
+        let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        let named: std::collections::BTreeSet<String> =
+            d.mats.iter().flat_map(|it| it.members.iter()).chain(&d.small).filter(|n| !n.is_empty()).cloned().collect();
+        assert_eq!(named, have);
+        assert_eq!((d.layers.len(), d.states.clone(), d.lm == d.embed, d.final_norm.is_none()), (6, vec![512 * 6 * 4; 4], true, true));
+        assert_eq!(d.rings.iter().map(|r| (r.d, r.nk, r.window)).collect::<Vec<_>>(), vec![(128, 2, 0), (128, 2, 9)]);
+        // (q, k, v and the gate's four rows, padded to rows that pack: 1,028 to 1,088; a conv layer's input product is wider)
+        assert_eq!((d.width(Slot::Proj), d.width(Slot::Xc), d.width(Slot::Att)), (3 * 512, 512, 4 * 128));
+        let kinds_of: Vec<bool> = d.layers.iter().map(|ops| ops.iter().any(|o| matches!(o, Op::ShortConv { .. }))).collect();
+        assert_eq!(kinds_of, [true, true, false, true, false, true]);
+        assert_eq!(crate::runtime::config::ModelConfig::parse(text).unwrap().family(), Some(crate::support::Family::Layers));
+    }
+
+    /// MiMo's small model (the logits checks' random one): the description reads every tensor of its manifest at the manifest's shape, and the dense lowering
+    /// names every one of them, a matrix's member (a layer's fused q-k-v matrix one member, as stored) or a small tensor; a ring a layer, of heads of 192, the
+    /// middle two a window of 9; three layers of experts; and it is a family the description is the whole of.
+    #[test]
+    fn the_random_mimo_lowers_with_every_tensor_named() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/mimo_tiny_manifest.json")).unwrap()).unwrap();
+        let text = manifest["config"].as_str().unwrap();
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap_or_else(|e| panic!("{}", e.msg));
+        let have: std::collections::BTreeSet<String> = manifest["tensors"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
+        kinds.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+        for t in manifest["tensors"].as_array().unwrap() {
+            let shape: Vec<usize> = t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+            assert_eq!(kinds.shapes.get(t[0].as_str().unwrap()), Some(&shape), "{}", t[0]);
+        }
+        let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        // (the experts' tensors are their blocks', read apart: `experts::of_layers`)
+        let experts: std::collections::BTreeSet<String> =
+            super::super::experts::of_layers(&kinds, (0, 4), 2).flat_map(|(_, _, roles)| roles.iter().flat_map(|(_, s)| s.names())).collect();
+        let named: std::collections::BTreeSet<String> =
+            d.mats.iter().flat_map(|it| it.members.iter()).chain(&d.small).filter(|n| !n.is_empty()).cloned().chain(experts).collect();
+        assert_eq!(named, have);
+        assert_eq!((d.layers.len(), d.states.is_empty(), d.lm == d.embed + 1, d.final_norm.is_some()), (4, true, true, true));
+        assert_eq!(d.rings.iter().map(|r| (r.d, r.nk, r.window)).collect::<Vec<_>>(), vec![(192, 2, 0), (192, 4, 9), (192, 4, 9), (192, 2, 0)]);
+        assert_eq!((d.width(Slot::Proj), d.width(Slot::Qo), d.width(Slot::Att)), (2816, 8 * 192, 8 * 128));
+        let attn: Vec<(usize, usize, usize, bool)> = d
+            .layers
+            .iter()
+            .map(|ops| ops.iter().find_map(|o| if let Op::Attn(a) = o { Some((a.dv, a.shards, a.stride, a.sinks.is_some())) } else { None }).unwrap())
+            .collect();
+        assert_eq!(attn, [(128, 2, 2176, false), (128, 2, 2816, true), (128, 2, 2816, true), (128, 2, 2176, false)]);
+        let moe: Vec<bool> = d.layers.iter().map(|ops| ops.iter().any(|o| matches!(o, Op::Moe(_)))).collect();
+        assert_eq!(moe, [false, true, true, true]);
+        assert_eq!(crate::runtime::config::ModelConfig::parse(text).unwrap().family(), Some(crate::support::Family::Layers));
+    }
+
+    /// A small config of MiMo's layout: three layers 256 wide, each a dense MLP; the first over the whole context (8 query heads over 2), the others sliding over
+    /// 8 positions and the query's own (8 over 4, a sink a head); queries and keys of 192 with their first 64 channels turned, values of 128 times 0.707; the
+    /// three products one matrix in 2 shards, or with `keys` over it.
+    fn mimo_config(keys: serde_json::Value) -> Described {
+        let mut c = serde_json::json!({
+            "architectures": ["MiMoV2ForCausalLM"], "model_type": "mimo_v2", "hidden_size": 256, "num_hidden_layers": 3, "vocab_size": 1024,
+            "layernorm_epsilon": 1e-6, "hidden_act": "silu", "max_position_embeddings": 4096, "attention_projection_layout": "fused_qkv",
+            "num_attention_heads": 8, "num_key_value_heads": 2, "head_dim": 192, "v_head_dim": 128, "rope_theta": 10000000.0,
+            "swa_num_attention_heads": 8, "swa_num_key_value_heads": 4, "swa_head_dim": 192, "swa_v_head_dim": 128, "swa_rope_theta": 10000.0,
+            "partial_rotary_factor": 0.334, "hybrid_layer_pattern": [0, 1, 1], "sliding_window_size": 8, "add_swa_attention_sink_bias": true,
+            "attention_value_scale": 0.707, "moe_layer_freq": [0, 0, 0], "intermediate_size": 512, "scoring_func": "sigmoid", "topk_method": "noaux_tc",
+        });
+        c.as_object_mut().unwrap().extend(keys.as_object().unwrap().clone());
+        crate::runtime::describe::describe(&c).unwrap_or_else(|e| panic!("{}", e.msg))
+    }
+
+    /// MiMo's attention on the dense lowering: the fused matrix as stored is the product's one member, and the attention reads its heads by the shards (2: on
+    /// the first layer each 4 query heads, a key head and a value head; on a sliding one 4, 2 and 2); values of 128 under heads of 192, so the output is 8 x 128
+    /// wide where the queries are 8 x 192 and the ring's heads 192; the values' factor; a sliding layer's window and sinks. With a matrix a product the same
+    /// operation with no shards, its three matrices stacked. The fused matrix stored in FP8, whose block scales start again at every shard, is refused by name.
+    #[test]
+    fn a_fused_product_in_shards_and_narrower_values_lower() {
+        let d = dense(&mimo_config(serde_json::json!({})), vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        let attn = |d: &ModelDesc, l: usize| d.layers[l].iter().find_map(|o| if let Op::Attn(a) = o { Some(a.clone()) } else { None }).unwrap();
+        let (full, swa) = (attn(&d, 0), attn(&d, 1));
+        assert_eq!((full.d, full.dv, full.nq, full.nk, full.v_scale, full.window, full.sinks), (192, 128, 8, 2, 0.707, 0, None));
+        assert_eq!((full.shards, full.stride, full.k_off, full.v_off), (2, 10 * 192 + 2 * 128, 4 * 192, Some(5 * 192)));
+        assert_eq!((swa.shards, swa.stride, swa.k_off, swa.v_off, swa.nk, swa.window), (2, 12 * 192 + 4 * 128, 4 * 192, Some(6 * 192), 4, 9));
+        assert!(swa.sinks.is_some() && full.warp_only() && !full.lib_decode());
+        assert_eq!((full.rope.map(|r| (r.span, r.pairs)), d.ropes.len()), (Some((64, 32)), 2));
+        let qkv = &d.mats[d.layers[0].iter().find_map(|o| if let Op::Linear { w, y: Slot::Proj, .. } = o { Some(*w) } else { None }).unwrap()];
+        assert_eq!((qkv.members.clone(), qkv.rows, qkv.cols), (vec!["model.layers.0.self_attn.qkv_proj.weight".to_string()], 2176, 256));
+        assert_eq!((d.width(Slot::Proj), d.width(Slot::Qo), d.width(Slot::Att)), (12 * 192 + 4 * 128, 8 * 192, 8 * 128));
+        assert_eq!(d.rings.iter().map(|r| (r.d, r.nk, r.window)).collect::<Vec<_>>(), vec![(192, 2, 0), (192, 4, 9), (192, 4, 9)]);
+        // (a matrix a product: q, k and v stacked, no shards)
+        let split = dense(&mimo_config(serde_json::json!({"attention_projection_layout": "split"})), vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        let s = attn(&split, 1);
+        assert_eq!((s.shards, s.stride, s.k_off, s.v_off, s.dv), (1, 12 * 192 + 4 * 128, 8 * 192, Some(12 * 192), 128));
+        assert_eq!(split.mats[0].members.len(), 3);
+        // (FP8 as released)
+        let quant = serde_json::json!({"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128], "store_dtype": "mxfp4", "mxfp4_block_size": 32,
+            "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]});
+        let Err(e) = dense(&mimo_config(serde_json::json!({"quantization_config": quant})), vec![2], 4096) else { panic!("a fused FP8 matrix, and lowered") };
+        assert!(e.msg.contains("qkv_proj.weight is stored in FP8 with block scales that start again at each of its 2 shards"), "{}", e.msg);
+    }
+
+    /// Where the preparation's kernel finds each head of a fused matrix is where the description cuts it: for every attention layer of MiMo's released config
+    /// (its recorded header's, the stored formats left out: 64 query heads over 4 key heads on the whole-context layers and over 8 on the sliding ones, 4
+    /// shards) and of the small model's, head j of q, of k and of v, as the kernel's arithmetic places it (`AttnOp::head_at`), starts at the row the
+    /// description's cuts give the role's j-th head.
+    #[test]
+    fn the_kernels_place_of_a_head_is_the_descriptions_cut() {
+        let (text, _) = header("MiMo-V2.6-Flash-RL.json");
+        let mut released: serde_json::Value = serde_json::from_str(&text).unwrap();
+        released.as_object_mut().unwrap().remove("quantization_config");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/mimo_tiny_manifest.json")).unwrap()).unwrap();
+        let small: serde_json::Value = serde_json::from_str(manifest["config"].as_str().unwrap()).unwrap();
+        for (cfg, layers, shards) in [(released, 48, 4), (small, 4, 2)] {
+            let kinds = crate::runtime::describe::describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+            let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+            assert_eq!(d.layers.len(), layers);
+            for (l, ops) in d.layers.iter().enumerate() {
+                let a = ops.iter().find_map(|o| if let Op::Attn(a) = o { Some(a) } else { None }).unwrap();
+                assert_eq!(a.shards, shards, "layer {l}");
+                // (the stored row of the role's row r: the cuts in order)
+                let stored = |r: &str, row: usize| -> usize {
+                    let Some(Source::RowsOf(_, cuts)) = role(&kinds.blocks[2 * l], r) else { panic!("layer {l}: {r} is not cut from rows") };
+                    let mut left = row;
+                    for &(from, to) in cuts {
+                        if left < to - from {
+                            return from + left;
+                        }
+                        left -= to - from;
+                    }
+                    panic!("layer {l}: {r} has no row {row}")
+                };
+                for h in 0..a.nq {
+                    assert_eq!(a.head_at(h, a.nq, 0, a.q_step), stored("q", h * a.d), "layer {l}: query head {h}");
+                }
+                for j in 0..a.nk {
+                    assert_eq!(a.head_at(j, a.nk, a.k_off, a.d), stored("k", j * a.d), "layer {l}: key head {j}");
+                    assert_eq!(a.head_at(j, a.nk, a.v_off.unwrap(), a.dv), stored("v", j * a.dv), "layer {l}: value head {j}");
+                    // (a head's rows are one run of its cut: the kernel reads them in a row)
+                    assert_eq!(stored("k", (j + 1) * a.d - 1), stored("k", j * a.d) + a.d - 1, "layer {l}: key head {j}");
+                    assert_eq!(stored("v", (j + 1) * a.dv - 1), stored("v", j * a.dv) + a.dv - 1, "layer {l}: value head {j}");
+                }
+            }
+        }
+    }
+
+    /// MiMo's experts on the dense lowering: a layer's feed-forward the Moe kind's block where the config says experts, whose shape and arithmetic the block's
+    /// loader takes from the kind (sigmoid scores, a choice bias, the best 2 of 8 renormalised, no shared expert, SwiGLU experts; no group of choices); the
+    /// first layer keeps its dense MLP. As released the experts are packed 4-bit codes, which the lowering refuses by name (the split layout here: its FP8
+    /// products are matrices the loader reads).
+    #[test]
+    fn sigmoid_routed_experts_with_a_choice_bias_lower() {
+        use crate::moe::{Act, Scoring};
+        let sparse = serde_json::json!({"moe_layer_freq": [0, 1, 1], "moe_intermediate_size": 128, "n_routed_experts": 8, "num_experts_per_tok": 2,
+            "norm_topk_prob": true, "n_group": 1, "topk_group": 1, "attention_projection_layout": "split"});
+        let kinds = mimo_config(sparse.clone());
+        let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        let moe: Vec<usize> = d.layers.iter().map(|ops| ops.iter().filter(|o| matches!(o, Op::Moe(_))).count()).collect();
+        assert_eq!(moe, [0, 1, 1]);
+        assert!(d.layers[0].iter().any(|o| matches!(o, Op::GateUpSilu { .. })) && !d.layers[1].iter().any(|o| matches!(o, Op::GateUpSilu { .. })));
+        let blocks: Vec<_> = super::super::experts::of_layers(&kinds, (0, 3), 2).collect();
+        assert_eq!(blocks.iter().map(|(ix, _, _)| (ix.layer, ix.moe)).collect::<Vec<_>>(), vec![(1, 0), (2, 1)]);
+        let (_, m, roles) = &blocks[0];
+        let c = super::super::experts::cfg(m, 256, 128).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert_eq!(
+            (c.experts, c.router.scoring, c.router.top_k, c.router.renorm, c.router.scale, c.router.bf16_logits),
+            (8, Scoring::Sigmoid, 2, true, 1.0, false)
+        );
+        assert!(matches!(c.act, Act::SwiGlu { limit: None }) && m.router.bias && m.shared.is_none());
+        assert!(matches!(role(roles, "choice_bias"), Some(Source::Tensor(n)) if n == "model.layers.1.mlp.gate.e_score_correction_bias"));
+        assert!(matches!(role(roles, "experts_gate_up"), Some(Source::Experts(e)) if e.len() == 8 && e[0].len() == 2));
+        let mut quant = sparse;
+        quant["quantization_config"] = serde_json::json!({"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128], "store_dtype": "mxfp4",
+            "mxfp4_block_size": 32, "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]});
+        let Err(e) = dense(&mimo_config(quant), vec![2], 4096) else { panic!("experts packed at 4 bits, and lowered") };
+        assert!(e.msg.contains("layer 1's experts are stored as packed 4-bit codes (model.layers.1.mlp.experts.0.gate_proj.weight"), "{}", e.msg);
+    }
+
     /// A plain dense decoder's config (the model type the description builder reads it by, the attention's settings) of three layers of hidden 256, 4 query heads over 2
     /// of 64, an MLP of 512, a vocabulary of 1,024: test shapes, no release's.
     fn dense_config(model_type: &str, extra: serde_json::Value) -> serde_json::Value {
@@ -2649,11 +3143,133 @@ mod tests {
         c
     }
 
+    /// Domyn Edge's small model (the logits checks' random one) lowers by the plain dense lowering: every layer the sandwich residual (`Op::AddNorm` after the
+    /// attention and after the MLP, no `Op::NormAdd`; the last one's next norm the final norm, which the head then reads from H: no final norm of its own on the
+    /// last rows); each layer's ring and attention at its own head width, with a rotary on the windowed layers alone; the queries' norm a weight of ones, one
+    /// small tensor a head width (`SmallForm::Ones`), the keys' the checkpoint's; a matrix for each tensor of the checkpoint, at its shape. (The planner does
+    /// not size a model whose layers differ in head width yet, so `fit`, `run` and `serve` do not take the family: `support::family` still refuses it.)
+    #[test]
+    fn domyn_edge_lowers_as_the_sandwich_dense_kind() {
+        use super::super::attn::QkNorm;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/domynedge_tiny_manifest.json")).unwrap()).unwrap();
+        let text = manifest["config"].as_str().unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(text).unwrap();
+        let kinds = crate::runtime::describe::describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        let have: std::collections::BTreeSet<String> = manifest["tensors"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
+        kinds.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+        for t in manifest["tensors"].as_array().unwrap() {
+            let shape: Vec<usize> = t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+            assert_eq!(kinds.shapes.get(t[0].as_str().unwrap()), Some(&shape), "{}", t[0]);
+        }
+        let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert_eq!((d.layers.len(), d.final_norm.is_none(), d.rings.len(), d.ropes.len()), (4, true, 4, 1));
+        assert_eq!(d.forms, vec![(d.forms[0].0, super::super::SmallForm::Ones(256)), (d.forms[1].0, super::super::SmallForm::Ones(64))]);
+        for (l, ops) in d.layers.iter().enumerate() {
+            let whole = l == 0 || l == 3;
+            assert_eq!(ops.iter().filter(|o| matches!(o, Op::AddNorm { scalar: None, .. })).count(), 2, "layer {l}");
+            assert!(!ops.iter().any(|o| matches!(o, Op::NormAdd { .. })), "layer {l}");
+            let Some(Op::Attn(a)) = ops.iter().find(|o| matches!(o, Op::Attn(_))) else { panic!("layer {l}: no attention") };
+            assert_eq!((a.d, a.nq, a.nk, a.rope.is_some()), (if whole { 256 } else { 64 }, 8, 4, !whole), "layer {l}");
+            let QkNorm::Weight { q, k } = a.norm else { panic!("layer {l}: {:?}", a.norm) };
+            assert!(d.small[q].is_empty() && d.small[k].ends_with(&format!("layers.{l}.attention.k_norm.weight")), "layer {l}");
+            assert_eq!(d.forms.iter().find(|f| f.0 == q).map(|f| f.1), Some(super::super::SmallForm::Ones(a.d)), "layer {l}");
+        }
+        // (the last add's next norm is the final norm)
+        let Some(Op::AddNorm { next, .. }) = d.layers[3].last() else { panic!() };
+        assert!(d.small[*next].ends_with("model.norm.weight"));
+        assert_eq!(d.widths[Slot::Proj as usize], 8 * 256 + 2 * 4 * 256);
+        assert_eq!(crate::runtime::config::ModelConfig::parse(text).unwrap().family(), Some(crate::support::Family::Layers));
+        // (a model with a norm after some blocks and not others is refused, named)
+        let mut odd = kinds.clone();
+        odd.desc.blocks[3].norm_out = None;
+        let e = dense(&odd, vec![2], 4096).unwrap_err().msg;
+        assert!(e.contains("layer 1") && e.contains("norm after it"), "{e}");
+    }
+
+    /// Granite Swash's small dense model (the logits checks' random one) lowers by the plain dense lowering: the embedding's rows times 12 with the first norm
+    /// (`Op::EmbedNorm`); each block's output added times 0.28 by the gated residual of two constant factors, 1 and the scale, fp32 a column
+    /// (`Op::GatedResidual`, `SmallForm::Const`); every attention with its sinks (the layer's small tensor) and the scores' factor 1/128; a window on the layers
+    /// the config names; the final norm after the last block, into H; the logits times a tenth.
+    #[test]
+    fn granite_swash_lowers_with_its_scales_and_sinks() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/granite_swa_tiny_manifest.json")).unwrap()).unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(manifest["config"].as_str().unwrap()).unwrap();
+        let kinds = crate::runtime::describe::describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        let have: std::collections::BTreeSet<String> = manifest["tensors"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
+        kinds.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+        let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert!(matches!(d.first, Op::EmbedNorm { scale, .. } if scale == 12.0), "{:?}", d.first);
+        assert_eq!((d.final_norm.is_none(), d.logit_mult, d.softcap, d.layers.len()), (true, 0.1, 0.0, 4));
+        use super::super::SmallForm::Const;
+        let [(alpha, Const(one, n1)), (beta, Const(scale, n2))] = d.forms[..] else { panic!("{:?}", d.forms) };
+        assert_eq!((one, n1, scale, n2), (1.0, 512, 0.28, 512));
+        for (l, ops) in d.layers.iter().enumerate() {
+            assert_eq!(ops.iter().filter(|o| matches!(o, Op::GatedResidual { alpha: a, beta: b } if (*a, *b) == (alpha, beta))).count(), 2, "layer {l}");
+            assert!(!ops.iter().any(|o| matches!(o, Op::NormAdd { .. } | Op::AddNorm { .. })), "layer {l}");
+            let Some(Op::Attn(a)) = ops.iter().find(|o| matches!(o, Op::Attn(_))) else { panic!("layer {l}: no attention") };
+            let sinks = a.sinks.unwrap_or_else(|| panic!("layer {l}: no sinks"));
+            assert!(d.small[sinks].ends_with(&format!("layers.{l}.self_attn.sinks")), "layer {l}: {}", d.small[sinks]);
+            assert_eq!((a.d, a.scale, a.window, a.lib_decode()), (128, 0.0078125, if l == 1 || l == 2 { 8 } else { 0 }, false), "layer {l}");
+            // (the MLP's down product lands in O, which the gated residual reads)
+            assert!(ops.iter().any(|o| matches!(o, Op::Linear { y: Slot::O, name: "MLP: down product", .. })), "layer {l}");
+        }
+        assert!(matches!(d.layers[3].last(), Some(Op::RmsNorm { x: Slot::X, y: Slot::H, w, .. }) if d.small[*w].ends_with("model.norm.weight")));
+        // (a model whose blocks differ in their residual is refused, named)
+        let mut odd = kinds.clone();
+        odd.desc.blocks[2].residual = crate::runtime::kinds::Residual::Add;
+        assert!(dense(&odd, vec![2], 4096).unwrap_err().msg.contains("layer 1"));
+    }
+
+    /// Mellum 2's small model (the logits checks' random one) lowers by the plain dense lowering: a layer whose feed-forward is a mixture of experts runs
+    /// `Op::Moe` of H into D in the MLP's place, the model's k-th such layer block k, and names no MLP matrices (the one dense layer keeps its two); the
+    /// full-attention layers' yarn rotary is a table of its own, its frequencies and factor the reference's, beside the windowed layers' plain one; a head of
+    /// its own. A rotary that changes with the sequence's length is still refused, named.
+    #[test]
+    fn mellum_lowers_with_its_experts_and_a_scaled_rotary() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/mellum_tiny_manifest.json")).unwrap()).unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(manifest["config"].as_str().unwrap()).unwrap();
+        let kinds = crate::runtime::describe::describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        let have: std::collections::BTreeSet<String> = manifest["tensors"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
+        kinds.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+        let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        let blocks: Vec<Option<usize>> = d.layers.iter().map(|ops| ops.iter().find_map(|o| if let Op::Moe(m) = o { Some(m.block) } else { None })).collect();
+        assert_eq!(blocks, [Some(0), Some(1), None, Some(2)]);
+        for (l, ops) in d.layers.iter().enumerate() {
+            let mlp = ops.iter().any(|o| matches!(o, Op::GateUpSilu { .. }));
+            assert_eq!(mlp, l == 2, "layer {l}");
+            assert!(ops.iter().all(|o| !matches!(o, Op::Moe(m) if m.y != Slot::D || m.x != Slot::H)), "layer {l}");
+        }
+        // (q, k, v and o a layer, the dense layer's two more, the embedding and the head)
+        assert_eq!((d.mats.len(), d.lm, d.embed), (4 * 2 + 2 + 2, 4 * 2 + 2 + 1, 4 * 2 + 2));
+        assert_eq!(d.ropes.len(), 2);
+        let (plain, yarn) = (&d.ropes[0], &d.ropes[1]);
+        assert!(plain.scaled.is_none() && plain.theta == 500000.0);
+        let (inv, af) = yarn.scaled.as_ref().expect("the full layers' yarn table");
+        assert_eq!((inv.len(), *af), (64, 1.277_258_9));
+        assert!(inv[0] == 1.0 && inv[63] < 1.0 / 500000f32.powf(126.0 / 128.0), "yarn leaves the fastest pair and slows the slowest: {} {}", inv[0], inv[63]);
+        let table = |l: usize| d.layers[l].iter().find_map(|o| if let Op::Attn(a) = o { a.rope.map(|r| r.table) } else { None });
+        assert_eq!([table(0), table(1), table(2), table(3)], [Some(0), Some(1), Some(0), Some(1)]);
+        let mut ntk = kinds.clone();
+        for b in ntk.desc.blocks.iter_mut() {
+            if let Body::Mixer(Mixer::Attention(a)) = &mut b.body {
+                a.rope.as_mut().unwrap().scaling = crate::runtime::kinds::RopeScaling::DynamicNtk { factor: 2.0, max_positions: 4096 };
+            }
+        }
+        assert!(dense(&ntk, vec![2], 4096).unwrap_err().msg.contains("scaled the same at every length"));
+    }
+
     /// Each form of the plain dense decoder the description builder reads (the random dense model of the logits checks; no q and k norms, a window on every
     /// layer; q and k norms with a tied head; neither) lowers to these operations, written out here by hand: the input norm (then its add of the residual),
     /// the q, k and v product, the attention kind, o, the norm with the residual, gate and up with SiLU, down, the final norm on the last rows; its matrices
     /// the checkpoint's tensors stacked in that order and sized by the description's shapes, which are the checkpoint's; its widths, heads, rotary and norms
-    /// the config's as the planner's sizes read it (`weights::Config`). A scaled rope and biases in the attention are refused, named.
+    /// the config's as the planner's sizes read it (`weights::Config`). Biases in the attention are refused, named; a rope scaled the same at every length
+    /// (Llama 3's) is a table of its own.
     #[test]
     fn dense_lowered_from_each_form_of_its_config() {
         use super::super::attn::{QkNorm, RopeAt};
@@ -2684,7 +3300,7 @@ mod tests {
             let eps = cfg["rms_norm_eps"].as_f64().unwrap() as f32;
             assert_eq!((d.family, d.hidden, d.vocab, d.eps, d.layers.len()), (super::super::dense::FAMILY, hid, n("vocab_size"), eps, layers), "{what}");
             let theta = cfg["rope_theta"].as_f64().unwrap();
-            assert_eq!(format!("{:?}", d.ropes), format!("{:?}", [Rope { theta, dim: hd, pairs: hd / 2, trig64: false }]), "{what}");
+            assert_eq!(format!("{:?}", d.ropes), format!("{:?}", [Rope { theta, dim: hd, pairs: hd / 2, trig64: false, scaled: None }]), "{what}");
             // (the small tensors: each layer's two norms, its q and k norms where it has them; then the final norm)
             let per = if qk { 4 } else { 2 };
             assert_eq!(d.small.len(), per * layers + 1, "{what}");
@@ -2746,10 +3362,12 @@ mod tests {
             assert_eq!(Some(s), tiny_shapes.get(name), "{name}");
         }
         assert_eq!(kinds.shapes.len(), tiny_shapes.len());
-        // (a kind the executor does not take: a scaled rope, biases in the attention)
+        // (a rope scaled the same at every length is a table of its own frequencies: Llama 3's)
         let scaled = crate::runtime::reference::testing::Fixture::load("llama_model").j["config"].clone();
+        // (that fixture's model is refused for its heads of 16 now, not for its rope: `mellum_lowers_with_its_experts_and_a_scaled_rotary` holds a scaled table)
         let e = dense(&crate::runtime::describe::describe(&scaled).unwrap(), vec![2], 4096).unwrap_err().msg;
-        assert!(e.contains("rope") && e.contains("Llama3"), "{e}");
+        assert!(e.contains("attention heads of 16") && !e.contains("rope"), "{e}");
+        // (a kind the executor does not take: biases in the attention)
         let e = dense(&crate::runtime::describe::describe(&dense_config("qwen2", serde_json::json!({}))).unwrap(), vec![2], 4096).unwrap_err().msg;
         assert!(e.contains("a bias"), "{e}");
     }

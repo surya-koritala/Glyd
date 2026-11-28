@@ -131,7 +131,7 @@ fn glyd_v7_level(glyd_json: &str) -> Option<String> {
     (m.get("format")?.as_str()? == "glyd-v7").then(|| m.get("level")?.as_str().map(str::to_string))?
 }
 
-/// The pre-packed repo `repo` of a model at `level` (kestrel or swift), planned as `hub_plan` plans a model, or None where the Hub has no such repo or it is not a glyd-v7 save of that level
+/// The pre-packed repo `repo` of a model at `level` (kestrel or linnet), planned as `hub_plan` plans a model, or None where the Hub has no such repo or it is not a glyd-v7 save of that level
 /// (the caller packs the bf16 model here instead). A repo the Hub would not show is none: it answers 401 for a name that is not there as for a private one.
 pub fn hub_plan_packed(repo: &str, level: &str, ui: &RefCell<Ui>) -> Done<Option<(Hub, Remote, Vec<Entry>)>> {
     if !looks_like_repo(repo) || hub::offline() {
@@ -388,23 +388,23 @@ mod tests {
     fn a_pre_packed_repo_is_planned_and_its_buffers_pass() {
         let d = |v: &[(&str, u64)]| v.iter().map(|(k, n)| (k.to_string(), *n)).collect::<Vec<_>>();
         let u8s = d(&[("U8", 7_000_000_000), ("I32", 300_000_000), ("BF16", 1_000_000_000)]);
-        assert!(check_dtypes("glyd/Qwen3.5-9B-swift", 6_000_000_000, &u8s, true).is_none());
+        assert!(check_dtypes("glyd/Qwen3.5-9B-linnet", 6_000_000_000, &u8s, true).is_none());
         let q4 = check_dtypes("x-AWQ", 5_700_000_000, &d(&[("I32", 1_100_000_000), ("F16", 600_000_000)]), false).unwrap();
         assert!(q4.what.contains("4-bit"), "{}", q4.what);
         let e = |p: &str, size| Entry { path: p.to_string(), size, blob: p.to_string(), sha256: None };
-        let remote = |files: Vec<Entry>| Remote { repo: "glyd/m-swift".into(), revision: "main".into(), commit: "c".repeat(40), files, dtypes: vec![] };
+        let remote = |files: Vec<Entry>| Remote { repo: "glyd/m-linnet".into(), revision: "main".into(), commit: "c".repeat(40), files, dtypes: vec![] };
         let files = vec![e("glyd.json", 9), e("config.json", 9), e("model-00001-of-00002.safetensors", 100), e("sub/x.safetensors", 5)];
         let v7 = |level: &str| format!("{{\"format\": \"glyd-v7\", \"layout\": \"i5\", \"level\": \"{level}\"}}");
         let paths = |w: Option<Vec<Entry>>| w.map(|w| w.iter().map(|e| e.path.clone()).collect::<Vec<_>>());
         assert_eq!(
-            paths(packed_files(&remote(files.clone()), Some(&v7("swift")), "swift")),
+            paths(packed_files(&remote(files.clone()), Some(&v7("linnet")), "linnet")),
             Some(vec!["glyd.json".to_string(), "config.json".into(), "model-00001-of-00002.safetensors".into()])
         );
         // the Hub's repo falls back to the bf16 model: another level, another format, no glyd.json, one that cannot be read
-        assert!(packed_files(&remote(files.clone()), Some(&v7("kestrel")), "swift").is_none());
-        assert!(packed_files(&remote(files.clone()), Some("{\"format\": \"glyd-v4\", \"level\": \"swift\"}"), "swift").is_none());
-        assert!(packed_files(&remote(files[1..].to_vec()), Some(&v7("swift")), "swift").is_none());
-        assert!(packed_files(&remote(files), None, "swift").is_none());
+        assert!(packed_files(&remote(files.clone()), Some(&v7("kestrel")), "linnet").is_none());
+        assert!(packed_files(&remote(files.clone()), Some("{\"format\": \"glyd-v4\", \"level\": \"linnet\"}"), "linnet").is_none());
+        assert!(packed_files(&remote(files[1..].to_vec()), Some(&v7("linnet")), "linnet").is_none());
+        assert!(packed_files(&remote(files), None, "linnet").is_none());
     }
 
     /// A lossy level's pack is in the cache when its directory is a glyd-v7 save of that layout, and not for the other level's.
@@ -413,7 +413,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("glyd-engine-cached-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert!(!cached_pack(&dir, Layout::Int5));
-        std::fs::write(dir.join("glyd.json"), "{\"format\": \"glyd-v7\", \"layout\": \"i5\", \"level\": \"swift\", \"packs\": {}}").unwrap();
+        std::fs::write(dir.join("glyd.json"), "{\"format\": \"glyd-v7\", \"layout\": \"i5\", \"level\": \"linnet\", \"packs\": {}}").unwrap();
         assert!(cached_pack(&dir, Layout::Int5) && !cached_pack(&dir, Layout::Int6) && !cached_pack(&dir, Layout::Int4));
         std::fs::write(dir.join("glyd.json"), "{\"format\": \"glyd-v7\", \"layout\": \"i4\", \"level\": \"wren\", \"packs\": {}}").unwrap();
         assert!(cached_pack(&dir, Layout::Int4) && !cached_pack(&dir, Layout::Int5) && !cached_pack(&dir, Layout::Int3));

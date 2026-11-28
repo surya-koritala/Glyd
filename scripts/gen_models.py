@@ -331,7 +331,7 @@ def main():
 
     flash = next((r for r in rows if r["name"] == "GLM-5.3-Flash"), None)
     unlisted = [l for l, _, _ in levels if flash and l not in flash["levels"]]
-    refused = "swift" if "swift" in unlisted else next(iter(unlisted), None)
+    refused = "linnet" if "linnet" in unlisted else next(iter(unlisted), None)
     if not flash or not refused:
         die("no row GLM-5.3-Flash, or it runs every level: the example refusal of the page has no case")
     capped = [r for r in rows if r["max_ctx"] is not None]

@@ -124,7 +124,7 @@ impl KernQx {
         launch!(self.gnorm, [n as u32, nv as u32, 1], [128, 1, 1], s; core, z, zs as i32, w, nv as i32, eps)
     }
 
-    /// The n-gram embedding's gate from the key and value products kv [n, 5 d] and the streams x: Condor's form (`engram` false: gv and gvn [n, 4 d] for
+    /// The n-gram embedding's gate from the key and value products kv [n, 5 d] and the streams x: Ibis's form (`engram` false: gv and gvn [n, 4 d] for
     /// `ple_conv`), or Engram's (`engram`: the gated value added into x, the weights wk and wq fp32; wc unread).
     ///
     /// # Safety

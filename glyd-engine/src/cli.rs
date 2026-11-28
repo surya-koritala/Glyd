@@ -164,7 +164,7 @@ fn planner(a: &Args, model: &str) -> Option<crate::plan::Planned> {
 /// The level run, serve and preflight load MODEL at (`run_level`), where nothing is asked the one `fit` printed: a Gemma 4 model or a family of the dynamic route takes
 /// penguin by default (`run_level`), which a 16 GB card cannot hold for Gemma 4 12B; the planner's level is what the printed plan said would load (P16, #221). A tag, --lossy,
 /// a glyd-v7 directory and a pre-packed repo are their own level.
-/// A family whose default is penguin takes the planner's level where it is a lossy one: Qwen3.8-27B on a 24 GB card is swift (the M1 gate on Windows, an A10G), its penguin
+/// A family whose default is penguin takes the planner's level where it is a lossy one: Qwen3.8-27B on a 24 GB card is linnet (the M1 gate on Windows, an A10G), its penguin
 /// needing two such cards or a larger one; a model the planner keeps lossless stays at penguin.
 fn load_level(a: &Args, model: &str, asked: Option<Layout>) -> Done<Option<Layout>> {
     let layout = run_level(model, asked)?;
@@ -347,16 +347,13 @@ pub(crate) fn supported_in(name: &str, c: &crate::runtime::config::ModelConfig) 
     }
     let d = crate::runtime::describe::describe_config(c).map_err(|e| Refusal::unsupported(format!("{name}: {}", e.msg), unrun_fix()))?;
     let max_pos = c.shared.max_position_embeddings.unwrap_or(crate::support::DEFAULT_CTX);
-    match crate::dynamic::lower::dense(&d, Vec::new(), max_pos) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(Refusal::unsupported(
-            match dense_lacks(&d) {
-                Some(what) => format!("{name} has {what}, which this engine does not run yet"),
-                None => format!("{name}: {}", e.msg),
-            },
-            unrun_fix(),
-        )),
-    }
+    // (what the plain dense row's sizes do not take is refused where the lowering would take it: a scaled rotary is a described family's, src/support.rs)
+    let said = match (crate::dynamic::lower::dense(&d, Vec::new(), max_pos), dense_lacks(&d)) {
+        (Ok(_), None) => return Ok(()),
+        (_, Some(what)) => format!("{name} has {what}, which this engine does not run yet"),
+        (Err(e), None) => format!("{name}: {}", e.msg),
+    };
+    Err(Refusal::unsupported(said, unrun_fix()))
 }
 
 /// The model's shape against what the engine's KV cache takes, and its context against what the tables cover: refused before anything is downloaded.
@@ -608,7 +605,7 @@ fn access_notes(ui: &RefCell<Ui>, a: &Args) {
     }
 }
 
-/// The level `given` (MODEL as typed) asks for: its tag's, --lossy's (kestrel), a pre-packed repo's own (glyd/NAME-swift), penguin for `:penguin`; None where it names none.
+/// The level `given` (MODEL as typed) asks for: its tag's, --lossy's (kestrel), a pre-packed repo's own (glyd/NAME-linnet), penguin for `:penguin`; None where it names none.
 fn requested(given: &str, lossy: bool) -> Option<&'static str> {
     level(given, lossy).ok().and_then(|(rest, l)| l.map(level_name).or_else(|| (rest != given).then_some("penguin")))
 }
@@ -817,6 +814,10 @@ pub fn serve(a: &Args) -> i32 {
     if let Err(r) = access_check(a) {
         return fail(&ui, &r);
     }
+    // (and a number of sequences it cannot serve: said here, as the earlier releases said it, not after the driver and the plan)
+    if let Err(r) = users_of(a) {
+        return fail(&ui, &r);
+    }
     // the level is run's, read before the GPU is looked at; the name served keeps the tag
     let given = a.pos.get(1).cloned().unwrap_or_default();
     // (a server never stops for an answer: a step it asks about is taken only with --yes)
@@ -904,7 +905,7 @@ fn serve_two(a: &Args, with: String) -> i32 {
     }
 }
 
-/// `serve MODEL:kestrel` (or `:swift`): the lossy level loaded as run loads it, served by the scheduler to up to --users sequences at once where the engine is a step of several (src/dynamic/rows.rs: Gemma 4),
+/// `serve MODEL:kestrel` (or `:linnet`): the lossy level loaded as run loads it, served by the scheduler to up to --users sequences at once where the engine is a step of several (src/dynamic/rows.rs: Gemma 4),
 /// else to one user at a time. `pair`: one of the two models of `serve --with`.
 fn serve_lossy(a: &Args, layout: Layout, name: String, ui: &RefCell<Ui>, pair: Option<&Pair>) -> i32 {
     let gone = |what: &str| Refusal::new(format!("the other model of serve --with {what}"), "Its own lines say why");
@@ -1277,7 +1278,7 @@ fn chat_loop(tx: mpsc::Sender<Job>, defaults: Params, mut thinking: Option<bool>
     let _ = tx.send(Job::Stop);
 }
 
-// ---- the lossy levels: a model of a family whose row has them (the plain dense kind, Gemma 4, the Qwen3.5 layout, the Nemotron-H layout) at about 6.5 bits per weight (:kestrel, which --lossy is: six-bit block codes), 5.5 (:swift: five-bit) or 4.5 (:wren: four-bit; the Nemotron-H layout's experts alone, the rest six-bit), one user at a time ------
+// ---- the lossy levels: a model of a family whose row has them (the plain dense kind, Gemma 4, the Qwen3.5 layout, the Nemotron-H layout) at about 6.5 bits per weight (:kestrel, which --lossy is: six-bit block codes), 5.5 (:linnet: five-bit) or 4.5 (:wren: four-bit; the Nemotron-H layout's experts alone, the rest six-bit), one user at a time ------
 
 // (the lossy paths' work, context bounds, host margin and Gemma's draft and chunk are src/plan.rs's constants, with the one reserve)
 
@@ -1506,7 +1507,15 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, m: &ModelConfig, gpu: &Gpu,
         (Box::new(e), bytes, vocab)
     } else if plan.kind == Kind::Qwen3 {
         // the executor (R3c, #139): a Llama-style dense model's description from its config, its products at the plan's level
-        let mut e = crate::dynamic::dense::load_of(dir, m, &o).map_err(|e| engine_refusal(e, name, plan, gpu))?;
+        // (a described family with experts the GPU does not hold whole: its experts in the expert cache of the plan's places, as the Qwen3.5 layout's)
+        let caching = match plan.experts {
+            Some(c) => {
+                let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.msg, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
+                Some(crate::hbg_store::HbCaching { places: c.slots, ram: None, offload, dense: 0 })
+            }
+            None => None,
+        };
+        let mut e = crate::dynamic::dense::load_cached(dir, m, &o, caching.as_ref()).map_err(|e| engine_refusal(e, name, plan, gpu))?;
         twelve_bit_pages(&mut e, plan, dir, m, name, ui)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)
@@ -1956,7 +1965,7 @@ fn open_dynamic(a: &Args, plan: &LoadPlan, dir: &Path, m: &ModelConfig) -> Done<
     Ok(crate::dynamic::split::open_plan(dir, m, plan, offload))
 }
 
-/// `run MODEL:kestrel` (or `:swift`, or `--lossy`): the model (a directory in the Hub's layout, the cache's copy, else downloaded), every weight rounded and packed in `layout` once into the cache and read from there (a glyd-v7 directory: read
+/// `run MODEL:kestrel` (or `:linnet`, or `--lossy`): the model (a directory in the Hub's layout, the cache's copy, else downloaded), every weight rounded and packed in `layout` once into the cache and read from there (a glyd-v7 directory: read
 /// as it is, at its level; a model with a pre-packed repo on the Hub, `glyd/NAME-LEVEL`: that is downloaded in place of the bf16 model), then one answer or the terminal's chat.
 fn run_lossy(a: &Args, layout: Layout, ui: &RefCell<Ui>, mut prompt: Option<String>, piped: bool, thinking: Option<bool>, images: &[String]) -> i32 {
     let started = load_lossy(a, layout, "", ui);
@@ -2148,7 +2157,7 @@ fn check(a: &Args, ui: &RefCell<Ui>) -> Done<String> {
     }
 }
 
-/// `preflight MODEL:kestrel` (or `:swift`, or `--lossy`): the kind of model, the GPU and its driver (the list of GPUs measured against vLLM is not looked at: vLLM has no lossy levels), the memory, the disk a
+/// `preflight MODEL:kestrel` (or `:linnet`, or `--lossy`): the kind of model, the GPU and its driver (the list of GPUs measured against vLLM is not looked at: vLLM has no lossy levels), the memory, the disk a
 /// download takes.
 fn check_lossy(a: &Args, model: &str, layout: Layout, ui: &RefCell<Ui>) -> Done<String> {
     match dynamic_family(model) {
@@ -2262,7 +2271,7 @@ pub fn verify(a: &Args) -> i32 {
             let m = std::fs::read_to_string(dir.join("glyd.json")).ok().and_then(|t| json::parse(&t).ok());
             let field = |k: &str| m.as_ref().and_then(|m| m.get(k)).and_then(Value::as_str).map(str::to_string);
             let source = m.as_ref().and_then(|m| m.get("source")).and_then(|s| s.get("repo")).and_then(Value::as_str).unwrap_or("its source").to_string();
-            let level = field("level").unwrap_or_else(|| "penguin".into());
+            let level = field("level").map_or("penguin".into(), |l| crate::levels::current_kept(&l));
             // (the exact four-bit layout is wren of a QAT checkpoint: its packs refuse anything but its source's weights)
             let exact = level == "penguin" || field("layout").as_deref() == Some(Layout::Int4H.name());
             println!(
@@ -2714,12 +2723,12 @@ mod tests {
         let g = fixture_dir("prepare-g4", "gemma4_12b_config.json");
         let gp = g.to_str().unwrap();
         let r = prepare(&args(&["prepare", &format!("{gp}:hummingbird")]), &ui).unwrap_err();
-        assert!(r.code == CANNOT && r.what.ends_with("(Gemma 4) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird"), "{r}");
+        assert!(r.code == CANNOT && r.what.ends_with("(Gemma 4) runs at the penguin, kestrel, linnet and wren levels in this engine, not hummingbird"), "{r}");
         let r = prepare(&args(&["prepare", &format!("{gp}:sparrow")]), &ui).unwrap_err();
         assert!(r.code == 1 && r.what == ":sparrow is not a level", "{r}");
         let dense = dir_with("prepare-dense", DENSE);
         let r = prepare(&args(&["prepare", &format!("{}:hummingbird", dense.to_str().unwrap())]), &ui).unwrap_err();
-        assert!(r.code == CANNOT && r.what.contains("(plain dense) runs at the penguin, kestrel, swift and wren levels"), "{r}");
+        assert!(r.code == CANNOT && r.what.contains("(plain dense) runs at the penguin, kestrel, linnet and wren levels"), "{r}");
         assert_eq!(prepare(&args(&["prepare"]), &ui).unwrap_err().code, 1);
         for d in [other, g, dense] {
             std::fs::remove_dir_all(d).unwrap();
@@ -2762,21 +2771,21 @@ mod tests {
         let gp = g.to_str().unwrap();
         // Gemma 4 12B: no level, a lossy one, --lossy, every level of its row
         assert!(supports_check(gp, false).is_ok());
-        for l in ["penguin", "kestrel", "swift", "wren"] {
+        for l in ["penguin", "kestrel", "linnet", "wren"] {
             assert!(supports_check(&format!("{gp}:{l}"), false).is_ok(), "{l}");
         }
         assert!(supports_check(gp, true).is_ok());
         let e = supports_check(&format!("{gp}:hummingbird"), false).unwrap_err();
         assert!(
             e.code == 3
-                && e.what.ends_with("(Gemma 4) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird")
+                && e.what.ends_with("(Gemma 4) runs at the penguin, kestrel, linnet and wren levels in this engine, not hummingbird")
                 && e.fix.starts_with("Run it lossless: glyd run "),
             "{e:?}"
         );
         // a tag that is no level is an error of the command line, not "not supported"
         let e = supports_check(&format!("{gp}:sparrow"), false).unwrap_err();
         assert!(e.code == 1 && e.what.contains(":sparrow is not a level"), "{e:?}");
-        let e = supports_check(&format!("{gp}:swift"), true).unwrap_err();
+        let e = supports_check(&format!("{gp}:linnet"), true).unwrap_err();
         assert!(e.what.contains("--lossy is :kestrel"), "{e:?}");
         // Qwen3.5 to 3.8 runs lossless and at the lossy levels; not at hummingbird, which is for experts
         let q35: Value = json::parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/qwen35_configs.json")).unwrap()).unwrap();
@@ -2788,12 +2797,12 @@ mod tests {
         let q = dir_with("supports-q35", &json::to_compact(&first));
         let qp = q.to_str().unwrap();
         assert!(supports_check(qp, false).is_ok());
-        assert!(supports_check(&format!("{qp}:swift"), false).is_ok());
+        assert!(supports_check(&format!("{qp}:linnet"), false).is_ok());
         assert!(supports_check(&format!("{qp}:penguin"), false).is_ok());
         let e = supports_check(&format!("{qp}:hummingbird"), false).unwrap_err();
         assert!(
             e.code == 3
-                && e.what.ends_with("(Qwen3.5) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird")
+                && e.what.ends_with("(Qwen3.5) runs at the penguin, kestrel, linnet and wren levels in this engine, not hummingbird")
                 && e.fix == format!("Run it lossless: glyd run {qp}"),
             "{e:?}"
         );
@@ -2803,10 +2812,10 @@ mod tests {
         assert!(
             supports_check(dp, false).is_ok()
                 && supports_check(&format!("{dp}:penguin"), false).is_ok()
-                && supports_check(&format!("{dp}:swift"), false).is_ok()
+                && supports_check(&format!("{dp}:linnet"), false).is_ok()
         );
         let e = supports_check(&format!("{dp}:hummingbird"), false).unwrap_err();
-        assert!(e.code == 3 && e.what.ends_with("(plain dense) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird"), "{e:?}");
+        assert!(e.code == 3 && e.what.ends_with("(plain dense) runs at the penguin, kestrel, linnet and wren levels in this engine, not hummingbird"), "{e:?}");
         let biased = dir_with("supports-biased", &DENSE.replacen('{', r#"{"attention_bias": true, "#, 1));
         assert!(supports_check(biased.to_str().unwrap(), false).unwrap_err().what.contains("biases in the attention"));
         let l = dir_with("supports-llama", OTHER);
@@ -2861,7 +2870,7 @@ mod tests {
     #[test]
     fn a_pre_packed_repo_is_named_by_its_model_and_level() {
         for (model, level, repo) in [
-            ("Qwen/Qwen3.5-9B", "swift", "glyd/Qwen3.5-9B-swift"),
+            ("Qwen/Qwen3.5-9B", "linnet", "glyd/Qwen3.5-9B-linnet"),
             ("Qwen/Qwen3.8-27B", "kestrel", "glyd/Qwen3.8-27B-kestrel"),
             ("Qwen/Qwen3.5-9B", "penguin", "glyd/Qwen3.5-9B-penguin"),
             ("Qwen/Qwen3.5-9B", "wren", "glyd/Qwen3.5-9B-wren"),
@@ -2869,10 +2878,10 @@ mod tests {
         ] {
             assert_eq!(packed_repo(model, level), repo);
         }
-        assert_eq!(level("glyd/Qwen3.5-9B-swift", false).unwrap(), ("glyd/Qwen3.5-9B-swift", Some(Layout::Int5)));
+        assert_eq!(level("glyd/Qwen3.5-9B-linnet", false).unwrap(), ("glyd/Qwen3.5-9B-linnet", Some(Layout::Int5)));
         assert_eq!(level("glyd/Qwen3.8-27B-kestrel", false).unwrap().1, Some(Layout::Int6));
         assert_eq!(level("glyd/Qwen3.5-9B-wren", false).unwrap(), ("glyd/Qwen3.5-9B-wren", Some(Layout::Int4)));
-        for plain in ["glyd/Qwen3.5-9B", "glyd/Qwen3.5-9B-penguin", "Qwen/Qwen3.5-9B-swift", "glyd/a/b-swift"] {
+        for plain in ["glyd/Qwen3.5-9B", "glyd/Qwen3.5-9B-penguin", "Qwen/Qwen3.5-9B-linnet", "glyd/a/b-linnet"] {
             assert_eq!(level(plain, false).unwrap().1, None, "{plain}");
         }
     }
@@ -2884,18 +2893,18 @@ mod tests {
         for (tag, layout) in [
             ("penguin", None),
             ("kestrel", Some(Layout::Int6)),
-            ("swift", Some(Layout::Int5)),
+            ("linnet", Some(Layout::Int5)),
             ("wren", Some(Layout::Int4)),
             ("hummingbird", Some(Layout::Hummingbird)),
             ("Penguin", None),
             ("KESTREL", Some(Layout::Int6)),
-            ("sWiFt", Some(Layout::Int5)),
+            ("lInNeT", Some(Layout::Int5)),
             ("Wren", Some(Layout::Int4)),
             ("HUMMINGBIRD", Some(Layout::Hummingbird)),
         ] {
             assert_eq!(level(&format!("{m}:{tag}"), false).unwrap(), (m, layout), "{tag}");
         }
-        assert_eq!(level("/models/mine:swift", false).unwrap(), ("/models/mine", Some(Layout::Int5)));
+        assert_eq!(level("/models/mine:linnet", false).unwrap(), ("/models/mine", Some(Layout::Int5)));
         assert_eq!(level("a:b:kestrel", false).unwrap(), ("a:b", Some(Layout::Int6))); // (the last ':' only)
                                                                                        // no tag: as it was; --lossy is kestrel, with its tag or without
         assert_eq!(level(m, false).unwrap(), (m, None));
@@ -2924,7 +2933,7 @@ mod tests {
             "m:v2",
             "m:4bit",
             "m:ké",
-            "m: swift",
+            "m: linnet",
             ":",
             "",
         ] {
@@ -2932,7 +2941,7 @@ mod tests {
             assert_eq!(level(plain, true).unwrap(), (plain, Some(Layout::Int6)), "{plain}");
         }
         // --lossy is :kestrel: with another level it is refused; a name that is no level is refused as it is
-        for tag in ["penguin", "swift", "SWIFT", "wren", "hummingbird"] {
+        for tag in ["penguin", "linnet", "LINNET", "wren", "hummingbird"] {
             let r = level(&format!("{m}:{tag}"), true).unwrap_err();
             assert!(r.code == 1 && r.what == format!("--lossy is :kestrel, not :{}", tag.to_lowercase()), "{tag}: {r}");
         }
@@ -2941,7 +2950,7 @@ mod tests {
         // the names the messages use, and the bits they say
         assert_eq!(
             (level_name(Layout::Int6), level_name(Layout::Int5), level_name(Layout::Int4), level_name(Layout::Int3), level_name(Layout::Hummingbird)),
-            ("kestrel", "swift", "wren", "i3", "hummingbird")
+            ("kestrel", "linnet", "wren", "i3", "hummingbird")
         );
         assert_eq!(
             (format!("{:.1}", bits(Layout::Int6)), format!("{:.1}", bits(Layout::Int5)), format!("{:.1}", bits(Layout::Int4))),
@@ -2955,7 +2964,7 @@ mod tests {
         let ui = RefCell::new(Ui::silent());
         let r = check(&args(&["preflight", "Qwen/Qwen3.8-27B:sparrow"]), &ui).unwrap_err();
         assert!(r.code == 1 && r.what == ":sparrow is not a level", "{r}");
-        let r = check(&args(&["preflight", "Qwen/Qwen3.8-27B:swift", "--lossy"]), &ui).unwrap_err();
+        let r = check(&args(&["preflight", "Qwen/Qwen3.8-27B:linnet", "--lossy"]), &ui).unwrap_err();
         assert!(r.code == 1 && r.what.starts_with("--lossy is :kestrel"), "{r}");
         assert_eq!(run(&args(&["run", "Qwen/Qwen3.8-27B:sparrow", "--prompt", "hi"])), 1);
         assert_eq!(run(&args(&["run", "Qwen/Qwen3.8-27B:penguin", "--lossy", "--prompt", "hi"])), 1);
@@ -2976,15 +2985,15 @@ mod tests {
     /// A glyd-v7 directory runs at its own level where none is asked, and is refused, naming both, at another.
     #[test]
     fn a_packed_directory_runs_at_its_own_level() {
-        let m = "/models/q-swift";
+        let m = "/models/q-linnet";
         assert_eq!(v7_level(m, Some(Layout::Int5), None).unwrap(), Some(Layout::Int5));
         assert_eq!(v7_level(m, Some(Layout::Int5), Some(Layout::Int5)).unwrap(), Some(Layout::Int5));
         let r = v7_level(m, Some(Layout::Int5), Some(Layout::Int6)).unwrap_err();
-        assert!(r.code == 1 && r.what == "/models/q-swift is packed at the swift level, not :kestrel", "{r}");
+        assert!(r.code == 1 && r.what == "/models/q-linnet is packed at the linnet level, not :kestrel", "{r}");
         assert_eq!(v7_level(m, None, Some(Layout::Int6)).unwrap(), Some(Layout::Int6));
         assert_eq!(v7_level(m, None, None).unwrap(), None);
         let r = v7_level("/models/q-wren", Some(Layout::Int4), Some(Layout::Int5)).unwrap_err();
-        assert!(r.code == 1 && r.what == "/models/q-wren is packed at the wren level, not :swift", "{r}");
+        assert!(r.code == 1 && r.what == "/models/q-wren is packed at the wren level, not :linnet", "{r}");
     }
 
     /// A lossy level's plan sizes the weights in its layout (plan.rs `sizing::bits`), and its refusals name the level.
@@ -3001,22 +3010,25 @@ mod tests {
         assert!(ratio > bits(Layout::Int5) / bits(Layout::Int6) && ratio < 0.9, "{ratio}");
         let ratio = four.weights as f64 / five.weights as f64;
         assert!(ratio > bits(Layout::Int4) / bits(Layout::Int5) && ratio < 0.9, "{ratio}");
-        for (layout, level) in [(Layout::Int6, "kestrel"), (Layout::Int5, "swift"), (Layout::Int4, "wren")] {
+        for (layout, level) in [(Layout::Int6, "kestrel"), (Layout::Int5, "linnet"), (Layout::Int4, "wren")] {
             let r = plan(layout, 8).err().unwrap();
             assert!(r.code == CANNOT && r.what.starts_with(&format!("Qwen3.8-27B at the {level} level takes about ")), "{r}");
             let r = lossy_plan(&a, "org/dense-36l", layout, &mc(DENSE), None, 80 << 30, "NVIDIA A100", None).err().unwrap();
             // (the plain dense kind's lossy levels are its own sizer's, `dense_fit`: this path takes the rows sized on one GPU, by the table)
             assert!(
                 r.code == CANNOT
-                    && r.what == format!("dense-36l: the {level} level on this path takes the Qwen3.5, Nemotron-H, Gemma 4 rows, not the plain dense one")
+                    && r.what
+                        == format!(
+                            "dense-36l: the {level} level on this path takes the Qwen3.5, Nemotron-H, Gemma 4, described layers rows, not the plain dense one"
+                        )
                     && r.fix == "Run it lossless: glyd run org/dense-36l",
                 "{r}"
             );
         }
     }
 
-    /// Nemotron 3 Super at the kestrel, swift and wren levels is sized by its packs in their layouts (120.58 billion matrix weights, 241 GB of bf16), with 8 KiB of KV a token; it is refused with the memory it needs and
-    /// the GPU's where that is short (the 80 GB cards hold wren alone, a 96 GB card swift too). At wren the 112.7 billion weights of its experts are four-bit codes (4.53 bits a weight) and the other 7.84 billion six-bit ones
+    /// Nemotron 3 Super at the kestrel, linnet and wren levels is sized by its packs in their layouts (120.58 billion matrix weights, 241 GB of bf16), with 8 KiB of KV a token; it is refused with the memory it needs and
+    /// the GPU's where that is short (the 80 GB cards hold wren alone, a 96 GB card linnet too). At wren the 112.7 billion weights of its experts are four-bit codes (4.53 bits a weight) and the other 7.84 billion six-bit ones
     /// (6.53), 70.4 GB with the small tensors: it fits the 79 GiB an A100 or H100 80 GB reports free, with room for the longest context the plan takes, and not 60 GiB.
     #[test]
     fn gemma4_plans_at_penguin_and_the_block_levels() {
@@ -3030,7 +3042,7 @@ mod tests {
         assert!((0.66..0.69).contains(&ratio), "penguin at {ratio} of bf16");
         assert!(penguin.weights > kestrel.weights && penguin.context >= LOSSY_MIN_CTX);
         let r = plan(Layout::Int3).err().unwrap();
-        assert!(r.code == CANNOT && r.what.ends_with("(Gemma 4) runs at the penguin, kestrel, swift and wren levels in this engine, not i3"), "{r}");
+        assert!(r.code == CANNOT && r.what.ends_with("(Gemma 4) runs at the penguin, kestrel, linnet and wren levels in this engine, not i3"), "{r}");
         // (penguin short of room on a 16 GB card: the wren repo, which fits, is named first; at 6 GiB nothing fits and the fix is the plain one; the base model has no wren)
         let small = |m: &str, free_gib: u64| {
             lossy_plan_with(&args(&["run", m]), m, Layout::Tiered, &mc(text), None, free_gib << 30, "NVIDIA GeForce RTX 4080 SUPER", None, None).err().unwrap()
@@ -3166,7 +3178,7 @@ mod tests {
         assert!((four.weights as f64 - wren).abs() < 2e6, "{} against {wren}", four.weights);
         assert!((70_300_000_000..70_500_000_000).contains(&four.weights), "{}", four.weights);
         assert_eq!((six.context, five.context, four.context), (LOSSY_CTX, LOSSY_CTX, LOSSY_CTX));
-        for (layout, level) in [(Layout::Int6, "kestrel"), (Layout::Int5, "swift")] {
+        for (layout, level) in [(Layout::Int6, "kestrel"), (Layout::Int5, "linnet")] {
             let r = plan(layout, 70).err().unwrap();
             assert!(
                 r.code == CANNOT
@@ -3175,7 +3187,7 @@ mod tests {
                 "{r}"
             );
         }
-        assert!(plan(Layout::Int5, 78).is_err() && plan(Layout::Int5, 82).is_ok(), "swift takes about 80 GiB");
+        assert!(plan(Layout::Int5, 78).is_err() && plan(Layout::Int5, 82).is_ok(), "linnet takes about 80 GiB");
         assert!(plan(Layout::Int6, 92).is_err() && plan(Layout::Int6, 96).is_ok(), "kestrel takes about 94 GiB");
         // wren on the 80 GB cards (79 GiB free): the weights 65.6 GiB, and the context the plan allows at most; refused at 60 GiB, with the memory it needs and the card's
         let a100 = lossy_plan(&a, model, Layout::Int4, text, None, 79 << 30, "NVIDIA A100-SXM4-80GB", None).unwrap();
@@ -3195,14 +3207,14 @@ mod tests {
         // the three-bit layout is no level of it
         let r = plan(Layout::Int3, 140).err().unwrap();
         assert!(
-            r.code == CANNOT && r.what.ends_with("(Nemotron-H) runs at the penguin, kestrel, swift, wren and hummingbird levels in this engine, not i3"),
+            r.code == CANNOT && r.what.ends_with("(Nemotron-H) runs at the penguin, kestrel, linnet, wren and hummingbird levels in this engine, not i3"),
             "{r}"
         );
         // and penguin, the dynamic route's, is no level of its experts on this path
         let r = plan(Layout::Tiered, 140).err().unwrap();
         assert!(
             r.code == CANNOT
-                && r.what.contains("its experts are held at the kestrel, swift and wren levels on this path")
+                && r.what.contains("its experts are held at the kestrel, linnet and wren levels on this path")
                 && r.fix.ends_with(&format!("{model}:kestrel")),
             "{r}"
         );
@@ -3230,7 +3242,7 @@ mod tests {
         }
     }
 
-    /// Nemotron 3 Super at swift on a GPU that cannot hold it whole runs with its experts in the computer's memory (77.5 GB of them pinned, and a margin) and a cache of them on the GPU: the cache is what the GPU has left
+    /// Nemotron 3 Super at linnet on a GPU that cannot hold it whole runs with its experts in the computer's memory (77.5 GB of them pinned, and a margin) and a cache of them on the GPU: the cache is what the GPU has left
     /// besides the rest of the model (5.6 GiB), the states, the workspaces and the 32,768 tokens' keys and values: 56 experts a layer of 512 on a 16 GB card, 106 on a 24 GB card (23 GiB free), 163 on a 32 GB card
     /// (31 GiB), 276 on 47; the least is two steps' choices (44 a layer). The computer's memory decides too: it is refused, in words, with 70 GiB where the experts and the margin want 78.
     #[test]
@@ -3301,7 +3313,7 @@ mod tests {
         assert_eq!((hb(15).slots, hb(23).slots, hb(31).slots), (84, 188, 293));
         let c = hb(15);
         assert_eq!((c.expert_bytes, c.host_bytes(), c.host_half_bytes(), c.in_place), (2_056_068, 40 * 512 * 2_056_068, 0, true));
-        // the pod job asks for these (tools/cards/nh_offload_job.sh): a 48 GB card at swift holds the caches of a 24 GB and a 32 GB card, the 24 and 32 GB cards their own at wren
+        // the pod job asks for these (tools/cards/nh_offload_job.sh): a 48 GB card at linnet holds the caches of a 24 GB and a 32 GB card, the 24 and 32 GB cards their own at wren
         let job = include_str!("../../tools/cards/nh_offload_job.sh");
         assert!(
             job.contains("CAPS=\"24g:auto:23 32g:auto:31 48g:auto\"") && job.contains("CAPS=\"card:auto\"") && job.contains("CAP16=\"16g:auto:15\""),
@@ -3454,7 +3466,7 @@ mod tests {
         assert!(table_check(&dense, None).is_ok() && table_check(&dense, Some(Layout::Tiered)).is_ok());
         assert!(table_check(&dense, Some(Layout::Int5)).is_ok());
         let r = table_check(&dense, Some(Layout::Hummingbird)).unwrap_err();
-        assert!(r.code == CANNOT && r.what.contains("runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird"), "{r}");
+        assert!(r.code == CANNOT && r.what.contains("runs at the penguin, kestrel, linnet and wren levels in this engine, not hummingbird"), "{r}");
         // (a model whose config is not to be had is the paths' own to say)
         assert!(table_check(&dir.join("nowhere").to_string_lossy(), Some(Layout::Int5)).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -3616,34 +3628,34 @@ mod tests {
     #[test]
     fn a_served_model_is_described_by_its_files_its_levels_and_its_gpu() {
         let root = std::env::temp_dir().join(format!("glyd-engine-cli-about-{}", std::process::id()));
-        let snap = root.join("models--glyd--Qwen3.5-9B-swift").join("snapshots").join("073a2132");
+        let snap = root.join("models--glyd--Qwen3.5-9B-linnet").join("snapshots").join("073a2132");
         let blob = "ea1b678c4787351b59de96915373a4a2aecc9eea49df70a64baf707b3e6f3830";
         std::fs::create_dir_all(&snap).unwrap();
-        std::fs::create_dir_all(root.join("models--glyd--Qwen3.5-9B-swift").join("blobs")).unwrap();
-        std::fs::write(root.join("models--glyd--Qwen3.5-9B-swift").join("blobs").join(blob), b"weights").unwrap();
+        std::fs::create_dir_all(root.join("models--glyd--Qwen3.5-9B-linnet").join("blobs")).unwrap();
+        std::fs::write(root.join("models--glyd--Qwen3.5-9B-linnet").join("blobs").join(blob), b"weights").unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(format!("../../blobs/{blob}"), snap.join("model-00001-of-00001.safetensors")).unwrap();
         std::fs::write(
             snap.join("glyd.json"),
-            r#"{"format":"glyd-v7","glyd":"0.29.3","source":{"repo":"Qwen/Qwen3.5-9B","revision":"c202236"},"layout":"i5","level":"swift"}"#,
+            r#"{"format":"glyd-v7","glyd":"0.29.3","source":{"repo":"Qwen/Qwen3.5-9B","revision":"c202236"},"layout":"i5","level":"linnet"}"#,
         )
         .unwrap();
         std::fs::write(snap.join("config.json"), "{}").unwrap();
         let held = crate::dev::Held { kv_type: "bf16", state_type: "fp32", ..Default::default() };
         let v = crate::tools::obj(about(
-            "Qwen/Qwen3.5-9B:swift",
+            "Qwen/Qwen3.5-9B:linnet",
             &snap,
-            Some("swift"),
-            "swift",
+            Some("linnet"),
+            "linnet",
             false,
-            "swift level: about 5.5 bits per weight, not lossless",
+            "linnet level: about 5.5 bits per weight, not lossless",
             Some(&held),
             &gpu("NVIDIA GeForce RTX 4080 SUPER", (8, 9), 15),
         ));
         let get = |path: &[&str]| path.iter().fold(&v, |v, k| v.get(k).unwrap_or_else(|| panic!("no {k}"))).clone();
         assert_eq!(
             (get(&["model", "id"]), get(&["model", "repo"]), get(&["model", "revision"])),
-            (Value::from("Qwen/Qwen3.5-9B:swift"), Value::from("glyd/Qwen3.5-9B-swift"), Value::from("073a2132"))
+            (Value::from("Qwen/Qwen3.5-9B:linnet"), Value::from("glyd/Qwen3.5-9B-linnet"), Value::from("073a2132"))
         );
         assert_eq!((get(&["model", "source", "revision"]), get(&["model", "made_by"])), (Value::from("c202236"), Value::from("glyd 0.29.3")));
         let files = get(&["model", "files"]);
@@ -3654,14 +3666,14 @@ mod tests {
         assert_eq!(sha("model-00001-of-00001.safetensors"), Some(Value::from(blob)));
         assert_eq!(
             (get(&["level", "requested"]), get(&["level", "effective"]), get(&["level", "lossless"])),
-            (Value::from("swift"), Value::from("swift"), Value::Bool(false))
+            (Value::from("linnet"), Value::from("linnet"), Value::Bool(false))
         );
         assert_eq!(
             (get(&["precision", "kv"]), get(&["precision", "state"]), get(&["device", "compute_capability"]), get(&["device", "cuda"])),
             (Value::from("bf16"), Value::from("fp32"), Value::from("8.9"), Value::from("13.0"))
         );
         // a directory out of the Hub's cache has no repo or revision
-        let plain = crate::tools::obj(about("m", &root, None, "swift", false, "w", None, &gpu("g", (8, 9), 15)));
+        let plain = crate::tools::obj(about("m", &root, None, "linnet", false, "w", None, &gpu("g", (8, 9), 15)));
         assert_eq!(
             (plain.get("model").and_then(|m| m.get("repo")), plain.get("level").and_then(|l| l.get("requested"))),
             (Some(&Value::Null), Some(&Value::Null))
@@ -3669,11 +3681,11 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
         // the level asked for
         for (given, lossy, want) in [
-            ("Qwen/Qwen3.5-9B:swift", false, Some("swift")),
+            ("Qwen/Qwen3.5-9B:linnet", false, Some("linnet")),
             ("Qwen/Qwen3.5-9B:PENGUIN", false, Some("penguin")),
             ("Qwen/Qwen3.5-9B", true, Some("kestrel")),
-            ("glyd/Qwen3.5-9B-swift", false, Some("swift")),
-            ("/models/q-swift", false, None),
+            ("glyd/Qwen3.5-9B-linnet", false, Some("linnet")),
+            ("/models/q-linnet", false, None),
             ("Qwen/Qwen3.5-9B:sparrow", false, None),
         ] {
             assert_eq!(requested(given, lossy), want, "{given}");

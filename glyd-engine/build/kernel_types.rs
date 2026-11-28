@@ -137,8 +137,25 @@ fn rust_type(decl: &str) -> Result<String, String> {
         .ok_or_else(|| format!("the C type {ty:?} (of {decl:?}) has no Rust type in build/kernel_types.rs"))
 }
 
-/// Each `extern "C" __global__ void` kernel of `code`: its name and its arguments' Rust types.
-fn kernels_in(code: &str, out: &mut Vec<(String, Vec<String>)>) -> Result<(), String> {
+/// A kernel's name, its arguments' Rust types and its `__launch_bounds__`'s first argument (its most threads a block), where it has one.
+type Found = (String, Vec<String>, Option<String>);
+
+/// The text before the first comma outside parentheses.
+fn first_arg(s: &str) -> &str {
+    let mut depth = 0;
+    for (j, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => return s[..j].trim(),
+            _ => {}
+        }
+    }
+    s.trim()
+}
+
+/// Each `extern "C" __global__ void` kernel of `code`: its name, its arguments' Rust types and its bound.
+fn kernels_in(code: &str, out: &mut Vec<Found>) -> Result<(), String> {
     const HEAD: &str = "extern \"C\" __global__ void";
     let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut at = 0;
@@ -146,9 +163,11 @@ fn kernels_in(code: &str, out: &mut Vec<(String, Vec<String>)>) -> Result<(), St
         let mut i = at + k + HEAD.len();
         let rest = flat[i..].trim_start();
         i = flat.len() - rest.len();
+        let mut bound = None;
         if rest.starts_with("__launch_bounds__") {
             let open = i + flat[i..].find('(').ok_or("a __launch_bounds__ with no parenthesis")? + 1;
-            i = balanced(&flat, open).ok_or("an unclosed __launch_bounds__")?.1;
+            let (text, next) = balanced(&flat, open).ok_or("an unclosed __launch_bounds__")?;
+            (bound, i) = (Some(first_arg(text).to_string()), next);
         }
         let rest = flat[i..].trim_start();
         i = flat.len() - rest.len();
@@ -163,14 +182,14 @@ fn kernels_in(code: &str, out: &mut Vec<(String, Vec<String>)>) -> Result<(), St
         } else {
             args.split(',').map(rust_type).collect::<Result<Vec<_>, _>>().map_err(|e| format!("{name}: {e}"))?
         };
-        out.push((name, types));
+        out.push((name, types, bound));
         at = next;
     }
     Ok(())
 }
 
 /// The kernels of a source file, those its macros make included.
-fn kernels_of(src: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+fn kernels_of(src: &str) -> Result<Vec<Found>, String> {
     let text = clean(src);
     let mut macros: BTreeMap<String, (Vec<String>, String)> = BTreeMap::new();
     let mut code = String::new();
@@ -210,20 +229,20 @@ fn kernels_of(src: &str) -> Result<Vec<(String, Vec<String>)>, String> {
 
 /// The Rust source of `crate::kt`: for each kernel of `sources` (file name, text), a type that holds it and says its arguments' types.
 pub fn generate(sources: &[(String, String)]) -> Result<String, String> {
-    let mut all: BTreeMap<String, (Vec<String>, String)> = BTreeMap::new();
+    let mut all: BTreeMap<String, (Vec<String>, String, Option<String>)> = BTreeMap::new();
     for (file, src) in sources {
-        for (name, types) in kernels_of(src).map_err(|e| format!("{file}: {e}"))? {
-            if let Some((_, other)) = all.get(&name) {
+        for (name, types, bound) in kernels_of(src).map_err(|e| format!("{file}: {e}"))? {
+            if let Some((_, other, _)) = all.get(&name) {
                 return Err(format!("the kernel {name} is in {other} and in {file}"));
             }
-            all.insert(name, (types, file.clone()));
+            all.insert(name, (types, file.clone(), bound));
         }
     }
     let mut out = String::from(
         "// Made by build.rs (build/kernel_types.rs) from kernels/*.cu: one type a kernel, with its arguments' types. Not edited by hand.\n\
          use crate::dev::{Kernel, Launch, Sig, Typed};\n\n",
     );
-    for (name, (types, file)) in &all {
+    for (name, (types, file, _)) in &all {
         let args = if types.is_empty() { "()".to_string() } else { format!("({},)", types.join(", ")) };
         out.push_str(&format!(
             "/// The kernel `{name}` of kernels/{file}.\n#[allow(non_camel_case_types)]\npub(crate) struct {name}(Kernel);\n\
@@ -237,8 +256,16 @@ pub fn generate(sources: &[(String, String)]) -> Result<String, String> {
     out.push_str(&format!("/// The kernels: {}.\npub const COUNT: usize = {};\n", all.len(), all.len()));
     // (each kernel with its file: a check's census of what it launched says which of a file's kernels it did not)
     out.push_str("/// Each kernel's name and its file of kernels/.\npub const NAMES: &[(&str, &str)] = &[\n");
-    for (name, (_, file)) in &all {
+    for (name, (_, file, _)) in &all {
         out.push_str(&format!("    (\"{name}\", \"{file}\"),\n"));
+    }
+    out.push_str("];\n");
+    // (a launch's block is at most its kernel's bound: src/fold.rs's tests hold the prompt kernels' to it)
+    out.push_str("/// Each kernel's `__launch_bounds__` as its source gives the most threads a block (a macro's arguments put in), where it has one.\npub const BOUNDS: &[(&str, &str)] = &[\n");
+    for (name, (_, _, bound)) in &all {
+        if let Some(b) = bound {
+            out.push_str(&format!("    (\"{name}\", {b:?}),\n"));
+        }
     }
     out.push_str("];\n");
     Ok(out)

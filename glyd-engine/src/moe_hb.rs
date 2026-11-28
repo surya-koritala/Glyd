@@ -813,7 +813,7 @@ impl HbMoe {
     ) -> Result<HbMoe> {
         let latent = match &m.latent {
             Some(l) if l.norm_in.is_none() && l.expert_norm.is_none() && l.norm_out.is_none() => l.dim,
-            other => return err(format!("a latent of {other:?}: the hummingbird level's experts work in a latent of the block's own projections, with no norm (kestrel, swift or wren take the others)")),
+            other => return err(format!("a latent of {other:?}: the hummingbird level's experts work in a latent of the block's own projections, with no norm (kestrel, linnet or wren take the others)")),
         };
         let v7 = v7_manifest(&ck.dir)?.ok_or_else(|| Error(format!("{}: not a glyd-v7 directory", ck.dir.display())))?;
         let (layout, manifest) = (v7.0, &v7.1);

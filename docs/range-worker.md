@@ -75,7 +75,7 @@ glyd-engine rangeworker --model MODEL[:level] --layers A..B [--ctx N] [--chunk N
 MODEL is a directory (a glyd/NAME-LEVEL snapshot, a lossless glyd-v4 save, or a bf16 checkpoint packed at load) or a Hub
 id in the cache; `ORG/NAME:level` takes glyd/NAME-level from the cache. `--head-rows N` (1 to 64 and the chunk; 1 by
 default): the most rows the last stage's head runs on in one chunk; each row more costs the last stage `vocab x 2 + 8`
-bytes and the LM head's workspace for that many rows where it needs more (Qwen3.5-9B swift, `--head-rows 8`: 3,476,536
+bytes and the LM head's workspace for that many rows where it needs more (Qwen3.5-9B linnet, `--head-rows 8`: 3,476,536
 bytes more scratch, the workspace unchanged). `--sessions N` (1 or 2; 1 by default): the sessions open at once, each with
 its own KV, states and graph, made at `prepare` ([two sessions a stage](#two-sessions-a-stage---sessions-2)). The worker loads nothing until `prepare`. Its
 standard input and output carry frames; its standard error is its own lines (the load's, errors'). `--no-graph` is a
@@ -106,8 +106,8 @@ before anything is allocated, and the worker ends (the stream is not trusted pas
 The allocation fields are the engine's own counters (the bytes it asked the driver for, as `/v1/glyd/info` counts them):
 `weights_bytes`, `kv_bytes`, `state_bytes`, `scratch_bytes` (the activations for a chunk, the products' workspaces, the
 logits, the rotary tables), `engine_bytes` their sum, `peak_bytes` the most so far. The CUDA context and the kernels' code
-are not in them: about 300 MiB a process in nvidia-smi (the record: a swift worker at 3,694 MiB against 3,398 MiB of buffers).
-The record's numbers for Qwen3.5-9B: a stage of 16 layers holds 6.03 GB (penguin), 3.10 GB (swift), 3.66 GB (kestrel) of
+are not in them: about 300 MiB a process in nvidia-smi (the record: a linnet worker at 3,694 MiB against 3,398 MiB of buffers).
+The record's numbers for Qwen3.5-9B: a stage of 16 layers holds 6.03 GB (penguin), 3.10 GB (linnet), 3.66 GB (kestrel) of
 weights, 21,233,664 bytes of KV for 1,296 positions, 25,755,648 bytes of states and 416,096,036 bytes of scratch (a 1,024-token
 chunk's); the boundary is 16,384 bytes a token.
 
@@ -165,7 +165,7 @@ Greedy, the way Starlings uses it: the last stage runs `head_rows: k + 1` and gi
 `[g_a, new drafts]` with `position_start` = start + a + 1 and `keep_previous: a + 1`. Sampling on the last stage stays
 head_rows 1 (refused with more rows); draw on the caller's side from the logits' body for anything else.
 
-Cost on the RTX 4080 SUPER, Qwen3.5-9B swift ([the record](../benchmarks/gpu/rtx4080s-range-rewind-2026-10-22/README.md)).
+Cost on the RTX 4080 SUPER, Qwen3.5-9B linnet ([the record](../benchmarks/gpu/rtx4080s-range-rewind-2026-10-22/README.md)).
 The whole model in one process (24 linear-attention layers, 64-token prompt): a one-row step 9.28 ms; a verify pass of 8
 rows 10.26 ms, of it the states' copy 0.17 ms (51,511,296 bytes); a rewind keeping 1 to 7 of the 8 rows 0.40 to 0.59 ms
 (0.03 ms more a kept row; keeping all 8 does nothing). Two worker processes on the one GPU: a plain step 9.89 ms a token;
@@ -208,7 +208,7 @@ copied).
 - One change for one session too: `session_cancelled` is true and `state` `cancelled` as soon as a cancel is asked. Before,
   a cancel with no chunk under way left `session_cancelled` false and `state` `idle` until the next request ran.
 
-Cost on the RTX 4080 SUPER, Qwen3.5-9B swift ([the record](../benchmarks/gpu/rtx4080s-range-sessions-2026-10-22/README.md)).
+Cost on the RTX 4080 SUPER, Qwen3.5-9B linnet ([the record](../benchmarks/gpu/rtx4080s-range-sessions-2026-10-22/README.md)).
 A session more on a stage of 16 layers: its keys and values (16,384 bytes a token: 134,217,728 at ctx 8,192) and its
 states (25,755,648 bytes); prepare's `engine_bytes` 3,677,122,908 with `--sessions 1`, 3,837,096,284 with 2; the
 device's free bytes 5.7 MB lower still (the graph, the driver's rounding). Its room and graph are made at `prepare` in
@@ -256,8 +256,8 @@ step, a verify pass of 8 rows, its states' copy and a rewind to each keep; with 
 bytes and graph capture, and a step of each in turn against a step alone. Prints "all checks passed", or the first
 difference and exits 1.
 Each run's SHA-256 of (tokens, logits) is printed. On a random model: `glyd-engine logitsmodel qwen35 DIR --servable` (the
-tokenizer and chat template `--workers` needs; `qwen35-wide` is the other dense shape), then `glyd-engine rangecheck DIR:swift
---workers [--sessions 2]` (the verify chunks are checked at swift only).
+tokenizer and chat template `--workers` needs; `qwen35-wide` is the other dense shape), then `glyd-engine rangecheck DIR:linnet
+--workers [--sessions 2]` (the verify chunks are checked at linnet only).
 
 ## Against Compute's proposal (partial-worker-contract.md)
 
@@ -279,13 +279,13 @@ tokenizer and chat template `--workers` needs; `qwen35-wide` is the other dense 
 
 - Models: Qwen3.5 dense (9B here; 27B, 3.6-27B and 3.8-27B are the same description, and Config35 takes their configs, so
   the worker takes them; the 27Bs are not run here yet) at every level the engine loads:
-  penguin (a lossless save, glyd-v4 or glyd-v7 `mma`, or a bf16 checkpoint packed at load), kestrel, swift, wren. The
-  record has penguin, swift and kestrel on the 4080 SUPER, two stages (0..16, 16..32) and swift in three (0..11, 11..23, 23..32):
+  penguin (a lossless save, glyd-v4 or glyd-v7 `mma`, or a bf16 checkpoint packed at load), kestrel, linnet, wren. The
+  record has penguin, linnet and kestrel on the 4080 SUPER, two stages (0..16, 16..32) and linnet in three (0..11, 11..23, 23..32):
   every step's logits and token equal to the whole model's, bit for bit, in one process and across worker processes.
-- Verify chunks and keep_previous: swift on the 4080 SUPER, two stages and three (0..11, 11..23, 23..32), prompts of 64
+- Verify chunks and keep_previous: linnet on the 4080 SUPER, two stages and three (0..11, 11..23, 23..32), prompts of 64
   and 1,024 tokens: drafted equal to plain, bit for bit, every keep from 0 to 7 drafts
   ([rtx4080s-range-rewind-2026-10-22](../benchmarks/gpu/rtx4080s-range-rewind-2026-10-22/README.md)).
-- Two sessions a stage (`--sessions 2`): swift on the 4080 SUPER, two stages and three, prompt 1,024 and 768: each
+- Two sessions a stage (`--sessions 2`): linnet on the 4080 SUPER, two stages and three, prompt 1,024 and 768: each
   session's 256 tokens and logits equal to its own whole-model run, bit for bit, with the passes of the two in turn,
   plain, drafted and mixed, and one session cancelled and ended half way
   ([rtx4080s-range-sessions-2026-10-22](../benchmarks/gpu/rtx4080s-range-sessions-2026-10-22/README.md)).
@@ -304,7 +304,7 @@ tokenizer and chat template `--workers` needs; `qwen35-wide` is the other dense 
   a verify chunk's rows are (above).
 - Verify chunks: Qwen3.5 only (the worker's family), at most 8 rows (the products' one-row kernel), greedy checks on the
   caller's side. A rewind reaches back one verify chunk only. The exactness is measured on the 4080 SUPER (Ada) with the
-  swift layout; another GPU or layout whose product of 2 to 8 rows takes another kernel than one row's would not be exact.
+  linnet layout; another GPU or layout whose product of 2 to 8 rows takes another kernel than one row's would not be exact.
 - `inspect` is the loaded stage's allocation, not a plan from the config.
 - A cancel cannot interrupt a chunk's GPU pass; it takes effect at the chunk's end (a 1,024-token prefill chunk of half
   the 9B model is about 100 ms on the 4080 SUPER).

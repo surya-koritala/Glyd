@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Nemotron 3 Super's expert cache on ONE PCIe card (Linear GLY-130; rp_run.sh contract: results in ~/results, ~/results/DONE at the end): a real RTX 4090 (24 GB, PCIe 4) or RTX 5090 (32 GB, PCIe 5), or a 48 GB L40/L40S
-# (PCIe 4 x16, as a 4090 has) with the cache capped to what a 24 GB and a 32 GB card would have. nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16 at 2dc98e2a (247 GB) packed is 70.5 GB at wren and 83.5 GB at swift: no consumer card
-# holds either, so every expert (63.4 GB at wren, 77.5 GB at swift) stays in the pod's memory, pinned, and a cache of them is on the GPU (src/offload.rs). An expert that is not on the GPU is copied in (the cache's first
+# (PCIe 4 x16, as a 4090 has) with the cache capped to what a 24 GB and a 32 GB card would have. nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16 at 2dc98e2a (247 GB) packed is 70.5 GB at wren and 83.5 GB at linnet: no consumer card
+# holds either, so every expert (63.4 GB at wren, 77.5 GB at linnet) stays in the pod's memory, pinned, and a cache of them is on the GPU (src/offload.rs). An expert that is not on the GPU is copied in (the cache's first
 # version, `copy`: the records' 11.95 tokens a second on the 4090 and 43.59 on the 5090) or its pairs are computed by the CPU from the pod's memory while the GPU runs the others (src/cpu_experts.rs; modes `cpu`, `split`,
-# `auto`: what `plan` says of each miss), which takes a second copy of the experts' first matrices in the row layout besides the experts: half their bytes again, 29.5 GiB at wren and 36.1 at swift. The level follows the card,
+# `auto`: what `plan` says of each miss), which takes a second copy of the experts' first matrices in the row layout besides the experts: half their bytes again, 29.5 GiB at wren and 36.1 at linnet. The level follows the card,
 # as nh_run_check_job.sh's does:
 #   23 to 40 GB (RTX 4090: 24,564 MiB, RTX 5090: 32,607 MiB)   wren (--layout i4: the experts four-bit, every other matrix six-bit), the cache `--expert-cache auto`: what `run` gives that card (by the plan's figures, 122 experts
 #                                                              a layer of 512 at 23 GiB free, 191 at 31 GiB); on the 4090 also the budget of a 16 GB card (RTX 4080: 16,376 MiB, about 15 GiB free): `--expert-cache auto:15`, 52 experts a layer
 #                                                              (6.00 GiB of cache; `auto:14` is the 44 of the least cache, and the plan refuses a card with less than 14.0 GiB free), labelled "4090 capped to a 16 GB card's budget"
-#   45 GB or more (L40, L40S: 46,068 MiB)                      swift (--layout i5), three caches: `auto:23` (a 24 GB card's: 106 experts a layer), `auto:31` (a 32 GB card's: 163) and `auto` (this card's)
+#   45 GB or more (L40, L40S: 46,068 MiB)                      linnet (--layout i5), three caches: `auto:23` (a 24 GB card's: 106 experts a layer), `auto:31` (a 32 GB card's: 163) and `auto` (this card's)
 # Each step is a line of steps.txt with its log; a step that fails does not stop the ones that can still run:
-#   0. guards     the CPUs (12 or more: the pack is bound by them), the pod's memory (the experts are pinned in it: 72 GiB at wren, 88 at swift; `free -g` is recorded and a pod that has less stops here, at its first lines,
+#   0. guards     the CPUs (12 or more: the pack is bound by them), the pod's memory (the experts are pinned in it: 72 GiB at wren, 88 at linnet; `free -g` is recorded and a pod that has less stops here, at its first lines,
 #                 with the line that says so; a pod with less than the experts and the CPU's half (102 GiB, 124) runs the mode `copy` alone and says so), the card's memory, nvcc's compute_N for the card (the RTX 5090's
 #                 sm_120 wants CUDA 12.8), the download's speed (8 minutes in, it must project to be done in 45)
 #   1. tiny       for each level (6, 5, 4) a random tiny model with mixture-of-experts layers (nemotron_ref.py moetoy: no Hub read), then glyd-engine nhoffload on it: run with every expert on the GPU (eager and as a graph)
@@ -21,7 +21,7 @@
 #                 moecheck relu2-22of512 relu2-rows-22of512 (the dense and the sparse product over Int6, Int5 and Int4 experts against the CPU reference), and cpuexperts (the CPU kernels' own speed on the pod's processor).
 #                 A run of nhoffload that fails is a fault of the code found in seconds: the job stops before the pack, its longest step, and says so in steps.txt
 #   2. download   the checkpoint (the pinned revision), in the background beside the builds
-#   3. pack       glyd-engine pack MODEL ~/v/packed --layout i4 (wren) or i5 (swift), the experts' second matrices in the row layout: the record's pod (22 CPUs) took 18 minutes, 12 CPUs about 60
+#   3. pack       glyd-engine pack MODEL ~/v/packed --layout i4 (wren) or i5 (linnet), the experts' second matrices in the row layout: the record's pod (22 CPUs) took 18 minutes, 12 CPUs about 60
 #   4. generate   glyd-engine generate with --expert-cache on the packed model, one run for each cache above, on ONE load of the model for all the variants of --offload-mode (the cache cold at the start of each): 256 greedy
 #                 tokens of a prompt, the prefill and the decode steps timed apart (decode tokens a second, and of the second half of the steps, the first filling a cold cache), and for each variant the cache's counts a token:
 #                 expert reads, the share found on the GPU (the record's replay at 32% of the experts says 74.2% of a chat's decode reads), the misses (by the CPU, copied in), the CPU's time and the copy stream's, the host's wait
@@ -56,7 +56,7 @@
 # and, in step 6, the dense one (as much again), the builds and the environment 30 GB.
 # Hummingbird (HB=1 in an uploaded hb.env; Linear GLY-98, GLY-134): Nemotron 3 Super at the Hummingbird level (src/moe_hb.rs: the routed experts as codebook rows of 3 and 2 bits, 42.1 GB, 39.2 GiB; every other matrix six-bit, 7.8 GB), for the cards
 # of 16 to 32 GB with system RAM; the same steps with these changes: the card of 15 to 40 GB runs the cache `--expert-cache auto` (one of 45 GB or more the three caches of a 24 GB card, a 32 GB card and its own); the experts pinned are 39.2 GiB, so the pod
-# needs 52 GiB of memory; there are no wren or swift packs and no dense steps; step 1 is the tiny model packed at this level from a random export (glyd-engine hbtoy) and run through the cache against every expert there (nhoffload) and glyd-engine hbcheck (the
+# needs 52 GiB of memory; there are no wren or linnet packs and no dense steps; step 1 is the tiny model packed at this level from a random export (glyd-engine hbtoy) and run through the cache against every expert there (nhoffload) and glyd-engine hbcheck (the
 # kernels against float64 at the real shape, and their speed); step 3 packs from an export, or takes a finished directory; glyd-gpu verify decodes every pack of the directory on the CPU. hb.env (all optional but one of the first three):
 #   PACKED_S3=s3://BUCKET/PREFIX/   a finished glyd-v7 Hummingbird directory, downloaded in the background beside the builds (no Hugging Face download and no pack), then verified
 #   EXPORT_S3=s3://BUCKET/PREFIX/   the calibration export (meta.json and layer-LLL.safetensors): downloaded into EXPORT_DIR beside the bf16 checkpoint's download, then packed here (glyd-engine pack MODEL DIR --layout hummingbird --codes EXPORT_DIR)
@@ -193,8 +193,8 @@ GPU_NAME=$(nvidia-smi -i 0 --query-gpu=name --format=csv,noheader | head -1); GP
 free -g > $R/free.txt 2>&1
 { TZ=EST5EDT date; nvidia-smi -L; nvidia-smi -i 0; nvcc --version | tail -2; echo "arch sm_$ARCH; a pod of $NGPU GPUs, the job uses GPU 0; $CPUS CPUs of $(nproc); $((RAM / 1024)) GiB of memory (host or control group)"; cat $R/free.txt; df -h ~ | tail -1; cat $SRC/COMMIT 2> /dev/null; } > $R/machine.txt 2>&1
 echo "pod: $NGPU GPU(s) ($GPU_NAME, ${GPU_MIB:-?} MiB); the job uses GPU 0 alone (CUDA_VISIBLE_DEVICES=0)" >> $P
-# the level follows the card: wren on a 24 or 32 GB one (the cache it has), swift on a 48 GB one (the caches of a 24 and a 32 GB card); Hummingbird (HB=1) on any card of 15 to 40 GB with the cache it has, on a 48 GB one with three;
-# NEED_CPU: the memory with the CPU's half (wren and swift: the experts' first matrices again; Hummingbird: nothing, the CPU reads the places of the host tier where they are)
+# the level follows the card: wren on a 24 or 32 GB one (the cache it has), linnet on a 48 GB one (the caches of a 24 and a 32 GB card); Hummingbird (HB=1) on any card of 15 to 40 GB with the cache it has, on a 48 GB one with three;
+# NEED_CPU: the memory with the CPU's half (wren and linnet: the experts' first matrices again; Hummingbird: nothing, the CPU reads the places of the host tier where they are)
 if [ "$HB" = 1 ]; then
     LAYOUT=hummingbird; LEVEL=hummingbird; EXPERTS="39.2"; NEED=52; NEED_CPU=52
     if [ "${GPU_MIB:-0}" -ge 45000 ]; then CAPS="24g:auto:23 32g:auto:31 48g:auto"; RAMCAPS="24g:auto:23"   # (a 48 GB card holds the model whole: the 32 GB computer's card is a 24 GB one)
@@ -202,11 +202,11 @@ if [ "$HB" = 1 ]; then
     else echo "gpu: $GPU_NAME, ${GPU_MIB:-?} MiB: the Hummingbird job runs on a card of 15 to 40 GB (the cache it has) or of 48 GB (the caches of a 24 and a 32 GB card): stopped" >> $P; exit 1; fi
     [ -n "$PACKED_S3$EXPORT_S3" ] || [ -f "$EXPORT_DIR/meta.json" ] || { echo "hb: HB=1 and none of PACKED_S3, EXPORT_S3, or an export in EXPORT_DIR ($EXPORT_DIR/meta.json): stopped" >> $P; exit 1; }
 elif [ "${GPU_MIB:-0}" -ge 45000 ]; then
-    LAYOUT=i5; LEVEL=swift; NEED=88; NEED_CPU=124; EXPERTS="72.2"; CAPS="24g:auto:23 32g:auto:31 48g:auto"
+    LAYOUT=i5; LEVEL=linnet; NEED=88; NEED_CPU=124; EXPERTS="72.2"; CAPS="24g:auto:23 32g:auto:31 48g:auto"
 elif [ "${GPU_MIB:-0}" -ge 23000 ] && [ "${GPU_MIB:-0}" -lt 40000 ]; then
     LAYOUT=i4; LEVEL=wren; NEED=72; NEED_CPU=102; EXPERTS="59.1"; CAPS="card:auto"
 else
-    echo "gpu: $GPU_NAME, ${GPU_MIB:-?} MiB: this job runs on a card of 24 or 32 GB (wren, the cache the card has) or of 48 GB (swift, the caches of a 24 and a 32 GB card): stopped" >> $P; exit 1
+    echo "gpu: $GPU_NAME, ${GPU_MIB:-?} MiB: this job runs on a card of 24 or 32 GB (wren, the cache the card has) or of 48 GB (linnet, the caches of a 24 and a 32 GB card): stopped" >> $P; exit 1
 fi
 # the guards, before anything is downloaded or built: the pack is bound by the CPUs (about 5.7 MB/s of bf16 a CPU: 241 GB takes about 59 min on 12), the experts are pinned in the pod's memory with the engine and the
 # system beside them, and the nvcc has to know the card (compute_120 is CUDA 12.8's)

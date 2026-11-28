@@ -1480,6 +1480,7 @@ __device__ __forceinline__ void next_pf(const NextPf& p, int b, int nb) {
 #include "moe_hb.cu"    // the Hummingbird experts' (codebook rows: the rotation, the two products, the weighted sum and the rotation back)
 #include "moe_hbg.cu"   // the Hummingbird experts' for every mixture of experts (any width, gated or not, a block of 32 to 1,024; after moe_hb.cu: its helpers)
 #include "nemotron.cu"  // Nemotron 3 Super's kernels (after qwen35.cu: they use its helpers)
+#include "short_conv.cu"  // the gated short convolution's (LFM's conv layers)
 #include "gemma4.cu"   // Gemma 4's kernels (after qwen35.cu: they use its helpers)
 #include "attn.cu"     // the attention layer kind's, every family's (after gemma4.cu and qwen35.cu: they use their helpers)
 #include "glm.cu"  // GLM-5.3-Flash's kernels (after qwen35.cu and moe.cu: they use their helpers)

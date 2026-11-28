@@ -1,1 +1,0 @@
-- The AMD development build (GLYD_HIP=1) passes clippy again: the launch configuration of NVIDIA's cluster launches is compiled only where they are (three unused items failed `-D warnings` under `cfg(glyd_hip)`).

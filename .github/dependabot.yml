@@ -7,7 +7,7 @@
 #   gomod          the Go binding
 #   github-actions the workflows and the composite actions in .github/actions
 #
-# Not listed: condor/ (scripts, no manifest) and research/ (experiments, no lock files).
+# Not listed: ibis/ (scripts, no manifest) and research/ (experiments, no lock files).
 version: 2
 updates:
   - package-ecosystem: cargo

@@ -242,7 +242,7 @@ pub fn mcp(a: &Args) -> Result<()> {
         let res = match msg.get("method").and_then(Value::as_str).unwrap_or("") {
             "initialize" => {
                 let v = p.and_then(|p| p.get("protocolVersion")).and_then(Value::as_str).unwrap_or("2025-06-18");
-                format!("{{\"protocolVersion\":{},\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"condor\",\"version\":\"0.2.3\"}}}}", jstr(v))
+                format!("{{\"protocolVersion\":{},\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"ibis\",\"version\":\"0.2.3\"}}}}", jstr(v))
             }
             // (one line: a message a line)
             "tools/list" => format!("{{\"tools\":{}}}", json::parse(TOOLS).map(|v| json::to_compact(&v)).unwrap_or_default()),

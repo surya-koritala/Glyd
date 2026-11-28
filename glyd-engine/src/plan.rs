@@ -879,7 +879,7 @@ const EFF_LOSSY: f64 = 1.0;
 const EFF_LOSSLESS: f64 = 0.72;
 const LAYER_S: f64 = 35e-6;
 /// Of the computer's memory bandwidth, what the CPU's expert products reach; the time a mixture-of-experts layer with its experts in RAM adds for the GPU and host
-/// to meet besides `LAYER_S` (calibrated on Condor's Qwen3.8-Flash-Next on an RTX 4080 SUPER, 0.20 ms a layer in all).
+/// to meet besides `LAYER_S` (calibrated on Ibis's Qwen3.8-Flash-Next on an RTX 4080 SUPER, 0.20 ms a layer in all).
 const EFF_CPU: f64 = 0.70;
 const SYNC_PER_MOE_LAYER: f64 = 0.165e-3;
 /// A prompt's tokens a second: 2 x the parameters a token multiplies over the GPU's tensor rate (`Device::tflops`) at `PROMPT_EFF` of it, and 1.11 µs a token a
@@ -1277,7 +1277,7 @@ pub fn score_classes(records: &[serde_json::Value]) -> Vec<(String, Vec<f64>, Ve
         .collect()
 }
 
-/// The share of expert reads a cache holding a share `f` of the experts serves at one row, f^HIT_EXPONENT: experts are used unevenly and a sequence uses its own again (Condor: 70-76% at about a quarter;
+/// The share of expert reads a cache holding a share `f` of the experts serves at one row, f^HIT_EXPONENT: experts are used unevenly and a sequence uses its own again (Ibis: 70-76% at about a quarter;
 /// the routing record benchmarks/moe-skew-2026-10-09's decode traces' least-recently-used places: 61, 73 and 80% at 17, 32 and 46%, where this says 67, 77 and 84: offload.rs's test). A router that chooses uniformly (a random model's) is 1.
 pub const HIT_EXPONENT: f64 = 0.23;
 /// How fast the reuse of the places between steps goes as a step's rows' distinct experts fill them (`step_hit`), fitted to the same record's decode traces at 4 to 20 rows (offload.rs's test).
@@ -1444,7 +1444,7 @@ fn level_bits(level: &str, sh: &Shape, d: &Device, one_gpu_hb: bool) -> Option<(
     let b = match level {
         "penguin" => return Some((rest, experts)),
         "kestrel" => (6.5, 6.5),
-        "swift" => (5.5, 5.5),
+        "linnet" => (5.5, 5.5),
         "wren" => (4.5, 4.5),
         _ => return None,
     };
@@ -1639,7 +1639,7 @@ pub const SCHEMA: &str = "glyd-plan/1";
 /// The engine path that loads a plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// The plain dense kind (every pre-norm dense decoder the description builder's `llama` reading takes) on the executor: src/dynamic/dense.rs, at penguin, kestrel, swift and wren.
+    /// The plain dense kind (every pre-norm dense decoder the description builder's `llama` reading takes) on the executor: src/dynamic/dense.rs, at penguin, kestrel, linnet and wren.
     Qwen3,
     /// Qwen3.5, 3.6 and 3.8 dense at a lossy level.
     Qwen35,
@@ -2850,7 +2850,7 @@ fn fit(a: &crate::args::Args) -> Result<(), crate::ui::Refusal> {
                 println!("note: the hummingbird level comes as a pre-packed download: glyd/{}-hummingbird", f.name);
             } else if f.family.route.expert_cache == crate::support::ExpertCache::Codes {
                 println!(
-                    "note: the hummingbird level is a codes pack of the experts beside the weights (DIR/pack): the pre-packed glyd/{}-hummingbird's (condor/tools/download.sh); --pack precise, best or fast plans each",
+                    "note: the hummingbird level is a codes pack of the experts beside the weights (DIR/pack): the pre-packed glyd/{}-hummingbird's (ibis/tools/download.sh); --pack precise, best or fast plans each",
                     f.name
                 );
             } else {
@@ -3948,7 +3948,7 @@ pub mod sizing {
     }
 
     /// The model's config as a lossy level reads it (the Qwen3.5 layout, dense or with experts, by its description: Qwen3.5, Qwen3.6 and Qwen3.8, their config says `qwen3_5`; the Nemotron-H layout: `nemotron_h`, at the
-    /// kestrel, swift and wren levels; Gemma 4 at penguin and its lossy levels), and what it takes in `layout` of `free` bytes of GPU memory at the context asked for (else up to LOSSY_CTX, as much as fits): refused where
+    /// kestrel, linnet and wren levels; Gemma 4 at penguin and its lossy levels), and what it takes in `layout` of `free` bytes of GPU memory at the context asked for (else up to LOSSY_CTX, as much as fits): refused where
     /// it does not fit at LOSSY_MIN_CTX. A pack is sized in its own layout (`pack_layout`: Nemotron's experts alone are four-bit at wren). `c`: its config.json, parsed once; `packed`: the glyd-v7 directory the model is,
     /// where its packs' bytes are the ones it holds.
     #[cfg(test)]
@@ -4165,10 +4165,14 @@ pub mod sizing {
         let max_pos = c.shared.max_position_embeddings.ok_or_else(|| refuse(crate::ffi::Error("no max_position_embeddings".into())))?;
         let low = crate::dynamic::split::lowered_described(&d, c.num("num_hidden_layers").unwrap_or(0), max_pos).map_err(refuse)?;
         // (its experts at this level, refused where they are not held at it)
-        let moe = MoeShape::of(&d, c);
+        let mut moe = MoeShape::of(&d, c);
+        // (the dense engine holds a described family's experts lossless, every one on the GPU: penguin is a level of theirs where the GPU holds the model)
+        if let Some(x) = moe.as_mut() {
+            x.lossless = lossy.lossless_experts;
+        }
         if let Some(Err(e)) = moe.as_ref().map(|x| x.place(layout)) {
             let fix = match layout {
-                Layout::Hummingbird => format!("Run it at the swift or kestrel level: glyd run {model}:swift"),
+                Layout::Hummingbird => format!("Run it at the linnet or kestrel level: glyd run {model}:linnet"),
                 _ => format!("Run it at kestrel: glyd run {model}:kestrel"),
             };
             return Err(Refusal::unsupported(format!("{name}: {}", e.msg), fix));
@@ -4306,7 +4310,9 @@ pub mod sizing {
                 Err(why) => also = format!("; in stages over its {} GPUs {why}", devs.len()),
             }
         }
-        if let Some(src) = lv.experts.as_ref().filter(|_| fitted.is_err() || cache.is_some()) {
+        // (not at penguin with the dense engine: the expert cache holds experts at a block level, and lossless they are all on the GPU or the level is refused)
+        let lossless_whole = layout == Layout::Tiered && lv.row.lossy.is_some_and(|l| l.lossless_experts);
+        if let Some(src) = lv.experts.as_ref().filter(|_| (fitted.is_err() || cache.is_some()) && !lossless_whole) {
             // (its context the one asked, else LOSSY_CTX, every one of its users holding it)
             let ctx = asked.unwrap_or(LOSSY_CTX).min(lv.max_pos.max(LOSSY_MIN_CTX));
             match src.as_ref().map_err(String::clone).and_then(|src| experts_in_ram(src, n.kv(n.users as u64, ctx), layout, free, host, cache, host_asked, gpu))
@@ -4627,6 +4633,9 @@ pub mod sizing {
         gated: bool,
         latent: usize,
         scaled: bool,
+        /// Whether its loader holds every expert lossless on the GPU at penguin (the dense engine's, `dynamic::dense`: the described layers'), so a place
+        /// has bytes at that level too; set by the level's sizing (`level_of`).
+        lossless: bool,
     }
 
     impl MoeShape {
@@ -4636,7 +4645,7 @@ pub mod sizing {
             use crate::runtime::describe::Source;
             use crate::runtime::kinds::{Body, Ffn};
             let (nl, nb) = (m.num("num_hidden_layers").unwrap_or(0), d.desc.blocks.len().max(1));
-            let mut x = MoeShape { moe: vec![false; nl], experts: 0, top_k: 0, inter: 0, width: 0, gated: false, latent: 0, scaled: false };
+            let mut x = MoeShape { moe: vec![false; nl], experts: 0, top_k: 0, inter: 0, width: 0, gated: false, latent: 0, scaled: false, lossless: false };
             let mut seen = false;
             for (b, (blk, roles)) in d.desc.blocks.iter().zip(&d.blocks).enumerate() {
                 let Body::Ffn(Ffn::Moe(e)) = &blk.body else { continue };
@@ -4675,12 +4684,17 @@ pub mod sizing {
                     ))
                 }
                 Layout::Hummingbird => return crate::moe_hb::expert_bytes_mean(self.experts, self.inter, self.latent),
+                // (lossless: its two matrices' bf16 bytes at the share the penguin level's packing leaves of them, as the other matrices are counted)
+                Layout::Tiered if self.lossless => {
+                    let up = if self.gated { 2 * self.inter } else { self.inter };
+                    return Ok(2 * (up * self.width + self.width * self.inter) as u64 * crate::dynamic::split::TIERED_PCT / 100);
+                }
                 Layout::Int6 => glyd_gpu::pack::INT6_TAG,
                 Layout::Int5 => glyd_gpu::pack::INT5_TAG,
                 Layout::Int4 => glyd_gpu::pack::INT4_TAG,
                 other => {
                     return crate::ffi::err(format!(
-                        "its experts are held at the kestrel, swift and wren levels on this path, not in the {} layout",
+                        "its experts are held at the kestrel, linnet and wren levels on this path, not in the {} layout",
                         other.name()
                     ))
                 }
@@ -5058,9 +5072,9 @@ pub mod sizing {
     }
 
     /// What a codes pack's plan is asked (`codes_plan_with`): the context, the users (a server's: `served`), the prompt chunk, the always-on matrices' layout
-    /// (penguin's lossless tiered one for `run`; Condor's server's level, four bits by default) and that of the attention blocks' own matrices and the LM head
-    /// where it differs (`hi`: Condor's server's `--hi`), the sidecars over the pack's experts whose copies the GPU's places hold (its mode's, `--side`'s, or
-    /// none: `--no-side`), whether the layers may be cut over the GPUs given in their order (Condor's server's `--gpus 0,1`; else the GPU with the most free
+    /// (penguin's lossless tiered one for `run`; Ibis's server's level, four bits by default) and that of the attention blocks' own matrices and the LM head
+    /// where it differs (`hi`: Ibis's server's `--hi`), the sidecars over the pack's experts whose copies the GPU's places hold (its mode's, `--side`'s, or
+    /// none: `--no-side`), whether the layers may be cut over the GPUs given in their order (Ibis's server's `--gpus 0,1`; else the GPU with the most free
     /// memory holds them), the cuts asked (`--split`), the places a layer asked (`--places`), and the computer's memory `--host-memory` gives the experts.
     #[derive(Clone, Debug)]
     pub(crate) struct CodesAsk {
@@ -5164,7 +5178,7 @@ pub mod sizing {
         if let Some(l) = (0..nl).find(|&l| !cb.has(l)) {
             return Err(Refusal::unsupported(
                 format!("{name}: its codes pack {} has no experts of layer {l} of the model's {nl}", pack.display()),
-                "Give the pack of this model's experts: the release's (condor/tools/download.sh), or one made for it",
+                "Give the pack of this model's experts: the release's (ibis/tools/download.sh), or one made for it",
             ));
         }
         // (the always-on matrices as the loader holds them; the tables its description reads on the host and the routed experts none of the GPU's)
@@ -5383,7 +5397,7 @@ pub mod sizing {
             format!(
                 "{name} ({family}) at the hummingbird level runs from a codes pack of its experts beside its weights (DIR/pack) or named by --pack, and {model} has none here"
             ),
-            "Name its pack (the release's: condor/tools/download.sh): run DIR:hummingbird --pack PACK, or put it in DIR/pack, or serve it with qwenserve CKPT PACK",
+            "Name its pack (the release's: ibis/tools/download.sh): run DIR:hummingbird --pack PACK, or put it in DIR/pack, or serve it with qwenserve CKPT PACK",
         )
     }
 
@@ -5399,7 +5413,7 @@ pub mod sizing {
     }
 
     /// The codes pack `--pack DIR` names to `run`, `serve` and `prepare` (`name_pack`), for a model whose directory holds none beside its weights: the
-    /// release's download keeps its packs beside `model/` (condor/tools/download.sh: `DIR/model`, `DIR/precise-v2`).
+    /// release's download keeps its packs beside `model/` (ibis/tools/download.sh: `DIR/model`, `DIR/precise-v2`).
     static PACK: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
     /// `--pack DIR` of `a` as this process's codes pack (`codes_of`), where it names one.
@@ -6093,7 +6107,7 @@ mod tests {
             ("cli.rs", "if plan.kind == Kind::Gemma4 {", "`open_lossy`: the one-GPU route's loader by the plan's engine (its row's `Lossy::kind`), each arm a family's weight map; a seam of that route's loaders is its own piece"),
             ("cli.rs", "crate::dynamic::gemma4::load_of(", "as above"),
             ("cli.rs", "} else if plan.kind == Kind::Qwen3 {", "as above"),
-            ("cli.rs", "crate::dynamic::dense::load_of(", "as above"),
+            ("cli.rs", "crate::dynamic::dense::load_cached(", "as above"),
             ("cli.rs", "} else if plan.kind == Kind::NemotronH {", "as above"),
             ("cli.rs", "crate::dynamic::nemotron::load_whole_of(", "as above"),
             ("cli.rs", "crate::dynamic::qwen35::", "as above (the arm of the rest: the Qwen3.5 layout's)"),
@@ -6388,10 +6402,119 @@ mod tests {
         assert_eq!(checked.len(), 16, "{checked:?}");
     }
 
+    /// #641: a family its description is the whole of (`Family::Layers`: Domyn Edge, Granite Swash, Mellum 2) is sized from that description as every
+    /// one-GPU row is, with no reader of its own: from each one's released config (its recorded header), `level_of` gives its weights at each level (fewer
+    /// bytes at each lower one, penguin's under bf16's), a ring a layer of that layer's own head width and window (Domyn Edge's 12 layers of 256 over the whole
+    /// context and 24 of 64 in a window, where one head width for every layer would be wrong), no state, and the dense engine as its loader; Mellum 2's experts
+    /// are placed. LFM's short convolutions keep a state a sequence, which the description gives and the plan counts: each of its 13 conv layers' 2,048
+    /// channels' last 6 values, fp32. The plain dense kind's own models keep their row. MiMo as released is not planned: its fused q-k-v matrices are FP8
+    /// with block scales that start again at every shard, a stored form the loader does not read, and the sizing says so by name at every level (its
+    /// packed 4-bit experts are the next such form).
+    #[test]
+    fn a_described_family_is_sized_from_its_description() {
+        use crate::weights::Layout;
+        let level = |name: &str, layout: Layout| {
+            let (text, _) = recorded_release(name);
+            assert_eq!(crate::support::family(&text, name).unwrap(), crate::support::Family::Layers, "{name}");
+            sizing::level_of(&args(&["run", "m"]), "m", name, layout, &mc(&text), None, None, Some(LOSSY_CTX))
+        };
+        for (name, layers, moe, state) in [
+            ("Domyn-Edge-Base", 36, false, 0),
+            ("granite-swash-2b", 24, false, 0),
+            ("Mellum2.1-12B-A2.5B-Instruct", 28, true, 0),
+            ("Aion-1.0-Instruct-2.3B", 28, false, 0),
+            ("LFM3-1.7B", 24, false, 13 * 2048 * 6 * 4),
+        ] {
+            // (a mixture of experts too: the dense engine holds its experts lossless at penguin, and at the block levels in their layout)
+            let levels: &[Layout] = &[Layout::Tiered, Layout::Int6, Layout::Int5, Layout::Int4];
+            let by_level: Vec<u64> = levels
+                .iter()
+                .map(|&l| {
+                    let lv = level(name, l).unwrap_or_else(|e| panic!("{name} at {l:?}: {e:?}"));
+                    assert_eq!((lv.kind, lv.row.name, lv.state, lv.draft), (Kind::Qwen3, "described layers", state, None), "{name}");
+                    assert_eq!(lv.layers.as_ref().unwrap().low.layers.len(), layers, "{name}");
+                    assert_eq!(lv.experts.is_some(), moe, "{name}");
+                    if let Some(e) = &lv.experts {
+                        let c = e.as_ref().unwrap_or_else(|m| panic!("{name}: its experts at {l:?}: {m}"));
+                        assert_eq!((c.experts, c.top_k, c.moe.iter().filter(|x| **x).count()), (64, 8, 28), "{name}");
+                    }
+                    assert!(lv.weights < lv.bf16, "{name} at {l:?}: {} of bf16 {}", lv.weights, lv.bf16);
+                    lv.weights
+                })
+                .collect();
+            assert!(by_level.windows(2).all(|w| w[0] > w[1]) && *by_level.last().unwrap() > 0, "{name}: {by_level:?}");
+        }
+        for l in [Layout::Tiered, Layout::Int6, Layout::Int5, Layout::Int4] {
+            let Err(e) = level("MiMo-V2.6-Flash-RL", l) else { panic!("MiMo as released, sized at {l:?}") };
+            assert!(format!("{e:?}").contains("qkv_proj.weight is stored in FP8 with block scales that start again at each of its 4 shards"), "{e:?}");
+        }
+        // (Mellum's experts at penguin: 64 of them in each of 28 layers, a place the two matrices' bf16 bytes at the penguin share)
+        let lv = level("Mellum2.1-12B-A2.5B-Instruct", Layout::Tiered).unwrap();
+        let cache = lv.experts.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(cache.place, 2 * (2 * 896 * 2304 + 2304 * 896) as u64 * crate::dynamic::split::TIERED_PCT / 100);
+        assert!(cache.all == 28 * 64 * cache.place && cache.all < lv.weights, "{} of {}", cache.all, lv.weights);
+        let lv = level("Domyn-Edge-Base", Layout::Tiered).unwrap();
+        let low = &lv.layers.as_ref().unwrap().low;
+        let rings: Vec<(usize, usize, usize)> = low.rings.iter().map(|r| (r.d, r.nk, r.window)).collect();
+        assert_eq!(rings.iter().filter(|r| **r == (256, 8, 0)).count(), 12, "{rings:?}");
+        assert_eq!(rings.iter().filter(|r| **r == (64, 8, 1025)).count(), 24, "{rings:?}");
+        // (a window's ring is a sequence's fixed cost, the whole-context layers' a token's: both counted)
+        assert!(lv.rings[0] > 0 && lv.per[0] == 12 * 2 * 8 * 256 * 2, "{:?} {:?}", lv.rings, lv.per);
+        let dense: serde_json::Value = serde_json::from_str(&fixture("dense_tiny_manifest.json")).unwrap();
+        assert_eq!(crate::support::family(dense["config"].as_str().unwrap(), "q").unwrap(), crate::support::Family::Qwen3);
+        // (and `fit` plans them as it plans every family: on an RTX 4080 SUPER, Domyn Edge and Granite Swash lossless, Mellum 2 at kestrel, the level `run` loads)
+        for (name, want) in [
+            ("Domyn-Edge-Base", "penguin"),
+            ("granite-swash-2b", "penguin"),
+            ("Mellum2.1-12B-A2.5B-Instruct", "kestrel"),
+            ("Aion-1.0-Instruct-2.3B", "penguin"),
+            ("LFM3-1.7B", "penguin"),
+        ] {
+            let (text, _) = recorded_release(name);
+            let dir = model_dir("described", name, &text);
+            let words = ["fit", dir.to_str().unwrap(), "--machine", "rtx4080s"];
+            let p = planned(&args(&words))
+                .unwrap_or_else(|e| panic!("{name}: {e:?}"))
+                .plan
+                .chosen
+                .and_then(|c| c.load)
+                .unwrap_or_else(|| panic!("{name}: no plan"));
+            assert_eq!((p.level, p.kind), (want, Kind::Qwen3), "{name}: {p:?}");
+        }
+        // (MiMo's layout in bf16, its small model's config: sized at every level, each fused q-k-v matrix counted once, as stored; bf16's bytes are its
+        // tensors', the three layers' choice biases held in fp32; its experts placed)
+        let manifest: serde_json::Value = serde_json::from_str(&fixture("mimo_tiny_manifest.json")).unwrap();
+        let text = manifest["config"].as_str().unwrap();
+        let values = |t: &serde_json::Value| t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).product::<u64>();
+        let all: u64 = manifest["tensors"].as_array().unwrap().iter().map(|t| values(t) * 2).sum();
+        let mut before = u64::MAX;
+        for l in [Layout::Tiered, Layout::Int6, Layout::Int5, Layout::Int4] {
+            let lv = sizing::level_of(&args(&["run", "m"]), "m", "mimo", l, &mc(text), None, None, Some(LOSSY_CTX)).unwrap_or_else(|e| panic!("{l:?}: {e:?}"));
+            assert_eq!((lv.kind, lv.row.name, lv.state, lv.bf16), (Kind::Qwen3, "described layers", 0, all + 3 * 8 * 2), "{l:?}");
+            let c = lv.experts.as_ref().unwrap().as_ref().unwrap_or_else(|m| panic!("its experts at {l:?}: {m}"));
+            assert_eq!((c.experts, c.top_k, c.moe.iter().filter(|x| **x).count()), (8, 2, 3), "{l:?}");
+            assert!(lv.weights < before && lv.weights < lv.bf16, "{l:?}: {} after {before}, of bf16 {}", lv.weights, lv.bf16);
+            before = lv.weights;
+        }
+        // (MiMo as released: `fit` chooses no plan, and each level says the stored form the loader does not read)
+        let (text, _) = recorded_release("MiMo-V2.6-Flash-RL");
+        let dir = model_dir("described", "MiMo-V2.6-Flash-RL", &text);
+        let plan = planned(&args(&["fit", dir.to_str().unwrap(), "--machine", "a100-80g"])).unwrap().plan;
+        assert!(plan.chosen.is_none() && plan.options.len() == 4, "{plan:?}");
+        for o in &plan.options {
+            assert!(o.load.is_none() && o.why.as_deref().is_some_and(|w| w.contains("stored in FP8 with block scales that start again")), "{o:?}");
+        }
+        // (and Mellum lossless where the GPU holds it whole: an A100 of 80 GB, every expert on it, none in the computer's memory)
+        let (text, _) = recorded_release("Mellum2.1-12B-A2.5B-Instruct");
+        let dir = model_dir("described", "Mellum2.1-12B-A2.5B-Instruct", &text);
+        let p = planned(&args(&["fit", dir.to_str().unwrap(), "--machine", "a100-80g"])).unwrap().plan.chosen.and_then(|c| c.load).expect("a plan on an A100");
+        assert!(p.level == "penguin" && p.kind == Kind::Qwen3 && p.experts.is_none(), "{p:?}");
+    }
+
     /// Both formats of the keys and values are lossless, so a plan takes the 12-bit pages GLYD_KV=lossless asks for only where they reserve no more than bf16
     /// (`sizing::one_gpu_pages`). One user at gemma-4-12B's whole context (262,144 tokens) reserves more in them than in bf16 (their worst case beside the tokens:
     /// a raw slab for every page of the sequence and the rows a pass unpacks): on an L4 and an RTX 4080 SUPER the plan is bf16's, its level bf16's (penguin on
-    /// the L4, as the plan was before that worst case was counted; swift on the 4080 SUPER, where the 12-bit pages were planned at kestrel in fewer bytes than
+    /// the L4, as the plan was before that worst case was counted; linnet on the 4080 SUPER, where the 12-bit pages were planned at kestrel in fewer bytes than
     /// their pools take). Eight users share the worst case: on the L4 the 12-bit pages plan more tokens each than bf16, at the same level. The plan says which.
     #[test]
     fn the_twelve_bit_pages_are_planned_only_where_they_reserve_no_more_than_bf16() {
@@ -6409,7 +6532,7 @@ mod tests {
         let plan = |lossless: bool, words: &[&str]| -> LoadPlan {
             sizing::asking_lossless(lossless, || planned(&args(words))).unwrap().plan.chosen.and_then(|c| c.load).expect("a plan")
         };
-        for (preset, level) in [("l4", "penguin"), ("rtx4080s", "swift")] {
+        for (preset, level) in [("l4", "penguin"), ("rtx4080s", "linnet")] {
             let words = ["serve", m, "--machine", preset, "--users", "1", "--no-draft", "--context", "262144"];
             let (b, t) = (plan(false, &words), plan(true, &words));
             assert_eq!(t, b, "{preset}: one user at the whole context is planned as in bf16");
@@ -6537,7 +6660,7 @@ mod tests {
     }
 
     /// #333: Qwen3.8-2.4T-A95B on its reference hardware, eight H100s. At penguin the machine is the limit (its experts held lossless take more than its 1,800 GiB
-    /// of memory): refused with the numbers. At wren, swift and kestrel one GPU does not hold it, even with its experts in the computer's memory (88.6, 105.0 and
+    /// of memory): refused with the numbers. At wren, linnet and kestrel one GPU does not hold it, even with its experts in the computer's memory (88.6, 105.0 and
     /// 121.5 GiB of one GPU's memory): its layers are cut into stages over the eight by the dynamic route's rule (`sizing::lossy_stages`), its experts in the
     /// computer's memory and each stage's places of them, every stage within its GPU's room. `fit` prints that plan (before, each of these levels was refused);
     /// one H100 still refuses them.
@@ -6553,7 +6676,7 @@ mod tests {
         let mach = Machine::preset("8xh100").unwrap();
         let devs: Vec<Target> = mach.devices.iter().enumerate().map(|(i, d)| Target::of(d, i as i32, Some(mach.ram_free))).collect();
         let c = mc(&config);
-        for (level, layout) in [("wren", crate::weights::Layout::Int4), ("swift", crate::weights::Layout::Int5), ("kestrel", crate::weights::Layout::Int6)] {
+        for (level, layout) in [("wren", crate::weights::Layout::Int4), ("linnet", crate::weights::Layout::Int5), ("kestrel", crate::weights::Layout::Int6)] {
             let f = fit(level, "8xh100");
             assert!(f.refusal.is_none(), "{level}: {:?}", f.refusal);
             let lp = f.plan.chosen.as_ref().and_then(|c| c.load.clone()).expect("a plan");
@@ -6879,7 +7002,7 @@ mod tests {
 
     #[test]
     fn predictions_match_what_was_measured() {
-        // tokens/s measured with one user and a short prompt (CHANGELOG; starlings/benchmarks; condor/README.md)
+        // tokens/s measured with one user and a short prompt (CHANGELOG; starlings/benchmarks; ibis/README.md)
         let within = |p: &Plan, want: f64, tol: f64| {
             let got = chosen(p).tok_s;
             assert!((got / want - 1.0).abs() < tol, "{got:.1} tok/s, measured {want}");
@@ -6889,10 +7012,10 @@ mod tests {
         // Gemma 4 12B at wren (Google's QAT weights, 4.5 bits) on an RTX 4080 SUPER: 82.5
         let g = Shape::from_config(&fixture("gemma4_12b_config.json")).unwrap();
         within(&plan(&g, &m4080, Ask { level: Some("wren"), ..Default::default() }), 82.5, 0.25);
-        // Qwen3.8-27B at swift on an RTX 4090: 46.0 (the model has a draft head; the measurement ran without drafting)
+        // Qwen3.8-27B at linnet on an RTX 4090: 46.0 (the model has a draft head; the measurement ran without drafting)
         let mut q = qwen35("Qwen/Qwen3.8-27B");
         q.mtp = false;
-        within(&plan(&q, &m4090, Ask { level: Some("swift"), ..Default::default() }), 46.0, 0.25);
+        within(&plan(&q, &m4090, Ask { level: Some("linnet"), ..Default::default() }), 46.0, 0.25);
         // Qwen3.8-Flash-Next at hummingbird on an RTX 4080 SUPER with 64 GB of RAM, experts in RAM, drafting: 91 (precise mode)
         let qx = Shape::from_config(&fixture("qwen4x_config.json")).unwrap();
         let p = plan(&qx, &m4080, Ask { level: Some("hummingbird"), ..Default::default() });
@@ -7037,7 +7160,7 @@ mod tests {
     /// 2026-11-23, bench --loads 1k:1 --no-draft, the median of 3; prompts of 936 and 1,002 tokens, 128 made) and the A100 SXM4 40GB's runs at 63bdcdcb
     /// (2026-11-24, bench's gate suite with GLYD_KV=bf16, the median of 3, 128 made: one user and eight on short prompts, one at 1k and 4k; the
     /// prompts of the short loads too short to time a prompt, so their prompt rates are not kept; the rate the A100's probe measured), and the A10's
-    /// plancheck runs (15: 8 users, Qwen3.5-0.8B kestrel, gemma-4-12B wren and swift at 1k, 4k, 8k, 1k for eight and 85% of the context). Only
+    /// plancheck runs (15: 8 users, Qwen3.5-0.8B kestrel, gemma-4-12B wren and linnet at 1k, 4k, 8k, 1k for eight and 85% of the context). Only
     /// releases of the last six months: the runs of older releases measured beside them are not kept. `GLYD_WRITE_CALIB=1` writes the file anew; the other machines'
     /// `plancheck` records are added to it.
     #[test]
@@ -7067,11 +7190,11 @@ mod tests {
             (g, &gemma_sh, Kind::Gemma4, "wren", "8k:1", 7511.0, 1, 55.140277, Some(1878.440661)),
             (g, &gemma_sh, Kind::Gemma4, "wren", "1k:8", 935.0, 8, 23.383665, Some(2096.645192)),
             (g, &gemma_sh, Kind::Gemma4, "wren", "27852t:1", 25548.0, 1, 51.465418, Some(1334.308805)),
-            (g, &gemma_sh, Kind::Gemma4, "swift", "1k:1", 935.0, 1, 50.202928, Some(2182.203677)),
-            (g, &gemma_sh, Kind::Gemma4, "swift", "4k:1", 3754.0, 1, 49.525424, Some(2055.072626)),
-            (g, &gemma_sh, Kind::Gemma4, "swift", "8k:1", 7511.0, 1, 48.866016, Some(1883.56461)),
-            (g, &gemma_sh, Kind::Gemma4, "swift", "1k:8", 935.0, 8, 22.060678, Some(2095.481739)),
-            (g, &gemma_sh, Kind::Gemma4, "swift", "27852t:1", 25548.0, 1, 46.112267, Some(1340.026958)),
+            (g, &gemma_sh, Kind::Gemma4, "linnet", "1k:1", 935.0, 1, 50.202928, Some(2182.203677)),
+            (g, &gemma_sh, Kind::Gemma4, "linnet", "4k:1", 3754.0, 1, 49.525424, Some(2055.072626)),
+            (g, &gemma_sh, Kind::Gemma4, "linnet", "8k:1", 7511.0, 1, 48.866016, Some(1883.56461)),
+            (g, &gemma_sh, Kind::Gemma4, "linnet", "1k:8", 935.0, 8, 22.060678, Some(2095.481739)),
+            (g, &gemma_sh, Kind::Gemma4, "linnet", "27852t:1", 25548.0, 1, 46.112267, Some(1340.026958)),
         ];
         for (at, gpu, preset, class, cc, sms, stream, ram, tflops, source, runs) in [
             (
@@ -7301,7 +7424,7 @@ mod tests {
         let p = plan(&q9, &Machine::preset("rtx4090").unwrap(), Ask::default());
         assert_eq!((chosen(&p).level, chosen(&p).placement.clone()), ("penguin", Some(Placement::Gpu(0))));
         let p = plan(&q9, &Machine::preset("rtx4060-laptop").unwrap(), Ask::default());
-        // (the lossy engines keep 2 GiB of an 8 GB card: swift's 5.8 GiB of weights do not fit beside them, so only wren does)
+        // (the lossy engines keep 2 GiB of an 8 GB card: linnet's 5.8 GiB of weights do not fit beside them, so only wren does)
         assert!(chosen(&p).level != "penguin" && p.options[0].why.is_some(), "{p:?}");
         // (the preset's driver is CUDA 12's: a build with CUDA 13's kernels alone says what it needs; one with CUDA 12's runs on it)
         assert_eq!(
@@ -8001,7 +8124,7 @@ mod tests {
     /// A codes pack's plan is the one expert-cache rule's (`expert_cache_with` of the pack's source, `codes_experts`, as every other source's): `run`'s places
     /// are the rule's on the GPU's room past its floor and the scratch, beside the users' keys, values and states; a computer whose memory holds less than a
     /// token's experts in every layer is refused by the rule in words (the plan's own rule planned it, reading every expert from the disk); over two GPUs named
-    /// (Condor's server's `--gpus 0,1`) the rule cuts the layers where one GPU leaves fewer places, each part its own places and its share of one sequence; the
+    /// (Ibis's server's `--gpus 0,1`) the rule cuts the layers where one GPU leaves fewer places, each part its own places and its share of one sequence; the
     /// cut and the places asked (`--split`, `--places`) are held, or refused in the plan's words.
     #[test]
     fn a_codes_packs_plan_is_the_one_expert_cache_rules() {
@@ -8056,7 +8179,7 @@ mod tests {
     /// GLYD_ENGINE_BATCH_PREFILL (a product's switch: at 0 prompts run one a pass and no finished sequence is kept) is read in one place, which the engine's
     /// steps, the plan's sequences and the checks share (`dynamic::batch_prefill`): `fit --users 8` plans what `serve --users 8` does with it at 0 and at 1,
     /// and each sequence's states have a copy at its mark at 1 alone. On a model with states, the release's shapes with its codes pack (planned as `glyd serve`
-    /// and Condor's server plan it).
+    /// and Ibis's server plan it).
     #[test]
     fn fit_and_serve_plan_alike_with_the_batch_prefill_switch_at_0_and_1() {
         let (dir, c, table, pack) = qx_release("qx-switch");
@@ -8079,11 +8202,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
-    /// Condor's server (`qwenserve`) loads by its plan (`qwen4x::serve_plan`, the planned route's rule): its users and context, the always-on matrices at its
+    /// Ibis's server (`qwenserve`) loads by its plan (`qwen4x::serve_plan`, the planned route's rule): its users and context, the always-on matrices at its
     /// level (four bits: more places than the lossless layout leaves on the same GPU), `--places` held; a GPU named twice shares its memory between its two
     /// parts; a GPU too small, and a cut that does not name a layer for each GPU after the first, refused in words.
     #[test]
-    fn condors_server_loads_by_its_plan() {
+    fn ibis_server_loads_by_its_plan() {
         let (dir, _, _, pack) = qx_release("qx-serve");
         let host = 64u64 << 30;
         let words = |more: &[&str]| -> crate::args::Args {
@@ -8135,12 +8258,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
-    /// Condor's server's `--hi` is planned where the loader puts it (`Placing::hi`): the release's attention blocks' own matrices and its LM head
+    /// Ibis's server's `--hi` is planned where the loader puts it (`Placing::hi`): the release's attention blocks' own matrices and its LM head
     /// (`Described::attention_and_head`: the head and each full-attention layer's q, k, v, o and indexer products, nothing of a Gated DeltaNet layer, a gated
     /// residual or the experts) at the second layout's share of their bf16 bytes, every other at the layout's; the default form's plan (four bits, five for
     /// those) holds those bytes more and no more places than four bits alone. The plan opens the sidecars the form names (`--no-side`: none).
     #[test]
-    fn condors_server_plans_its_second_layout_and_sidecars() {
+    fn ibis_server_plans_its_second_layout_and_sidecars() {
         use crate::weights::Layout::{Int4, Int5};
         let (dir, c, table, pack) = qx_release("qx-hi");
         let (nl, every) = (c.num("num_hidden_layers").unwrap(), c.num("full_attention_interval").unwrap());
@@ -8468,7 +8591,7 @@ mod tests {
                         continue;
                     }
                     let d = &Machine::preset(preset).unwrap().devices[0];
-                    for level in ["kestrel", "swift", "wren"] {
+                    for level in ["kestrel", "linnet", "wren"] {
                         let o = f.plan.options.iter().find(|o| o.level == level).unwrap_or_else(|| panic!("{preset} {level}: no option"));
                         let lp = o.load.as_ref().unwrap_or_else(|| panic!("{preset} {level}: {:?}", o.why));
                         let layout = crate::levels::layout_of(level).unwrap();
@@ -8905,7 +9028,7 @@ mod tests {
         let f = planned(&args(&["fit", &model, "--machine", "rtx4080s", "--context", "8192"])).unwrap();
         assert!(remembered(&root, &model, f.plan.chosen.as_ref().unwrap()).unwrap().contains("a different plan"));
         // (another GPU, another level: not the same memory)
-        assert!(recall_in(&root, &model, "swift", &lp.gpu).is_none() && recall_in(&root, &model, lp.level, "NVIDIA L4").is_none());
+        assert!(recall_in(&root, &model, "linnet", &lp.gpu).is_none() && recall_in(&root, &model, lp.level, "NVIDIA L4").is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -8955,7 +9078,7 @@ mod tests {
 
     /// P16: no preset by fixture model by level where `fit` and `run` disagree: for every one, `fit` refuses exactly where `run` does, in `run`'s words and with its
     /// status, and where `run` loads a plan `fit` prints that plan. The models are the families' fixtures, one of a dense architecture the engine does not run, and
-    /// Qwen3.8-Flash-Next (Condor's); every machine preset, AMD, Apple, Arm and the multi-GPU ones among them; every level this build has, those a family does not run at too.
+    /// Qwen3.8-Flash-Next (Ibis's); every machine preset, AMD, Apple, Arm and the multi-GPU ones among them; every level this build has, those a family does not run at too.
     #[test]
     fn fit_and_run_agree_on_every_preset_and_model() {
         let q35 = json::parse(&fixture("qwen35_configs.json")).unwrap();
@@ -9060,7 +9183,7 @@ mod tests {
         assert_eq!(calib(0), 0, "said nothing of the GPU");
         assert_eq!(calib(planned_used + (300 << 20)), 300 << 20, "took 300 MiB more");
         assert_eq!(calib(planned_used + (5 << 30)), 1 << 30, "at most a GiB: another program's");
-        assert_eq!(calibration_in(&root, &model, "swift", &lp.gpu), 0, "another level");
+        assert_eq!(calibration_in(&root, &model, "linnet", &lp.gpu), 0, "another level");
         let _ = std::fs::remove_dir_all(&root);
         // (and it is the reserve's: the plan says the free memory as it was)
         let mut p = lp.clone();
@@ -9263,11 +9386,11 @@ mod tests {
     #[test]
     fn the_ladder_takes_its_steps_in_order_and_prices_them() {
         let dir = model_dir("ladder", "Nemotron-H", &fixture("nemotron_h_config.json"));
-        let model = format!("{}:swift", dir.to_str().unwrap());
+        let model = format!("{}:linnet", dir.to_str().unwrap());
         let f = planned(&args(&["fit", &model, "--machine", "a100-80g"])).unwrap();
         let (sh, m, fam) = (&f.shape, &f.machine, f.family);
-        // (swift's 78 GiB with its experts in the computer's memory on an 80 GB card: made whole here, the loader's answers are made up below)
-        let base = LoadPlan { experts: None, ..f.plan.chosen.as_ref().and_then(|c| c.load.clone()).expect("swift loads on 80 GB") };
+        // (linnet's 78 GiB with its experts in the computer's memory on an 80 GB card: made whole here, the loader's answers are made up below)
+        let base = LoadPlan { experts: None, ..f.plan.chosen.as_ref().and_then(|c| c.load.clone()).expect("linnet loads on 80 GB") };
         let name = dir.to_str().unwrap();
         let go = |asked: &'static str, want: usize, answers: Vec<(&'static str, Result<Option<LoadPlan>, String>)>| {
             let size = |l: &'static str, _ctx: usize| match answers.iter().find(|a| a.0 == l) {
@@ -9278,11 +9401,11 @@ mod tests {
             ladder(sh, m, fam, name, asked, want, &size)
         };
         // as asked: no step, nothing said
-        let l = go("swift", base.context, vec![("swift", Ok(Some(base.clone())))]);
+        let l = go("linnet", base.context, vec![("linnet", Ok(Some(base.clone())))]);
         assert!(l.is_as_asked() && l.steps.is_empty() && !l.needs_confirmation() && l.report().is_empty());
         // a shorter context: the loader's, said, no cost, not asked about
         let short = LoadPlan { context: 4096, ..base.clone() };
-        let l = go("swift", 32768, vec![("swift", Ok(Some(short.clone())))]);
+        let l = go("linnet", 32768, vec![("linnet", Ok(Some(short.clone())))]);
         assert_eq!(l.steps.iter().map(|s| (s.kind, s.cost_pct, s.confirm)).collect::<Vec<_>>(), vec![(StepKind::ShorterContext, 0.0, false)]);
         assert!(l.text().contains("1. shorter context: 4096 tokens where 32768 were wanted (no change in speed)"), "{}", l.text());
         // experts in the computer's memory: a cache of a few places is far slower than the GPU alone, a cache of most of them is not
@@ -9290,7 +9413,7 @@ mod tests {
             |slots: usize| crate::offload::CachePlan { layers: 40, experts: 512, slots, expert_bytes: 3 << 20, in_place: false, ram: 40 * 512 * (3 << 20) };
         let tight = LoadPlan { experts: Some(cache(26)), ..base.clone() };
         let roomy = LoadPlan { experts: Some(cache(500)), ..base.clone() };
-        let l = go("swift", base.context, vec![("swift", Ok(Some(tight)))]);
+        let l = go("linnet", base.context, vec![("linnet", Ok(Some(tight)))]);
         assert_eq!(l.steps.len(), 1);
         assert!(
             l.steps[0].kind == StepKind::ExpertsInRam && l.steps[0].cost_pct > CONFIRM_COST_PCT && l.steps[0].confirm && l.needs_confirmation(),
@@ -9298,12 +9421,12 @@ mod tests {
             l.steps
         );
         let tight_cost = l.steps[0].cost_pct;
-        let l = go("swift", base.context, vec![("swift", Ok(Some(roomy)))]);
+        let l = go("linnet", base.context, vec![("linnet", Ok(Some(roomy)))]);
         // (a cache of nearly every expert is the cheaper step, though the host and the GPU meeting in every layer still costs: the planner's calibrated sync)
         assert!(l.steps[0].cost_pct < tight_cost && l.steps[0].cost_pct > 0.0, "{:?} against {tight_cost}", l.steps);
         // a lower level where the one asked is refused: asked about, whatever it costs, after the context and the experts at that level in the order
         let lower = LoadPlan { level: "wren", context: 8192, experts: Some(cache(500)), ..base.clone() };
-        let l = go("swift", 32768, vec![("swift", Err("it needs 90 GiB".into())), ("wren", Ok(Some(lower)))]);
+        let l = go("linnet", 32768, vec![("linnet", Err("it needs 90 GiB".into())), ("wren", Ok(Some(lower)))]);
         assert_eq!(l.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ShorterContext, StepKind::ExpertsInRam, StepKind::LowerLevel]);
         assert!(l.steps[2].confirm && l.needs_confirmation() && l.plan.as_ref().unwrap().level == "wren");
         assert!(l.report().contains("it loads at the wren level") && l.report().contains("not available: the KV cache's type"), "{}", l.report());
@@ -9312,15 +9435,15 @@ mod tests {
         let at = |most: usize| {
             let b = base.clone();
             move |l: &'static str, ctx: usize| match l {
-                "swift" if ctx <= most => Ok(Some(LoadPlan { context: ctx, ..b.clone() })),
+                "linnet" if ctx <= most => Ok(Some(LoadPlan { context: ctx, ..b.clone() })),
                 "wren" => Ok(Some(LoadPlan { level: "wren", ..b.clone() })),
                 _ => Err(crate::ui::Refusal::unsupported(format!("{l} at {ctx} tokens"), "")),
             }
         };
-        let l = ladder(sh, m, fam, name, "swift", 262144, &at(65536));
-        assert_eq!(l.plan.as_ref().map(|p| (p.level, p.context)), Some(("swift", 65536)));
+        let l = ladder(sh, m, fam, name, "linnet", 262144, &at(65536));
+        assert_eq!(l.plan.as_ref().map(|p| (p.level, p.context)), Some(("linnet", 65536)));
         assert_eq!(l.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ShorterContext]);
-        let l = ladder(sh, m, fam, name, "swift", 262144, &at(4096));
+        let l = ladder(sh, m, fam, name, "linnet", 262144, &at(4096));
         assert_eq!(l.plan.as_ref().map(|p| p.level), Some("wren"), "4096 is below the floor of {PREFERRED_CTX}");
         // dense layers in the computer's memory (the dynamic route's plan, src/dense_ram.rs): a step after the experts, priced by itself (their bytes over the link, every token)
         let spread = |dense: usize, dense_bytes: u64| Spread {
@@ -9338,9 +9461,9 @@ mod tests {
             dense_bytes,
             tables: 0,
         };
-        let without = go("swift", base.context, vec![("swift", Ok(Some(LoadPlan { spread: Some(spread(0, 0)), ..base.clone() })))]);
+        let without = go("linnet", base.context, vec![("linnet", Ok(Some(LoadPlan { spread: Some(spread(0, 0)), ..base.clone() })))]);
         assert_eq!(without.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ExpertsInRam]);
-        let with = go("swift", base.context, vec![("swift", Ok(Some(LoadPlan { spread: Some(spread(2, 2 << 30)), ..base.clone() })))]);
+        let with = go("linnet", base.context, vec![("linnet", Ok(Some(LoadPlan { spread: Some(spread(2, 2 << 30)), ..base.clone() })))]);
         assert_eq!(with.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ExpertsInRam, StepKind::DenseInRam]);
         assert_eq!(with.steps[0].cost_pct, without.steps[0].cost_pct, "the experts' step costs what it does without the dense one");
         // (2 GiB over a 25 GB/s link is 86 ms a token more: over 30% of any speed this model has on the card)
@@ -9348,10 +9471,10 @@ mod tests {
         assert!(with.text().contains("dense layers in the computer's memory: the last 2 layers' matrices (2.0 GiB) there"), "{}", with.text());
         assert_eq!(with.json()["steps"][1]["kind"], "dense_in_ram");
         // nothing loads: the first refusal, no plan
-        let l = go("swift", 32768, vec![("swift", Err("first".into())), ("wren", Err("second".into())), ("hummingbird", Err("third".into()))]);
+        let l = go("linnet", 32768, vec![("linnet", Err("first".into())), ("wren", Err("second".into())), ("hummingbird", Err("third".into()))]);
         assert!(l.plan.is_none() && l.refusal.as_ref().is_some_and(|r| r.what == "first") && l.report().contains("no step loads it (first)"));
         // a path not sized by its loader: the ladder says nothing
-        let l = go("swift", 32768, vec![("swift", Ok(None))]);
+        let l = go("linnet", 32768, vec![("linnet", Ok(None))]);
         assert!(l.plan.is_none() && l.steps.is_empty() && l.refusal.is_none());
     }
 
@@ -9534,7 +9657,7 @@ mod tests {
             let r = sizing::size_dynamic(&args(&["run", "q"]), "Qwen3.8-2.4T-A95B", &table, None, &mc(&text), "Qwen3.5", &devs, Some(m.ram_free), &|_| false)
                 .unwrap_err();
             assert!(r.what.contains("keeps the experts its GPUs do not hold in the computer's memory: they take"), "{preset}: {}", r.what);
-            for level in ["kestrel", "swift", "wren"] {
+            for level in ["kestrel", "linnet", "wren"] {
                 let layout = crate::levels::layout_of(level).unwrap();
                 let model = dir.to_str().unwrap();
                 let r = sizing::lossy_plan_with(&args(&["run", model]), model, layout, &mc(&text), None, devs[0].free, &devs[0].name, None, devs[0].host)

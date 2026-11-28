@@ -1381,7 +1381,7 @@ mod tests {
             made_by: None,
             family: "test",
             requested: None,
-            level: "swift",
+            level: "linnet",
             layout: Layout::Int5,
             hidden: 8,
             vocab: 100,
@@ -1544,15 +1544,15 @@ mod tests {
     fn levels_tags_and_rates() {
         assert_eq!(
             (level_of(Layout::Int5), level_of(Layout::Int6), level_of(Layout::Int4H), level_of(Layout::Hummingbird), level_of(Layout::Tiered)),
-            ("swift", "kestrel", "wren", "hummingbird", "penguin")
+            ("linnet", "kestrel", "wren", "hummingbird", "penguin")
         );
         assert_eq!(
-            (layout_of("swift"), layout_of("i6"), layout_of("hb"), layout_of("mma"), layout_of("x")),
+            (layout_of("linnet"), layout_of("i6"), layout_of("hb"), layout_of("mma"), layout_of("x")),
             (Some(Layout::Int5), Some(Layout::Int6), Some(Layout::Hummingbird), Some(Layout::Tiered), None)
         );
-        assert_eq!(split_tag("Qwen/Qwen3.5-9B:swift"), ("Qwen/Qwen3.5-9B", Some("swift".to_string())));
+        assert_eq!(split_tag("Qwen/Qwen3.5-9B:linnet"), ("Qwen/Qwen3.5-9B", Some("linnet".to_string())));
         assert_eq!(split_tag("/a/b:c/d"), ("/a/b:c/d", None));
-        assert_eq!(split_tag("glyd/Qwen3.5-9B-swift"), ("glyd/Qwen3.5-9B-swift", None));
+        assert_eq!(split_tag("glyd/Qwen3.5-9B-linnet"), ("glyd/Qwen3.5-9B-linnet", None));
         let v = json::parse(r#"{"rates":{"vram_read":{"gbs":700.5},"vram_product":{"gbs":600},"link_h2d_pinned":{"gbs":25.0},"ram_read":{"gbs":40},"ssd_read_16":{"gbs":6.5}}}"#).unwrap();
         assert_eq!(Rates::from_json(&v), Rates { vram: 600e9, link: 25e9, ram: 40e9, ssd: 6.5e9 });
         let v = json::parse(r#"{"rates":{"vram_read":{"gbs":700.5}}}"#).unwrap();

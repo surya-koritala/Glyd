@@ -21,11 +21,11 @@ Each model here comes at a level, the tag after its name in `glyd run`, and its 
 | :-- | :-- |
 | penguin | lossless: every weight decodes to its bf16 value (the default) |
 | kestrel | Glyd's own quantization, about 6.5 bits per weight |
-| swift | Glyd's own quantization, about 5.5 bits per weight |
+| linnet | Glyd's own quantization, about 5.5 bits per weight |
 
 ```bash
 curl -LsSf https://getglyd.com/install.sh | sh
-glyd run Qwen/Qwen3.8-27B:swift
+glyd run Qwen/Qwen3.8-27B:linnet
 ```
 
 ```bash

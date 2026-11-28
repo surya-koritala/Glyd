@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn only_plain_names_reach_a_shell_line() {
-        for ok in ["Qwen/Qwen3-8B", "Qwen/Qwen3.5-9B:swift", "/home/u/models/Qwen3-8B", "a_b@c+d"] {
+        for ok in ["Qwen/Qwen3-8B", "Qwen/Qwen3.5-9B:linnet", "/home/u/models/Qwen3-8B", "a_b@c+d"] {
             assert!(plain_name(ok), "{ok}");
         }
         for bad in ["", "x'; rm -rf ~ #", "a b", "$(id)", "`id`", "a\nb", "x\"y", "a;b", "a|b", "a&b", "a>b"] {

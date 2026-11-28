@@ -3,7 +3,7 @@
 //! activation, whether they work in a latent (with projections of the block's own where the latent has no norm) and whether each one's output is normed, and
 //! whether the shared expert is gated; the roles say where each matrix is, a tensor (or its rows) an expert or one tensor of them all stacked. The experts and
 //! the shared expert are held at the level asked: a lossless level's stacked and packed as one matrix each (the packer's check: it decodes to the weights bit
-//! for bit), a block level's (kestrel, swift, wren) an expert at a time, relu squared experts' second matrices in the level's row layout (the sparse product);
+//! for bit), a block level's (kestrel, linnet, wren) an expert at a time, relu squared experts' second matrices in the level's row layout (the sparse product);
 //! a glyd-v7 directory's packs as saved. A stage can hold them otherwise (`Held`): this GPU's slice of each expert's rows where every layer is across a group
 //! of GPUs, a hummingbird directory's codebook rows, the expert cache's places.
 
@@ -101,7 +101,7 @@ pub trait NhHost {
     /// # Safety
     /// Live device buffers of those sizes, on the engine's stream.
     unsafe fn lin(&self, w: &Mat, x: u64, m: usize, y: u64) -> Result<()>;
-    /// y [m, n] = x [m, k] w^T in bf16, w a block's own rows on the GPU (rows it decodes for a call: Condor's shared expert).
+    /// y [m, n] = x [m, k] w^T in bf16, w a block's own rows on the GPU (rows it decodes for a call: Ibis's shared expert).
     ///
     /// # Safety
     /// Live device buffers of those sizes, on the engine's stream.
@@ -123,11 +123,18 @@ fn normed(m: &kinds::Moe) -> Option<kinds::Norm> {
 /// other operations' (`MoeOp`'s variants, a family's own block), a logit scale the normed experts' alone.
 pub fn cfg(m: &kinds::Moe, hidden: usize, inter: usize) -> Result<MoeCfg> {
     let r = &m.router;
+    r.one_scored().map_err(|e| e.context("experts"))?;
     if r.hash || r.groups.is_some() {
         return err(format!("experts of {m:?}: hash routing and grouped choices are not the resident block's"));
     }
     if r.logit_scale != 1.0 && normed(m).is_none() {
         return err(format!("experts of {m:?}: a logit scale is the router's of experts whose outputs are normed"));
+    }
+    // (the SwiGLU limit the kernels compute holds the gate before its activation; the limit on the activated gate is refused by its name)
+    let limit = kinds::Clamp::before(m.expert.clamp).map_err(|e| e.context(&format!("experts of {:?}", m.expert)))?;
+    // (the gpt-oss SwiGLU, the experts' or the shared expert's: refused by its name)
+    if let Some(why) = m.expert.not_run().or(m.shared.and_then(|s| s.not_run())) {
+        return err(format!("experts of {:?}: {why}", m.expert));
     }
     let scoring = match r.score {
         RouterScore::Softmax => Scoring::Softmax,
@@ -142,7 +149,7 @@ pub fn cfg(m: &kinds::Moe, hidden: usize, inter: usize) -> Result<MoeCfg> {
     }
     let act = match (m.expert.act, m.expert.gated, normed(m)) {
         (kinds::Act::Silu, true, Some(n)) if n.kind == NormKind::Rms && n.weight == NormWeight::InputPlusOne && m.shared.is_none() => {
-            Act::SwiGlu { limit: Some(m.expert.clamp.unwrap_or(f32::INFINITY)) }
+            Act::SwiGlu { limit: Some(limit.unwrap_or(f32::INFINITY)) }
         }
         (_, _, Some(n)) => {
             return err(format!(
@@ -150,7 +157,7 @@ pub fn cfg(m: &kinds::Moe, hidden: usize, inter: usize) -> Result<MoeCfg> {
                 m.expert
             ))
         }
-        (kinds::Act::Silu, true, None) => Act::SwiGlu { limit: m.expert.clamp },
+        (kinds::Act::Silu, true, None) => Act::SwiGlu { limit },
         (kinds::Act::GeluTanh, true, None) if m.expert.clamp.is_none() => Act::GeGlu,
         (kinds::Act::Relu2, false, None) if m.expert.clamp.is_none() => Act::Relu2,
         (kinds::Act::Situ { beta, linear }, true, None) if m.expert.clamp.is_none() => Act::Situ { beta, linear },
@@ -614,7 +621,7 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
     }
     let lossless = matches!(level, Layout::Tiered | Layout::Twelve);
     if !lossless && !matches!(level, Layout::Int6 | Layout::Int5 | Layout::Int4) {
-        return err(format!("the experts are held at the penguin, kestrel, swift and wren levels: {} is asked", level.name()));
+        return err(format!("the experts are held at the penguin, kestrel, linnet and wren levels: {} is asked", level.name()));
     }
     let v7 = crate::weights::v7_manifest(&ck.dir)?;
     if let Some((got, _)) = &v7 {
@@ -1652,7 +1659,18 @@ mod tests {
     fn qwen() -> Moe {
         let mlp = Mlp { act: kinds::Act::Silu, gated: true, bias: false, clamp: None };
         Moe {
-            router: Router { score: RouterScore::Softmax, logit_scale: 1.0, bias: false, groups: None, top_k: 10, renorm: true, scale: 1.0, hash: false },
+            router: Router {
+                score: RouterScore::Softmax,
+                logit_scale: 1.0,
+                bias: false,
+                groups: None,
+                top_k: 10,
+                renorm: true,
+                scale: 1.0,
+                hash: false,
+                routers: 1,
+                expert_scale: false,
+            },
             experts: 512,
             expert: mlp,
             shared: Some(mlp),
@@ -1819,7 +1837,7 @@ mod tests {
         c.check().unwrap();
         let mut g = qwen();
         g.router = Router { score: RouterScore::Sigmoid, bias: true, scale: 2.5, top_k: 8, ..g.router };
-        (g.expert.clamp, g.shared, g.shared_gate) = (Some(10.0), None, false);
+        (g.expert.clamp, g.shared, g.shared_gate) = (Some(kinds::Clamp::Gate(10.0)), None, false);
         let c = super::cfg(&g, 4096, 2048).unwrap();
         assert_eq!((c.router.scoring, c.router.scale, c.router.bf16_logits, c.act), (Scoring::Sigmoid, 2.5, false, Act::SwiGlu { limit: Some(10.0) }));
     }
@@ -1900,6 +1918,14 @@ mod tests {
                 m.shared = Some(m.expert);
             },
             "SwiGLU",
+        );
+        refused(
+            &|m| {
+                m.expert.act = kinds::Act::SwigluOai { alpha: 1.702 };
+                m.expert.clamp = Some(kinds::Clamp::Gate(7.0));
+                m.shared = Some(m.expert);
+            },
+            kinds::Act::SWIGLU_OAI_NOT_RUN,
         );
     }
 
@@ -2019,7 +2045,7 @@ mod tests {
             assert!(said.contains("packed in"), "{said}");
         }
         let said = super::held(m, roles, hid, &ck, Layout::Int3, None).err().unwrap().msg;
-        assert!(said.contains("penguin, kestrel, swift and wren levels"), "{said}");
+        assert!(said.contains("penguin, kestrel, linnet and wren levels"), "{said}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

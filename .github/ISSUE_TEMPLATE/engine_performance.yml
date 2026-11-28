@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        A number needs a machine and a command. Run the same command twice and report the second run, so the model's first load is not in it. For Condor (the big-MoE-on-one-card path) use the "Condor: bench result or slow speed" form.
+        A number needs a machine and a command. Run the same command twice and report the second run, so the model's first load is not in it. For Ibis (the big-MoE-on-one-card path) use the "Ibis: bench result or slow speed" form.
   - type: input
     id: version
     attributes:
@@ -25,7 +25,7 @@ body:
     id: model
     attributes:
       label: Model and level
-      description: As typed, e.g. `Qwen/Qwen3.5-9B:swift`, and the context size (`--ctx`) if you set it.
+      description: As typed, e.g. `Qwen/Qwen3.5-9B:linnet`, and the context size (`--ctx`) if you set it.
     validations:
       required: true
   - type: textarea

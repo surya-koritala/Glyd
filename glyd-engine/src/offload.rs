@@ -769,7 +769,7 @@ pub fn cgroup_free(limit: u64, current: u64, stat: &str) -> u64 {
 }
 
 /// The host memory a process can still take: what /proc/meminfo says is available, or less where a control group (v2 or v1) limits it below that (`cgroup_free`). None where the system does not say (not Linux).
-/// The one probe of it (#137: Condor's server had its own): every path that plans memory reads it here. GLYD_MEMAVAIL_GB (a development build's): a test's stand-in for a smaller computer.
+/// The one probe of it (#137: Ibis's server had its own): every path that plans memory reads it here. GLYD_MEMAVAIL_GB (a development build's): a test's stand-in for a smaller computer.
 pub fn host_memory() -> Option<u64> {
     if let Some(g) = crate::tune!("GLYD_MEMAVAIL_GB").and_then(|v| v.parse::<f64>().ok()) {
         return Some((g * (1u64 << 30) as f64) as u64);
@@ -4241,7 +4241,7 @@ mod tests {
         assert_eq!(out, [5, 0, -1, -1]);
     }
 
-    /// The places and memory a cache is sized to: Nemotron 3 Super's experts at the swift level are 3,784,704 bytes (two matrices of 2,688 steps of 640 bytes and 172,032 of scales apiece) in 40 layers of 512.
+    /// The places and memory a cache is sized to: Nemotron 3 Super's experts at the linnet level are 3,784,704 bytes (two matrices of 2,688 steps of 640 bytes and 172,032 of scales apiece) in 40 layers of 512.
     /// The places a layer of a budget are the one expert-cache rule's (src/plan.rs `sizing::expert_cache_with`), as every route plans them.
     #[test]
     fn the_budget_is_places_a_layer() {

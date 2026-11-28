@@ -299,6 +299,46 @@ fn mask_numbers(name: &str) -> (String, Option<usize>, Option<usize>) {
     (out, layer, expert)
 }
 
+/// A release's recorded header (tests/fixtures/headers/NAME.json, and what `glyd-engine intake --record` writes): the files the Hub listed (path, bytes), the
+/// index's total, the config.json's text and the table of tensors, compact. Read by ranges: the files' headers and the small files, no weights.
+pub fn header_record(hub: &hub::Hub, remote: &hub::Remote, table: &Table) -> serde_json::Value {
+    let groups = table.compact();
+    let listed: Vec<serde_json::Value> =
+        remote.files.iter().filter(|e| e.path.ends_with(".safetensors")).map(|e| serde_json::json!({"path": e.path, "bytes": e.size})).collect();
+    let index = hub.text(&remote.repo, &remote.commit, "model.safetensors.index.json").ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+    let config = hub.text(&remote.repo, &remote.commit, "config.json").unwrap_or_default();
+    serde_json::json!({
+        "repo": remote.repo, "commit": remote.commit, "listed_safetensors": listed,
+        // (a total some indexes write as a float: 4892365451008.0)
+        "index_total_size": index.as_ref().and_then(|i| i["metadata"]["total_size"].as_u64().or_else(|| i["metadata"]["total_size"].as_f64().map(|t| t as u64))),
+        "config": config,
+        "groups": groups.iter().map(|g| serde_json::json!({"mask": g.mask, "dtype": g.dtype, "shape": g.shape, "bytes": g.bytes, "layers": g.layers, "experts": g.experts})).collect::<Vec<_>>(),
+    })
+}
+
+/// The groups of a recorded header (`header_record`); None where `v` is not one.
+pub fn groups_of(v: &serde_json::Value) -> Option<Vec<Group>> {
+    v["groups"]
+        .as_array()?
+        .iter()
+        .map(|g| {
+            Some(Group {
+                mask: g["mask"].as_str()?.to_string(),
+                dtype: g["dtype"].as_str()?.to_string(),
+                shape: g["shape"].as_array()?.iter().map(|x| x.as_u64()).collect::<Option<Vec<u64>>>()?,
+                bytes: g["bytes"].as_u64()?,
+                layers: g["layers"].as_array()?.iter().map(|x| x.as_u64().map(|l| l as usize)).collect::<Option<Vec<usize>>>()?,
+                experts: g["experts"].as_u64()? as usize,
+            })
+        })
+        .collect()
+}
+
+/// A tensor's name with its layer and expert numbers masked (`model.layers.{L}.mlp.experts.{E}.w1.weight`): the form a recorded header groups by.
+pub fn masked(name: &str) -> String {
+    mask_numbers(name).0
+}
+
 impl Table {
     /// The table as groups (`Group`), in a fixed order.
     pub fn compact(&self) -> Vec<Group> {
@@ -493,24 +533,13 @@ pub(crate) mod tests {
     ];
 
     fn groups_of(v: &serde_json::Value) -> Vec<Group> {
-        v["groups"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|g| Group {
-                mask: g["mask"].as_str().unwrap().to_string(),
-                dtype: g["dtype"].as_str().unwrap().to_string(),
-                shape: g["shape"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect(),
-                bytes: g["bytes"].as_u64().unwrap(),
-                layers: g["layers"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect(),
-                experts: g["experts"].as_u64().unwrap() as usize,
-            })
-            .collect()
+        super::groups_of(v).unwrap()
     }
 
     /// Records the headers of the recent models by ranges from the Hub (the files' headers and the small files; no weights) into tests/fixtures/headers:
     /// `GLYD_RECORD_HEADERS=1 cargo test -p glyd-engine --lib -- --ignored record_header_fixtures` (or GLYD_RECORD_HEADERS=REPO,REPO: those of the list alone).
-    /// Recorded and committed so far: nine of the ten repos listed below (gemma-4-12B-it, Kimi-K3, DeepSeek-V4-Flash-0731, Qwen3.8-27B, and
+    /// Recorded and committed so far: ten of the eleven repos listed below (Nemotron 3.5 Lightning, the Nemotron-H layout's release whose config says
+    /// `mtp_layers_block_type`; gemma-4-12B-it, Kimi-K3, DeepSeek-V4-Flash-0731, Qwen3.8-27B, and
     /// DeepSeek-V4.1-Flash-1017, the family's newest release, whose config, index and inference code are the first DeepSeek-V4.1-Flash's byte for byte;
     /// #333's Kimi-K3.1-Pro and Qwen3.8-2.4T-A95B; and GLM-5.3 and DeepSeek-V4-Flash's DSpark drafter). Muse Spark's repo is gated: its header is
     /// recorded with a token and kept out of the tree, so `runtime::describe_tests::every_recorded_release_describes_or_says_what_it_lacks`, which holds each
@@ -536,6 +565,7 @@ pub(crate) mod tests {
             "Qwen/Qwen3.8-2.4T-A95B",
             "deepseek-ai/DeepSeek-V4.1-Flash-1017",
             "deepseek-ai/DeepSeek-V4-Flash-DSpark",
+            "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
         ] {
             if !only.is_empty() && !only.contains(&repo) {
                 continue;
@@ -552,17 +582,8 @@ pub(crate) mod tests {
             };
             let groups = table.compact();
             assert_eq!(Table::expand(&groups), table, "{repo}: the compact table gives the table back");
-            let listed: Vec<serde_json::Value> =
-                remote.files.iter().filter(|e| e.path.ends_with(".safetensors")).map(|e| serde_json::json!({"path": e.path, "bytes": e.size})).collect();
-            let index = hub.text(repo, &remote.commit, "model.safetensors.index.json").ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
-            let config = hub.text(repo, &remote.commit, "config.json").unwrap_or_default();
-            let v = serde_json::json!({
-                "repo": repo, "commit": remote.commit, "listed_safetensors": listed,
-                // (a total some indexes write as a float: 4892365451008.0)
-                "index_total_size": index.as_ref().and_then(|i| i["metadata"]["total_size"].as_u64().or_else(|| i["metadata"]["total_size"].as_f64().map(|t| t as u64))),
-                "config": config,
-                "groups": groups.iter().map(|g| serde_json::json!({"mask": g.mask, "dtype": g.dtype, "shape": g.shape, "bytes": g.bytes, "layers": g.layers, "experts": g.experts})).collect::<Vec<_>>(),
-            });
+            let v = header_record(&hub, &remote, &table);
+            let listed = v["listed_safetensors"].as_array().unwrap();
             let name = repo.rsplit('/').next().unwrap();
             std::fs::write(out.join(format!("{name}.json")), serde_json::to_string(&v).unwrap()).unwrap();
             eprintln!("{repo}: {} tensors in {} groups, {} files", table.rows.len(), groups.len(), listed.len());
