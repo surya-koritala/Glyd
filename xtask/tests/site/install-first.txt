@@ -1,0 +1,8 @@
+--- IN release.json
+\{"installScript": "x", "z": false, "release": 1}
+--- OUT release.json
+|{
+|  "installScript": "v0.36.0",
+|  "z": false,
+|  "release": "v0.36.0"
+|}

@@ -1,0 +1,9 @@
+--- IN bundle.json
+\{"schema": 
+--- ENV
+|HOME=/home/runner
+--- STDOUT
+--- STDERR
+|json.decoder.JSONDecodeError: Expecting value: line 1 column 12 (char 11)
+--- EXIT
+|1

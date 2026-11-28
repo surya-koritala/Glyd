@@ -428,11 +428,15 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/pc-job
+      # (cargo xtask: the repository's own tasks, the standard library only, built here in seconds)
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.97.1"
       # One version in Cargo's spelling (0.27.0-rc.1) and Python's (0.27.0rc1), in every file that has it
       - run: |
           bash -n gpu/vllm/acceptance.sh
-          python3 scripts/bump_version.py --check
-          python3 scripts/bump_version.py --selftest
+          cargo xtask bump-version --check
+          cargo test --locked -p xtask
           python3 tools/report/report.py --selftest
           bash scripts/check_install_verify.sh
 

@@ -9,11 +9,13 @@ readme = "README.md"
 keywords = ["compression", "storage", "s3", "zstd", "deduplication"]
 categories = ["compression"]
 license = "Apache-2.0"
-exclude = ["corpus/", "benchmarks/", "docs/codec/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/", "glyd-store/", "gpu/", "glyd-gpu/", "glyd-engine/", "glyd-gpu-py/", "ibis/", "starlings/", "fuzz/", "research/", "tools/", "cards/", "huggingface/", "ckpt/"]
+exclude = ["corpus/", "benchmarks/", "docs/codec/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/", "glyd-store/", "gpu/", "glyd-gpu/", "glyd-engine/", "glyd-gpu-py/", "ibis/", "starlings/", "fuzz/", "research/", "tools/", "cards/", "huggingface/", "ckpt/", "xtask/"]
 
 [workspace]
 members = [
     ".", "glyd-store", "glyd-gpu", "glyd-engine",
+    # the repository's own tasks (`cargo xtask`: .cargo/config.toml): the standard library only
+    "xtask",
     # Starlings (starlings/crates): edition 2024, rust-version 1.97.1 (the toolchain pinned for the whole workspace), rustfmt defaults (starlings/rustfmt.toml).
     "starlings/crates/starlings-protocol", "starlings/crates/starlings-core", "starlings/crates/starlings-adapters", "starlings/crates/starlings-cli", "starlings/crates/starlings-security",
 ]

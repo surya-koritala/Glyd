@@ -6,7 +6,7 @@ name: GPU
 on:
   push:
     branches: [main]
-    paths: ['glyd-engine/**', 'gpu/**', 'glyd-gpu/**', 'Cargo.lock', 'scripts/ci_gpu_build.sh', 'scripts/ci_restore_mtimes.py', '.github/workflows/gpu*.yml', 'tests/clients/**']
+    paths: ['glyd-engine/**', 'gpu/**', 'glyd-gpu/**', 'Cargo.lock', 'scripts/ci_gpu_build.sh', 'xtask/src/ci_*.rs', '.github/workflows/gpu*.yml', 'tests/clients/**']
   pull_request:
     types: [labeled, synchronize]
   workflow_dispatch:

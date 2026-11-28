@@ -1,3 +1,7 @@
+# The repository's own tasks (xtask/): `cargo xtask bump-version 0.26.0`
+[alias]
+xtask = "run --quiet --package xtask --"
+
 # Windows builds take SSE4.1 (every x86-64 CPU since 2008 has it, the host of any card the engine supports among them): without it
 # f32::round_ties_even is a call to a software routine there (Linux's glibc has a fast one), and a load's packing of the always-on
 # matrices took 513 s instead of 16.7 s on an AWS EPYC 7R13 (2026-10-18), with the same answers.

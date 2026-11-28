@@ -30,7 +30,7 @@ bird: penguin, kestrel, linnet, wren, hummingbird.
 
 ## Release day (one repository: surya-koritala/Glyd)
 
-1. `scripts/bump_version.py X.Y.Z` (the four Cargo.toml and their Cargo.lock entries, both pyproject.toml and `__init__.py`, both installers' pins), CHANGELOG `## Unreleased` → `## vX.Y.Z`,
+1. `cargo xtask bump-version X.Y.Z` (the four Cargo.toml and their Cargo.lock entries, both pyproject.toml and `__init__.py`, both installers' pins), CHANGELOG `## Unreleased` → `## vX.Y.Z`,
    with every `changelog.d/*.md` entry put under it and the files removed.
    PR to main, CI green.
 2. `scripts/release_ready.sh X.Y.Z` on the merge commit, then tag `vX.Y.Z` there, push the tag, and right away

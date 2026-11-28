@@ -1,0 +1,36 @@
+--- IN bundle.json
+|{
+| "schema": "x",
+| "ok": 0,
+| "version": "0.35.0",
+| "checks": [
+|  {
+|   "id": "backend-cuda",
+|   "status": "fail",
+|   "found": "none",
+|   "fix": null
+|  }
+| ],
+| "gpus": null,
+| "sample_plan": {
+|  "level": null
+| },
+| "paths": "/home/runner"
+\}
+--- ENV
+|HOME=/home/runner
+|GLYD_API_KEY=none
+--- STDOUT
+|1 checks, GPU None, sample plan None
+|the bundle is not what it should be:
+|  schema x
+|  not ok: backend-cuda: none
+|  CUDA: none
+|  no GPU in the bundle
+|  the sample plan does not load here: {'level': None}
+|  the home folder is in the bundle
+|  a secret is in the bundle
+|  backend-cuda fails with no fix
+--- STDERR
+--- EXIT
+|1

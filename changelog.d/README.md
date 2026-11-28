@@ -7,5 +7,5 @@ One file per pull request holds that pull request's CHANGELOG entry, so two pull
   what changed and the numbers where there are some.
 - Don't edit CHANGELOG.md's `## Unreleased` section in a pull request.
 
-At release, `scripts/bump_version.py X.Y.Z` puts every entry here under the release's heading in CHANGELOG.md, newest
+At release, `cargo xtask bump-version X.Y.Z` puts every entry here under the release's heading in CHANGELOG.md, newest
 first (by the commit that added each file), and removes the files. This README stays.

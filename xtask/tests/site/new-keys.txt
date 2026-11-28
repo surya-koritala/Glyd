@@ -1,0 +1,30 @@
+--- IN release.json
+\{"highlights": ["caf\u00e9 \ud834\udd1e \"q\" \\ \/ \t"], "nested": {"a": {"b": [[], {}, [1, [2, {"c": true}]]]}}, "big": 12345678901234567890, "small": 1e-7, "neg": -0.0}
+--- OUT release.json
+|{
+|  "highlights": [
+|    "café 𝄞 \"q\" \\ / \t"
+|  ],
+|  "nested": {
+|    "a": {
+|      "b": [
+|        [],
+|        {},
+|        [
+|          1,
+|          [
+|            2,
+|            {
+|              "c": true
+|            }
+|          ]
+|        ]
+|      ]
+|    }
+|  },
+|  "big": 12345678901234567890,
+|  "small": 1e-07,
+|  "neg": -0.0,
+|  "release": "v0.36.0",
+|  "installScript": "v0.36.0"
+|}

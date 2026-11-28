@@ -1,0 +1,30 @@
+--- ARGS
+|--check
+|0.35.1
+--- STDOUT
+--- STDERR
+|version files disagree:
+|  Cargo.toml: 0.35.0, expected 0.35.1
+|  glyd-store/Cargo.toml: 0.35.0, expected 0.35.1
+|  glyd-store/Cargo.toml: 0.35.0, expected 0.35.1
+|  Cargo.toml: 0.35.0, expected 0.35.1
+|  glyd-gpu/Cargo.toml: 0.35.0, expected 0.35.1
+|  glyd-engine/Cargo.toml: 0.35.0, expected 0.35.1
+|  Cargo.lock: 0.35.0, expected 0.35.1
+|  Cargo.lock: 0.35.0, expected 0.35.1
+|  Cargo.lock: 0.35.0, expected 0.35.1
+|  Cargo.lock: 0.35.0, expected 0.35.1
+|  bindings/python/pyproject.toml: 0.35.0, expected 0.35.1
+|  bindings/python/pyproject.toml: 0.35.0, expected 0.35.1
+|  bindings/python/pyproject.toml: 0.35.0, expected 0.35.1
+|  bindings/python/glyd/__init__.py: 0.35.0, expected 0.35.1
+|  glyd-gpu-py/pyproject.toml: 0.35.0, expected 0.35.1
+|  glyd-gpu-py/glyd_gpu/__init__.py: 0.35.0, expected 0.35.1
+|  scripts/install.sh: 0.35.0, expected 0.35.1
+|  scripts/install.ps1: 0.35.0, expected 0.35.1
+|  ROADMAP.md: does not name v0.35.1 (## Where it stands (v0.35.0, 2026-11-20))
+|  docs/index.html: does not name v0.35.1 (Rust, C ABI, CLI; v0.35.0, November 2026.)
+|  CHANGELOG.md: no heading '## v0.35.1 — DATE' (still Unreleased?)
+|(python3 scripts/bump_version.py VERSION sets them all)
+--- EXIT
+|1

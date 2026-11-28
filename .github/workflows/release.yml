@@ -11,7 +11,7 @@ name: Release (glyd)
 #
 # What publishes: a pushed v* tag, or a dispatch whose `tag` is one, that exists, whose
 # commit is on main or a release-X.Y.Z branch, whose version files all say the tag's version
-# (scripts/bump_version.py --check TAG), and on whose exact commit CI (ci.yml) has succeeded in a
+# (cargo xtask bump-version --check TAG), and on whose exact commit CI (ci.yml) has succeeded in a
 # push or a run by hand (a pull request's run tests a merge, not the commit). Tag a commit after
 # its CI passed (scripts/release_ready.sh VERSION says), an rc too: tag a main commit whose own CI
 # run passed. A tag whose commit has no passed run fails here: run CI on the tag (gh workflow run
@@ -65,6 +65,10 @@ jobs:
         with:
           fetch-depth: 0 # every branch and tag: which branches hold the tag's commit
           persist-credentials: false
+      # (cargo xtask bump-version --check below: the repository's own tasks, the standard library only, built here in seconds)
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.97.1"
       - name: Plan
         id: plan
         env:
@@ -82,7 +86,7 @@ jobs:
           if [ -z "$tag" ]; then
             # no tag: build this ref as it stands, publish nothing
             sha="$GITHUB_SHA"; label="dev-${GITHUB_SHA:0:7}"; publish=false
-            python3 scripts/bump_version.py --check
+            cargo xtask bump-version --check
           else
             [[ "$tag" =~ ^v[0-9][0-9A-Za-z._-]*$ ]] || fail "$(printf '%q' "$tag") is not a v* version tag"
             git rev-parse -q --verify "refs/tags/$tag^{commit}" > /dev/null || fail "$tag is not a tag of this repository"
@@ -91,8 +95,8 @@ jobs:
             [ -n "$on" ] || fail "$tag is at $sha, which is on neither main nor a release-* branch"
             echo "$tag is $sha, on: $(echo "$on" | tr '\n' ' ')"
             git checkout -q --detach "$sha"
-            [ -f scripts/bump_version.py ] || fail "$tag has no scripts/bump_version.py, which checks its version files"
-            python3 scripts/bump_version.py --check "$tag"
+            [ -f xtask/Cargo.toml ] || fail "$tag has no xtask/, which checks its version files"
+            cargo xtask bump-version --check "$tag"
             label="$tag"; publish=true
           fi
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail "$sha is not a commit"

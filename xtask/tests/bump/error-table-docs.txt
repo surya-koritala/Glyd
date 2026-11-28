@@ -1,0 +1,31 @@
+--- ARGS
+|0.36.0
+|--date
+|2031-02-03
+--- IN ROADMAP.md
+|# Roadmap
+|
+|## Where it stands (v0.35.0)
+--- IN changelog.d/a-thing.md
+|- A thing.
+--- IN changelog.d/b-other.md
+|- Another thing.
+|
+--- IN changelog.d/c-multi.md
+|
+|- Third, with numbers: 1.5x.
+|  A second line of it.
+|- Fourth.
+--- IN changelog.d/d-empty.md
+--- IN changelog.d/e-space.md
+| 
+|	
+--- IN changelog.d/f-nonl.md
+\- No newline at its end.
+--- IN changelog.d/notes.txt
+|not an entry
+--- STDOUT
+--- STDERR
+|ROADMAP.md: 0 matches of '^## Where it stands \\(v(?P<v>[\\d.]+), \\d{4}-\\d{2}-\\d{2}\\)$', expected 1 (this script's table is out of date)
+--- EXIT
+|1

@@ -1,0 +1,87 @@
+--- ARGS
+|0.36.0rc1
+|--date
+|2031-02-03
+--- OUT Cargo.lock
+|version = 4
+|
+|[[package]]
+|name = "glyd"
+|version = "0.36.0-rc.1"
+|
+|[[package]]
+|name = "glyd-engine"
+|version = "0.36.0-rc.1"
+|
+|[[package]]
+|name = "glyd-gpu"
+|version = "0.36.0-rc.1"
+|
+|[[package]]
+|name = "glyd-preflate"
+|version = "0.7.6"
+|
+|[[package]]
+|name = "glyd-store"
+|version = "0.36.0-rc.1"
+|
+|[[package]]
+|name = "xtask"
+|version = "0.0.0"
+--- OUT Cargo.toml
+|[package]
+|name = "glyd"
+|version = "0.36.0-rc.1"
+|edition = "2021"
+|
+|[dependencies]
+|glyd-engine = { path = "glyd-engine", version = "0.36.0-rc.1", optional = true }
+|libc = { version = "0.2" }
+--- OUT bindings/python/glyd/__init__.py
+|"""glyd"""
+|__version__ = "0.36.0rc1"
+--- OUT bindings/python/pyproject.toml
+|[project]
+|name = "glyd"
+|version = "0.36.0rc1"
+|
+|[project.optional-dependencies]
+|gpu = ["glyd-gpu[gpu]==0.36.0rc1"]
+|vllm = ["glyd-gpu[vllm]==0.36.0rc1"]
+--- OUT glyd-engine/Cargo.toml
+|[package]
+|name = "glyd-engine"
+|version = "0.36.0-rc.1"
+|
+|[dependencies]
+|  version = "9.9.9"
+--- OUT glyd-gpu-py/glyd_gpu/__init__.py
+|__version__ = "0.36.0rc1"
+--- OUT glyd-gpu-py/pyproject.toml
+|[project]
+|name = "glyd-gpu"
+|version = "0.36.0rc1"
+--- OUT glyd-gpu/Cargo.toml
+|[package]
+|name = "glyd-gpu"
+|version = "0.36.0-rc.1"
+--- OUT glyd-store/Cargo.toml
+|[package]
+|name = "glyd-store"
+|version = "0.36.0-rc.1"
+|
+|[dependencies]
+|glyd = { version = "0.36.0-rc.1", path = ".." }
+--- OUT scripts/install.ps1
+|$GlydVersion = if ($env:GLYD_VERSION) { $env:GLYD_VERSION } else { '0.36.0rc1' }
+|Write-Host $GlydVersion
+--- OUT scripts/install.sh
+|#!/bin/sh
+|GLYD_VERSION="${GLYD_VERSION:-0.36.0rc1}"
+|echo "$GLYD_VERSION"
+--- STDOUT
+|11 files set to 0.36.0-rc.1 (Cargo), 0.36.0rc1 (Python): Cargo.toml, glyd-store/Cargo.toml, glyd-gpu/Cargo.toml, glyd-engine/Cargo.toml, Cargo.lock, bindings/python/pyproject.toml, bindings/python/glyd/__init__.py, glyd-gpu-py/pyproject.toml, glyd-gpu-py/glyd_gpu/__init__.py, scripts/install.sh, scripts/install.ps1
+|a pre-release: the docs stay at the last release
+--- STDERR
+--- EXIT
+|0
