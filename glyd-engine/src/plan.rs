@@ -1444,7 +1444,7 @@ fn level_bits(level: &str, sh: &Shape, d: &Device, one_gpu_hb: bool) -> Option<(
     let b = match level {
         "penguin" => return Some((rest, experts)),
         "kestrel" => (6.5, 6.5),
-        "swift" => (5.5, 5.5),
+        "linnet" => (5.5, 5.5),
         "wren" => (4.5, 4.5),
         _ => return None,
     };
@@ -1639,7 +1639,7 @@ pub const SCHEMA: &str = "glyd-plan/1";
 /// The engine path that loads a plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// The plain dense kind (every pre-norm dense decoder the description builder's `llama` reading takes) on the executor: src/dynamic/dense.rs, at penguin, kestrel, swift and wren.
+    /// The plain dense kind (every pre-norm dense decoder the description builder's `llama` reading takes) on the executor: src/dynamic/dense.rs, at penguin, kestrel, linnet and wren.
     Qwen3,
     /// Qwen3.5, 3.6 and 3.8 dense at a lossy level.
     Qwen35,
@@ -3948,7 +3948,7 @@ pub mod sizing {
     }
 
     /// The model's config as a lossy level reads it (the Qwen3.5 layout, dense or with experts, by its description: Qwen3.5, Qwen3.6 and Qwen3.8, their config says `qwen3_5`; the Nemotron-H layout: `nemotron_h`, at the
-    /// kestrel, swift and wren levels; Gemma 4 at penguin and its lossy levels), and what it takes in `layout` of `free` bytes of GPU memory at the context asked for (else up to LOSSY_CTX, as much as fits): refused where
+    /// kestrel, linnet and wren levels; Gemma 4 at penguin and its lossy levels), and what it takes in `layout` of `free` bytes of GPU memory at the context asked for (else up to LOSSY_CTX, as much as fits): refused where
     /// it does not fit at LOSSY_MIN_CTX. A pack is sized in its own layout (`pack_layout`: Nemotron's experts alone are four-bit at wren). `c`: its config.json, parsed once; `packed`: the glyd-v7 directory the model is,
     /// where its packs' bytes are the ones it holds.
     #[cfg(test)]
@@ -4168,7 +4168,7 @@ pub mod sizing {
         let moe = MoeShape::of(&d, c);
         if let Some(Err(e)) = moe.as_ref().map(|x| x.place(layout)) {
             let fix = match layout {
-                Layout::Hummingbird => format!("Run it at the swift or kestrel level: glyd run {model}:swift"),
+                Layout::Hummingbird => format!("Run it at the linnet or kestrel level: glyd run {model}:linnet"),
                 _ => format!("Run it at kestrel: glyd run {model}:kestrel"),
             };
             return Err(Refusal::unsupported(format!("{name}: {}", e.msg), fix));
@@ -4680,7 +4680,7 @@ pub mod sizing {
                 Layout::Int4 => glyd_gpu::pack::INT4_TAG,
                 other => {
                     return crate::ffi::err(format!(
-                        "its experts are held at the kestrel, swift and wren levels on this path, not in the {} layout",
+                        "its experts are held at the kestrel, linnet and wren levels on this path, not in the {} layout",
                         other.name()
                     ))
                 }
@@ -6457,7 +6457,7 @@ mod tests {
     /// Both formats of the keys and values are lossless, so a plan takes the 12-bit pages GLYD_KV=lossless asks for only where they reserve no more than bf16
     /// (`sizing::one_gpu_pages`). One user at gemma-4-12B's whole context (262,144 tokens) reserves more in them than in bf16 (their worst case beside the tokens:
     /// a raw slab for every page of the sequence and the rows a pass unpacks): on an L4 and an RTX 4080 SUPER the plan is bf16's, its level bf16's (penguin on
-    /// the L4, as the plan was before that worst case was counted; swift on the 4080 SUPER, where the 12-bit pages were planned at kestrel in fewer bytes than
+    /// the L4, as the plan was before that worst case was counted; linnet on the 4080 SUPER, where the 12-bit pages were planned at kestrel in fewer bytes than
     /// their pools take). Eight users share the worst case: on the L4 the 12-bit pages plan more tokens each than bf16, at the same level. The plan says which.
     #[test]
     fn the_twelve_bit_pages_are_planned_only_where_they_reserve_no_more_than_bf16() {
@@ -6475,7 +6475,7 @@ mod tests {
         let plan = |lossless: bool, words: &[&str]| -> LoadPlan {
             sizing::asking_lossless(lossless, || planned(&args(words))).unwrap().plan.chosen.and_then(|c| c.load).expect("a plan")
         };
-        for (preset, level) in [("l4", "penguin"), ("rtx4080s", "swift")] {
+        for (preset, level) in [("l4", "penguin"), ("rtx4080s", "linnet")] {
             let words = ["serve", m, "--machine", preset, "--users", "1", "--no-draft", "--context", "262144"];
             let (b, t) = (plan(false, &words), plan(true, &words));
             assert_eq!(t, b, "{preset}: one user at the whole context is planned as in bf16");
@@ -6603,7 +6603,7 @@ mod tests {
     }
 
     /// #333: Qwen3.8-2.4T-A95B on its reference hardware, eight H100s. At penguin the machine is the limit (its experts held lossless take more than its 1,800 GiB
-    /// of memory): refused with the numbers. At wren, swift and kestrel one GPU does not hold it, even with its experts in the computer's memory (88.6, 105.0 and
+    /// of memory): refused with the numbers. At wren, linnet and kestrel one GPU does not hold it, even with its experts in the computer's memory (88.6, 105.0 and
     /// 121.5 GiB of one GPU's memory): its layers are cut into stages over the eight by the dynamic route's rule (`sizing::lossy_stages`), its experts in the
     /// computer's memory and each stage's places of them, every stage within its GPU's room. `fit` prints that plan (before, each of these levels was refused);
     /// one H100 still refuses them.
@@ -6619,7 +6619,7 @@ mod tests {
         let mach = Machine::preset("8xh100").unwrap();
         let devs: Vec<Target> = mach.devices.iter().enumerate().map(|(i, d)| Target::of(d, i as i32, Some(mach.ram_free))).collect();
         let c = mc(&config);
-        for (level, layout) in [("wren", crate::weights::Layout::Int4), ("swift", crate::weights::Layout::Int5), ("kestrel", crate::weights::Layout::Int6)] {
+        for (level, layout) in [("wren", crate::weights::Layout::Int4), ("linnet", crate::weights::Layout::Int5), ("kestrel", crate::weights::Layout::Int6)] {
             let f = fit(level, "8xh100");
             assert!(f.refusal.is_none(), "{level}: {:?}", f.refusal);
             let lp = f.plan.chosen.as_ref().and_then(|c| c.load.clone()).expect("a plan");
@@ -6955,10 +6955,10 @@ mod tests {
         // Gemma 4 12B at wren (Google's QAT weights, 4.5 bits) on an RTX 4080 SUPER: 82.5
         let g = Shape::from_config(&fixture("gemma4_12b_config.json")).unwrap();
         within(&plan(&g, &m4080, Ask { level: Some("wren"), ..Default::default() }), 82.5, 0.25);
-        // Qwen3.8-27B at swift on an RTX 4090: 46.0 (the model has a draft head; the measurement ran without drafting)
+        // Qwen3.8-27B at linnet on an RTX 4090: 46.0 (the model has a draft head; the measurement ran without drafting)
         let mut q = qwen35("Qwen/Qwen3.8-27B");
         q.mtp = false;
-        within(&plan(&q, &m4090, Ask { level: Some("swift"), ..Default::default() }), 46.0, 0.25);
+        within(&plan(&q, &m4090, Ask { level: Some("linnet"), ..Default::default() }), 46.0, 0.25);
         // Qwen3.8-Flash-Next at hummingbird on an RTX 4080 SUPER with 64 GB of RAM, experts in RAM, drafting: 91 (precise mode)
         let qx = Shape::from_config(&fixture("qwen4x_config.json")).unwrap();
         let p = plan(&qx, &m4080, Ask { level: Some("hummingbird"), ..Default::default() });
@@ -7103,7 +7103,7 @@ mod tests {
     /// 2026-11-23, bench --loads 1k:1 --no-draft, the median of 3; prompts of 936 and 1,002 tokens, 128 made) and the A100 SXM4 40GB's runs at 63bdcdcb
     /// (2026-11-24, bench's gate suite with GLYD_KV=bf16, the median of 3, 128 made: one user and eight on short prompts, one at 1k and 4k; the
     /// prompts of the short loads too short to time a prompt, so their prompt rates are not kept; the rate the A100's probe measured), and the A10's
-    /// plancheck runs (15: 8 users, Qwen3.5-0.8B kestrel, gemma-4-12B wren and swift at 1k, 4k, 8k, 1k for eight and 85% of the context). Only
+    /// plancheck runs (15: 8 users, Qwen3.5-0.8B kestrel, gemma-4-12B wren and linnet at 1k, 4k, 8k, 1k for eight and 85% of the context). Only
     /// releases of the last six months: the runs of older releases measured beside them are not kept. `GLYD_WRITE_CALIB=1` writes the file anew; the other machines'
     /// `plancheck` records are added to it.
     #[test]
@@ -7133,11 +7133,11 @@ mod tests {
             (g, &gemma_sh, Kind::Gemma4, "wren", "8k:1", 7511.0, 1, 55.140277, Some(1878.440661)),
             (g, &gemma_sh, Kind::Gemma4, "wren", "1k:8", 935.0, 8, 23.383665, Some(2096.645192)),
             (g, &gemma_sh, Kind::Gemma4, "wren", "27852t:1", 25548.0, 1, 51.465418, Some(1334.308805)),
-            (g, &gemma_sh, Kind::Gemma4, "swift", "1k:1", 935.0, 1, 50.202928, Some(2182.203677)),
-            (g, &gemma_sh, Kind::Gemma4, "swift", "4k:1", 3754.0, 1, 49.525424, Some(2055.072626)),
-            (g, &gemma_sh, Kind::Gemma4, "swift", "8k:1", 7511.0, 1, 48.866016, Some(1883.56461)),
-            (g, &gemma_sh, Kind::Gemma4, "swift", "1k:8", 935.0, 8, 22.060678, Some(2095.481739)),
-            (g, &gemma_sh, Kind::Gemma4, "swift", "27852t:1", 25548.0, 1, 46.112267, Some(1340.026958)),
+            (g, &gemma_sh, Kind::Gemma4, "linnet", "1k:1", 935.0, 1, 50.202928, Some(2182.203677)),
+            (g, &gemma_sh, Kind::Gemma4, "linnet", "4k:1", 3754.0, 1, 49.525424, Some(2055.072626)),
+            (g, &gemma_sh, Kind::Gemma4, "linnet", "8k:1", 7511.0, 1, 48.866016, Some(1883.56461)),
+            (g, &gemma_sh, Kind::Gemma4, "linnet", "1k:8", 935.0, 8, 22.060678, Some(2095.481739)),
+            (g, &gemma_sh, Kind::Gemma4, "linnet", "27852t:1", 25548.0, 1, 46.112267, Some(1340.026958)),
         ];
         for (at, gpu, preset, class, cc, sms, stream, ram, tflops, source, runs) in [
             (
@@ -7367,7 +7367,7 @@ mod tests {
         let p = plan(&q9, &Machine::preset("rtx4090").unwrap(), Ask::default());
         assert_eq!((chosen(&p).level, chosen(&p).placement.clone()), ("penguin", Some(Placement::Gpu(0))));
         let p = plan(&q9, &Machine::preset("rtx4060-laptop").unwrap(), Ask::default());
-        // (the lossy engines keep 2 GiB of an 8 GB card: swift's 5.8 GiB of weights do not fit beside them, so only wren does)
+        // (the lossy engines keep 2 GiB of an 8 GB card: linnet's 5.8 GiB of weights do not fit beside them, so only wren does)
         assert!(chosen(&p).level != "penguin" && p.options[0].why.is_some(), "{p:?}");
         // (the preset's driver is CUDA 12's: a build with CUDA 13's kernels alone says what it needs; one with CUDA 12's runs on it)
         assert_eq!(
@@ -8534,7 +8534,7 @@ mod tests {
                         continue;
                     }
                     let d = &Machine::preset(preset).unwrap().devices[0];
-                    for level in ["kestrel", "swift", "wren"] {
+                    for level in ["kestrel", "linnet", "wren"] {
                         let o = f.plan.options.iter().find(|o| o.level == level).unwrap_or_else(|| panic!("{preset} {level}: no option"));
                         let lp = o.load.as_ref().unwrap_or_else(|| panic!("{preset} {level}: {:?}", o.why));
                         let layout = crate::levels::layout_of(level).unwrap();
@@ -8971,7 +8971,7 @@ mod tests {
         let f = planned(&args(&["fit", &model, "--machine", "rtx4080s", "--context", "8192"])).unwrap();
         assert!(remembered(&root, &model, f.plan.chosen.as_ref().unwrap()).unwrap().contains("a different plan"));
         // (another GPU, another level: not the same memory)
-        assert!(recall_in(&root, &model, "swift", &lp.gpu).is_none() && recall_in(&root, &model, lp.level, "NVIDIA L4").is_none());
+        assert!(recall_in(&root, &model, "linnet", &lp.gpu).is_none() && recall_in(&root, &model, lp.level, "NVIDIA L4").is_none());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -9126,7 +9126,7 @@ mod tests {
         assert_eq!(calib(0), 0, "said nothing of the GPU");
         assert_eq!(calib(planned_used + (300 << 20)), 300 << 20, "took 300 MiB more");
         assert_eq!(calib(planned_used + (5 << 30)), 1 << 30, "at most a GiB: another program's");
-        assert_eq!(calibration_in(&root, &model, "swift", &lp.gpu), 0, "another level");
+        assert_eq!(calibration_in(&root, &model, "linnet", &lp.gpu), 0, "another level");
         let _ = std::fs::remove_dir_all(&root);
         // (and it is the reserve's: the plan says the free memory as it was)
         let mut p = lp.clone();
@@ -9329,11 +9329,11 @@ mod tests {
     #[test]
     fn the_ladder_takes_its_steps_in_order_and_prices_them() {
         let dir = model_dir("ladder", "Nemotron-H", &fixture("nemotron_h_config.json"));
-        let model = format!("{}:swift", dir.to_str().unwrap());
+        let model = format!("{}:linnet", dir.to_str().unwrap());
         let f = planned(&args(&["fit", &model, "--machine", "a100-80g"])).unwrap();
         let (sh, m, fam) = (&f.shape, &f.machine, f.family);
-        // (swift's 78 GiB with its experts in the computer's memory on an 80 GB card: made whole here, the loader's answers are made up below)
-        let base = LoadPlan { experts: None, ..f.plan.chosen.as_ref().and_then(|c| c.load.clone()).expect("swift loads on 80 GB") };
+        // (linnet's 78 GiB with its experts in the computer's memory on an 80 GB card: made whole here, the loader's answers are made up below)
+        let base = LoadPlan { experts: None, ..f.plan.chosen.as_ref().and_then(|c| c.load.clone()).expect("linnet loads on 80 GB") };
         let name = dir.to_str().unwrap();
         let go = |asked: &'static str, want: usize, answers: Vec<(&'static str, Result<Option<LoadPlan>, String>)>| {
             let size = |l: &'static str, _ctx: usize| match answers.iter().find(|a| a.0 == l) {
@@ -9344,11 +9344,11 @@ mod tests {
             ladder(sh, m, fam, name, asked, want, &size)
         };
         // as asked: no step, nothing said
-        let l = go("swift", base.context, vec![("swift", Ok(Some(base.clone())))]);
+        let l = go("linnet", base.context, vec![("linnet", Ok(Some(base.clone())))]);
         assert!(l.is_as_asked() && l.steps.is_empty() && !l.needs_confirmation() && l.report().is_empty());
         // a shorter context: the loader's, said, no cost, not asked about
         let short = LoadPlan { context: 4096, ..base.clone() };
-        let l = go("swift", 32768, vec![("swift", Ok(Some(short.clone())))]);
+        let l = go("linnet", 32768, vec![("linnet", Ok(Some(short.clone())))]);
         assert_eq!(l.steps.iter().map(|s| (s.kind, s.cost_pct, s.confirm)).collect::<Vec<_>>(), vec![(StepKind::ShorterContext, 0.0, false)]);
         assert!(l.text().contains("1. shorter context: 4096 tokens where 32768 were wanted (no change in speed)"), "{}", l.text());
         // experts in the computer's memory: a cache of a few places is far slower than the GPU alone, a cache of most of them is not
@@ -9356,7 +9356,7 @@ mod tests {
             |slots: usize| crate::offload::CachePlan { layers: 40, experts: 512, slots, expert_bytes: 3 << 20, in_place: false, ram: 40 * 512 * (3 << 20) };
         let tight = LoadPlan { experts: Some(cache(26)), ..base.clone() };
         let roomy = LoadPlan { experts: Some(cache(500)), ..base.clone() };
-        let l = go("swift", base.context, vec![("swift", Ok(Some(tight)))]);
+        let l = go("linnet", base.context, vec![("linnet", Ok(Some(tight)))]);
         assert_eq!(l.steps.len(), 1);
         assert!(
             l.steps[0].kind == StepKind::ExpertsInRam && l.steps[0].cost_pct > CONFIRM_COST_PCT && l.steps[0].confirm && l.needs_confirmation(),
@@ -9364,12 +9364,12 @@ mod tests {
             l.steps
         );
         let tight_cost = l.steps[0].cost_pct;
-        let l = go("swift", base.context, vec![("swift", Ok(Some(roomy)))]);
+        let l = go("linnet", base.context, vec![("linnet", Ok(Some(roomy)))]);
         // (a cache of nearly every expert is the cheaper step, though the host and the GPU meeting in every layer still costs: the planner's calibrated sync)
         assert!(l.steps[0].cost_pct < tight_cost && l.steps[0].cost_pct > 0.0, "{:?} against {tight_cost}", l.steps);
         // a lower level where the one asked is refused: asked about, whatever it costs, after the context and the experts at that level in the order
         let lower = LoadPlan { level: "wren", context: 8192, experts: Some(cache(500)), ..base.clone() };
-        let l = go("swift", 32768, vec![("swift", Err("it needs 90 GiB".into())), ("wren", Ok(Some(lower)))]);
+        let l = go("linnet", 32768, vec![("linnet", Err("it needs 90 GiB".into())), ("wren", Ok(Some(lower)))]);
         assert_eq!(l.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ShorterContext, StepKind::ExpertsInRam, StepKind::LowerLevel]);
         assert!(l.steps[2].confirm && l.needs_confirmation() && l.plan.as_ref().unwrap().level == "wren");
         assert!(l.report().contains("it loads at the wren level") && l.report().contains("not available: the KV cache's type"), "{}", l.report());
@@ -9378,15 +9378,15 @@ mod tests {
         let at = |most: usize| {
             let b = base.clone();
             move |l: &'static str, ctx: usize| match l {
-                "swift" if ctx <= most => Ok(Some(LoadPlan { context: ctx, ..b.clone() })),
+                "linnet" if ctx <= most => Ok(Some(LoadPlan { context: ctx, ..b.clone() })),
                 "wren" => Ok(Some(LoadPlan { level: "wren", ..b.clone() })),
                 _ => Err(crate::ui::Refusal::unsupported(format!("{l} at {ctx} tokens"), "")),
             }
         };
-        let l = ladder(sh, m, fam, name, "swift", 262144, &at(65536));
-        assert_eq!(l.plan.as_ref().map(|p| (p.level, p.context)), Some(("swift", 65536)));
+        let l = ladder(sh, m, fam, name, "linnet", 262144, &at(65536));
+        assert_eq!(l.plan.as_ref().map(|p| (p.level, p.context)), Some(("linnet", 65536)));
         assert_eq!(l.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ShorterContext]);
-        let l = ladder(sh, m, fam, name, "swift", 262144, &at(4096));
+        let l = ladder(sh, m, fam, name, "linnet", 262144, &at(4096));
         assert_eq!(l.plan.as_ref().map(|p| p.level), Some("wren"), "4096 is below the floor of {PREFERRED_CTX}");
         // dense layers in the computer's memory (the dynamic route's plan, src/dense_ram.rs): a step after the experts, priced by itself (their bytes over the link, every token)
         let spread = |dense: usize, dense_bytes: u64| Spread {
@@ -9404,9 +9404,9 @@ mod tests {
             dense_bytes,
             tables: 0,
         };
-        let without = go("swift", base.context, vec![("swift", Ok(Some(LoadPlan { spread: Some(spread(0, 0)), ..base.clone() })))]);
+        let without = go("linnet", base.context, vec![("linnet", Ok(Some(LoadPlan { spread: Some(spread(0, 0)), ..base.clone() })))]);
         assert_eq!(without.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ExpertsInRam]);
-        let with = go("swift", base.context, vec![("swift", Ok(Some(LoadPlan { spread: Some(spread(2, 2 << 30)), ..base.clone() })))]);
+        let with = go("linnet", base.context, vec![("linnet", Ok(Some(LoadPlan { spread: Some(spread(2, 2 << 30)), ..base.clone() })))]);
         assert_eq!(with.steps.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![StepKind::ExpertsInRam, StepKind::DenseInRam]);
         assert_eq!(with.steps[0].cost_pct, without.steps[0].cost_pct, "the experts' step costs what it does without the dense one");
         // (2 GiB over a 25 GB/s link is 86 ms a token more: over 30% of any speed this model has on the card)
@@ -9414,10 +9414,10 @@ mod tests {
         assert!(with.text().contains("dense layers in the computer's memory: the last 2 layers' matrices (2.0 GiB) there"), "{}", with.text());
         assert_eq!(with.json()["steps"][1]["kind"], "dense_in_ram");
         // nothing loads: the first refusal, no plan
-        let l = go("swift", 32768, vec![("swift", Err("first".into())), ("wren", Err("second".into())), ("hummingbird", Err("third".into()))]);
+        let l = go("linnet", 32768, vec![("linnet", Err("first".into())), ("wren", Err("second".into())), ("hummingbird", Err("third".into()))]);
         assert!(l.plan.is_none() && l.refusal.as_ref().is_some_and(|r| r.what == "first") && l.report().contains("no step loads it (first)"));
         // a path not sized by its loader: the ladder says nothing
-        let l = go("swift", 32768, vec![("swift", Ok(None))]);
+        let l = go("linnet", 32768, vec![("linnet", Ok(None))]);
         assert!(l.plan.is_none() && l.steps.is_empty() && l.refusal.is_none());
     }
 
@@ -9600,7 +9600,7 @@ mod tests {
             let r = sizing::size_dynamic(&args(&["run", "q"]), "Qwen3.8-2.4T-A95B", &table, None, &mc(&text), "Qwen3.5", &devs, Some(m.ram_free), &|_| false)
                 .unwrap_err();
             assert!(r.what.contains("keeps the experts its GPUs do not hold in the computer's memory: they take"), "{preset}: {}", r.what);
-            for level in ["kestrel", "swift", "wren"] {
+            for level in ["kestrel", "linnet", "wren"] {
                 let layout = crate::levels::layout_of(level).unwrap();
                 let model = dir.to_str().unwrap();
                 let r = sizing::lossy_plan_with(&args(&["run", model]), model, layout, &mc(&text), None, devs[0].free, &devs[0].name, None, devs[0].host)

@@ -58,7 +58,7 @@ class CalibratedPack(unittest.TestCase):
             tiny(src)
             run(sys.executable, ROOT / 'huggingface/plan.py', src, plan, '--lossy', env={**os.environ, 'PYTHONPATH': str(ROOT / 'glyd-gpu-py')})
             seqs = torch.randint(0, 256, (16, 64), dtype=torch.int32)
-            for bits, layout, level in ((5, 'i5', 'swift'), (6, 'i6', 'kestrel')):
+            for bits, layout, level in ((5, 'i5', 'linnet'), (6, 'i6', 'kestrel')):
                 model = Qwen3_5ForConditionalGeneration.from_pretrained(src, dtype=torch.bfloat16).eval()
                 codes, out = t / f'codes{bits}', t / f'out{bits}'
                 cal = calib.quantize(model, seqs, bits, codes, calib.SOURCES)

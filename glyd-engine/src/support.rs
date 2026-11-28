@@ -204,7 +204,7 @@ pub use crate::plan::LOSSY_CTX;
 pub const DEFAULT_CTX: usize = 8192;
 
 /// Lossless, or a block level of every weight.
-const PENGUIN_LOSSY: &[&str] = &["penguin", "kestrel", "swift", "wren"];
+const PENGUIN_LOSSY: &[&str] = &["penguin", "kestrel", "linnet", "wren"];
 const NONE: &[&str] = &[];
 const PENGUIN: &[&str] = &["penguin"];
 /// Lossless, or the routed experts at hummingbird's bits (a directory `glyd-engine pack --layout hummingbird --usage` makes: src/hb_pack.rs).
@@ -248,12 +248,12 @@ pub static TABLE: [Support; 12] = [
     Support {
         family: Family::NemotronH,
         name: "Nemotron-H",
-        levels: &["penguin", "kestrel", "swift", "wren", "hummingbird"],
+        levels: &["penguin", "kestrel", "linnet", "wren", "hummingbird"],
         hummingbird_packed_only: true,
         default_ctx: None,
         max_ctx: None,
         split_levels: PENGUIN,
-        experts_in_ram_levels: &["kestrel", "swift", "wren", "hummingbird"],
+        experts_in_ram_levels: &["kestrel", "linnet", "wren", "hummingbird"],
         drafts: false,
         route: ONE_GPU,
         saves: Some(Saves { rest_at_wren: Some(crate::weights::Layout::Int6), ..SAVED }),
@@ -461,7 +461,7 @@ impl Support {
     /// layout's level is its name's (`levels::name_of`); the three-bit layout, which is no level, packs where the family runs a block level (its codes are
     /// the block levels' at three bits).
     pub fn pack_refusal(&self, layout: Layout, model: &str, name: &str) -> Option<Refusal> {
-        if layout == Layout::Int3 && ["kestrel", "swift", "wren"].iter().any(|l| self.allows(l)) {
+        if layout == Layout::Int3 && ["kestrel", "linnet", "wren"].iter().any(|l| self.allows(l)) {
             return None;
         }
         self.refusal(model, name, crate::levels::name_of(layout))
@@ -615,24 +615,24 @@ mod tests {
         let r = check(DENSE, "org/dense", "dense", "hummingbird").unwrap_err();
         assert_eq!(
             (r.what.as_str(), r.fix.as_str()),
-            ("dense (plain dense) runs at the penguin, kestrel, swift and wren levels in this engine, not hummingbird", "Run it lossless: glyd run org/dense")
+            ("dense (plain dense) runs at the penguin, kestrel, linnet and wren levels in this engine, not hummingbird", "Run it lossless: glyd run org/dense")
         );
-        assert!(check(DENSE, "org/dense", "dense", "penguin").is_ok() && check(DENSE, "org/dense", "dense", "swift").is_ok());
+        assert!(check(DENSE, "org/dense", "dense", "penguin").is_ok() && check(DENSE, "org/dense", "dense", "linnet").is_ok());
         let n = fixture("nemotron_h_config.json");
-        for l in ["penguin", "kestrel", "swift", "hummingbird"] {
+        for l in ["penguin", "kestrel", "linnet", "hummingbird"] {
             assert!(check(&n, "nvidia/N", "N", l).is_ok(), "{l}");
         }
         assert!(check(&n, "nvidia/N", "N", "wren").is_ok(), "wren runs in every build");
         // (the Qwen3.5 layout: penguin and every lossy level; never hummingbird, which is for experts)
         let q35: Value = json::parse(&fixture("qwen35_configs.json")).unwrap();
         let q38 = json::to_compact(q35.get("Qwen/Qwen3.8-27B").unwrap());
-        for l in ["penguin", "kestrel", "swift", "wren"] {
+        for l in ["penguin", "kestrel", "linnet", "wren"] {
             assert!(check(&q38, "Qwen/Qwen3.8-27B", "Qwen3.8-27B", l).is_ok(), "{l}");
         }
         assert!(check(&q38, "Qwen/Qwen3.8-27B", "Qwen3.8-27B", "hummingbird").is_err());
         assert_eq!(
             row(Family::Qwen35).split_levels,
-            ["penguin", "kestrel", "swift", "wren"],
+            ["penguin", "kestrel", "linnet", "wren"],
             "its layers cut over the GPUs at penguin and at every lossy level, as the dynamic route cuts them"
         );
         // (Qwen3.8-Flash-Next: penguin on the dynamic route, its layers cut over the GPUs as the route cuts them; hummingbird from the codes pack beside its weights,

@@ -1,7 +1,7 @@
 # glyd-engine serve on an RTX 4080 SUPER: the probe, memory and cancel, 2026-10-19
 
 The GLY-238 checks on the owner's PC (Ryzen 9 7950X3D, RTX 4080 SUPER 16 GB, driver 595.91.07): `glyd-engine serve` of
-Qwen3.5-9B at the swift level, the snapshot of glyd/Qwen3.5-9B-swift at revision 073a2132abeaa41c119678b9687092871521eb4d
+Qwen3.5-9B at the linnet level, the snapshot of glyd/Qwen3.5-9B-linnet at revision 073a2132abeaa41c119678b9687092871521eb4d
 (packed by glyd 0.29.3 from Qwen/Qwen3.5-9B c202236235762e1c871ad0ccb60c8ee5ba337b9a), `--ctx 4096`, built from commit
 86530a29 (build.txt). The run held ~/glyd-scratch/gpu.lock; another job's Python process held 1,982 MiB of the GPU
 throughout. `record.sh` is the whole run (19:10 Eastern); every file below is its output, as it came. A first run of the
@@ -31,8 +31,8 @@ after the server stopped        -                    2223
   finish_reason stop (prompt-cancel-stream.txt).
 - The process's 7,002 MiB is 338 MiB more than the engine's buffers (6,663.8 MiB): the CUDA context, the kernels' code and
   the driver's rounding, which the counters do not count (`not_counted` in info.json).
-- The same model by its Hub name and level, `glyd-engine serve Qwen/Qwen3.5-9B:swift`: the same snapshot from the cache, the
-  same 6,987,473,708 bytes, `level.requested: "swift"` (info-hubname.json); ready in 2.5 s. The base model's config.json
+- The same model by its Hub name and level, `glyd-engine serve Qwen/Qwen3.5-9B:linnet`: the same snapshot from the cache, the
+  same 6,987,473,708 bytes, `level.requested: "linnet"` (info-hubname.json); ready in 2.5 s. The base model's config.json
   came from the Hub; the directory run was offline (HF_HUB_OFFLINE=1).
 - /v1/glyd/tokenize counted 17 tokens for the prompt that chat-json.txt's usage counts as 17.
 

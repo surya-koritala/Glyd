@@ -1,4 +1,4 @@
-# Recurrent states kept at block boundaries, RTX 4080, Qwen3.5-9B at swift (2026-11-22)
+# Recurrent states kept at block boundaries, RTX 4080, Qwen3.5-9B at linnet (2026-11-22)
 
 A model with recurrent layers (Qwen3.5's Gated DeltaNet, Nemotron-H's Mamba-2) carries a sequence's whole past in its states, which are what they are after its last
 token. Until this change the description executor could go on from such a sequence only at its mark, its prompt's end, and only while the sequence was still in a slot;
@@ -11,7 +11,7 @@ blocks are held by name (#142). That is the Qwen3.5 / 3.8 layout today; Nemotron
 233.2 tokens/s in all, where they made 107.7; one conversation's later turns 0.098 to 0.125 s, where they took 0.93 s. Loads with nothing in common are as before.**
 
 Machine: a rented RTX 4080 (16 GB, driver 595.91.07, 350 W, AMD Ryzen 9 3900X), nothing else on the GPU. Engine: main 6c598eca with M2 batch 20, built by the GPU
-job's recipe (`scripts/ci_gpu_build.sh`, kernels for sm_89). Model: `Qwen/Qwen3.5-9B:swift` (6.2 GB). `bench` started the server itself (8 users, no draft model);
+job's recipe (`scripts/ci_gpu_build.sh`, kernels for sm_89). Model: `Qwen/Qwen3.5-9B:linnet` (6.2 GB). `bench` started the server itself (8 users, no draft model);
 128 new tokens a turn, temperature 0, a warm-up round and two rounds a load; no request failed. "Off" is the same binary with `GLYD_ENGINE_STATE_SNAP_MB=0` (no pool:
 the behaviour before this change), in the same session.
 

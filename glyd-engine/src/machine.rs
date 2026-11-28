@@ -139,7 +139,7 @@ pub fn engine_chosen(asked: bool) -> bool {
 pub type Entry = (&'static str, (i32, i32), &'static [&'static str]);
 
 /// The family of the Qwen3 dense models (Qwen3ForCausalLM), the one `glyd run` hands to the engine by default: the lossless levels of the others are vLLM's, and their lossy levels are the engine's by the user's asking
-/// (`:kestrel`, `:swift`), where this list is not looked at (vLLM has no lossy levels).
+/// (`:kestrel`, `:linnet`), where this list is not looked at (vLLM has no lossy levels).
 pub const QWEN3: &str = "Qwen3";
 
 /// For a path that is the engine's whatever the list (the user asked for it by name, or a lossy level): the list is not looked at, and no family is named.

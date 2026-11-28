@@ -133,7 +133,7 @@ impl Options {
 }
 
 /// A model directory (absolute, or starting with `./` or `../`), or a Hub name
-/// (`glyd/Qwen3.8-27B-swift`) that the engine fetches into the Hugging Face cache once the operator
+/// (`glyd/Qwen3.8-27B-linnet`) that the engine fetches into the Hugging Face cache once the operator
 /// agrees. A directory in the current directory never stands in for a Hub name (GLY-366).
 fn model_dir(model: &Path, engine: &Path, yes: bool) -> Result<PathBuf> {
     let text = model.to_string_lossy();

@@ -117,7 +117,7 @@ fn gib(b: u64) -> String {
     format!("{:.2} GiB", b as f64 / (1u64 << 30) as f64)
 }
 
-/// `glyd-engine stackcheck [--dirs EACH,STACKED] [--levels penguin,kestrel,swift,wren] [--places N] [--tokens N] [--scratch DIR]`: the Qwen3.5 layout's random
+/// `glyd-engine stackcheck [--dirs EACH,STACKED] [--levels penguin,kestrel,linnet,wren] [--places N] [--tokens N] [--scratch DIR]`: the Qwen3.5 layout's random
 /// model with experts (the qwen35moe case, or the two directories given: the same weights a tensor an expert's matrix and stacked, `logitsmodel ... --stacked`)
 /// held in its two forms on GPU 0: at each level its logits of a prompt and four decode steps the same bits in both, resident and through the expert cache
 /// (`--places` of a layer's experts, fewer than it has; copy mode, the resident layer's bits); and at each lossy level the save of each form (`pack::run_with`)
@@ -149,7 +149,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
             (x, y)
         }
     };
-    let levels: Vec<String> = a.flag("levels").unwrap_or("penguin,kestrel,swift,wren").split(',').map(str::to_string).collect();
+    let levels: Vec<String> = a.flag("levels").unwrap_or("penguin,kestrel,linnet,wren").split(',').map(str::to_string).collect();
     let vocab = crate::runtime::config::ModelConfig::load(&each)?.num("vocab_size").unwrap_or(1000).max(16);
     let tokens: Vec<u32> = (0..n).map(|i| ((i * 7919 + 13) % (vocab - 4) + 2) as u32).collect();
     let run = |dir: &Path, layout: Option<Layout>, cached: bool| -> Result<Vec<Vec<f32>>> {

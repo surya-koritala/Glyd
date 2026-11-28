@@ -82,7 +82,7 @@ from a folder, under Windows PowerShell 5.1. Two runs on one machine:
 | Install | 7 s | failed (the first run's install was there; not looked into: the machine stopped answering) |
 | Gemma 4 12B-it | penguin (16.9 GB pre-packed download in 108 s), ready 10 s after it, 15.26 GiB loaded of 15 planned, valid JSON | a first token, 137 s with the model already on disk |
 | Nemotron 3.5 Lightning | wren, ready 16 s after the download, 17.07 GiB of 17.2 planned, valid JSON | a first token, 166 s with the model on disk |
-| Qwen3.8-27B | fit plans swift; `glyd serve` refused it as penguin | the same |
+| Qwen3.8-27B | fit plans linnet; `glyd serve` refused it as penguin | the same |
 | Refusals | refused, but counted 8 to 14 lines | 2 lines each; GLM-5.3-Flash was downloaded to 198 GB of 328 GB, then DeepSeek and Kimi hit a full disk |
 | No Python | PASS | PASS |
 | Result | 18 PASS, 9 FAIL | 23 PASS, 4 FAIL |
@@ -92,7 +92,7 @@ What run 1's FAILs were:
   a native program's stderr lines became error records of several lines each, and `Out-String` wrapped them; and `$blocked` was the
   `$script:Blocked` counter (PowerShell's names ignore case). Fixed in `m1-gate.ps1` (run 2).
 - The engine: untagged `glyd serve Qwen/Qwen3.8-27B` loaded penguin, which Qwen3.5 to 3.8 does not run at, where `glyd fit` planned
-  swift (`load_level` asked the planner only for Gemma 4 and the dynamic families). Fixed in the engine: the planner's lossy level.
+  linnet (`load_level` asked the planner only for Gemma 4 and the dynamic families). Fixed in the engine: the planner's lossy level.
 
 What run 2 found besides:
 - The engine on Windows could not read a disk's free space (`hub::disk_free` was Linux's alone), so a download larger than the disk was not
@@ -109,7 +109,7 @@ the release's own zip from GitHub (with #515's fixes and the script's). 29 PASS,
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | Gemma 4 12B-it | penguin | 11 s | 108 s | 15.26 of 15 GiB | valid |
 | Nemotron 3.5 Lightning | wren | 13 s | 117 s | 17.07 of 17.2 GiB | valid |
-| Qwen3.8-27B | swift | 6 s | 144 s | 17.35 of 17.3 GiB | valid |
+| Qwen3.8-27B | linnet | 6 s | 144 s | 17.35 of 17.3 GiB | valid |
 
 Installed in 10 s; Qwen3.8-Flash-Next, Qwen-AgentWorld and Muse Glimmer refused as families this engine does not run, and GLM-5.3-Flash,
 DeepSeek-V4-Flash and Kimi-K3 as fitting nowhere, each in two lines and before any download; nothing called Python.

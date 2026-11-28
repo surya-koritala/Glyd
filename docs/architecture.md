@@ -49,7 +49,7 @@ Decision order (`glyd fit MODEL` prints every step; today `glyd-engine fit`):
 
 1. **Backend**: the best available device vendor; CPU if none.
 2. **Format**: the release's own format if it fits (bf16 → lossless pack; FP8/FP4 kept exactly); else the highest lossy
-   level that fits at the minimum context (kestrel 6.5 → swift 5.5 → wren 4.5 → hummingbird ~2-3 bits on experts).
+   level that fits at the minimum context (kestrel 6.5 → linnet 5.5 → wren 4.5 → hummingbird ~2-3 bits on experts).
 3. **Placement**: dense layers on the fastest tier that holds them, split across GPUs when one is not enough; MoE experts
    ranked by use, hot experts on the GPU, the rest in RAM (computed on the CPU) or on NVMe; layer ranges on other
    machines only when local tiers cannot hold the model.
@@ -63,7 +63,7 @@ flowchart TD
   A["glyd run MODEL<br/>model bytes vs free memory"] --> Q1{"Fits VRAM bit for bit?"}
   Q1 -- yes --> L["Lossless (penguin)<br/>sign+mantissa byte, exponent coded<br/>≈10.75 bits, decoded in the kernel"]
   Q1 -- no --> Q2{"Fits at a lossy level?"}
-  Q2 -- yes --> Y["kestrel 6.5 · swift 5.5 · wren 4.5 bits<br/>KL printed before download"]
+  Q2 -- yes --> Y["kestrel 6.5 · linnet 5.5 · wren 4.5 bits<br/>KL printed before download"]
   Q2 -- no --> Q3{"MoE, RAM to spare?"}
   Q3 -- yes --> C["Expert tiers (hummingbird)<br/>hot experts in VRAM, rest in RAM/NVMe<br/>CPU computes misses"]
   Q3 -- no --> Q4{"More GPUs here?"}
@@ -157,7 +157,7 @@ compute-bound standard dense/FP8/NVFP4 ops to proven vendor libraries.
 | :--- | ---: | :---: | :--- |
 | penguin (`mma`, `mma12`) | ~10.75 / ~12.04 | yes | bf16 weights bit for bit; layout chosen per GPU |
 | FP8 / FP4 / MXFP4 releases | as released | yes | kept as the release's codes; FP8 also in a ~7-bit lossless coding |
-| kestrel / swift / wren | 6.5 / 5.5 / 4.5 | no | Int6 / Int5 / Int4; wren keeps QAT 4-bit releases exactly |
+| kestrel / linnet / wren | 6.5 / 5.5 / 4.5 | no | Int6 / Int5 / Int4; wren keeps QAT 4-bit releases exactly |
 | hummingbird | ~2-3.4 on experts | no | experts' bits by use; attention 4-6 bits |
 | KV cache | 12 (bf16 16) | yes | per-model tables; the executor's pages are bf16, or 12-bit where `GLYD_KV=lossless` asks for them (where the model's attention has heads of 128, 256 or 512 channels or is a latent attention, and no draft model runs beside it) and they reserve no more than bf16 for the plan: the plan chooses and says which (`kv_format`), and the loader follows it. `kv12check` and `usercheck --kv12` hold the Qwen3.5 layout's too |
 

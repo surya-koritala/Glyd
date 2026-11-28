@@ -691,7 +691,7 @@ mod tests {
         assert!(all.iter().all(|n| names.contains(n.as_str()) && !crate::nemotron::skipped(n)), "a tensor the checkpoint lacks, or the MTP head's");
     }
 
-    /// The plan at each level on the pinned checkpoint's config: at kestrel and swift no linear names a layout (the save's holds every pack, the plan as it was); at wren the 40,960 experts' matrices (112.7 billion
+    /// The plan at each level on the pinned checkpoint's config: at kestrel and linnet no linear names a layout (the save's holds every pack, the plan as it was); at wren the 40,960 experts' matrices (112.7 billion
     /// weights) are the save's, four-bit codes, and the other 258 packs (7.84 billion) say \"i6\": six-bit codes. Qwen3.5's plan names no layout at any level.
     #[test]
     fn nemotron_plan_puts_the_experts_in_four_bit_codes_and_the_rest_in_six_at_wren() {
@@ -711,7 +711,7 @@ mod tests {
             let named = linears.iter().filter(|l| l.1.is_some()).count();
             let down = |name: &str| name.contains(".mixer.experts.") && name.ends_with(".down_proj");
             if level != Layout::Int4 {
-                // (kestrel and swift: the level's layout for every pack but the experts' down matrices, whose plan names the row layout of the level's bits)
+                // (kestrel and linnet: the level's layout for every pack but the experts' down matrices, whose plan names the row layout of the level's bits)
                 let rows = level.row_of().unwrap().name();
                 assert_eq!(named, 20_480, "{level:?}");
                 assert!(linears.iter().all(|(name, own)| *own == if down(name) { Some(rows) } else { None }), "{level:?}");
@@ -745,7 +745,7 @@ mod tests {
 
     /// A tiny NemotronH checkpoint (the random tiny model's config: Mamba-2, attention and mixture-of-experts layers, every matrix in whole blocks; with a tensor of the MTP head) packed by `run_with` at each of
     /// the three levels the engine runs: a glyd-v7 directory under the source's names, whose packs the loader's checks accept and `read_pack` reads as the packer makes them of the bf16 tensors (the fused q, k, v too),
-    /// each in the layout `pack_layout` gives it (the level's layout at kestrel and swift but for the experts' down matrices, in the row layout of its bits; at wren the experts four-bit, their down matrices in the
+    /// each in the layout `pack_layout` gives it (the level's layout at kestrel and linnet but for the experts' down matrices, in the row layout of its bits; at wren the experts four-bit, their down matrices in the
     /// four-bit row layout, and the rest six-bit, the entries naming them), and which glyd-gpu's verify decodes to the sha256 of its glyd.json. A reader that takes the level's layout for every pack refuses the packs of
     /// another layout by their tag.
     #[test]
@@ -787,7 +787,7 @@ mod tests {
                 assert!(got.data == want.data && got.b1 == want.b1 && got.b2 == want.b2 && (got.rows, got.cols) == (want.rows, want.cols), "{}", p.key);
                 assert!(matches!((got.words, want.words), (Words::Tiered { tiers: a, .. }, Words::Tiered { tiers: b, .. }) if a == b), "{}", p.key);
             }
-            // (the level's layout and the row layout of its bits at kestrel and swift, the experts' four-bit layout, its row layout and the six-bit one at wren)
+            // (the level's layout and the row layout of its bits at kestrel and linnet, the experts' four-bit layout, its row layout and the six-bit one at wren)
             assert_eq!(layouts.len(), if asked == Layout::Int4 { 3 } else { 2 }, "{layouts:?}");
             for t in c.kept() {
                 assert_eq!(saved.get(&t.name).unwrap().1.dtype, "BF16", "{}", t.name);
@@ -1229,7 +1229,7 @@ mod tests {
         crate::logits::random_model("glm", &glm).unwrap();
         crate::logits::random_model("dense", &dense).unwrap();
         let row = crate::support::row(Family::Glm);
-        for (layout, level) in [(Layout::Int6, "kestrel"), (Layout::Int5, "swift"), (Layout::Int4, "wren"), (Layout::Int4H, "wren"), (Layout::Int3, "i3")] {
+        for (layout, level) in [(Layout::Int6, "kestrel"), (Layout::Int5, "linnet"), (Layout::Int4, "wren"), (Layout::Int4H, "wren"), (Layout::Int3, "i3")] {
             let out = root.join(format!("glm-{}", layout.name()));
             let e = run_with(glm.to_str().unwrap(), &out, 2, layout, true).unwrap_err().msg;
             let want = format!(

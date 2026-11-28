@@ -7,7 +7,7 @@ Public text gives these numbers and nothing about how the codes are stored.
 |----------|--------------|----------------------------------------------|----------------------------|---------------------------------|
 | GLYD-P   | Penguin      | lossless compression of the bf16 weights      | ~10.8 (model dependent)    | yes, bit for bit                |
 | GLYD-K6  | Kestrel      | 6-bit codes, a scale per 32                   | 6.5                        | no                              |
-| GLYD-S5  | Swift        | 5-bit codes, a scale per 32                   | 5.5                        | no                              |
+| GLYD-S5  | Linnet        | 5-bit codes, a scale per 32                   | 5.5                        | no                              |
 | GLYD-W4  | Wren         | 4-bit codes, a scale per 32                   | 4.5                        | no                              |
 | GLYD-X4  | (QAT models) | exact 4-bit: a 4-bit-trained checkpoint kept bit for bit | 4.5             | yes vs the QAT release, not vs bf16 |
 | GLYD-HB3 | Hummingbird  | MoE: experts by use (precise mode)            | experts ~2.7, rest 6.5     | no                              |

@@ -12,7 +12,7 @@ Small saved checkpoints (a tiny Qwen3: one 128-wide layer, random bf16 weights f
 | `v0.33.1-mma` | `glyd pack` of release 0.33.1 | glyd-v4, tiered, lossless |
 | `v0.33.1-mma12` | the same | glyd-v3, 12-bit, lossless |
 | `v0.33.1-a` | the same | glyd-v6, candidate A (three fraction bits), lossy |
-| `v0.33.1-i6`, `-i5`, `-i4`, `-i3` | the same | glyd-v7, six, five, four and three-bit block codes (kestrel, swift, wren; i3 has no level) |
+| `v0.33.1-i6`, `-i5`, `-i4`, `-i3` | the same | glyd-v7, six, five, four and three-bit block codes (kestrel, linnet, wren; i3 has no level) |
 | `main-i6r`, `-i5r`, `-i4r` | this glyd (no release writes them yet) | glyd-v7, the block layout of the same bits, with o_proj and down_proj in the row layout (each row one input's weights) |
 | `main-hb` | this glyd, from a synthetic Hummingbird export | glyd-v7 at the level hummingbird: two experts' matrices in codebook rows (c3r at three bits, c2r at two), a dense linear at i6 |
 | `v1-0.27.0-mma` | glyd 0.27's packer (`glyd_gpu::v1`) | glyd-v1, the tiered layout of glyd 0.20 to 0.27 |

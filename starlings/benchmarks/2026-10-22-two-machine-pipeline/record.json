@@ -2,7 +2,7 @@
  "engine": "glyd-engine release 8c667f40 (sha256 eb3f4a5467dee751a623\u2026)",
  "gpu_library_sha256_prefix": "f15088de58f07251fdda",
  "starlings": "a0c4ce8 + examples/pipeline_tool, release, test-backend (sha256 772065f1a502e3a71d39\u2026)",
- "model": "glyd/Qwen3.5-9B-swift 073a2132abeaa41c119678b9687092871521eb4d",
+ "model": "glyd/Qwen3.5-9B-linnet 073a2132abeaa41c119678b9687092871521eb4d",
  "pods": {
   "C": "RTX 6000 Ada, US-WA-1, 10.0.26.59, coordinator + stage 0 (layers 0..16)",
   "G": "RTX 6000 Ada, US-KS-2, 10.1.54.61, stage 1 (layers 16..32)"

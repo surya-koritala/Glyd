@@ -15,7 +15,7 @@
 16	google/gemma-4-12B-it	2026-05-23	12	wren	Q4_0@google/gemma-4-12B-it-qat-q4_0-unquantized
 16	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	2026-08-01	32.9	wren	Q4_K_M
 24	Qwen/Qwen3.8-27B	2026-08-05	27	wren	Q4_K_M
-24	Qwen/Qwen3.8-27B	2026-08-05	27	swift	Q5_K_M
+24	Qwen/Qwen3.8-27B	2026-08-05	27	linnet	Q5_K_M
 24	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	2026-08-01	32.9	kestrel	Q6_K
 32	Qwen/Qwen3.8-27B	2026-08-05	27	kestrel	Q6_K
 32	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	2026-08-01	32.9	kestrel	Q6_K

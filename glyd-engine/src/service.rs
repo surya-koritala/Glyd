@@ -272,7 +272,7 @@ pub fn verified(port: u16) -> bool {
 /// What a request's `model` came to: the repo and level as `glyd serve` takes them, and the name the service shows for it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spec {
-    /// `Qwen/Qwen3.5-9B` or `Qwen/Qwen3.5-9B:swift`: the model word of `glyd serve`, and the key of the loaded model.
+    /// `Qwen/Qwen3.5-9B` or `Qwen/Qwen3.5-9B:linnet`: the model word of `glyd serve`, and the key of the loaded model.
     pub arg: String,
     /// The name `glyd ps` shows.
     pub name: String,
@@ -1760,10 +1760,10 @@ mod tests {
         let local = |repos: &[&str]| -> Vec<models::Local> {
             repos.iter().map(|r| models::Local { repo: r.to_string(), bytes: 1, level: "penguin".into(), name: None }).collect()
         };
-        let have = local(&["Qwen/Qwen3-8B", "glyd/Qwen3-8B-swift", "someone/else"]);
+        let have = local(&["Qwen/Qwen3-8B", "glyd/Qwen3-8B-linnet", "someone/else"]);
         let ok = |n: &str| spec_of(n, &m, &have).unwrap();
         assert_eq!(ok("qwen3"), Spec { arg: "Qwen/Qwen3-8B".into(), name: "qwen3:8b".into() });
-        assert_eq!(ok("qwen3:8b:swift").arg, "Qwen/Qwen3-8B:swift");
+        assert_eq!(ok("qwen3:8b:linnet").arg, "Qwen/Qwen3-8B:linnet");
         assert_eq!(ok("Qwen/Qwen3-8B").arg, "Qwen/Qwen3-8B");
         assert_eq!(ok("someone/else").arg, "someone/else");
         let (c, why) = spec_of("qwen3:32b", &m, &have).unwrap_err();
@@ -1772,12 +1772,12 @@ mod tests {
         for bad in ["/etc", "./m", "~/m", "model.gguf", "nonsense", "", "qwen3:8b:fast"] {
             assert_eq!(spec_of(bad, &m, &have).unwrap_err().0, 404, "{bad}");
         }
-        assert!(spec_of("Qwen/Qwen3-8B:swift", &m, &local(&[])).is_err());
+        assert!(spec_of("Qwen/Qwen3-8B:linnet", &m, &local(&[])).is_err());
         // the pre-packed repo of a level alone is enough
-        assert_eq!(spec_of("qwen3:swift", &m, &local(&["glyd/Qwen3-8B-swift"])).unwrap().arg, "glyd/Qwen3-8B-swift");
-        assert_eq!(spec_of("Qwen/Qwen3-8B:swift", &m, &local(&["glyd/Qwen3-8B-swift"])).unwrap().arg, "glyd/Qwen3-8B-swift");
+        assert_eq!(spec_of("qwen3:linnet", &m, &local(&["glyd/Qwen3-8B-linnet"])).unwrap().arg, "glyd/Qwen3-8B-linnet");
+        assert_eq!(spec_of("Qwen/Qwen3-8B:linnet", &m, &local(&["glyd/Qwen3-8B-linnet"])).unwrap().arg, "glyd/Qwen3-8B-linnet");
         // a pre-packed repo given by its own name is what it is
-        assert_eq!(spec_of("glyd/Qwen3-8B-swift", &m, &local(&["glyd/Qwen3-8B-swift"])).unwrap().arg, "glyd/Qwen3-8B-swift");
+        assert_eq!(spec_of("glyd/Qwen3-8B-linnet", &m, &local(&["glyd/Qwen3-8B-linnet"])).unwrap().arg, "glyd/Qwen3-8B-linnet");
     }
 
     #[test]

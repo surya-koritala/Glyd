@@ -12,7 +12,7 @@ versions, no separate model versions.
 | Site | version badge, the models table, install.sh from the tag byte for byte |
 
 New models ship through `glyd run` only (`glyd run glyd/gemma-4-31B-wren`). Model repos are `glyd/<model>-<level>`, the level a
-bird: penguin, kestrel, swift, wren, hummingbird.
+bird: penguin, kestrel, linnet, wren, hummingbird.
 
 ## Before the release
 

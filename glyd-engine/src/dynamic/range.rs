@@ -824,7 +824,7 @@ fn exec(op: &str, f: &Frame, s: &Setup, held: &mut Option<Held>, counter: &mut u
                 return err("verify: a decode chunk (phase decode)");
             }
             if verify && !verified_level(&s.level) {
-                return err(format!("verify on {}: checked bit for bit on swift only so far", s.level));
+                return err(format!("verify on {}: checked bit for bit on linnet only so far", s.level));
             }
             // keep_previous K: the last chunk was a verify chunk of R rows at P (the session at P + R); its first K rows stay, before this chunk, which starts at P + K
             let keep = match f.head.get("keep_previous") {
@@ -1075,7 +1075,7 @@ pub fn resolve(spec: &str) -> Result<(PathBuf, Option<Layout>)> {
     let layout = match tag.as_deref().map(|t| crate::levels::by_name(t).filter(|l| l.name != "hummingbird")) {
         None => None,
         Some(Some(l)) => l.layout,
-        Some(None) => return err(format!(":{} is not a level (penguin, kestrel, swift, wren)", tag.unwrap_or_default())),
+        Some(None) => return err(format!(":{} is not a level (penguin, kestrel, linnet, wren)", tag.unwrap_or_default())),
     };
     if Path::new(model).is_dir() {
         let dir = PathBuf::from(model);
@@ -1093,22 +1093,22 @@ pub fn resolve(spec: &str) -> Result<(PathBuf, Option<Layout>)> {
 }
 
 /// The level a directory runs at: its glyd.json's, penguin for a lossless save, else the layout it is packed at here (penguin where none).
-/// Levels whose verify chunks rangecheck has checked bit for bit against plain steps (swift on Ada); the others refuse `verify` (describe's
+/// Levels whose verify chunks rangecheck has checked bit for bit against plain steps (linnet on Ada); the others refuse `verify` (describe's
 /// verify_rows 0) until checked.
 fn verified_level(level: &str) -> bool {
-    level.split(' ').next() == Some("swift")
+    level.split(' ').next() == Some("linnet")
 }
 
 pub fn level_name(dir: &Path, layout: Option<Layout>) -> Result<String> {
     if let Some((_, m)) = v7_manifest(dir)? {
-        return Ok(m.get("level").and_then(Value::as_str).unwrap_or("penguin").to_string());
+        return Ok(m.get("level").and_then(Value::as_str).map_or("penguin".to_string(), crate::levels::current_kept));
     }
     if lossless_manifest(dir)?.is_some() {
         return Ok("penguin".to_string());
     }
     Ok(match layout {
         Some(Layout::Int6) => "kestrel",
-        Some(Layout::Int5) => "swift",
+        Some(Layout::Int5) => "linnet",
         Some(Layout::Int4) => "wren",
         Some(Layout::Int3) => "hummingbird",
         _ => "penguin",
@@ -2660,7 +2660,7 @@ mod tests {
         for bad in ["16", "32..16", "0..33", "a..b", "16..16"] {
             assert!(layers_arg(&a(&["rangeworker", "--layers", bad]), 32).is_err(), "{bad}");
         }
-        assert!(matches!(resolve("Qwen/Qwen3.5-9B:swift"), Ok((_, Some(Layout::Int5))) | Err(_)));
+        assert!(matches!(resolve("Qwen/Qwen3.5-9B:linnet"), Ok((_, Some(Layout::Int5))) | Err(_)));
         assert!(resolve("x:sparrow").unwrap_err().msg.contains("not a level"));
     }
 }

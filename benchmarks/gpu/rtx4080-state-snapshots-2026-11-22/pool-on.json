@@ -16,9 +16,9 @@
     "arch": "x86_64"
   },
   "model": {
-    "id": "Qwen/Qwen3.5-9B:swift",
-    "argument": "Qwen/Qwen3.5-9B:swift",
-    "level": "swift",
+    "id": "Qwen/Qwen3.5-9B:linnet",
+    "argument": "Qwen/Qwen3.5-9B:linnet",
+    "level": "linnet",
     "weights_bytes": 6200345608.0,
     "weights_source": "/v1/glyd/info"
   },

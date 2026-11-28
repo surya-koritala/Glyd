@@ -62,7 +62,7 @@ serving, tools and troubleshooting.
 | :--- | :--- | :--- | :--- |
 | **penguin** | about 10.8 | yes | the release's weights, bit for bit (an FP8 or FP4 release is kept as released) |
 | **kestrel** | 6.5 | no | 6-bit codes and a scale for every 32 weights |
-| **swift** | 5.5 | no | 5-bit codes |
+| **linnet** | 5.5 | no | 5-bit codes |
 | **wren** | 4.5 | no | 4-bit codes; exact on a quantization-aware checkpoint (Gemma 4 QAT) |
 | **hummingbird** | 2 to 3 on experts | no | mixture-of-experts layers: the busiest experts at 3 bits, the rest at 2 |
 
@@ -94,19 +94,19 @@ Glyd supports model families, not individual models: any size or fine-tune of th
 
 | Family | Levels |
 | :--- | :--- |
-| Gemma | penguin, kestrel, swift, wren |
-| Qwen | penguin, kestrel, swift, wren, hummingbird |
-| Llama | penguin, kestrel, swift, wren |
-| Mistral | penguin, kestrel, swift, wren |
-| Nemotron | penguin, kestrel, swift, wren, hummingbird |
+| Gemma | penguin, kestrel, linnet, wren |
+| Qwen | penguin, kestrel, linnet, wren, hummingbird |
+| Llama | penguin, kestrel, linnet, wren |
+| Mistral | penguin, kestrel, linnet, wren |
+| Nemotron | penguin, kestrel, linnet, wren, hummingbird |
 | Kimi | penguin, hummingbird |
 | GLM | penguin, hummingbird |
 | DeepSeek | penguin, hummingbird |
 | Muse | penguin, hummingbird |
-| Domyn Edge | penguin, kestrel, swift, wren |
-| Granite | penguin, kestrel, swift, wren |
-| Mellum | kestrel, swift, wren |
-| Aion | penguin, kestrel, swift, wren |
+| Domyn Edge | penguin, kestrel, linnet, wren |
+| Granite | penguin, kestrel, linnet, wren |
+| Mellum | kestrel, linnet, wren |
+| Aion | penguin, kestrel, linnet, wren |
 
 The engine tells a family by a model's `config.json`, not by its name.
 

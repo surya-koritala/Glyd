@@ -1,6 +1,6 @@
 # The quality bar of the lossy levels
 
-Kestrel, swift, wren and hummingbird change the weights; penguin does not. Before a pack of a lossy level is published, one suite measures how far
+Kestrel, linnet, wren and hummingbird change the weights; penguin does not. Before a pack of a lossy level is published, one suite measures how far
 its outputs are from the lossless level of the same model, and the level's bar decides: publish or refuse. The code is `glyd-engine/src/quality.rs`;
 the bars are in `glyd-engine/src/levels.rs` (`Bar`).
 
@@ -22,8 +22,8 @@ item (`--ctx` says otherwise).
 
 ```bash
 glyd-engine quality Qwen/Qwen3.8-27B:penguin --out ref.json     # the lossless level: the reference
-glyd-engine quality Qwen/Qwen3.8-27B:swift --out swift.json
-glyd-engine quality --card ref.json swift.json --out card.json  # exit 0: publish, 1: refuse (the reasons on stderr)
+glyd-engine quality Qwen/Qwen3.8-27B:linnet --out linnet.json
+glyd-engine quality --card ref.json linnet.json --out card.json  # exit 0: publish, 1: refuse (the reasons on stderr)
 ```
 
 ## The card and the bar
@@ -37,7 +37,7 @@ a text or task the candidate lacks is a refusal, not a pass.
 | Level | Mean KL at most | Best token the same at least | A task's accuracy at most this much under the lossless level's |
 | :--- | --: | --: | --: |
 | kestrel (6.5 bits) | 0.02 | 94% | 5 points |
-| swift (5.5) | 0.05 | 91% | 7.5 points |
+| linnet (5.5) | 0.05 | 91% | 7.5 points |
 | wren (4.5) | 0.08 | 86% | 10 points |
 | hummingbird (experts at 2-4) | 0.12 | 90% | 10 points |
 
@@ -47,7 +47,7 @@ without calibration 0.0534 (top-1 88.9%, `benchmarks/weights/kld-q56-2026-10-09`
 `benchmarks/weights/moe-quality-2026-10-10/nemotron-hummingbird`). Each bar is about 1.4 times the largest KL and three to four points under the
 lowest agreement. Those studies read WikiText-2 with 64 to 128 tokens a position; the suite reads its own texts with 20. The first cards the suite
 writes are the check of the bars against its own figures, and a bar that does not hold is changed in `levels.rs` with the cards that show it.
-The task bars (5 points under the lossless level at kestrel, 7.5 at swift, 10 at wren and hummingbird) have no measurement behind them: they
+The task bars (5 points under the lossless level at kestrel, 7.5 at linnet, 10 at wren and hummingbird) have no measurement behind them: they
 are a choice, held until the first cards' task figures, and changed the same way.
 
 ## Publish or refuse
@@ -66,7 +66,7 @@ step and the upload's refusal are every lossy level's.
 The bars above are for released models, measured with the suite. The GPU job holds every level's arithmetic on a small random model of each family
 with `glyd-engine levelcheck` (`glyd-engine/src/logits.rs`): the model at penguin and at each lossy level its family runs, the same tokens, and the
 KL of the level's logits from penguin's against a threshold of that family and level, twice the family's first measured run. Qwen3.5, Gemma 4 and
-the state-space case are held at kestrel, swift and wren; DeepSeek-V4, Muse Spark, Kimi-K3 and GLM-5.3-Flash at hummingbird, on a directory the check makes with the two
+the state-space case are held at kestrel, linnet and wren; DeepSeek-V4, Muse Spark, Kimi-K3 and GLM-5.3-Flash at hummingbird, on a directory the check makes with the two
 commands above (the corpus pass over made-up documents). A level that does not load fails the check. A random model's weights do not compress as a
 trained model's do, so these thresholds say nothing of a release: they catch a level whose kernels or packer changed.
 
@@ -92,7 +92,7 @@ glyd-engine quality --table card-*.json                          # the cards sid
 ```
 
 The pairs: penguin (about 10.8 bits, lossless) against FP8 (8, vLLM `--quantization fp8` or a released FP8 checkpoint) and Q8_0 (8.5); kestrel
-(6.53) against Q6_K (6.56); swift (5.53) against Q5_K_M (about 5.7); wren (4.53) against Q4_K_M (about 4.9), Q4_0 (4.5) and a 4-bit AWQ checkpoint (about 4.2
+(6.53) against Q6_K (6.56); linnet (5.53) against Q5_K_M (about 5.7); wren (4.53) against Q4_K_M (about 4.9), Q4_0 (4.5) and a 4-bit AWQ checkpoint (about 4.2
 with group 128). The token texts of the log-probabilities are compared as the servers give them; llama.cpp's shape (`logprobs.content[0].top_logprobs`)
 and the completions API's (`logprobs.top_logprobs[0]`) are both read. Published comparisons live under `benchmarks/quality/`, each with its
 commands, versions and logs; none is published until it was measured.

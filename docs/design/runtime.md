@@ -19,7 +19,7 @@ to the recent families was the first priority; every family has them now (see "A
 
 ## Top gaps for the recent families (2026-11-20, when the design was written)
 
-1. **Qwen3.8 dense (27B) has no lossless level on the engine.** The Qwen3.5 code path it runs on accepts kestrel, swift and wren only
+1. **Qwen3.8 dense (27B) has no lossless level on the engine.** The Qwen3.5 code path it runs on accepts kestrel, linnet and wren only
    (`support.rs`, the `Qwen3.5` row: `levels: LOSSY`); penguin runs only through the frozen vLLM plugin. Its penguin pack is ~38 GiB
    (51.7 GiB bf16), so it needs the 40-80 GB cards or a split (#331).
 2. **No recent family batches or pages its KV.** Every one runs one sequence per engine: the description executor refuses more than one

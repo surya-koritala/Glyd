@@ -42,7 +42,7 @@ between them and the ones after, on quality and on where the speeds come from, a
 Plan: penguin (10.8 bits) · GPU 0 (NVIDIA GeForce RTX 4090) · 32768 tokens of context · ~41 tokens/s (37-45) · prompts ~4583 tokens/s
   penguin       15.0 GiB    32768 ctx  ~  41 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)  <- chosen
   kestrel        9.1 GiB    32768 ctx  ~  83 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
-  swift          7.7 GiB    32768 ctx  ~  95 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
+  linnet          7.7 GiB    32768 ctx  ~  95 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
   wren           6.3 GiB    32768 ctx  ~ 111 tok/s  GPU 0 (NVIDIA GeForce RTX 4090)
 ```
 

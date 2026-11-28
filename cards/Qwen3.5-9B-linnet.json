@@ -69,10 +69,10 @@
   ],
   "costs": {
     "schema": "glyd-costs/1",
-    "source": "glyd-engine costs glyd/Qwen3.5-9B-swift (glyd-engine 0.32.1 at 3f634598): the packed files' safetensors headers, basis file; docs/cost-profile.md",
-    "repo": "glyd/Qwen3.5-9B-swift",
+    "source": "glyd-engine costs glyd/Qwen3.5-9B-linnet (glyd-engine 0.32.1 at 3f634598): the packed files' safetensors headers, basis file; docs/cost-profile.md",
+    "repo": "glyd/Qwen3.5-9B-linnet",
     "revision": "073a2132abeaa41c119678b9687092871521eb4d",
-    "level": "swift",
+    "level": "linnet",
     "layout": "i5",
     "bits_per_weight": 5.543,
     "layers": {

@@ -40,7 +40,7 @@ pub const CMDS: &[Cmd] = &[
         name: "run",
         args: "MODEL[:LEVEL]",
         summary: "chat with a model in the terminal and at one URL",
-        detail: "MODEL is a short name (gemma4, qwen3.8:27b), a Hub id (ORG/NAME), a directory or a GGUF file. LEVEL is penguin (lossless, the default), kestrel, swift, wren or hummingbird. \
+        detail: "MODEL is a short name (gemma4, qwen3.8:27b), a Hub id (ORG/NAME), a directory or a GGUF file. LEVEL is penguin (lossless, the default), kestrel, linnet, wren or hummingbird. \
                  --prompt TEXT answers once and exits. Where the service is running the chat goes through it.",
         flags: &["context", "users", "devices", "port", "host"],
     },

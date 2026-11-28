@@ -1565,7 +1565,7 @@ pub(crate) mod tests {
             |dtype: &str| kept.iter().filter(|t| t.dtype == dtype).map(|t| t.shape.iter().product::<u64>() * if dtype == "F32" { 4 } else { 2 }).sum::<u64>();
         let (bf16, f32) = (kept_bytes("BF16"), kept_bytes("F32"));
         let (w, i6, i5) = table.iter().fold((0, 0, 0), |a, r| (a.0 + r.1, a.1 + r.2, a.2 + r.3));
-        println!("{:24} {:>16} {:>16} {:>16}", "", "weights", "i6 (kestrel)", "i5 (swift)");
+        println!("{:24} {:>16} {:>16} {:>16}", "", "weights", "i6 (kestrel)", "i5 (linnet)");
         for r in &table {
             println!("{:24} {:>16} {:>16} {:>16}", r.0, r.1, r.2, r.3);
         }

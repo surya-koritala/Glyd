@@ -7,7 +7,7 @@
 //!   within the bounds, both recorded from the same (`packcheck --record`). On the CPU on every merge (the unit test below,
 //!   which ci.yml's engine tests run) and with the GPU library's decode on the GPU runner (`packcheck --gpu`).
 //! - The formats the engine reads a saved directory in, as the glyd/* repos and the engine's cache hold them (`packcheck --engine`, the GPU job): glyd-v7 at penguin,
-//!   kestrel, swift and wren (glyd-v4 and glyd-v3 with the earlier dense engine's `engine.safetensors` went with that engine, R3c #139: such a cache is packed again). Each is
+//!   kestrel, linnet and wren (glyd-v4 and glyd-v3 with the earlier dense engine's `engine.safetensors` went with that engine, R3c #139: such a cache is packed again). Each is
 //!   made here from a logits case's random model of a family published in it (Qwen3.5's layout, Gemma 4, the glyd/nemotron-3-* repos' layout; the plain dense kind for the engine's cache) by the packer that made those repos (`pack::run`), loaded from the saved directory as
 //!   `run` loads a pre-packed repo, in the layout it was saved in; its rows held to the same bits as the engine's own run of the model packed as it loads in that layout,
 //!   made in the same run (on any GPU, nothing recorded: what a saved directory is for), and within the bound of the case's reference at that level where it
@@ -386,10 +386,10 @@ fn threads() -> usize {
 pub const SAVED: &[(&str, &str, &str, &str)] = &[
     ("dense", "penguin", "mma", "glyd-v7 at penguin: a plain dense model in the engine's cache (the executor's, src/dynamic/dense.rs)"),
     ("qwen35", "kestrel", "i6", "glyd-v7 i6: glyd/Qwen3.5-*, Qwen3.6-27B and Qwen3.8-27B -kestrel"),
-    ("qwen35", "swift", "i5", "glyd-v7 i5: the same at swift"),
+    ("qwen35", "linnet", "i5", "glyd-v7 i5: the same at linnet"),
     ("qwen35", "wren", "i4", "glyd-v7 i4: the same at wren"),
     ("qwen35moe", "kestrel", "i6", "glyd-v7 i6: the Qwen3.5 layout with experts at kestrel, each expert's gate and up one pack and its down another"),
-    ("qwen35moe", "swift", "i5", "glyd-v7 i5: the same at swift"),
+    ("qwen35moe", "linnet", "i5", "glyd-v7 i5: the same at linnet"),
     ("qwen35moe", "wren", "i4", "glyd-v7 i4: the same at wren"),
     (
         "qwen35moe-st",
@@ -397,11 +397,11 @@ pub const SAVED: &[(&str, &str, &str, &str)] = &[
         "i6",
         "glyd-v7 i6: the same model with each layer's experts stacked in two tensors (Qwen3.8-2.4T-A95B's form), packed from their rows",
     ),
-    ("qwen35moe-st", "swift", "i5", "glyd-v7 i5: the same at swift"),
+    ("qwen35moe-st", "linnet", "i5", "glyd-v7 i5: the same at linnet"),
     ("qwen35moe-st", "wren", "i4", "glyd-v7 i4: the same at wren"),
     ("gemma4", "penguin", "mma", "glyd-v7 at penguin: glyd/gemma-4-12B-penguin, -31B-penguin"),
     ("gemma4", "kestrel", "i6", "glyd-v7 i6: Gemma 4 at kestrel"),
-    ("gemma4", "swift", "i5", "glyd-v7 i5: Gemma 4 at swift"),
+    ("gemma4", "linnet", "i5", "glyd-v7 i5: Gemma 4 at linnet"),
     ("gemma4", "wren", "i4", "glyd-v7 i4: Gemma 4 at wren (a checkpoint not trained to four bits)"),
     ("gemma4-kv", "penguin", "mma", "glyd-v7 at penguin: Gemma 4's KV-sharing layers, each sharing layer's queries alone as its description reads them"),
     ("gemma4-kv", "kestrel", "i6", "glyd-v7 i6: the same at kestrel"),

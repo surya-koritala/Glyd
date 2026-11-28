@@ -56,7 +56,7 @@ pub enum Format {
     F32,
     /// Glyd's lossless formats (10.75-12 bits).
     Lossless,
-    /// Int4-6 and codebook lossy levels, by name (kestrel, swift, wren, ...).
+    /// Int4-6 and codebook lossy levels, by name (kestrel, linnet, wren, ...).
     Lossy(String),
     /// FP8 with 128x128 block scales, as DeepSeek and GLM release them.
     Fp8Block,

@@ -38,9 +38,9 @@ cargo build --release -p starlings-cli
 Run it, from the [beta guide](https://github.com/surya-koritala/Glyd/blob/main/starlings/docs/beta.md):
 
 ```bash
-starlings up --model glyd/Qwen3.8-27B-swift                 # one machine, its GPUs
-starlings up --model glyd/Qwen3.8-27B-swift --machines 2    # first machine: prints a join code
-starlings join --model glyd/Qwen3.8-27B-swift               # second machine: enter the code, approve on the first
+starlings up --model glyd/Qwen3.8-27B-linnet                 # one machine, its GPUs
+starlings up --model glyd/Qwen3.8-27B-linnet --machines 2    # first machine: prints a join code
+starlings join --model glyd/Qwen3.8-27B-linnet               # second machine: enter the code, approve on the first
 ```
 
 - It opens a web UI and an OpenAI-style `/v1/chat/completions` on loopback (port 9750).

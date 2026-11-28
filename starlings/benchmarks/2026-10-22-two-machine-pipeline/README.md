@@ -5,7 +5,7 @@ GLY-188 (M4) on two Runpod pods in different data centers, on Runpod's private n
 - pod C (US-WA-1, 10.0.26.59): the coordinator and the stage-0 worker daemon (layers 0..16);
 - pod G (US-KS-2, 10.1.54.61): the stage-1 worker daemon (layers 16..32).
 
-Both pods have an RTX 6000 Ada, driver 595.91.07 and Ubuntu 24.04. Qwen3.5-9B (glyd swift, 073a2132…) is at the same path on both. All three daemons were enrolled through the CLI. The chat request went over HTTP to the coordinator on C. Then the daemons were stopped, and the whole model (layers 0..32) ran the same prompt on C with the same chunking and settings.
+Both pods have an RTX 6000 Ada, driver 595.91.07 and Ubuntu 24.04. Qwen3.5-9B (glyd linnet, 073a2132…) is at the same path on both. All three daemons were enrolled through the CLI. The chat request went over HTTP to the coordinator on C. Then the daemons were stopped, and the whole model (layers 0..32) ran the same prompt on C with the same chunking and settings.
 
 Result: all three runs give tokens equal to the whole model's (same count, same sha256; the prompt sha256 matches too).
 

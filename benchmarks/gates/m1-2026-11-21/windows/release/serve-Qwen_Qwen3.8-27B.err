@@ -1,16 +1,16 @@
-Downloading Qwen3.8-27B-swift: 10% (1.9 GB of 18.7 GB)
-Downloading Qwen3.8-27B-swift: 20% (3.7 GB of 18.7 GB)
-Downloading Qwen3.8-27B-swift: 30% (5.6 GB of 18.7 GB)
-Downloading Qwen3.8-27B-swift: 40% (7.5 GB of 18.7 GB)
-Downloading Qwen3.8-27B-swift: 50% (9.4 GB of 18.7 GB)
-Downloading Qwen3.8-27B-swift: 60% (11.2 GB of 18.7 GB)
-Downloading Qwen3.8-27B-swift: 70% (13.1 GB of 18.7 GB)
-Downloading Qwen3.8-27B-swift: 80% (15.0 GB of 18.7 GB)
-Downloading Qwen3.8-27B-swift: 90% (16.8 GB of 18.7 GB)
-Downloading Qwen3.8-27B-swift: 100% (18.7 GB of 18.7 GB)
-Downloaded Qwen3.8-27B-swift (18.7 GB).
-Qwen3.8-27B: about 17.4 GiB on the GPU at the swift level (about 5.5 bits per weight, not lossless), in place of 50.1 GiB of bf16.
-Plan: swift level, 26649 tokens of context: 17.4 GiB of weights on the GPU, 1.8 GiB of cache, 1.2 GiB for the engine's work, 0.8 GiB kept free; 21.1 GiB of the NVIDIA A10G's 21.1 GiB free.
+Downloading Qwen3.8-27B-linnet: 10% (1.9 GB of 18.7 GB)
+Downloading Qwen3.8-27B-linnet: 20% (3.7 GB of 18.7 GB)
+Downloading Qwen3.8-27B-linnet: 30% (5.6 GB of 18.7 GB)
+Downloading Qwen3.8-27B-linnet: 40% (7.5 GB of 18.7 GB)
+Downloading Qwen3.8-27B-linnet: 50% (9.4 GB of 18.7 GB)
+Downloading Qwen3.8-27B-linnet: 60% (11.2 GB of 18.7 GB)
+Downloading Qwen3.8-27B-linnet: 70% (13.1 GB of 18.7 GB)
+Downloading Qwen3.8-27B-linnet: 80% (15.0 GB of 18.7 GB)
+Downloading Qwen3.8-27B-linnet: 90% (16.8 GB of 18.7 GB)
+Downloading Qwen3.8-27B-linnet: 100% (18.7 GB of 18.7 GB)
+Downloaded Qwen3.8-27B-linnet (18.7 GB).
+Qwen3.8-27B: about 17.4 GiB on the GPU at the linnet level (about 5.5 bits per weight, not lossless), in place of 50.1 GiB of bf16.
+Plan: linnet level, 26649 tokens of context: 17.4 GiB of weights on the GPU, 1.8 GiB of cache, 1.2 GiB for the engine's work, 0.8 GiB kept free; 21.1 GiB of the NVIDIA A10G's 21.1 GiB free.
 Ready in 2m29s: Qwen3.8-27B on the NVIDIA A10G, 17.4 GiB of weights, 26649 tokens of context, one user at a time.
 Up to 1 users at once.
 Qwen/Qwen3.8-27B is served at http://127.0.0.1:18734: the chat page at /, the API at /v1 (OpenAI-compatible). Ctrl-C stops it.

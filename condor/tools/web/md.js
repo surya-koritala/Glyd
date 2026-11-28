@@ -16,7 +16,7 @@
     sql: "select from where and or not insert into values update set delete create table drop alter add join left right inner outer on group by order having limit offset as distinct union all null is like in between case when then else end primary key foreign references index",
   };
   const FAMILY = { python: "py", py: "py", javascript: "js", js: "js", jsx: "js", typescript: "js", ts: "js", tsx: "js", json: "js", rust: "rs", rs: "rs", go: "go", golang: "go",
-                   c: "c", h: "c", cpp: "c", "c++": "c", cc: "c", java: "c", kotlin: "c", cs: "c", csharp: "c", swift: "c", bash: "sh", sh: "sh", shell: "sh", zsh: "sh", console: "sh", sql: "sql" };
+                   c: "c", h: "c", cpp: "c", "c++": "c", cc: "c", java: "c", kotlin: "c", cs: "c", csharp: "c", linnet: "c", bash: "sh", sh: "sh", shell: "sh", zsh: "sh", console: "sh", sql: "sql" };
   const SETS = {};
   for (const k in KW) SETS[k] = new Set(KW[k].split(" "));
   function highlight(code, lang) {

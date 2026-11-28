@@ -235,11 +235,11 @@ fn fit_shows_the_quality_of_each_level() {
     let o = glyd(&d, &["fit", "qwen3.5:9b", "--machine", "h100"]);
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("Quality against the lossless level"), "{out}");
-    assert!(out.contains("KL 0.0373 from bf16") && out.contains("cards/Qwen3.5-9B-swift.json"), "{out}");
+    assert!(out.contains("KL 0.0373 from bf16") && out.contains("cards/Qwen3.5-9B-linnet.json"), "{out}");
     assert!(out.contains("wren         not measured"), "{out}");
     let o = glyd(&d, &["fit", "qwen3.5:9b", "--machine", "h100", "--json"]);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-    assert_eq!(v["quality"]["swift"]["source"], "cards/Qwen3.5-9B-swift.json", "{v}");
+    assert_eq!(v["quality"]["linnet"]["source"], "cards/Qwen3.5-9B-linnet.json", "{v}");
     assert!(v["quality"]["wren"].is_null() && v["quality"].as_object().unwrap().contains_key("wren"), "{v}");
     let _ = std::fs::remove_dir_all(&d);
 }

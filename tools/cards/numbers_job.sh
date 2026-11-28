@@ -18,7 +18,7 @@ export GLYD_GPU_LIB=$(ls ~/v/lib/libglyd_gpu_cuda*.so | head -1)
 step build bash -c 'cd ~/v/src && cargo build --release -p glyd-engine'
 wait
 E=~/v/src/target/release/glyd-engine
-case $LEVEL in swift) LAY="--layout i5";; kestrel) LAY="--layout i6";; *) LAY="";; esac
+case $LEVEL in linnet) LAY="--layout i5";; kestrel) LAY="--layout i6";; *) LAY="";; esac
 # (the bench's own context is 4,096: its GPU memory is the figure for a 4k conversation)
 $E microbench ~/v/m $LAY --prompt 1024 --new 256 --ctx 4096 > $R/bench.out 2> $R/bench.err; echo "bench: rc=$?" >> $P
 grep '^{' $R/bench.out | tail -1 > $R/bench.json

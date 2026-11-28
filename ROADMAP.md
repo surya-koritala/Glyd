@@ -51,7 +51,7 @@ Released, on main and planned are listed apart.
 - One repository under Apache-2.0 with the engine, the GPU library, Condor and Starlings (#263); raw data out of the tree
   (#265); rustfmt, clippy and cargo-deny in CI (#266, part of S8); one table of what the engine runs, shared by `fit`,
   `run` and `serve` (#267, P16); security updates (S7, #211).
-- The engine runs the plain dense kind, the Qwen3.5 layout (3.5, 3.6, 3.8) and Gemma 4 at penguin, kestrel, swift and wren,
+- The engine runs the plain dense kind, the Qwen3.5 layout (3.5, 3.6, 3.8) and Gemma 4 at penguin, kestrel, linnet and wren,
   Nemotron-H at those and hummingbird, and Kimi-K3, GLM-5.3-Flash, DeepSeek-V4 and Muse Spark at penguin and hummingbird, all on one executor. Qwen3.8-Flash-Next (Condor's
   model) runs there too: `glyd run` takes it at penguin and its codes packs at hummingbird; Condor's scripts serve the packs
   with `qwenserve`. The list is `glyd-engine/src/support.rs`.
