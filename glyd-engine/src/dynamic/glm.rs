@@ -221,7 +221,14 @@ pub(crate) fn latent(c: &ConfigGlm) -> MlaOp {
             ape: 0,
             gate: 0,
             key: super::KeyNorm::Layer(1e-6),
+            q_in: None,
+            q_norm: 0,
+            q_bias: 0,
+            pos_scale: false,
+            scale_s: 0,
+            scale_b: 0,
         }),
+        pos_scale: None,
     }
 }
 

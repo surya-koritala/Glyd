@@ -553,26 +553,17 @@ impl std::fmt::Debug for Mla {
 }
 
 impl Mla {
-    /// What of a latent attention the executor has no operation for yet (the CPU reference computes each), in words; None where it has none of them.
-    pub fn not_run(&self) -> Option<&'static str> {
-        if self.pos_scale {
-            Some(Mla::POS_SCALE_NOT_RUN)
-        } else if self.kv_from.is_some() {
-            Some(Mla::KV_FROM_NOT_RUN)
-        } else if self.rope_learned {
-            Some(Mla::ROPE_LEARNED_NOT_RUN)
-        } else if self.indexer.as_ref().is_some_and(|x| x.q_in.is_some() || x.pos_scale) {
-            Some(Mla::INDEX_INPUT_NOT_RUN)
-        } else {
-            None
-        }
+    /// Mistral Large's forms of a latent attention (`pos_scale`, `kv_from`, `rope_learned`, an indexer with `q_in` or `pos_scale`): the executor runs them
+    /// in models of plain residuals (`dynamic::lower::latent_moe`, which names their tensors and makes their rotary's table); its other lowerings of a latent
+    /// attention refuse them by this name. None where the kind has none of them.
+    pub fn plain_only(&self) -> Option<&'static str> {
+        let forms = self.pos_scale || self.kv_from.is_some() || self.rope_learned || self.indexer.as_ref().is_some_and(|x| x.q_in.is_some() || x.pos_scale);
+        forms.then_some(Mla::PLAIN_ONLY)
     }
 
-    pub const POS_SCALE_NOT_RUN: &'static str = "a latent attention whose queries are scaled by their position, which the executor does not run yet";
-    pub const KV_FROM_NOT_RUN: &'static str = "a latent attention that attends to another layer's latents, which the executor does not run yet";
-    pub const ROPE_LEARNED_NOT_RUN: &'static str = "a latent attention whose rotary's frequencies are learned, which the executor does not run yet";
-    pub const INDEX_INPUT_NOT_RUN: &'static str =
-        "a latent attention's indexer whose queries are the block's input's, scaled by their position, which the executor does not run yet";
+    pub const PLAIN_ONLY: &'static str = "a latent attention whose queries are scaled by their position, whose latents are another layer's, whose rotary's \
+                                          frequencies are learned or whose indexer reads the block's input, outside a model of plain residuals, which the \
+                                          executor does not run yet";
 }
 
 /// DeepSeek-V4's attention: one KV head of `head_dim` whose keys are its values (K = V), `heads` query heads, rope on the trailing

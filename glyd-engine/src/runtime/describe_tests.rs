@@ -3826,7 +3826,7 @@ fn mistral_large_describes_its_latent_attentions_their_indexers_and_its_experts(
                 assert_eq!((ix.heads, ix.head_dim, ix.top_k, ix.block, ix.form), (32, 128, 2048, 1, IndexForm::LAYER_KEYS), "layer {l}");
                 assert_eq!((ix.shared, ix.rope, ix.pos_scale), (l >= 17 && matches!(l % 4, 1 | 2), if turns { 64 } else { 0 }, true), "layer {l}");
                 assert!(matches!(ix.q_in, Some(n) if n.kind == NormKind::Layer && n.eps == 1e-6), "layer {l}");
-                assert_eq!(x.not_run(), Some(Mla::POS_SCALE_NOT_RUN));
+                assert_eq!(x.plain_only(), Some(Mla::PLAIN_ONLY));
                 (nope, lent, shared) = (nope + !turns as usize, lent + x.kv_from.is_some() as usize, shared + ix.shared as usize);
             }
             Body::Ffn(Ffn::Mlp(m)) => {
@@ -3904,9 +3904,8 @@ fn mistral_large_describes_its_latent_attentions_their_indexers_and_its_experts(
         assert!(have.contains(left) && !d.names().contains(left), "{left}");
     }
     d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
-    // (described, not run: the executor names what it lacks)
-    let e = crate::dynamic::split::loader(&d).err().map(|e| e.msg).unwrap_or_default();
-    assert_eq!(e, format!("its layers hold {}", Mla::POS_SCALE_NOT_RUN));
+    // (its kinds choose the loader of the latent attention with plain residuals, which lowers its layout: `dynamic::lower::latent_moe`)
+    crate::dynamic::split::loader(&d).map(|_| ()).unwrap_or_else(|e| panic!("{}", e.msg));
 }
 
 /// A small config of the Mistral Large layout in its wrapper with `keys` over its text config: eight layers, every fourth without positions, the
@@ -4077,9 +4076,10 @@ fn mistral_large_reads_its_config_as_transformers_does() {
         let e = refused(c);
         assert!(e.contains(word), "{word}: {e}");
     }
-    // (described, not run: the planner's lowering and the loader name what the executor lacks)
-    let Err(e) = crate::dynamic::split::lowered_described(&d, 8, 4096) else { panic!("a scale by position lowered") };
-    assert!(e.msg.contains("queries are scaled by their position, which the executor does not run yet"), "{}", e.msg);
+    // (the planner's lowering takes its kinds, and this config's widths are not the kernels': refused in words. A model of the kernels' widths lowers:
+    // `dynamic::lower`'s test of the random model)
+    let Err(e) = crate::dynamic::split::lowered_described(&d, 8, 4096) else { panic!("latents of 12 lowered") };
+    assert!(e.msg.contains("latents of 12 + 4") && e.msg.contains("the kernels take"), "{}", e.msg);
 }
 
 /// The Mistral Large layout on the CPU reference, a random model of the small config (every tensor of the shape its description gives). A prompt at

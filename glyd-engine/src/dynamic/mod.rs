@@ -610,6 +610,10 @@ pub struct Rope {
     /// A scaled rotary's own frequency a pair and its factor on cos and sin (`kinds::RopeScaling` of a form that does not change with the sequence's length:
     /// linear, yarn, llama3), as `runtime::reference::rope::inv_freq` makes them; None: theta's.
     pub scaled: Option<(Vec<f32>, f32)>,
+    /// Learned frequencies (`kinds::Mla::rope_learned`, Mistral Large's): the checkpoint's tensor [pairs] of this name, each pair's frequency of `scaled`
+    /// times the exponential of its value, in fp32 as the kind's reference takes them; the table is made from the checkpoint at load. None: the
+    /// frequencies as they are.
+    pub learned: Option<String>,
 }
 
 /// A layer's keys and values, `nk` heads of `d`: a ring of the window and a chunk where `window` > 0, else the whole context. `values` false: keys alone, in kc
@@ -852,6 +856,7 @@ impl Op {
                 MlaIn::Fused { w } => vec![w, a.q_b, a.o],
                 MlaIn::Apart { q_a, kv_a } => vec![q_a, kv_a, a.q_b, a.o],
                 MlaIn::Direct { kv_a } => vec![kv_a, a.q_b, a.o],
+                MlaIn::Borrowed { .. } => vec![a.q_b, a.o],
             },
             _ => Vec::new(),
         }
@@ -861,7 +866,7 @@ impl Op {
         match *self {
             Op::Attn(ref a) => vec![a.ring],
             Op::IdxMean { keys, pools, .. } => vec![keys, pools],
-            Op::Mla(ref a) => std::iter::once(a.ring).chain(a.indexer.as_ref().map(|_| a.ring + 1)).collect(),
+            Op::Mla(ref a) => a.ring_ids(),
             Op::CompKv { ring, .. } => vec![ring],
             Op::CompAttn { ring, cache, .. } => std::iter::once(ring).chain(cache).collect(),
             Op::Compress { cache, raw, .. } => std::iter::once(cache).chain(raw).collect(),
@@ -1117,7 +1122,7 @@ fn read_typed(d: &ModelDesc) -> Vec<(usize, bool)> {
 /// The values a small tensor's operation reads of it at least, where the operation says (a shorter tensor would be read past its end on the GPU; a longer one
 /// is read in its first values, as a release's A_log of more heads than the model has): the Kimi delta rule's A_log a head and dt_bias a channel, its gated
 /// norm a head's channels (a head's channels: the recurrence's state holds heads x channels x channels fp32), its convolutions' taps a channel (the row's own
-/// and the state's, bf16).
+/// and the state's, bf16); a latent attention's scales by position and the norm of the layer's input its indexer's queries read (Mistral Large's).
 fn read_at_least(d: &ModelDesc) -> Vec<(usize, usize)> {
     let mut v = Vec::new();
     for ops in &d.layers {
@@ -1134,6 +1139,15 @@ fn read_at_least(d: &ModelDesc) -> Vec<(usize, usize)> {
                 Op::KdaConv { w, state, c, .. } => v.push((w, c + d.states.get(state).map_or(0, |b| b / 2))),
                 Op::KdaOut { w, .. } => v.push((w, kd)),
                 Op::ShortConv { w, d, taps, .. } => v.push((w, d * taps)),
+                // (a latent attention's queries' scale by position, a value a head; its indexer's, a value an index head, and the weight and bias of the
+                // norm its queries read the layer's input through, as wide as the model)
+                Op::Mla(ref a) => {
+                    v.extend(a.pos_scale.into_iter().flat_map(|(s, b)| [(s, a.heads), (b, a.heads)]));
+                    if let Some(x) = &a.indexer {
+                        v.extend(x.pos_scale.then_some([(x.scale_s, x.pick.heads), (x.scale_b, x.pick.heads)]).into_iter().flatten());
+                        v.extend(x.q_in.map(|_| [(x.q_norm, d.hidden), (x.q_bias, d.hidden)]).into_iter().flatten());
+                    }
+                }
                 _ => {}
             }
         }
@@ -1173,6 +1187,19 @@ fn rotary_scaled(inv: &[f32], af: f32, max_pos: usize) -> (Vec<u16>, Vec<u16>) {
         }
     }
     (c, s)
+}
+
+/// A rotary's learned frequencies (`Rope::learned`): each of `inv` times the exponential of its value of the checkpoint's bf16 tensor `name`, in fp32, as
+/// the kind's reference makes them (`runtime::reference::mla::step_with`).
+fn learned_freqs(ck: &Checkpoint, name: &str, inv: &[f32]) -> Result<Vec<f32>> {
+    use crate::runtime::reference::Libm;
+    let (_, t) = ck.get(name).ok_or_else(|| Error(format!("no tensor {name}")))?;
+    let b = ck.read(name).map_err(|e| Error(format!("{name}: {e}")))?;
+    if t.dtype != "BF16" || b.len() != inv.len() * 2 {
+        return err(format!("{name}: {} of {} bytes, where a rotary of {} angles reads a bf16 factor an angle", t.dtype, b.len(), inv.len()));
+    }
+    let alpha = b.as_chunks::<2>().0.iter().map(|x| f32::from_bits((u16::from_le_bytes(*x) as u32) << 16));
+    Ok(inv.iter().zip(alpha).map(|(&f, a)| f * a.lexp()).collect())
 }
 
 /// Whether form `f` makes fp32 values (a residual gate's factors), not bf16.
@@ -2185,10 +2212,12 @@ impl Dyn {
             .ropes
             .iter()
             .map(|r| {
-                let (c, s) = match &r.scaled {
-                    Some((inv, af)) => rotary_scaled(&inv[..r.pairs.min(inv.len())], *af, mp),
-                    None if r.trig64 => rotary64(r.theta, r.dim, r.pairs, mp),
-                    None => rotary(r.theta, r.dim, r.pairs, mp),
+                let (c, s) = match (&r.scaled, &r.learned) {
+                    (Some((inv, af)), Some(name)) => rotary_scaled(&learned_freqs(&ck, name, &inv[..r.pairs.min(inv.len())])?, *af, mp),
+                    (None, Some(name)) => return err(format!("a rotary whose frequencies are learned ({name}), given none to scale")),
+                    (Some((inv, af)), None) => rotary_scaled(&inv[..r.pairs.min(inv.len())], *af, mp),
+                    (None, None) if r.trig64 => rotary64(r.theta, r.dim, r.pairs, mp),
+                    (None, None) => rotary(r.theta, r.dim, r.pairs, mp),
                 };
                 Ok((upload_bytes(crate::weights::as_bytes(&c))?, upload_bytes(crate::weights::as_bytes(&s))?))
             })

@@ -2163,6 +2163,27 @@ pub fn ling_draw(out: &Path, seed: u64) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/ling_tiny_manifest.json"), out, seed, true, "Ling model")
 }
 
+/// Mistral Large's small model (eight layers, each a latent attention of two heads whose queries are one product, scaled by their position, over latents of
+/// 64 and a shared key part of 64 turned by YaRN's frequencies times learned factors; layers 3 and 7 with no positions, their keys the latent's alone;
+/// layer 7 attending to layer 3's latents; an indexer of four heads of 128 on the layer's input keeping 8 tokens, its queries scaled by position too,
+/// layers 2, 5 and 6 taking the picks of the layer before; the first layer's feed-forward a dense MLP, the others 16 softmax-routed experts of which 4 a
+/// token beside a shared MLP; 256 wide, the head its own and soft-capped at 30, a vocabulary of 4096): the family's case, no release's. The scales by
+/// position are drawn about s = 0 and b = 1 (transformers' initial values), a fifth of one apart, so that each head's factor moves with its position and
+/// a few change sign; the learned factors about 0, a fifth apart. Its head is drawn at half a head's width (the manifest's `head`): at a whole one the
+/// case's noise floor against fp32 (`mistral_noise_floor`) was KL mean 1.05e-5 and max 1.68e-5, past a tenth of the kind's bound (1.0e-5 and 2.5e-5); at
+/// half it is 8.3e-7 and 1.3e-6, and 7.0e-7 to 8.4e-7 on two other seeds.
+pub fn mistral_random(out: &Path) -> Result<()> {
+    mistral_draw(out, MISTRAL_SEED)
+}
+
+/// The seed of `mistral_random`'s draw.
+pub const MISTRAL_SEED: u64 = 0x2026_1128_0000_0071;
+
+/// `mistral_random` drawn from `seed` (not 0).
+pub fn mistral_draw(out: &Path, seed: u64) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/mistral_tiny_manifest.json"), out, seed, true, "Mistral Large model")
+}
+
 /// A small Qwen3.5-family text model (Qwen3_5ForCausalLM: three Gated DeltaNet layers and a gated full-attention one, 1024 wide, a vocabulary of 4096): the layout of Qwen3.8-27B and the releases of its family at 0.8B's widths.
 /// Drawn by `manifest_random`'s rules, then the final norm's (1 + w) times `QWEN35_HEAD` (`head_scaled`): its head's logits that much smaller, which every row's
 /// KL from a last-place difference goes as a power of. As first drawn, the GPU against itself (each prompt served alone against all 64 at once, its sums in another
@@ -2597,12 +2618,22 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
             // (a router's choice bias an expert: beside sigmoid scores, a tenth of their range: small enough that the scores still choose and large enough
             // to change some choices)
             (0..n).map(|_| (gauss(&mut u01) * 0.1) as f32).collect()
-        } else if name.contains("ngram_embedding") || name.contains("embed_tokens") || name.contains("word_embeddings") {
+        } else if name.ends_with("ssmax_scaling.s") || name.ends_with("lerope.alpha") {
+            // (a query head's scale by the logarithm of its position, and a rotary angle's learned factor's logarithm: about 0, where transformers
+            // begins them, far enough from it that each changes what it scales)
+            (0..n).map(|_| (gauss(&mut u01) * 0.2) as f32).collect()
+        } else if name.ends_with("ssmax_scaling.b") {
+            // (the scale's bias a head: about 1, the first token's factor)
+            (0..n).map(|_| (1.0 + gauss(&mut u01) * 0.2) as f32).collect()
+        } else if name.ends_with("_norm.bias") {
+            // (a LayerNorm's bias: a tenth of its normed values)
+            (0..n).map(|_| (gauss(&mut u01) * 0.1) as f32).collect()
+        } else if name.contains("ngram_embedding") || name.contains("embed_tokens") || name.contains("word_embeddings") || name.contains("tok_embeddings") {
             // (an embedding that is the head too, as Qwen3.5's tied one is, is as wide as a head's rows: else its logits are tens apart and the softmax a point)
             let std = if tied && name.contains("embed_tokens") { head / (cols as f64).sqrt() } else { 1.0 };
             (0..n).map(|_| (gauss(&mut u01) * std) as f32).collect()
         } else if shape.len() == 2 || name.contains("experts.") {
-            let s = if name == "lm_head.weight" { head } else { 1.0 } / (cols as f64).sqrt();
+            let s = if name == "lm_head.weight" || name == "output.weight" { head } else { 1.0 } / (cols as f64).sqrt();
             (0..n).map(|_| (gauss(&mut u01) * s) as f32).collect()
         } else {
             return err(format!("no rule for {name} {shape:?}"));
@@ -2811,6 +2842,16 @@ pub fn cases() -> Vec<Case> {
             id: "ling",
             family: "Ling (groups of the Kimi delta attention closed by a latent attention gated a head, on plain residuals; grouped experts with limits on the activated gate)",
             weights: Weights::Random(ling_random),
+            engine: glm_dsa_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            on_choices: Some(ref_drive),
+            also: None,
+        },
+        Case {
+            id: "mistral",
+            family: "Mistral Large (latent attention scaled by position, learned rotary frequencies, latents shared across layers, an indexer on the layer's input; a capped head)",
+            weights: Weights::Random(mistral_random),
             engine: glm_dsa_engine,
             cpu: Some(described_cpu),
             vocab: 4096,
@@ -4784,6 +4825,23 @@ mod tests {
         assert!(worst <= 1e-5, "a noise floor of KL {worst:.2e}, past a tenth of the bound");
     }
 
+    /// Mistral Large's layout (the mistral case): its noise floor as `ling_noise_floor` measures Ling's (the rounding points its description gives, the
+    /// RMS norms' and the capped head's `Twice`, against every one in fp32, on the same experts and picks), on the case's model and two of other seeds, each
+    /// at most a tenth of the lossless bound. cargo test --profile ci -- --ignored mistral_noise_floor.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore]
+    fn mistral_noise_floor() {
+        let mut worst = 0f64;
+        for k in 0..3u64 {
+            let dir = std::env::temp_dir().join(format!("glyd-mistralfloor-{k}-{}", std::process::id()));
+            mistral_draw(&dir, MISTRAL_SEED ^ (k << 32)).unwrap();
+            worst = worst.max(rounded_against_f32(&dir, &format!("mistral seed {k}")));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        assert!(worst <= 1e-5, "a noise floor of KL {worst:.2e}, past a tenth of the bound");
+    }
+
     /// The CPU reference of the model in `dir` with its description's rounding points against itself with every one in fp32 (`ModelDesc::f32_arithmetic`),
     /// the f32 run taking the rounded run's experts and indexer picks, on the standard tokens (each sequence a token at a time from a fresh model): the KL
     /// mean over the rows, printed with its max (as `what`).
@@ -5940,7 +5998,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
         "dense" | "domynedge" | "granite-swa" | "mellum" | "lfm3" | "mimo" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" | "kimi-dsa" => crate::dynamic::kimi::load(dir, o)?,
-        "glm-dsa" | "glm-dsa-f8" | "ling" => crate::dynamic::glm::load_plain(dir, o)?,
+        "glm-dsa" | "glm-dsa-f8" | "ling" | "mistral" => crate::dynamic::glm::load_plain(dir, o)?,
         // (its experts at a lossy level, as its logits case: kestrel where penguin is asked)
         "glm" => crate::dynamic::glm::load(dir, &DynOpts { layout: Some(Layout::Tiered), ..o.clone() }, level_layout(level)?.unwrap_or(Layout::Int6))?,
         // (its experts at the level asked: the lossless one where none is)
@@ -6026,6 +6084,7 @@ fn random_model_of(case: &str, dir: &Path) -> Result<()> {
         "lfm3" => lfm3_random(dir),
         "mimo" => mimo_random(dir),
         "ling" => ling_random(dir),
+        "mistral" => mistral_random(dir),
         "muse" => crate::muse_ref::random(dir),
         "kimi" => crate::kimi_ref::random(dir, 1, true, 8),
         "kimi-dsa" => crate::kimi_ref::random_dsa(dir),

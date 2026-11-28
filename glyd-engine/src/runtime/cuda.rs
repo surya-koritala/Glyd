@@ -261,7 +261,7 @@ mod tests {
     /// operation of every layer is in one piece: the description's blocks, in order, are the executor's runs.
     #[test]
     fn every_block_is_a_piece_of_its_kind() {
-        const CASES: [&str; 16] = [
+        const CASES: [&str; 17] = [
             "gemma4",
             "gemma4-kv",
             "dense",
@@ -270,6 +270,7 @@ mod tests {
             "glm",
             "glm-dsa",
             "ling",
+            "mistral",
             "kimi",
             "kimi-dsa",
             "deepseek-v4",

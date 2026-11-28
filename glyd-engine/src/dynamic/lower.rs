@@ -103,7 +103,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         let sliding = a.window.is_some();
         let slot = if sliding { &mut sliding_rope } else { &mut global_rope };
         let r = *slot.get_or_insert_with(|| {
-            ropes.push(Rope { theta: rope.theta, dim: rope.dim, pairs: rope.freqs, trig64: false, scaled: None });
+            ropes.push(Rope { theta: rope.theta, dim: rope.dim, pairs: rope.freqs, trig64: false, scaled: None, learned: None });
             ropes.len() - 1
         });
         let (dh, nk, has_v) = (a.head_dim, a.kv_heads, !a.k_eq_v);
@@ -341,7 +341,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
                 Some(r) => {
                     // (a scaled rotary: the frequencies and the factor the reference makes of the kind, a table of them)
                     let scaled = (r.scaling != RopeScaling::None).then(|| crate::runtime::reference::rope::inv_freq(r));
-                    let t = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false, scaled };
+                    let t = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false, scaled, learned: None };
                     Some(match ropes.iter().position(|x| (x.theta, x.dim, x.pairs) == (t.theta, t.dim, t.pairs) && x.scaled == t.scaled) {
                         Some(i) => i,
                         None => {
@@ -776,7 +776,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                                 "{what}: a rotary of {r:?} and an indexer of {ix:?}: the kernels take the plain rotary within the index heads, of a multiple of 32 up to 1,024"
                             ));
                         }
-                        let rt = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false, scaled: None };
+                        let rt = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false, scaled: None, learned: None };
                         let table = match ropes.iter().position(|x| (x.theta, x.dim, x.pairs) == (rt.theta, rt.dim, rt.pairs)) {
                             Some(i) => i,
                             None => {
@@ -1318,7 +1318,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
         mats,
         small,
         forms: Vec::new(),
-        ropes: vec![Rope { theta: rope.theta, dim: rotary, pairs: rotary / 2, trig64: false, scaled: None }],
+        ropes: vec![Rope { theta: rope.theta, dim: rotary, pairs: rotary / 2, trig64: false, scaled: None, learned: None }],
         rings,
         first: first.unwrap_or(Op::RmsNorm { x: Slot::X, w: 0, y: Slot::H, weight: NormW::PlusOne, eps }),
         layers: ops_all,
@@ -1648,7 +1648,14 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         mats,
         small,
         forms,
-        ropes: vec![Rope { theta: atts.iter().find_map(|a| a.rope.as_ref()).map_or(0.0, |r| r.theta), dim: hd, pairs: hd / 2, trig64: true, scaled: None }],
+        ropes: vec![Rope {
+            theta: atts.iter().find_map(|a| a.rope.as_ref()).map_or(0.0, |r| r.theta),
+            dim: hd,
+            pairs: hd / 2,
+            trig64: true,
+            scaled: None,
+            learned: None,
+        }],
         rings,
         first: Op::RmsNorm { x: Slot::X, w: ones, y: Slot::X, weight: NormW::Plain, eps },
         layers: ops_all,
@@ -1788,6 +1795,9 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
             ops.extend(kda_ops(m0, s0, conv, ssm, qd, heads, bound));
         } else if let Some(x) = mla {
             // (q's and the key-value latent's products apart; the indexer's picks given as their tokens and the open pool's)
+            if let Some(why) = x.plain_only() {
+                return err(why);
+            }
             let op = super::mla::MlaOp::of(x, super::mla::MlaIn::Apart { q_a: m0, kv_a: m0 + 2 }, m0 + 1, m0 + 3, n_small, rings.len(), true, None)?;
             let q_rank = x.q_lora.ok_or_else(|| Error(format!("GLM-5.3-Flash: layer {l}'s latent attention has no query latent")))?;
             mats.extend([
@@ -1869,6 +1879,12 @@ pub(crate) fn split_apart_picks(l: usize) -> String {
     format!("{LATENT}: layer {l} takes the picks of a layer of another stage: a split must keep them together")
 }
 
+/// The words for a split that puts a layer in another stage than the layer whose latents it attends to (`kinds::Mla::kv_from`; `j` that layer's block): the
+/// loader's refusal of it.
+pub(crate) fn split_apart_latents(l: usize, j: usize) -> String {
+    format!("{LATENT}: layer {l} attends to the latents of block {j}, no latent attention of its stage that makes its own before it: a split must keep them together")
+}
+
 /// Blocks of a latent attention and a feed-forward on the plain residual (GLM-5.3, `glm_moe_dsa`): x += mla(norm(x)), x += ffn(norm(x)) a layer, the
 /// feed-forward a SwiGLU MLP or a block of experts (`dynamic::experts`), the final norm, the head; stage `st` (a model split across GPUs). The residual rounds
 /// to bf16 at each add and every norm rounds as the kind says (`Rounding::Twice`, transformers' bf16 RMSNorm: `NormW::Rounded`; the reference's residual
@@ -1887,12 +1903,19 @@ pub(crate) fn split_apart_picks(l: usize) -> String {
 /// its states a sequence the convolutions' last three inputs (bf16) and the rule's state (fp32 [heads, 128, 128]), in the description's `states`, which
 /// the plan counts. What the kernels do not take is refused by name: heads of another size than 128, a convolution of other than 4 taps, a decay that is
 /// not the bounded one, gates in a low rank.
+///
+/// Mistral Large's layers are this lowering's too: the rotary's table is YaRN's frequencies times the model's learned factors (`Rope::learned`, the tensor
+/// named after every operation's small tensors); a layer with no positions has no shared key part beside layers with one (each operation's own widths, the
+/// scratch sized for all: `MlaRun`); a layer that attends to an earlier layer's latents (`MlaIn::Borrowed`) has no kv_a and no norm of a latent, reads
+/// that layer's ring and must be in its stage; an indexer on the layer's input adds, after its other small tensors, the weight and bias of the norm its
+/// queries read and their scale by position; the attention's queries' scale by position is the layer's last two small tensors; the head is soft-capped
+/// (`ModelDesc::softcap`, each of the cap's operations rounded).
 pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     super::split::runs(d)?;
     use super::mla::{MlaIn, MlaOp};
     use crate::kern::GM_D;
     use crate::moe::Act;
-    use crate::runtime::kinds::{Clamp, Collapse, Decay, LinearKind, NormKind, NormWeight, Residual, Rounding};
+    use crate::runtime::kinds::{Clamp, Collapse, Decay, LinearKind, NormKind, NormWeight, Residual, RopeScaling, Rounding};
     let m = &d.desc;
     let h = m.hidden;
     let what = LATENT;
@@ -1903,8 +1926,13 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
             m.embed.streams
         ));
     }
-    if m.head.rounding != Rounding::Once || m.head.scale != 1.0 || m.head.softcap.is_some() || m.head.collapse != Collapse::None {
-        return err(format!("{what}: a head of {:?}, where the executor's rounds the product's output to bf16, unscaled and uncapped", m.head));
+    // (the executor's head: the product's bf16 output; with a soft cap, the cap's three operations each rounded after it, as Gemma 4's head's)
+    let head_rounds = if m.head.softcap.is_some() { Rounding::Twice } else { Rounding::Once };
+    if m.head.rounding != head_rounds || m.head.scale != 1.0 || m.head.collapse != Collapse::None {
+        return err(format!(
+            "{what}: a head of {:?}, where the executor's rounds the product's output to bf16, unscaled, and with a soft cap rounds each of its operations",
+            m.head
+        ));
     }
     let norms = m.blocks.iter().map(|b| &b.norm_in).chain([&m.final_norm]);
     if let Some(n) = norms.clone().find(|n| n.kind != NormKind::Rms || n.weight != NormWeight::Plain || n.rounding != Rounding::Twice) {
@@ -1929,6 +1957,11 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
     let mut first = None;
     // (the pick the latent attention before a layer leaves, for a `shared` one: its shape, and whether it ran in this stage)
     let mut lender: Option<(super::IdxPick, bool)> = None;
+    // (each layer of the stage whose latent attention makes its own latents: their ring, the latent's width and the shared key part's, for a layer that
+    // attends to them)
+    let mut made: Vec<Option<(usize, usize, usize)>> = vec![None; layers];
+    // (whether a latent attention's queries are one product of the layer's input: not GLM-5.3's layout, whose name the description then does not take)
+    let mut one_product = false;
     for l in 0..layers {
         let (ab, fb) = (&m.blocks[2 * l], &m.blocks[2 * l + 1]);
         if ab.residual != Residual::Add || fb.residual != Residual::Add || ab.norm_out.is_some() || fb.norm_out.is_some() {
@@ -1940,22 +1973,46 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
         // (the layer's mixer: the latent attention's operation, or the delta attention's heads and its decay's bound)
         let (latent, delta) = match &ab.body {
             Body::Mixer(Mixer::Mla(x)) => {
-                let table = match (&x.rope, ropes.first()) {
-                    (None, _) => None,
-                    (Some(r), None) => {
-                        ropes.push(Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false, scaled: None });
+                // (the table of the layer's rotary: the default frequencies; a scaling's own, which no sequence's length changes (`MlaOp::of` refuses the
+                // others); learned factors of them, the model's one tensor, read when the table is made)
+                let table = match &x.rope {
+                    None => None,
+                    Some(r) => {
+                        let scaled = (r.scaling != RopeScaling::None || x.rope_learned).then(|| crate::runtime::reference::rope::inv_freq(r));
+                        let learned = if x.rope_learned { Some(one(a, "rope_alpha")?) } else { None };
+                        let t = Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false, scaled, learned };
+                        match ropes.first() {
+                            None => ropes.push(t),
+                            Some(t0) if (t0.theta, t0.dim, t0.pairs, &t0.scaled, &t0.learned) == (t.theta, t.dim, t.pairs, &t.scaled, &t.learned) => {}
+                            Some(t0) => return err(format!("{what}: layer {l}'s rotary {r:?}, where an earlier layer's is {t0:?}: one table")),
+                        }
                         Some(0)
                     }
-                    (Some(r), Some(t)) if (r.theta, r.dim, r.freqs) == (t.theta, t.dim, t.pairs) => Some(0),
-                    (Some(r), Some(t)) => return err(format!("{what}: layer {l}'s rotary {r:?}, where an earlier layer's is {t:?}: one table")),
                 };
                 // (pools of tokens give the open pool's tokens after the best pools', the release's; a key a token has none)
                 let tail = x.indexer.as_ref().is_some_and(|i| i.block > 1);
-                // (the queries through a latent of their own, q_a and kv_a apart; or one product of the layer's input, then kv_a)
-                let (input, q_b, o) = match x.q_lora {
-                    Some(_) => (MlaIn::Apart { q_a: m0, kv_a: m0 + 2 }, m0 + 1, m0 + 3),
-                    None => (MlaIn::Direct { kv_a: m0 + 1 }, m0, m0 + 2),
+                // (the queries through a latent of their own, q_a and kv_a apart; or one product of the layer's input, then kv_a; or that product and
+                // the latents of an earlier layer of the stage, of the same widths: block `j`'s, a layer's first)
+                let (input, q_b, o) = match (x.q_lora, x.kv_from) {
+                    (Some(_), None) => (MlaIn::Apart { q_a: m0, kv_a: m0 + 2 }, m0 + 1, m0 + 3),
+                    (None, None) => (MlaIn::Direct { kv_a: m0 + 1 }, m0, m0 + 2),
+                    (_, Some(j)) => {
+                        let from = match made.get(j / 2).copied().flatten().filter(|_| j % 2 == 0 && j / 2 < l) {
+                            Some((ring, kr, rd)) if (kr, rd) == (x.kv_lora, x.rope_dim) => ring,
+                            Some((_, kr, rd)) => {
+                                return err(format!(
+                                    "{what}: layer {l}'s latents of {} + {} attend to block {j}'s of {kr} + {rd}: one width of latent and of shared key part",
+                                    x.kv_lora, x.rope_dim
+                                ))
+                            }
+                            // (another stage's layer: its operation is not this stage's, and names no ring)
+                            None if !mine => 0,
+                            None => return err(split_apart_latents(l, j)),
+                        };
+                        (MlaIn::Borrowed { from }, m0, m0 + 1)
+                    }
                 };
+                one_product |= x.q_lora.is_none() && qd == 0;
                 let mut op = MlaOp::of(x, input, q_b, o, n_small + 2, rings.len(), tail, table)?;
                 // (a shared indexer's picks are the ones the latent attention before it made, of the same pick (its keys the lender's ring), in this stage)
                 if let (Some(p), Some((q, _))) = (op.lent.as_mut(), &lender) {
@@ -2050,10 +2107,14 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
                 }
                 None => mats.push(it(vec![one(a, "q")?], qw, h)),
             }
-            mats.extend([it(vec![one(a, "kv_a")?], x.kv_lora + x.rope_dim, h), it(vec![one(a, "o")?], h, x.heads * x.v_dim)]);
-            for r in ["kv_a_norm", "kv_b"] {
-                small.push(one(a, r)?);
+            // (its own key-value latent's product and norm; none where its latents are another layer's)
+            if !op.borrowed() {
+                mats.push(it(vec![one(a, "kv_a")?], x.kv_lora + x.rope_dim, h));
+                small.push(one(a, "kv_a_norm")?);
+                made[l] = Some((op.ring, x.kv_lora, x.rope_dim));
             }
+            mats.push(it(vec![one(a, "o")?], h, x.heads * x.v_dim));
+            small.push(one(a, "kv_b")?);
             // (its own indexer's, in the order the operation reads them: `MlaIndexer::at`)
             if let Some(ix) = op.indexer.as_ref() {
                 let layer = matches!(ix.key, super::mla::KeyNorm::Layer(_));
@@ -2061,7 +2122,9 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
                     .into_iter()
                     .chain(layer.then_some("indexer_k_norm_bias"))
                     .chain(["indexer_weights"])
-                    .chain(if ix.pooled() { ["indexer_pool_ape", "indexer_pool_gate"].as_slice() } else { &[] }.iter().copied());
+                    .chain(if ix.pooled() { ["indexer_pool_ape", "indexer_pool_gate"].as_slice() } else { &[] }.iter().copied())
+                    .chain(if ix.q_in.is_some() { ["indexer_q_norm", "indexer_q_norm_bias"].as_slice() } else { &[] }.iter().copied())
+                    .chain(if ix.pos_scale { ["indexer_scale_s", "indexer_scale_b"].as_slice() } else { &[] }.iter().copied());
                 for r in names {
                     small.push(one(a, r)?);
                 }
@@ -2069,6 +2132,10 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
             // (a gate of one value a head: its matrix a small tensor, after the indexer's)
             if op.head_gate.is_some() {
                 small.push(one(a, "g")?);
+            }
+            // (the queries' scale by position: a value a head each, the operation's last two)
+            if op.pos_scale.is_some() {
+                small.extend([one(a, "q_scale_s")?, one(a, "q_scale_b")?]);
             }
             n_small += op.small_count();
             n_mats += op.mat_count();
@@ -2138,6 +2205,12 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
         last.extend([Op::Add { x: Slot::D }, Op::RmsNorm { x: Slot::X, w: n_small, y: Slot::H, weight: NormW::Rounded, eps }]);
         n_small += 1;
     }
+    // (a rotary's learned frequencies: the table is made from the tensor at load; no operation reads it, and it is named after every one's so that the
+    // description names every tensor a load of it reads)
+    if let Some(alpha) = ropes.first().and_then(|r| r.learned.clone()) {
+        small.push(alpha);
+        n_small += 1;
+    }
     let e = n_mats;
     let lm = if st.last && d.head.is_some() { e + 1 } else { e };
     mats.push(it(vec![d.embed.clone()], m.vocab, h));
@@ -2159,7 +2232,14 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
         }
     }
     Ok(ModelDesc {
-        family: if qd > 0 { "a delta and latent attention model" } else { "GLM-5.3" },
+        // (GLM-5.3's layout: every layer a latent attention whose queries have a latent of their own)
+        family: if qd > 0 {
+            "a delta and latent attention model"
+        } else if one_product {
+            LATENT
+        } else {
+            "GLM-5.3"
+        },
         hidden: h,
         vocab: m.vocab,
         eps,
@@ -2178,7 +2258,7 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
         skinny: false,
         embed: e,
         lm,
-        softcap: 0.0,
+        softcap: m.head.softcap.unwrap_or(0.0),
         eos,
         post: None,
         v4: None,
@@ -2252,6 +2332,9 @@ pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32
             }
             Body::Mixer(Mixer::Mla(x)) => {
                 // (q_a, the gate and kv_a one product; with the newer config's indexer on the layers it names)
+                if let Some(why) = x.plain_only() {
+                    return err(why);
+                }
                 let op = super::mla::MlaOp::of(x, super::mla::MlaIn::Fused { w: 0 }, 0, 0, 0, 0, false, None)?;
                 if x.indexer.is_some() {
                     mla_ix = Some(op);
@@ -3059,6 +3142,119 @@ mod tests {
         assert!(dense(&config(&["conv"], serde_json::json!({"conv_L_cache": 16})), vec![2], 4096).is_ok());
     }
 
+    /// Mistral Large's small model's config (tests/fixtures/mistral_tiny_manifest.json) with `keys` over it, described.
+    fn mistral_tiny(keys: serde_json::Value) -> Described {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/mistral_tiny_manifest.json")).unwrap()).unwrap();
+        let mut cfg: serde_json::Value = serde_json::from_str(manifest["config"].as_str().unwrap()).unwrap();
+        cfg.as_object_mut().unwrap().extend(keys.as_object().unwrap().clone());
+        crate::runtime::describe::describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg))
+    }
+
+    /// Mistral Large's small model (the logits checks' random one) lowers whole by the planner's choice of a lowering: the description reads every tensor
+    /// of its manifest at the manifest's shape and the lowering names every one that is not a block of experts' own, the rotary's learned factors among
+    /// them. Every layer's queries are one product and scaled by position; layers 3 and 7 have no positions (no shared key part, heads of 128 from the
+    /// latent alone) beside layers with 64 rotated channels, turned by the one table of YaRN's frequencies times the learned factors; layer 7 attends to
+    /// layer 3's latents (its ring; no kv_a, no norm, no ring of latents of its own) and keeps its own indexer's keys; layers 2, 5 and 6 take the picks of
+    /// the layer before; an indexer of a layer's own reads the layer's input through a LayerNorm and scales its queries by position. The first layer's
+    /// feed-forward is the dense MLP, the others' softmax-routed experts beside a shared MLP; the head is its own matrix, soft-capped at 30. A stage that
+    /// would part a layer from the latents it attends to is refused in words.
+    #[test]
+    fn the_random_mistral_large_lowers_with_every_tensor_named() {
+        use super::super::mla::{MlaIn, MlaOp};
+        use super::super::Stage;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/mistral_tiny_manifest.json")).unwrap()).unwrap();
+        let kinds = mistral_tiny(serde_json::json!({}));
+        let have: std::collections::BTreeSet<String> = manifest["tensors"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
+        kinds.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+        for t in manifest["tensors"].as_array().unwrap() {
+            let shape: Vec<usize> = t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+            assert_eq!(kinds.shapes.get(t[0].as_str().unwrap()), Some(&shape), "{}", t[0]);
+        }
+        let d = super::super::split::lowered_described(&kinds, 8, 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert_eq!(super::super::unnamed(&d), None);
+        let named: std::collections::BTreeSet<String> =
+            d.mats.iter().flat_map(|it| it.members.iter()).cloned().chain(d.small.iter().flat_map(|s| s.split('|').map(String::from))).collect();
+        // (a block of experts reads its own tensors: the router, the experts' and the shared MLP's matrices)
+        let own: std::collections::BTreeSet<String> = have.iter().filter(|n| n.contains(".gate.weight") || n.contains("experts.")).cloned().collect();
+        assert!(named.is_disjoint(&own) && named.union(&own).cloned().collect::<std::collections::BTreeSet<_>>() == have);
+        assert_eq!(d.small.last().map(String::as_str), Some("lerope.alpha"));
+        // (one table: YaRN's frequencies, the learned factors' tensor named; the head capped)
+        assert_eq!((d.ropes.len(), d.ropes[0].pairs, d.ropes[0].learned.as_deref(), d.ropes[0].scaled.is_some()), (1, 32, Some("lerope.alpha"), true));
+        assert_eq!((d.softcap, d.lm, d.final_norm.is_none(), d.states.len()), (30.0, d.embed + 1, true, 0));
+        let ops: Vec<&MlaOp> = d.layers.iter().flatten().filter_map(|o| if let Op::Mla(a) = o { Some(a) } else { None }).collect();
+        assert_eq!(ops.len(), 8);
+        // (seven layers' latents and five indexers' keys: layer 7 has no ring of latents)
+        assert_eq!(d.rings.len(), 7 + 5);
+        for (l, a) in ops.iter().enumerate() {
+            let (turns, full) = (l % 4 != 3, ![2, 5, 6].contains(&l));
+            assert_eq!(
+                (a.heads, a.kv_rank, a.v, a.q_rank, a.nope, a.rope),
+                (2, 64, 64, 0, if turns { 64 } else { 128 }, if turns { 64 } else { 0 }),
+                "layer {l}"
+            );
+            assert_eq!(a.rot.map(|r| (r.table, r.index)), turns.then_some((0, if full { 64 } else { 0 })), "layer {l}");
+            assert_eq!((a.indexer.is_some(), a.lent.is_some(), a.pos_scale.is_some()), (full, !full, true), "layer {l}");
+            assert_eq!(matches!(a.input, MlaIn::Borrowed { .. }), l == 7, "layer {l}");
+            let r = &d.rings[a.ring];
+            assert_eq!((r.d, r.values), (64 + a.rope, false), "layer {l}");
+            if let Some(x) = &a.indexer {
+                assert_eq!(
+                    (x.pick.heads, x.dim, x.pick.ratio, x.pick.top_k, x.pick.tail, x.q_in, x.pos_scale),
+                    (4, 128, 1, 8, false, Some(1e-6), true),
+                    "layer {l}"
+                );
+                assert_eq!(
+                    (d.rings[x.ring()].d, d.small[x.scale_b].as_str()),
+                    (256, format!("layers.{l}.attention.indexer.ssmax_scaling.b").as_str()),
+                    "layer {l}"
+                );
+                assert_eq!(d.small[x.q_bias], format!("layers.{l}.attention.indexer.q_input_norm.bias"), "layer {l}");
+            }
+            let (ss, sb) = a.pos_scale.unwrap();
+            assert_eq!(
+                (d.small[ss].as_str(), d.small[sb].as_str(), d.small[a.kv_b].as_str()),
+                (
+                    format!("layers.{l}.attention.ssmax_scaling.s").as_str(),
+                    format!("layers.{l}.attention.ssmax_scaling.b").as_str(),
+                    format!("layers.{l}.attention.wkv_b.weight").as_str()
+                )
+            );
+            assert_eq!(d.mats[a.q_b].members, [format!("layers.{l}.attention.wq.weight")], "layer {l}");
+            assert_eq!(d.mats[a.o].members, [format!("layers.{l}.attention.wo.weight")], "layer {l}");
+        }
+        // (layer 7 reads layer 3's ring, of the same width; a shared layer's picks are over the keys of the layer that made them)
+        assert_eq!((ops[7].ring, ops[7].input), (ops[3].ring, MlaIn::Borrowed { from: ops[3].ring }));
+        assert_ne!(ops[7].indexer.as_ref().unwrap().ring(), ops[3].indexer.as_ref().unwrap().ring());
+        assert_eq!(ops[2].lent.as_ref().map(|p| p.keys), ops[1].indexer.as_ref().map(|x| x.pick.keys));
+        assert_eq!(ops[6].lent.as_ref().map(|p| p.keys), ops[4].indexer.as_ref().map(|x| x.pick.keys));
+        // (the scratch is made for every layer's shape: `MlaRun::new` takes the most of each over the operations)
+        assert!(ops.iter().all(|a| a.check().is_ok()));
+        // (the feed-forwards: the dense MLP, then seven blocks of softmax-routed experts with a shared MLP)
+        assert!(d.layers[0].iter().any(|o| matches!(o, Op::GatedAct { inter: 512, .. })));
+        assert_eq!(d.layers.iter().flatten().filter(|o| matches!(o, Op::Moe(_))).count(), 7);
+        for (_, m, _) in super::super::experts::of_layers(&kinds, (0, 8), 2) {
+            let (c, shared) = super::super::experts::cfg_shared(m, 256, 128).unwrap_or_else(|e| panic!("{}", e.msg));
+            c.check().unwrap_or_else(|e| panic!("{}", e.msg));
+            assert_eq!((c.experts, c.router.top_k, c.router.groups, c.router.scale, c.router.renorm, shared.is_some()), (16, 4, None, 1.0, true, false));
+        }
+        // (a stage that begins after layer 3 holds layer 7 without the latents it attends to)
+        let e = latent_moe(&kinds, vec![2], 4096, &Stage { layers: (4, 8), first: false, last: true }).unwrap_err().msg;
+        assert_eq!(e, split_apart_latents(7, 6));
+        // (stages that keep them together lower: every operation's tensors named in each)
+        for st in [Stage { layers: (0, 3), first: true, last: false }, Stage { layers: (3, 8), first: false, last: true }] {
+            let part = latent_moe(&kinds, vec![2], 4096, &st).unwrap_or_else(|e| panic!("{st:?}: {}", e.msg));
+            assert_eq!(part.small.last().map(String::as_str), Some("lerope.alpha"), "{st:?}");
+        }
+        // (a head with no cap is the plain one; a cap with the product's rounding alone is not the executor's)
+        let mut once = kinds.clone();
+        once.desc.head.rounding = crate::runtime::kinds::Rounding::Once;
+        assert!(latent_moe(&once, vec![2], 4096, &Stage::whole(8)).unwrap_err().msg.contains("with a soft cap rounds each of its operations"));
+    }
+
     /// Ling's small model's config (tests/fixtures/ling_tiny_manifest.json) with `keys` over it, described.
     fn ling_tiny(keys: serde_json::Value) -> Described {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -3554,7 +3750,11 @@ mod tests {
             let eps = cfg["rms_norm_eps"].as_f64().unwrap() as f32;
             assert_eq!((d.family, d.hidden, d.vocab, d.eps, d.layers.len()), (super::super::dense::FAMILY, hid, n("vocab_size"), eps, layers), "{what}");
             let theta = cfg["rope_theta"].as_f64().unwrap();
-            assert_eq!(format!("{:?}", d.ropes), format!("{:?}", [Rope { theta, dim: hd, pairs: hd / 2, trig64: false, scaled: None }]), "{what}");
+            assert_eq!(
+                format!("{:?}", d.ropes),
+                format!("{:?}", [Rope { theta, dim: hd, pairs: hd / 2, trig64: false, scaled: None, learned: None }]),
+                "{what}"
+            );
             // (the small tensors: each layer's two norms, its q and k norms where it has them; then the final norm)
             let per = if qk { 4 } else { 2 };
             assert_eq!(d.small.len(), per * layers + 1, "{what}");

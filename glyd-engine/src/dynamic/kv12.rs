@@ -323,7 +323,8 @@ pub fn shapes(d: &super::ModelDesc) -> Vec<Option<KvShape>> {
                     round: a.sbf16,
                     width: a.nk * a.d,
                 }),
-                Op::Mla(a) => {
+                // (a latent attention with another layer's latents writes none: the ring is its writer's)
+                Op::Mla(a) if !a.borrowed() => {
                     let w = a.kv_rank + a.rope;
                     Some(KvShape { ring: a.ring, heads: w.div_ceil(128), channels: 128, one: true, window: 0, scale: a.scale as f64, round: false, width: w })
                 }
@@ -338,7 +339,7 @@ pub fn writer(d: &super::ModelDesc, ring: usize) -> Option<(usize, usize)> {
     d.layers.iter().enumerate().find_map(|(l, ops)| {
         ops.iter().find_map(|op| match op {
             Op::Attn(a) if a.writes && a.ring == ring => Some((l, a.nq)),
-            Op::Mla(a) if a.ring == ring => Some((l, 1)),
+            Op::Mla(a) if a.ring == ring && !a.borrowed() => Some((l, 1)),
             _ => None,
         })
     })
