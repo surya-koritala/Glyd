@@ -279,7 +279,7 @@ mod tests {
             q_head_norm: false,
             share: None,
         };
-        let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: Some(10.0) };
+        let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: Some(crate::runtime::kinds::Clamp::Gate(10.0)) };
         let blk = |body: Body| Block { norm_in: Norm::rms(1e-6), body, norm_out: None, residual: Residual::Streams(s) };
         let blocks = vec![blk(Body::Mixer(Mixer::Compressed(c))), blk(Body::Ffn(Ffn::Mlp(mlp)))];
         let mut layers = Vec::new();

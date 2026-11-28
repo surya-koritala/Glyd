@@ -2,7 +2,8 @@
 //! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), Qwen3.8-Flash-Next (Ibis's
 //! model: gated residuals, the indexer on GQA, the hashed n-gram embedding), gemma-4 text, GLM-5.3 and
 //! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, DeepSeek-V4, Nemotron 3
-//! (`nemotron_h`), LFM3 (`lfm3`: described, not run yet), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
+//! (`nemotron_h`), LFM3 (`lfm3`: described, not run yet), Ling 3 (`bailing_hybrid`: described, not run yet), and the Llama-style standard
+//! architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
 //! through the tables of their naming convention (`names`); a format detail such as Kimi-K3's MXFP4 experts (`.weight_packed` for
 //! `.weight`) is the loader's. The config comes parsed once (`config::ModelConfig`).
 //!
@@ -566,6 +567,10 @@ pub fn describe_config_in(c: &ModelConfig, have: Option<&BTreeSet<String>>) -> R
     // (the Kimi-K3 layout by its text model's, not the wrapper's release name: Kimi-K3's wrapper is `kimi_k3`, Kimi-K3.1's `kimi_k31`)
     if c.nested && c.text_type == "kimi_linear" {
         return kimi(c);
+    }
+    // (Ling by its text model's type, in the vision-language wrapper `bailing_moe_v3_vl` or alone)
+    if c.text_type == "bailing_hybrid" {
+        return ling(c);
     }
     match c.model_type.as_str() {
         "muse_spark" => return muse(c),
@@ -2773,7 +2778,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     let mlp_types: Option<Vec<bool>> = k.raw("mlp_layer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str() == Some("sparse")).collect());
     let dense_inter = k.usize("intermediate_size")?;
     let moe_inter = k.usize("moe_intermediate_size")?;
-    let clamp = if flash { k.opt_f64("swiglu_limit")?.map(|v| v as f32) } else { None };
+    let clamp = if flash { k.opt_f64("swiglu_limit")?.map(|v| Clamp::Gate(v as f32)) } else { None };
     let mlp = Mlp { act, gated: true, bias: false, clamp };
     let ne = k.usize("n_routed_experts")?;
     let ng = k.opt_usize("n_group")?.unwrap_or(1);
@@ -3321,6 +3326,384 @@ fn kimi_mxfp4(q: &Value) -> Result<()> {
     Ok(())
 }
 
+/// The roles whose matrices a Ling release holds in FP8 where its `quantization_config` does not leave their module out: every product of a layer (the
+/// modules that are `nn.Linear`); not the router (a parameter, and listed), the convolutions, the norms, A_log or dt_bias.
+const LING_FP8: &[&str] = &[
+    "q",
+    "k",
+    "v",
+    "o",
+    "decay",
+    "gate",
+    "beta",
+    "q_a",
+    "q_b",
+    "kv_a",
+    "kv_b",
+    "g",
+    "up",
+    "down",
+    "shared_gate",
+    "shared_up",
+    "shared_down",
+    "experts_gate_up",
+    "experts_down",
+];
+
+/// Ling 3 (`bailing_hybrid`, the text model of BailingMoeV3VLForConditionalGeneration, `bailing_moe_v3_vl`): a pre-norm decoder on a plain residual whose
+/// layers are of two sorts of mixer and, a layer, a gated SiLU MLP or a mixture of experts, read as the release's own modelling code reads its config
+/// (`modeling_bailing_moe_v3_vl.py`), with vLLM's, SGLang's, llama.cpp's and transformers' readings beside it.
+///  - `layer_group_size` g: layer l is a latent attention where (l + 1) is a multiple of g, and where l is past the last whole group (l >= layers / g * g);
+///    every other layer is the Kimi delta attention. (transformers and SGLang have the first rule alone: the two differ only where the layers are not a
+///    whole number of groups, and the release's, vLLM's and llama.cpp's is taken.)
+///  - the delta attention (`Linear`, `LinearKind::KimiDelta`): `num_attention_heads` heads of `head_dim` for the queries, keys and values, each of q, k
+///    and v its own product and its own causal convolution of `short_conv_kernel_size` taps with a SiLU; q and k l2-normed, q times 1 / sqrt(head_dim);
+///    beta the sigmoid of one value a head (`b_proj`); the decay a value a key channel from the full-rank `f_proj` (`no_kda_lora`), with
+///    `kda_safe_gate` g = `kda_lower_bound` sigmoid(exp(A_log[head]) (f + dt_bias)) (`Decay::Bounded`), else -exp(A_log[head]) softplus(f + dt_bias);
+///    the output RMS-normed a head and times sigmoid of the full-rank `g_proj`, then `o_proj`. No positions.
+///  - the latent attention (`Mla`): the queries one product (`q_proj`; with `q_lora_rank`, `q_a_proj`, a norm and `q_b_proj`), the key-value latent of
+///    `kv_lora_rank` normed at 1e-6 (the release's norm of the latents takes its default eps, not `rms_norm_eps`; vLLM gives it the config's) with
+///    `qk_rope_head_dim` shared key channels beside it; those channels and the queries' last `qk_rope_head_dim` turned in interleaved pairs (2i, 2i + 1)
+///    at `rope_theta`, angle i's frequency theta^(-2i / qk_rope_head_dim): `partial_rotary_factor` is in the config and every reference sets it aside
+///    (the rotary is the whole of `qk_rope_head_dim`). The scores times 1 / sqrt(qk_nope_head_dim + qk_rope_head_dim). The output gate
+///    (`gated_attention_proj_granularity_type`): "head_wise", sigmoid of one value a head on the layer's input, every channel of the head's output
+///    times it (`GateFrom::Head`, `g_proj` [heads, hidden]); "element_wise", a value a channel (`GateFrom::Own`). Then the output product, `dense`.
+///  - `mrope_section` [t, h, w] (in pairs, summing to qk_rope_head_dim / 2, h = w): where an image's tokens have three positions, the first h + w
+///    angles turn by the row's (even angles) and the column's (odd ones) and the last t by the temporal one. A text token's three positions are one,
+///    so the text model's rotary is the plain one; the description names no sections (`Rope::mrope` is the interleaved layout of another family) and
+///    leaves the vision tower and its projector unread (`names::LING`; `vision_config`).
+///  - the first `first_k_dense_replace` layers' feed-forward is a gated MLP of `intermediate_size`; the others `num_experts` of
+///    `moe_intermediate_size`: the sigmoid of the router's fp32 logits, the choice among the scores plus `expert_bias`, inside the best `topk_group` of
+///    `n_group` groups (a group's score the sum of its two best), the best `num_experts_per_tok` kept, their own scores divided by their sum (not with
+///    one expert a token) and times `routed_scaling_factor`; and one shared MLP of `moe_shared_expert_intermediate_size` x `num_shared_experts`, added.
+///  - `expert_swiglu_limit_list` and `share_expert_swiglu_limit_list`: a limit a layer for the routed experts and for the shared MLP (0, null or past
+///    the list's end: none), on the ACTIVATED gate: min(silu(gate), l) clamp(up, -l, l) (`Clamp::Activated`; not DeepSeek-V4's, which holds the gate
+///    before its activation). The dense layers' MLP has none.
+///  - `num_nextn_predict_layers` draft layers follow the model's under the same names (`model.layers.{layers + j}`): each a draft head of DeepSeek-V3's
+///    form (`MtpInput::Joined`: `enorm`, `hnorm`, `eh_proj`, `final_layernorm`, the model's embedding and head) whose block is a latent attention and
+///    the experts; its number is past the limit lists, so its experts have no limit.
+/// The norms are RMS norms computed in fp32, cast, then times the weight (`Rounding::Twice`); the head is not the embedding.
+/// Keys whose default differs between the release's config class and transformers' are required, not defaulted: `layer_group_size`,
+/// `first_k_dense_replace`, `routed_scaling_factor`, `rope_theta`, `kda_safe_gate`, `gated_attention_proj_granularity_type`. Keys of the family's
+/// earlier softmax attention that no code of this layout reads (`use_qk_norm`, `group_norm_size`, `linear_silu`, `rotary_dim`) and the config class's
+/// training settings are read and select nothing; `use_mla_nope` (SGLang: no rotary) must be false.
+/// Stored formats (`quantization_config`): FP8 E4M3 matrices in square blocks, each with its scales (`weight_scale_inv`), every product of a layer but
+/// the modules of `modules_to_not_convert` (as released: the embedding, the head, the routers, the delta attention's `b_proj` and the model's latent
+/// attentions' `g_proj`; a draft layer's `g_proj` is FP8); the convolutions, the norms, A_log, dt_bias and a draft head's `eh_proj` are not FP8.
+fn ling(c: &ModelConfig) -> Result<Described> {
+    let (mt, tc, prefix) = ("bailing_hybrid", &c.text, "model.");
+    if c.nested {
+        top_keys(&c.top, &c.model_type, &["text_config", "vision_config", "quantization_config", "tie_word_embeddings", "norm_query_embeds"])?;
+        // (a key no code of the release reads; only what the release says of it is taken)
+        if let Some(v) = c.top.get("norm_query_embeds").filter(|v| !v.is_null() && **v != Value::Bool(false)) {
+            return err(format!("{}: norm_query_embeds = {v} is not supported (only false)", c.model_type));
+        }
+    }
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, c.top.get("tie_word_embeddings").and_then(Value::as_bool))?;
+    k.expect("hidden_act", &Value::from("silu"))?;
+    for x in ["use_bias", "use_qkv_bias"] {
+        k.expect(x, &Value::Bool(false))?;
+    }
+    // (the config class's keys that its modelling code does not read, the training's; and the earlier softmax attention's, which this layout has none of)
+    for x in [
+        "max_window_layers",
+        "seq_aux",
+        "mtp_loss_scaling_factor",
+        "embedding_dropout",
+        "output_dropout",
+        "use_qk_norm",
+        "group_norm_size",
+        "linear_silu",
+        "rotary_dim",
+    ] {
+        k.raw(x);
+    }
+    let need = |key: &str, why: &str| -> Error { Error(format!("{mt}: no {key} ({why})")) };
+    // the two sorts of mixer
+    let group = k.opt_usize("layer_group_size")?.ok_or_else(|| need("layer_group_size", "the release's code has 5 where unsaid and transformers' 6"))?;
+    if group == 0 {
+        return err(format!("{mt}: layer_group_size = 0 is not a group of layers"));
+    }
+    let latent = |l: usize| (l + 1) % group == 0 || l >= layers / group * group;
+    let any_delta = (0..layers).any(|l| !latent(l));
+    let heads = k.usize("num_attention_heads")?;
+    // (the latent attention has one shared key part and a latent, not key heads: the release's code takes the two counts' ratio as 1)
+    k.expect("num_key_value_heads", &Value::from(heads))?;
+    // the delta attention
+    let (kd, conv) = (k.opt_usize("head_dim")?.unwrap_or(128), k.opt_usize("short_conv_kernel_size")?.unwrap_or(4));
+    let full_rank = k.bool("no_kda_lora", false)?;
+    let safe = match k.raw("kda_safe_gate") {
+        Some(Value::Bool(b)) => Some(*b),
+        Some(v) => return err(format!("{mt}: kda_safe_gate = {v} is not true or false")),
+        None => None,
+    };
+    let bound = k.opt_f64("kda_lower_bound")?;
+    let decay = match (safe, bound) {
+        (Some(true), Some(b)) if b < 0.0 => Decay::Bounded(b as f32),
+        (Some(true), b) => return err(format!("{mt}: kda_safe_gate with kda_lower_bound = {b:?}, where the bounded decay's bound is below 0")),
+        (Some(false), _) => Decay::Softplus,
+        (None, _) if !any_delta => Decay::Softplus,
+        (None, _) => return Err(need("kda_safe_gate", "the release's code has the softplus decay where unsaid and transformers' the bounded one")),
+    };
+    if any_delta && !full_rank {
+        return err(format!(
+            "{mt}: no_kda_lora is not true: the delta attention's forget and output gates in a low rank (f_a_proj, g_a_proj) are not supported"
+        ));
+    }
+    if any_delta && (kd == 0 || conv == 0) {
+        return err(format!("{mt}: a delta attention of heads of {kd} and a convolution of {conv} taps"));
+    }
+    let lin = Linear {
+        kind: LinearKind::KimiDelta,
+        k_heads: heads,
+        v_heads: heads,
+        k_dim: kd,
+        v_dim: kd,
+        conv,
+        decay,
+        gate_act: Act::Sigmoid,
+        norm_eps: eps,
+        state_f32: true,
+    };
+    // the latent attention
+    let (nope, rd, vd, kvl) = (k.usize("qk_nope_head_dim")?, k.usize("qk_rope_head_dim")?, k.usize("v_head_dim")?, k.usize("kv_lora_rank")?);
+    let q_lora = k.opt_usize("q_lora_rank")?;
+    let gate = match k.str("gated_attention_proj_granularity_type")? {
+        Some("head_wise") => GateFrom::Head,
+        Some("element_wise") => GateFrom::Own,
+        Some(o) => return err(format!("{mt}: gated_attention_proj_granularity_type {o} is not supported (head_wise or element_wise)")),
+        None => {
+            return Err(need("gated_attention_proj_granularity_type", "the release's code has no output gate where unsaid and transformers' a head-wise one"))
+        }
+    };
+    // (the rotary: plain, the whole of the shared key part, in interleaved pairs; SGLang's use_mla_nope turns it off, the release's code never)
+    k.expect("use_mla_nope", &Value::Bool(false))?;
+    k.expect("rope_interleave", &Value::Bool(true))?;
+    k.expect("rope_scaling", &Value::Null)?;
+    k.expect("rope_parameters", &Value::Null)?;
+    k.opt_f64("partial_rotary_factor")?;
+    let theta = k.opt_f64("rope_theta")?.ok_or_else(|| need("rope_theta", "the release's code has 600,000 where unsaid and transformers' 6,000,000"))?;
+    if rd == 0 || rd % 2 != 0 {
+        return err(format!("{mt}: qk_rope_head_dim = {rd} is not a rotary's pairs"));
+    }
+    match k.raw("mrope_section").map(|v| (v, v.as_array().map(|a| a.iter().map(Value::as_u64).collect::<Vec<_>>()))) {
+        None => {}
+        Some((_, Some(a))) if matches!(a[..], [Some(t), Some(h), Some(w)] if h == w && 2 * (t + h + w) == rd as u64) => {}
+        Some((v, _)) => {
+            return err(format!("{mt}: mrope_section = {v} is not supported: [t, h, w] pairs with h = w that sum to qk_rope_head_dim / 2 = {}", rd / 2))
+        }
+    }
+    let rope = Rope { style: RopeStyle::Interleaved, ..Rope::plain(theta, rd) };
+    let twice = |e: f32| Norm { rounding: Rounding::Twice, ..Norm::rms(e) };
+    let mla = Mla {
+        heads,
+        q_lora,
+        kv_lora: kvl,
+        nope,
+        rope_dim: rd,
+        v_dim: vd,
+        rope: Some(rope.clone()),
+        q_norm: twice(1e-6),
+        kv_norm: twice(1e-6),
+        gate: Some(OutGate { act: Act::Sigmoid, from: gate, norm: None }),
+        scale: ((nope + rd) as f32).powf(-0.5),
+        absorbed: true,
+        indexer: None,
+    };
+    // the feed-forward
+    let dense =
+        k.opt_usize("first_k_dense_replace")?.ok_or_else(|| need("first_k_dense_replace", "the release's code has 1 where unsaid and transformers' 2"))?;
+    let inter = k.usize("intermediate_size")?;
+    let (ne, top_k, moe_inter) = (k.usize("num_experts")?, k.usize("num_experts_per_tok")?, k.usize("moe_intermediate_size")?);
+    let n_shared = k.opt_usize("num_shared_experts")?.unwrap_or(1);
+    if n_shared == 0 {
+        return err(format!("{mt}: num_shared_experts = 0 is not supported: the layout's mixture has a shared MLP"));
+    }
+    let shared_inter = k.usize("moe_shared_expert_intermediate_size")? * n_shared;
+    for x in ["score_function", "scoring_func"] {
+        k.expect(x, &Value::from("sigmoid"))?;
+    }
+    k.expect("topk_method", &Value::from("noaux_tc"))?;
+    k.expect("moe_router_enable_expert_bias", &Value::Bool(true))?;
+    // (the release's code divides the chosen scores by their sum whatever the key says; SGLang reads it)
+    k.expect("norm_topk_prob", &Value::Bool(true))?;
+    k.expect("router_dtype", &Value::from("fp32"))?;
+    let (ng, tg) = (k.opt_usize("n_group")?.unwrap_or(8), k.opt_usize("topk_group")?.unwrap_or(4));
+    if ng == 0 || ne % ng != 0 || tg == 0 || tg > ng || (ng > 1 && ne / ng < 2) {
+        return err(format!("{mt}: {ne} experts in n_group = {ng} groups of which topk_group = {tg} are kept: not groups of two experts or more"));
+    }
+    let scale =
+        k.opt_f64("routed_scaling_factor")?.ok_or_else(|| need("routed_scaling_factor", "the release's code has 1 where unsaid and transformers' 2.5"))?;
+    let router = Router {
+        score: RouterScore::Sigmoid,
+        logit_scale: 1.0,
+        bias: true,
+        groups: (ng > 1).then_some((ng, tg)),
+        top_k,
+        renorm: top_k > 1,
+        scale: scale as f32,
+        hash: false,
+    };
+    // (a limit a layer: 0 and null are none, and so is a layer past the list's end, a draft layer among them)
+    let limits = |key: &str| -> Result<Vec<Option<Clamp>>> {
+        let list = match k.raw(key) {
+            None => return Ok(Vec::new()),
+            Some(Value::Array(a)) => a,
+            Some(v) => return err(format!("{mt}: {key} = {v} is not a list of limits")),
+        };
+        list.iter()
+            .enumerate()
+            .map(|(l, v)| match (v, v.as_f64()) {
+                (Value::Null, _) => Ok(None),
+                (_, Some(x)) if x > 0.0 && x.is_finite() => Ok(Some(Clamp::Activated(x as f32))),
+                (_, Some(x)) if x.abs() < f64::MIN_POSITIVE => Ok(None),
+                _ => err(format!("{mt}: {key}[{l}] = {v} is not a limit")),
+            })
+            .collect()
+    };
+    let (expert_limits, shared_limits) = (limits("expert_swiglu_limit_list")?, limits("share_expert_swiglu_limit_list")?);
+    let silu = |clamp: Option<Clamp>| Mlp { act: Act::Silu, gated: true, bias: false, clamp };
+    let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
+    k.raw("quantization_config");
+    let fp8 = Fp8::parse(c.top.get("quantization_config").or(tc.get("quantization_config")), mt)?;
+    let held = |w: &str| fp8.as_ref().is_some_and(|f| f.holds(w));
+    let n = twice(eps);
+    let (mut shapes, mut scales) = (BTreeMap::new(), BTreeMap::new());
+    // (a layer's two blocks and their roles: layer `l` of the checkpoint, its mixer the latent attention or the delta attention, its feed-forward the
+    // experts or the dense MLP)
+    let mut layer = |l: usize, latent: bool, sparse: bool| -> (Vec<Block>, Vec<Vec<(String, Source)>>) {
+        let p = names::LING.layer(prefix, l);
+        let mut ar = names::roles(part::NORM_IN, &p, 0, all);
+        let mixer = if latent {
+            ar.extend(but(part::LING_MLA, &p, 0, if q_lora.is_some() { &["q"] } else { &["q_a", "q_a_norm", "q_b"] }));
+            let (qw, ql) = (heads * (nope + rd), q_lora.unwrap_or(0));
+            shape_roles(
+                &mut shapes,
+                &ar,
+                &[
+                    ("q", vec![qw, d]),
+                    ("q_a", vec![ql, d]),
+                    ("q_a_norm", vec![ql]),
+                    ("q_b", vec![qw, ql]),
+                    ("kv_a", vec![kvl + rd, d]),
+                    ("kv_a_norm", vec![kvl]),
+                    ("kv_b", vec![heads * (nope + vd), kvl]),
+                    ("g", vec![if gate == GateFrom::Head { heads } else { heads * vd }, d]),
+                    ("o", vec![d, heads * vd]),
+                ],
+            );
+            Mixer::Mla(mla.clone())
+        } else {
+            ar.extend(names::roles(part::LING_KDA, &p, 0, all));
+            let qd = heads * kd;
+            shape_roles(
+                &mut shapes,
+                &ar,
+                &[
+                    ("q", vec![qd, d]),
+                    ("k", vec![qd, d]),
+                    ("v", vec![qd, d]),
+                    ("o", vec![d, qd]),
+                    ("decay", vec![qd, d]),
+                    ("gate", vec![qd, d]),
+                    ("beta", vec![heads, d]),
+                    ("a_log", vec![heads]),
+                    ("dt_bias", vec![qd]),
+                    ("norm", vec![kd]),
+                ],
+            );
+            // (each product's convolution, a tensor of one input channel: [channels, 1, taps])
+            for (_, src) in ar.iter().filter(|(role, _)| role == "conv") {
+                shapes.extend(src.names().into_iter().map(|w| (w, vec![qd, 1, conv])));
+            }
+            Mixer::Linear(lin.clone())
+        };
+        let mut fr = names::roles(part::NORM_POST, &p, 0, all);
+        let body = if sparse {
+            fr.extend(names::roles(part::LING_MOE, &p, ne, all));
+            shape_roles(
+                &mut shapes,
+                &fr,
+                &[
+                    ("router", vec![ne, d]),
+                    ("choice_bias", vec![ne]),
+                    ("experts_gate_up", vec![moe_inter, d]),
+                    ("experts_down", vec![d, moe_inter]),
+                    ("shared_gate", vec![shared_inter, d]),
+                    ("shared_up", vec![shared_inter, d]),
+                    ("shared_down", vec![d, shared_inter]),
+                ],
+            );
+            let limit = |list: &[Option<Clamp>]| list.get(l).copied().flatten();
+            Ffn::Moe(Moe {
+                router: router.clone(),
+                experts: ne,
+                expert: silu(limit(&expert_limits)),
+                shared: Some(silu(limit(&shared_limits))),
+                shared_gate: false,
+                latent: None,
+            })
+        } else {
+            fr.extend(names::roles(part::MLP_BODY, &p, 0, all));
+            shape_roles(&mut shapes, &fr, &[("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
+            Ffn::Mlp(silu(None))
+        };
+        shape_roles(&mut shapes, &ar, &[("norm_in", vec![d])]);
+        shape_roles(&mut shapes, &fr, &[("norm_in", vec![d])]);
+        // (the stored formats: a product the quantization_config does not leave out is FP8 with its scales; a layer's experts as its first expert's)
+        for (_, src) in ar.iter().chain(&fr).filter(|(role, _)| LING_FP8.contains(&role.as_str())) {
+            let fp8 = match src {
+                Source::Tensor(w) => held(w),
+                Source::Experts(e) => e.first().and_then(|x| x.first()).is_some_and(|w| held(w)),
+                _ => false,
+            };
+            if fp8 {
+                scales.extend(src.names().into_iter().map(|w| (w.clone(), format!("{w}_scale_inv"))));
+            }
+        }
+        let block = |body: Body| Block { norm_in: n, body, norm_out: None, residual: Residual::Add };
+        (vec![block(Body::Mixer(mixer)), block(Body::Ffn(body))], vec![ar, fr])
+    };
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for l in 0..layers {
+        let (b, r) = layer(l, latent(l), l >= dense);
+        blocks.extend(b);
+        roles.extend(r);
+    }
+    // (the draft layers: each a head of its own, a latent attention and the experts between the head's own roles, which are not FP8)
+    let (mut mtp, mut mtp_roles, mut own_shapes) = (Vec::new(), Vec::new(), BTreeMap::new());
+    for j in 0..mtp_layers {
+        let (b, r) = layer(layers + j, true, true);
+        let own = names::roles(part::LING_MTP, &names::LING.layer(prefix, layers + j), 0, all);
+        shape_roles(&mut own_shapes, &own, &[("eh_proj", vec![d, 2 * d]), ("norm_embed", vec![d]), ("norm_hidden", vec![d]), ("final_norm", vec![d])]);
+        mtp.push(MtpHead { blocks: b, norm_embed: n, norm_hidden: n, final_norm: n, dspark: None, input: MtpInput::Joined });
+        mtp_roles.push((r, own));
+    }
+    shapes.extend(own_shapes);
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: n,
+        // (the logits in bf16: the release's lm_head is a bf16 product, its output the logits)
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::Once },
+        mtp,
+        vision: None,
+        rope: Some(rope),
+    };
+    let mut out = finish(&k, desc, &names::LING, prefix, roles, mtp_layers)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    (out.shapes, out.scales, out.mtp) = (shapes, scales, mtp_roles);
+    out.fp8_block = fp8.map(|f| f.block);
+    Ok(out)
+}
+
 /// Muse Spark (`muse_spark`): GQA with weightless q/k norms, rope and a window on the sliding layers only, a gated output with a per-head
 /// norm; a normed embedding; sandwich norms with Muse's gated residual; the latent MoE in every layer; a soft-capped head. Its numbers read as
 /// its family's reader reads them (`muse::number`: transformers' defaults where absent); a quantized checkpoint refused (`muse::quantized`); its
@@ -3580,7 +3963,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
             }
         }
     };
-    let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: limit };
+    let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: limit.map(Clamp::Gate) };
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
     // (the last layer's attention and feed-forward, of which a DSpark drafter's are made)
     let (mut comp_template, mut moe_template) = (None, None);
@@ -3934,7 +4317,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
             }
         }
     };
-    let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: limit };
+    let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: limit.map(Clamp::Gate) };
     let (mut blocks, mut roles, mut attn_block) = (Vec::new(), Vec::new(), vec![0usize; layers]);
     // (the last layer's attention and feed-forward, of which the drafter's are made)
     let (mut comp_template, mut moe_template) = (None, None);

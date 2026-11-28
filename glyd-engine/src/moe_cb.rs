@@ -789,7 +789,7 @@ mod tests {
         refused(&|x| x.router.bias = true, (2560, 640), "choice bias");
         refused(
             &|x| {
-                x.expert.clamp = Some(7.0);
+                x.expert.clamp = Some(kinds::Clamp::Gate(7.0));
                 x.shared = Some(x.expert);
             },
             (2560, 640),

@@ -1004,6 +1004,10 @@ pub struct Loader {
 /// The refusal of a description that holds a gated short convolution (`kinds::ShortConv`): the CPU reference computes it, the executor has no operation for it.
 pub const SHORT_CONV_NOT_RUN: &str = "its layers hold a short convolution, which the executor does not run yet";
 
+/// The refusal of a description that holds the Kimi delta attention on plain residuals (Ling's layers: the delta attention beside a latent attention with a
+/// gate a head, experts whose SwiGLU limit holds the activated gate): the CPU reference computes them, no loader lowers the layout.
+pub const DELTA_PLAIN_NOT_RUN: &str = "its layers hold the Kimi delta attention on plain residuals, which the executor does not run yet";
+
 /// The layer kinds a loader of the dynamic route lowers, as a description tells them apart (`lowering`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Lowering {
@@ -1038,6 +1042,9 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
     // (a kind the reference has and no lowering yet: refused by its name before the kinds beside it choose a lowering)
     if mixer(&|m| matches!(m, Mixer::ShortConv(_))) {
         return err(SHORT_CONV_NOT_RUN);
+    }
+    if linear(LinearKind::KimiDelta) && plain {
+        return err(DELTA_PLAIN_NOT_RUN);
     }
     Ok(if mixer(&|m| matches!(m, Mixer::Compressed(_))) {
         Lowering::Compressed

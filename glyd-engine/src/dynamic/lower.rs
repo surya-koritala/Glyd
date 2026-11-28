@@ -1625,7 +1625,9 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
                     g => return err(format!("GLM-5.3-Flash: layer {l}'s MLP gate is {g:?}")),
                 };
                 inter = d.shapes.get(gate).map(|s| s[0]).ok_or_else(|| Error(format!("GLM-5.3-Flash: no shape for {gate}")))?;
-                limit = mlp.clamp.ok_or_else(|| Error(format!("GLM-5.3-Flash: layer {l}'s MLP has no SwiGLU limit: this engine runs the clamped SwiGLU")))?;
+                limit = crate::runtime::kinds::Clamp::before(mlp.clamp)
+                    .map_err(|e| e.context(&format!("GLM-5.3-Flash: layer {l}'s MLP")))?
+                    .ok_or_else(|| Error(format!("GLM-5.3-Flash: layer {l}'s MLP has no SwiGLU limit: this engine runs the clamped SwiGLU")))?;
                 false
             }
             Body::Ffn(Ffn::Moe(_)) => true,

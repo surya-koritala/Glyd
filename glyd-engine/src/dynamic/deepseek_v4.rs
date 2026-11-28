@@ -533,7 +533,7 @@ fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) 
     if i % 128 != 0 {
         return err(format!("experts of width {i}: this engine runs widths of 128s"));
     }
-    let limit = m.expert.clamp.filter(|&c| c > 0.0);
+    let limit = crate::runtime::kinds::Clamp::before(m.expert.clamp)?.filter(|&c| c > 0.0);
     // each expert's two matrices in the smallest layout that holds the layer's experts exactly (one pack for the stack, so one layout for all of them): the FP4 layout with packed scales (4.07
     // bits a weight), else the FP4 layout as released (4.25), else five-bit runs (5.5; GLYD_V4_FP4=0 asks for them); packed on all the cores (an expert's pack is its rows of the stacked matrix's:
     // block layouts have fixed strides), then joined

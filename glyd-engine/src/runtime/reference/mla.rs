@@ -245,11 +245,15 @@ pub fn step(m: &Mla, p: &Params, c: &mut LatentCache, h: &[f32], pos: u32) -> Re
     if kv_b.len() != nh * (nope + vd) * kr {
         return err(format!("MLA: kv_b of {} values for {nh} x ({nope} + {vd}) x {kr}", kv_b.len()));
     }
+    // (the gate's product: a value a channel of each head's output, or one a head, `GateFrom::Head`)
+    let per_head = m.gate.is_some_and(|g| g.from == crate::runtime::kinds::GateFrom::Head);
     let gate = match m.gate {
-        Some(g) if g.from == crate::runtime::kinds::GateFrom::Head => return err("MLA: an output gate of one value a head is plain attention's (`Attn`)"),
         Some(_) => Some(p.prod("g", h)?),
         None => None,
     };
+    if let Some(gv) = gate.as_ref().filter(|gv| gv.len() != if per_head { nh } else { nh * vd }) {
+        return err(format!("MLA: a gate of {} values for {nh} heads{}", gv.len(), if per_head { "" } else { " of their values' width" }));
+    }
     let seen: Vec<usize> = (0..c.pos.len()).filter(|&j| c.pos[j] <= pos).collect();
     let (seen, margin) = match &m.indexer {
         // (a shared indexer runs none: the query attends to what the latent attention before it picked for it, transformers' `prev_topk_indices`)
@@ -306,7 +310,12 @@ pub fn step(m: &Mla, p: &Params, c: &mut LatentCache, h: &[f32], pos: u32) -> Re
             if let Some(n) = g.norm {
                 o = norm(&n, &o, None, None);
             }
-            o.iter_mut().zip(&gv[head * vd..][..vd]).for_each(|(x, &z)| *x *= act(g.act, z));
+            if per_head {
+                let z = act(g.act, gv[head]);
+                o.iter_mut().for_each(|x| *x *= z);
+            } else {
+                o.iter_mut().zip(&gv[head * vd..][..vd]).for_each(|(x, &z)| *x *= act(g.act, z));
+            }
         }
         out.extend(o);
     }
@@ -625,5 +634,64 @@ mod tests {
         let mut want = best[..5].to_vec();
         want.sort_unstable();
         assert_eq!(got, want, "{score:?}");
+    }
+
+    /// A gate of one value a head (`GateFrom::Head`, Ling's "head_wise" `g_proj`) on a latent attention with one query product and an interleaved rotary on
+    /// the shared key part: each head's output times sigmoid of the head's row of `g` on the layer's input. It is, to the bit, the gate of a value a
+    /// channel whose rows repeat each head's row over the head's values; it is not the layer without a gate; and a head whose row is zero is halved.
+    #[test]
+    fn a_gate_a_head_is_the_gate_a_channel_with_a_heads_rows_alike() {
+        use crate::runtime::kinds::{Act, GateFrom, OutGate, Rope, RopeStyle};
+        let (nh, nope, rd, vd, kr) = (2usize, 8usize, 4usize, 6usize, 12usize);
+        let gate = |from| Some(OutGate { act: Act::Sigmoid, from, norm: None });
+        let m = Mla {
+            heads: nh,
+            q_lora: None,
+            kv_lora: kr,
+            nope,
+            rope_dim: rd,
+            v_dim: vd,
+            rope: Some(Rope { style: RopeStyle::Interleaved, ..Rope::plain(6e6, rd) }),
+            q_norm: Norm::rms(1e-6),
+            kv_norm: Norm::rms(1e-6),
+            gate: gate(GateFrom::Head),
+            scale: ((nope + rd) as f32).powf(-0.5),
+            absorbed: true,
+            indexer: None,
+        };
+        let mut p = Params::new();
+        for (role, shape) in [("q", [nh * (nope + rd), D]), ("kv_a", [kr + rd, D]), ("kv_b", [nh * (nope + vd), kr]), ("o", [D, nh * vd]), ("g", [nh, D])] {
+            p.put(role, &shape, fill(&format!("mla.head.{role}"), shape[0] * shape[1], -0.4, 0.4));
+        }
+        p.put("kv_a_norm", &[kr], fill("mla.head.kv_a_norm", kr, 0.5, 1.5));
+        let g = p.vec("g").unwrap().to_vec();
+        let run = |m: &Mla, p: &Params| -> Vec<Vec<f32>> {
+            let mut c = LatentCache::default();
+            inputs(6).iter().enumerate().map(|(t, h)| step(m, p, &mut c, h, t as u32).unwrap()).collect()
+        };
+        let by_head = run(&m, &p);
+        assert!(by_head.iter().flatten().all(|x| x.is_finite()));
+        // (the same gate a channel: head h's row, once a value of the head)
+        let mut wide = p.clone();
+        let rows: Vec<f32> = (0..nh).flat_map(|h| g[h * D..(h + 1) * D].repeat(vd)).collect();
+        wide.put("g", &[nh * vd, D], rows);
+        assert_eq!(by_head, run(&Mla { gate: gate(GateFrom::Own), ..m.clone() }, &wide), "a gate a head is a head's rows alike");
+        assert!(rel(&by_head[5], &run(&Mla { gate: None, ..m.clone() }, &p)[5]) > 1e-3, "the gate changes the answer");
+        // (a gate of the other width is refused, not read short)
+        let mut c = LatentCache::default();
+        assert!(
+            step(&m, &wide, &mut c, &inputs(1)[0], 0).is_err() && step(&Mla { gate: gate(GateFrom::Own), ..m.clone() }, &p, &mut c, &inputs(1)[0], 0).is_err()
+        );
+        // (a head whose row of `g` is zero has the gate sigmoid(0), a half, exactly: with the other head's columns of `o` zeroed, the layer is the gate-less
+        // one at half, to the bit)
+        let mut one = p.clone();
+        let mut o = p.vec("o").unwrap().to_vec();
+        for r in 0..D {
+            o[r * nh * vd + vd..(r + 1) * nh * vd].iter_mut().for_each(|x| *x = 0.0);
+        }
+        one.put("o", &[D, nh * vd], o);
+        one.put("g", &[nh, D], (0..nh * D).map(|i| if i < D { 0.0 } else { g[i] }).collect());
+        let half: Vec<Vec<f32>> = run(&Mla { gate: None, ..m.clone() }, &one).into_iter().map(|row| row.into_iter().map(|x| 0.5 * x).collect()).collect();
+        assert_eq!(run(&m, &one), half, "a head's gate of a half halves its output");
     }
 }

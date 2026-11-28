@@ -239,6 +239,14 @@
     "plan": "0fa9ead20583f698",
     "family": "refused: m is a Lfm3ForCausalLM model, which this engine has no description of yet"
   },
+  "headers/Ling-3.2-air.json": {
+    "blocks": 84,
+    "tensors": 127131,
+    "kinds": "995adda943adc6aa",
+    "weights": "18dfad69171b7fdb",
+    "plan": "03d3237e670e8a1c",
+    "family": "refused: m is a BailingMoeV3VLForConditionalGeneration model, which this engine has no description of yet"
+  },
   "headers/Mellum2.1-12B-A2.5B-Instruct.json": {
     "blocks": 56,
     "tensors": 5631,

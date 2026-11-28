@@ -236,7 +236,7 @@ fn moe_params(f: &Fixture, shared: &str, more: &[(&str, &str)]) -> Params {
 }
 
 fn silu_mlp(clamp: Option<f32>) -> Mlp {
-    Mlp { act: Act::Silu, gated: true, bias: false, clamp }
+    Mlp { act: Act::Silu, gated: true, bias: false, clamp: clamp.map(crate::runtime::kinds::Clamp::Gate) }
 }
 
 #[test]
