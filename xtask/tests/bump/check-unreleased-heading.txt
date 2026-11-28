@@ -1,0 +1,116 @@
+--- ARGS
+|--check
+|0.36.0
+--- IN CHANGELOG.md
+|# Changelog
+|
+|## v0.36.0 (Unreleased)
+|
+|- Written by hand before the fragments.
+|
+|## v0.35.0 — 2026-11-20
+|
+|- The last release.
+--- IN Cargo.lock
+|version = 4
+|
+|[[package]]
+|name = "glyd"
+|version = "0.36.0"
+|
+|[[package]]
+|name = "glyd-engine"
+|version = "0.36.0"
+|
+|[[package]]
+|name = "glyd-gpu"
+|version = "0.36.0"
+|
+|[[package]]
+|name = "glyd-preflate"
+|version = "0.7.6"
+|
+|[[package]]
+|name = "glyd-store"
+|version = "0.36.0"
+|
+|[[package]]
+|name = "xtask"
+|version = "0.0.0"
+--- IN Cargo.toml
+|[package]
+|name = "glyd"
+|version = "0.36.0"
+|edition = "2021"
+|
+|[dependencies]
+|glyd-engine = { path = "glyd-engine", version = "0.36.0", optional = true }
+|libc = { version = "0.2" }
+--- IN ROADMAP.md
+|# Roadmap
+|
+|## Where it stands (v0.36.0, 2031-02-03)
+|
+|Text that says (v0.35.0, 2026-11-20) again, not as the heading.
+--- IN bindings/python/glyd/__init__.py
+|"""glyd"""
+|__version__ = "0.36.0"
+--- IN bindings/python/pyproject.toml
+|[project]
+|name = "glyd"
+|version = "0.36.0"
+|
+|[project.optional-dependencies]
+|gpu = ["glyd-gpu[gpu]==0.36.0"]
+|vllm = ["glyd-gpu[vllm]==0.36.0"]
+--- IN changelog.d/README.md
+|how
+--- NOT changelog.d/a-thing.md
+--- NOT changelog.d/b-other.md
+--- NOT changelog.d/c-multi.md
+--- NOT changelog.d/d-empty.md
+--- NOT changelog.d/e-space.md
+--- NOT changelog.d/f-nonl.md
+--- IN changelog.d/notes.txt
+|not an entry
+--- IN docs/index.html
+|<p>One library. Rust, C ABI, CLI; v0.36.0, February 2031.</p>
+|<p>Rust, C ABI, CLI; v0.35.0, november 2026.</p>
+--- IN glyd-engine/Cargo.toml
+|[package]
+|name = "glyd-engine"
+|version = "0.36.0"
+|
+|[dependencies]
+|  version = "9.9.9"
+--- IN glyd-gpu-py/glyd_gpu/__init__.py
+|__version__ = "0.36.0"
+--- IN glyd-gpu-py/pyproject.toml
+|[project]
+|name = "glyd-gpu"
+|version = "0.36.0"
+--- IN glyd-gpu/Cargo.toml
+|[package]
+|name = "glyd-gpu"
+|version = "0.36.0"
+--- IN glyd-store/Cargo.toml
+|[package]
+|name = "glyd-store"
+|version = "0.36.0"
+|
+|[dependencies]
+|glyd = { version = "0.36.0", path = ".." }
+--- IN scripts/install.ps1
+|$GlydVersion = if ($env:GLYD_VERSION) { $env:GLYD_VERSION } else { '0.36.0' }
+|Write-Host $GlydVersion
+--- IN scripts/install.sh
+|#!/bin/sh
+|GLYD_VERSION="${GLYD_VERSION:-0.36.0}"
+|echo "$GLYD_VERSION"
+--- STDOUT
+--- STDERR
+|version files disagree:
+|  CHANGELOG.md: no heading '## v0.36.0 — DATE' (still Unreleased?)
+|(python3 scripts/bump_version.py VERSION sets them all)
+--- EXIT
+|1

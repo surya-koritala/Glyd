@@ -2,7 +2,7 @@
 # github.com/surya-koritala/homebrew-glyd carries a copy of this file).
 # Apple silicon and Linux (x86_64, arm64) install the release's prebuilt
 # binaries in seconds; an Intel Mac and --HEAD build from source with cargo.
-# Each release: python3 scripts/bump_formula.py X.Y.Z, then copy this file to the tap.
+# Each release: cargo xtask bump-formula X.Y.Z, then copy this file to the tap.
 class Glyd < Formula
   desc "Compression for object storage: record mode, packs, a cross-object store"
   homepage "https://getglyd.com"

@@ -5,7 +5,7 @@
 #     scripts/release.sh 0.30.0 --private-notes FILE --public-notes FILE [--post FILE] [--dry-run] [--from STEP] [--only STEP]
 #
 # Run it from the glyd-gpu worktree on the release's pull request branch (not main; it commits the version files there). It needs git,
-# python3, curl, and gh signed in. FILE: the CHANGELOG entry that goes under `## Unreleased` (the private one may link and name
+# cargo, python3, curl, and gh signed in. FILE: the CHANGELOG entry that goes under `## Unreleased` (the private one may link and name
 # formats and kernels; the public one never does), and the public notes are also the GitHub release's. --post: the site's release post
 # (an .mdx with a description of at most 155 characters). Steps, in order:
 #     private-bump  public-pr  shim  private-merge  private-tag  pypi-gpu  public-merge  public-tag  release-page  pypi-glyd
@@ -60,18 +60,9 @@ watch_run() { local id; wait_for "a $2 run on $3 in $1" 30 10 bash -c "gh run li
   id=$(gh run list -R "$1" -w "$2" --branch "$3" --limit 1 --json databaseId --jq '.[0].databaseId'); gh run watch "$id" -R "$1" --exit-status >/dev/null; }
 pypi_has() { # PACKAGE: this version is on the JSON API and in the simple index (its files are named with - or _)
   local p=$1; curl -fsS -o /dev/null "https://pypi.org/pypi/$p/$V/json" && curl -fsS "https://pypi.org/simple/$p/" | grep -qE "${p//-/[_-]}-${V//./\\.}[-.]"; }
-changelog_insert() { # CHANGELOG NOTES: the notes go under `## Unreleased` (bump_version.py turns that heading into the release's)
-  python3 - "$1" "$2" <<'PY'
-import sys
-path, notes = sys.argv[1:]
-text = open(path).read()
-head = "## Unreleased\n"
-if head not in text: sys.exit("CHANGELOG.md has no '## Unreleased' heading")
-body = open(notes).read().strip("\n")
-if not body: sys.exit(notes + " is empty")
-open(path, "w").write(text.replace(head, head + "\n" + body + "\n", 1))
-PY
-}
+# CHANGELOG NOTES: the notes go under `## Unreleased` (bump-version turns that heading into the release's)
+changelog_insert() { cargo xtask changelog-insert "$1" "$2"; }
+pubtask() { cargo run --quiet --manifest-path "$PUBWT/Cargo.toml" --package xtask -- "$@"; } # the public tree's own tasks, on the public tree
 clean() { [ -z "$(git status --porcelain)" ]; }
 tag_is() { [ "$(git rev-parse "$T^{commit}")" = "$1" ]; } # the local tag points at this commit
 remote_is() { [ "$(git ls-remote "$1" "$2" | cut -f1)" = "$3" ]; } # REMOTE REF SHA
@@ -86,8 +77,8 @@ step_private_bump() { # the version commit on the release PR branch, and its pul
   [ -n "$br" ] && [ "$br" != main ] && [ "$br" != glyd-shim ] || die "run this on the release's pull request branch, not '$br'"
   check "the tree is clean" clean
   run changelog_insert CHANGELOG.md "$PRIV_NOTES"
-  run python3 scripts/bump_version.py "$V"
-  check "every version file says $T" python3 scripts/bump_version.py --check "$T"
+  run cargo xtask bump-version "$V"
+  check "every version file says $T" cargo xtask bump-version --check "$T"
   run git "${ID[@]}" commit -s -am "$T: CHANGELOG and versions"
   rec PRIV_SHA git rev-parse HEAD
   run git push private "HEAD:refs/heads/$br"
@@ -99,8 +90,8 @@ step_public_pr() { # the public release branch, from origin/main, with the publi
   run git fetch origin main
   run git worktree add -B "public-release-$V" "$PUBWT" origin/main
   run changelog_insert "$PUBWT/CHANGELOG.md" "$PUB_NOTES"
-  run python3 "$PUBWT/scripts/bump_version.py" "$V"
-  check "the public tree says $T" python3 "$PUBWT/scripts/bump_version.py" --check "$T"
+  run pubtask bump-version "$V"
+  check "the public tree says $T" pubtask bump-version --check "$T"
   check "its glyd[gpu]/glyd[vllm] extras pin glyd-gpu $V" grep -q "glyd-gpu.*$V" "$PUBWT/bindings/python/pyproject.toml"
   run git -C "$PUBWT" "${ID[@]}" commit -s -am "$T: CHANGELOG and versions"
   rec PUB_SHA git -C "$PUBWT" rev-parse HEAD
@@ -160,7 +151,7 @@ step_pypi_glyd() { wait_for "glyd $V on PyPI (JSON and the simple index; the ind
 step_formula() { # the formula branch, its PR, admin-merged once CI passes
   run git -C "$PUBWT" fetch origin main
   run git -C "$PUBWT" checkout -B "formula-$V" origin/main
-  run python3 "$PUBWT/scripts/bump_formula.py" "$V"
+  run pubtask bump-formula "$V"
   check "the formula says $V" grep -q "version \"$V\"" "$PUBWT/Formula/glyd.rb"
   run git -C "$PUBWT" "${ID[@]}" commit -s -am "glyd $V: Homebrew formula"
   run git -C "$PUBWT" push origin "HEAD:refs/heads/formula-$V"

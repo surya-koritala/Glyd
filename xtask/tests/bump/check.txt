@@ -1,0 +1,17 @@
+--- ARGS
+|--check
+--- IN CHANGELOG.md
+|# Changelog
+|
+|## v0.36.0 (Unreleased)
+|
+|- Written by hand before the fragments.
+|
+|## v0.35.0 — 2026-11-20
+|
+|- The last release.
+--- STDOUT
+|version files agree: Cargo 0.35.0, Python 0.35.0; the docs name it
+--- STDERR
+--- EXIT
+|0

@@ -1,0 +1,49 @@
+--- ARGS
+|0.36.0
+|--date
+|2031-02-03
+--- IN Cargo.lock
+|version = 4
+|
+|[[package]]
+|name = "glyd"
+|version = "0.35.0"
+|
+|[[package]]
+|name = "glyd-engine"
+|version = "0.35.0"
+|
+|[[package]]
+|name = "glyd-preflate"
+|version = "0.7.6"
+|
+|[[package]]
+|name = "glyd-store"
+|version = "0.35.0"
+|
+|[[package]]
+|name = "xtask"
+|version = "0.0.0"
+--- IN changelog.d/a-thing.md
+|- A thing.
+--- IN changelog.d/b-other.md
+|- Another thing.
+|
+--- IN changelog.d/c-multi.md
+|
+|- Third, with numbers: 1.5x.
+|  A second line of it.
+|- Fourth.
+--- IN changelog.d/d-empty.md
+--- IN changelog.d/e-space.md
+| 
+|	
+--- IN changelog.d/f-nonl.md
+\- No newline at its end.
+--- IN changelog.d/notes.txt
+|not an entry
+--- STDOUT
+--- STDERR
+|Cargo.lock: 3 matches of '^name = "glyd(?:-engine|-gpu|-store)?"\\nversion = "(?P<v>[^"]+)"', expected 4 (this script's table is out of date)
+--- EXIT
+|1

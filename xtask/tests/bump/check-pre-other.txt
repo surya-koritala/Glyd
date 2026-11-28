@@ -1,0 +1,125 @@
+--- ARGS
+|--check
+|v0.36.0-rc.2
+--- IN CHANGELOG.md
+|# Changelog
+|
+|## v0.36.0 (Unreleased)
+|
+|- Written by hand before the fragments.
+|
+|## v0.35.0 — 2026-11-20
+|
+|- The last release.
+--- IN Cargo.lock
+|version = 4
+|
+|[[package]]
+|name = "glyd"
+|version = "0.36.0-rc.1"
+|
+|[[package]]
+|name = "glyd-engine"
+|version = "0.36.0-rc.1"
+|
+|[[package]]
+|name = "glyd-gpu"
+|version = "0.36.0-rc.1"
+|
+|[[package]]
+|name = "glyd-preflate"
+|version = "0.7.6"
+|
+|[[package]]
+|name = "glyd-store"
+|version = "0.36.0-rc.1"
+|
+|[[package]]
+|name = "xtask"
+|version = "0.0.0"
+--- IN Cargo.toml
+|[package]
+|name = "glyd"
+|version = "0.36.0-rc.1"
+|edition = "2021"
+|
+|[dependencies]
+|glyd-engine = { path = "glyd-engine", version = "0.36.0-rc.1", optional = true }
+|libc = { version = "0.2" }
+--- IN ROADMAP.md
+|# Roadmap
+|
+|## Where it stands (v0.35.0, 2026-11-20)
+|
+|Text that says (v0.35.0, 2026-11-20) again, not as the heading.
+--- IN bindings/python/glyd/__init__.py
+|"""glyd"""
+|__version__ = "0.36.0rc1"
+--- IN bindings/python/pyproject.toml
+|[project]
+|name = "glyd"
+|version = "0.36.0rc1"
+|
+|[project.optional-dependencies]
+|gpu = ["glyd-gpu[gpu]==0.36.0rc1"]
+|vllm = ["glyd-gpu[vllm]==0.36.0rc1"]
+--- IN changelog.d/README.md
+|how
+--- IN docs/index.html
+|<p>One library. Rust, C ABI, CLI; v0.35.0, November 2026.</p>
+|<p>Rust, C ABI, CLI; v0.35.0, november 2026.</p>
+--- IN glyd-engine/Cargo.toml
+|[package]
+|name = "glyd-engine"
+|version = "0.36.0-rc.1"
+|
+|[dependencies]
+|  version = "9.9.9"
+--- IN glyd-gpu-py/glyd_gpu/__init__.py
+|__version__ = "0.36.0rc1"
+--- IN glyd-gpu-py/pyproject.toml
+|[project]
+|name = "glyd-gpu"
+|version = "0.36.0rc1"
+--- IN glyd-gpu/Cargo.toml
+|[package]
+|name = "glyd-gpu"
+|version = "0.36.0-rc.1"
+--- IN glyd-store/Cargo.toml
+|[package]
+|name = "glyd-store"
+|version = "0.36.0-rc.1"
+|
+|[dependencies]
+|glyd = { version = "0.36.0-rc.1", path = ".." }
+--- IN scripts/install.ps1
+|$GlydVersion = if ($env:GLYD_VERSION) { $env:GLYD_VERSION } else { '0.36.0rc1' }
+|Write-Host $GlydVersion
+--- IN scripts/install.sh
+|#!/bin/sh
+|GLYD_VERSION="${GLYD_VERSION:-0.36.0rc1}"
+|echo "$GLYD_VERSION"
+--- STDOUT
+--- STDERR
+|version files disagree:
+|  Cargo.toml: 0.36.0-rc.1, expected 0.36.0-rc.2
+|  glyd-store/Cargo.toml: 0.36.0-rc.1, expected 0.36.0-rc.2
+|  glyd-store/Cargo.toml: 0.36.0-rc.1, expected 0.36.0-rc.2
+|  Cargo.toml: 0.36.0-rc.1, expected 0.36.0-rc.2
+|  glyd-gpu/Cargo.toml: 0.36.0-rc.1, expected 0.36.0-rc.2
+|  glyd-engine/Cargo.toml: 0.36.0-rc.1, expected 0.36.0-rc.2
+|  Cargo.lock: 0.36.0-rc.1, expected 0.36.0-rc.2
+|  Cargo.lock: 0.36.0-rc.1, expected 0.36.0-rc.2
+|  Cargo.lock: 0.36.0-rc.1, expected 0.36.0-rc.2
+|  Cargo.lock: 0.36.0-rc.1, expected 0.36.0-rc.2
+|  bindings/python/pyproject.toml: 0.36.0rc1, expected 0.36.0rc2
+|  bindings/python/pyproject.toml: 0.36.0rc1, expected 0.36.0rc2
+|  bindings/python/pyproject.toml: 0.36.0rc1, expected 0.36.0rc2
+|  bindings/python/glyd/__init__.py: 0.36.0rc1, expected 0.36.0rc2
+|  glyd-gpu-py/pyproject.toml: 0.36.0rc1, expected 0.36.0rc2
+|  glyd-gpu-py/glyd_gpu/__init__.py: 0.36.0rc1, expected 0.36.0rc2
+|  scripts/install.sh: 0.36.0rc1, expected 0.36.0rc2
+|  scripts/install.ps1: 0.36.0rc1, expected 0.36.0rc2
+|(python3 scripts/bump_version.py VERSION sets them all)
+--- EXIT
+|1

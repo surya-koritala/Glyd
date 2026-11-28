@@ -1,0 +1,10 @@
+--- ARGS
+|--check
+--- IN Cargo.toml
+|[package]
+|name = "glyd"
+--- STDOUT
+--- STDERR
+|Cargo.toml: no version
+--- EXIT
+|1

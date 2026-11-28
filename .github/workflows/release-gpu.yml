@@ -9,7 +9,7 @@ name: Release (GPU and engine)
 # Run by hand (gh workflow run release.yml --ref BRANCH [-f pythons="3.12"]): the same builds and checks of that branch (or of a tag
 # that is not v*), kept as the run's artifacts. Only a v* tag publishes, pushed or run by hand on the tag (--ref vX.Y.Z): `publish` does
 # not run for anything else, and the `pypi` environment accepts v* tags alone. The plan job decides what is built: a tag must exist,
-# be on main or a release-X.Y.Z branch, the version files must say its version (scripts/bump_version.py --check TAG), and CI (ci.yml)
+# be on main or a release-X.Y.Z branch, the version files must say its version (cargo xtask bump-version --check TAG), and CI (ci.yml)
 # must have succeeded on its exact commit in a push or a run by hand (a pull request's run tests a merge, not the commit); every later
 # job builds the commit it names. Tag a commit after its CI passed (scripts/release_ready.sh VERSION says), an rc too: tag a main
 # commit whose own CI run passed. A tag whose commit has no passed run fails here: run CI on the tag (gh workflow run ci.yml --ref
@@ -71,6 +71,10 @@ jobs:
         with:
           fetch-depth: 0 # every branch and tag: which branches hold the tag's commit
           persist-credentials: false
+      # (cargo xtask bump-version --check below: the repository's own tasks, the standard library only, built here in seconds)
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.97.1"
       - name: Plan
         id: plan
         env:
@@ -89,7 +93,7 @@ jobs:
           if [ -z "$tag" ]; then
             # by hand: this ref as it stands, nothing published
             sha="$GITHUB_SHA"; label="dev-${GITHUB_SHA:0:7}"; publish=false; pythons="${INPUT_PYTHONS:-3.10 3.11 3.12 3.13 3.14}"
-            python3 scripts/bump_version.py --check
+            cargo xtask bump-version --check
           else
             [[ "$tag" =~ ^v[0-9][0-9A-Za-z._-]*$ ]] || fail "$(printf '%q' "$tag") is not a v* version tag"
             git rev-parse -q --verify "refs/tags/$tag^{commit}" > /dev/null || fail "$tag is not a tag of this repository"
@@ -98,7 +102,7 @@ jobs:
             [ -n "$on" ] || fail "$tag is at $sha, which is on neither main nor a release-* branch"
             echo "$tag is $sha, on: $(echo "$on" | tr '\n' ' ')"
             git checkout -q --detach "$sha"
-            python3 scripts/bump_version.py --check "$tag"
+            cargo xtask bump-version --check "$tag"
             label="$tag"; publish=true; pythons="3.10 3.11 3.12 3.13 3.14"
           fi
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail "$sha is not a commit"

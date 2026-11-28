@@ -1,0 +1,8 @@
+--- ARGS
+|--check
+|0.36.0rc
+--- STDOUT
+--- STDERR
+|'0.36.0rc' is not a version here: X.Y.Z, or X.Y.Z with rcN, aN or bN
+--- EXIT
+|1

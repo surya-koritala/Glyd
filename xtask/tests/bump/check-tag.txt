@@ -1,0 +1,8 @@
+--- ARGS
+|--check
+|v0.35.0
+--- STDOUT
+|version files agree: Cargo 0.35.0, Python 0.35.0; the docs name it
+--- STDERR
+--- EXIT
+|0
