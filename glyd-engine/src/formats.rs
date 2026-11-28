@@ -2,10 +2,13 @@
 //! (E8M0) a block of the matrix, the block read from the scales' shape; FP4 (E2M1, two weights a byte, the first in the low four bits) with an E8M0 scale a
 //! run of 32 of a row, as a release names it (`X.weight` stored as I8, its scales `X.scale`) or as compressed-tensors packs it (MXFP4: `X.weight_packed`,
 //! `X.weight_scale`). A weight times a power of two is exact in f32, and in bf16 where it is in range. And a table read by rows stored at 4 bits (NF4 levels
-//! times a bf16 scale a row: `X.q4`), as v0.34.2 decoded it.
+//! times a bf16 scale a row: `X.q4`), as v0.34.2 decoded it. Where a description names a matrix's scales (`Stored`), the scales' tensor is the one it names,
+//! whatever its suffix, and the block is the one the scales' shape and the config's `weight_block_size` give: fp32 scales a block (`X.qscale_weight` as
+//! `X.weight_scale_inv`), or a byte's power of two a run of 32 columns of a row.
 
 use crate::ffi::{err, Error, Result};
 use glyd_gpu::safetensors::Checkpoint;
+use std::collections::BTreeMap;
 
 /// An E8M0 scale's value: 2^(b - 127); 255 is NaN.
 pub fn e8m0(b: u8) -> f32 {
@@ -92,18 +95,81 @@ pub fn scales_beside(ck: &Checkpoint, name: &str) -> Option<String> {
 /// An FP8 matrix [rows, cols] with its fp32 scales, one a block of 128 x 128 ([ceil(rows / 128), ceil(cols / 128)]): each value its E4M3 code's value
 /// times its block's scale, one fp32 product (the value the GPU's products take: an E4M3 value is exact in bf16 and f32, the product rounded once).
 pub fn fp8_scaled(q: &[u8], scales: &[f32], rows: usize, cols: usize) -> Result<Vec<f32>> {
-    let gc = cols.div_ceil(128);
-    if q.len() != rows * cols || scales.len() != rows.div_ceil(128) * gc {
-        return err(format!("{} bytes and {} scales for an FP8 matrix of {rows} x {cols} in blocks of 128", q.len(), scales.len()));
+    fp8_scaled_blocks(q, scales, rows, cols, [128, 128])
+}
+
+/// `fp8_scaled` in blocks of `block` rows and columns (the scales row-major over [ceil(rows / block[0]), ceil(cols / block[1])], the last block of a row
+/// or a column short where the matrix does not divide).
+pub fn fp8_scaled_blocks(q: &[u8], scales: &[f32], rows: usize, cols: usize, block: [usize; 2]) -> Result<Vec<f32>> {
+    let [br, bc] = block;
+    if br == 0 || bc == 0 || cols == 0 || q.len() != rows * cols || scales.len() != rows.div_ceil(br) * cols.div_ceil(bc) {
+        return err(format!("{} bytes and {} scales for an FP8 matrix of {rows} x {cols} in blocks of {br} x {bc}", q.len(), scales.len()));
     }
-    Ok(q.iter().enumerate().map(|(i, &b)| glyd_gpu::fp8::e4m3(b) * scales[(i / cols) / 128 * gc + (i % cols) / 128]).collect())
+    let gc = cols.div_ceil(bc);
+    Ok(q.iter().enumerate().map(|(i, &b)| glyd_gpu::fp8::e4m3(b) * scales[(i / cols) / br * gc + (i % cols) / bc]).collect())
+}
+
+/// The block a described FP8 matrix of `rows` x `cols` has one scale of, from its scales' shape (a grid of two dimensions): the first of `given` (the
+/// description's block, the config's `weight_block_size`) whose grid is that shape, else the first of 128, 32 and 1 rows by 128, 32 and 1 columns whose
+/// grid is (a run of 32 columns of a row is [1, 32]). None where no block makes the shape.
+pub fn grid_block(rows: usize, cols: usize, shape: &[u64], given: &[[usize; 2]]) -> Option<[usize; 2]> {
+    let [gr, gc] = shape[..] else { return None };
+    let fits = |b: &[usize; 2]| b[0] > 0 && b[1] > 0 && [rows.div_ceil(b[0]) as u64, cols.div_ceil(b[1]) as u64] == [gr, gc];
+    const SIZES: [usize; 3] = [128, 32, 1];
+    given.iter().copied().chain(SIZES.iter().flat_map(|&a| SIZES.iter().map(move |&b| [a, b]))).find(fits)
+}
+
+/// The stored formats of a checkpoint as its description says them (`describe::Described::stored`): which tensor holds a quantized matrix's scales, and
+/// the FP8 matrices' block where the config gives one.
+#[derive(Clone, Debug, Default)]
+pub struct Stored {
+    /// A quantized matrix's name and its scales' (`Described::scales`).
+    pub scales: BTreeMap<String, String>,
+    /// The FP8 matrices' square block (`Described::fp8_block`).
+    pub block: Option<usize>,
+}
+
+impl Stored {
+    /// Tensor `name` as f32: a matrix the description names scales for, decoded with those scales (`described`); any other tensor, a matrix stored in
+    /// another type than the description says (a random model's bf16), and a format `described` does not take, by what the checkpoint holds (`tensor`).
+    pub fn tensor(&self, ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
+        self.described(ck, name).or_else(|| tensor(ck, name))
+    }
+
+    /// The matrix `name` decoded with the scales the description names for it, by the types the two are stored in:
+    ///  - FP8 (E4M3) with fp32 scales a block (`grid_block`): each value its code's value times its block's scale, one fp32 product (`fp8_scaled_blocks`);
+    ///  - FP8 with a byte's power-of-two scale (U8 or E8M0: 2^(s - 127)) a block: the product, exact, as the bf16 it is (`fp8_blocks`).
+    ///
+    /// None where the description names no scales for it, or the two tensors are not one of these.
+    fn described(&self, ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
+        let sn = self.scales.get(name)?;
+        let ((_, t), (_, st)) = (ck.get(name)?, ck.get(sn)?);
+        let [rows, cols] = t.shape[..] else { return None };
+        let (rows, cols) = (rows as usize, cols as usize);
+        let bf16 = |w: u16| f32::from_bits((w as u32) << 16);
+        match (t.dtype.as_str(), st.dtype.as_str()) {
+            ("F8_E4M3", "F32" | "U8" | "F8_E8M0") => {
+                let given: Vec<[usize; 2]> = self.block.map(|b| [b, b]).into_iter().chain(ck.fp8_block).collect();
+                let block = grid_block(rows, cols, &st.shape, &given)?;
+                let (q, s) = (ck.read(name).ok()?, ck.read(sn).ok()?);
+                let v = if st.dtype == "F32" {
+                    let s: Vec<f32> = s.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                    fp8_scaled_blocks(&q, &s, rows, cols, block).ok()?
+                } else {
+                    fp8_blocks(&q, &s, rows, cols, block).ok()?.into_iter().map(bf16).collect()
+                };
+                Some((vec![rows, cols], v))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A checkpoint's tensor as f32, by the type it is stored in: bf16 and f32 as stored, int64 (a hash table's ids) as their values; an FP8 matrix with its
 /// scales (`X.scale`, a block each, or fp32 block scales `X.weight_scale_inv`: `scales_beside`); an FP4 matrix stored as I8 with its runs' scales
 /// (`X.scale`); and where `X.weight` or its codes `X.weight_packed` are asked for and the checkpoint holds the matrix as compressed-tensors packs it, that
 /// MXFP4 matrix, or the table stored at 4 bits (`X.q4`) as the bf16 values it decodes to (`nf4_row`). Another type, or a quantized matrix without its
-/// scales: none.
+/// scales: none. The scales are found by these names alone: a matrix whose scales its description names otherwise is read by `Stored::tensor`.
 pub fn tensor(ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
     let Some((_, t)) = ck.get(name) else { return packed_fp4(ck, name).or_else(|| q4_table(ck, name)) };
     let shape: Vec<usize> = t.shape.iter().map(|&d| d as usize).collect();
@@ -363,6 +429,143 @@ mod tests {
         assert_eq!(tensor(&ck, "layers.0.ffn.experts.0.w1.weight"), Some((vec![fr, fc], fp4.clone())));
         assert_eq!(tensor(&ck, "model.layers.0.mlp.experts.0.gate_proj.weight"), Some((vec![fr, fc], fp4.clone())));
         assert_eq!(tensor(&ck, "model.layers.0.mlp.experts.0.gate_proj.weight_packed"), Some((vec![fr, fc], fp4)), "the codes asked for by their own name");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// E4M3's definition in f64, a byte at a time: a sign, four bits of exponent with bias 7, three of fraction; exponent 0 subnormal.
+    fn e4m3_f64(b: u8) -> f64 {
+        let (e, m) = (((b >> 3) & 15) as i32, (b & 7) as f64);
+        let v = if e == 0 { m / 8.0 * 2f64.powi(-6) } else { (1.0 + m / 8.0) * 2f64.powi(e - 7) };
+        if b & 0x80 != 0 {
+            -v
+        } else {
+            v
+        }
+    }
+
+    /// Every E4M3 byte but the two NaNs, in turn, `n` of them from `from`.
+    fn codes(from: usize, n: usize) -> Vec<u8> {
+        (from..from + n).map(|i| (i % 256) as u8).map(|b| if b & 0x7F == 0x7F { b - 1 } else { b }).collect()
+    }
+
+    /// FP8 with fp32 scales a block of any size: a matrix whose rows and columns do not divide by the block (the last blocks short), every code, scales
+    /// that are powers of two and that are not: each value the one product in fp32 of its code's value and its block's scale, the formula in f64 rounded
+    /// once. The block is read from the scales' shape: the given block where its grid is the shape, else 128, 32 or 1 a side, a run of 32 columns of a
+    /// row being [1, 32]; a shape no block makes is none.
+    #[test]
+    fn fp8_with_fp32_scales_a_block_of_any_size() {
+        let (rows, cols, block) = (20usize, 28usize, [8usize, 8usize]);
+        let q = codes(0, rows * cols);
+        assert!((0..=255u8).filter(|b| b & 0x7F != 0x7F).all(|b| q.contains(&b)), "every code");
+        let (gr, gc) = (rows.div_ceil(8), cols.div_ceil(8));
+        let s: Vec<f32> = (0..gr * gc).map(|i| if i % 2 == 0 { 2f32.powi(i as i32 - 9) } else { 0.0137 * (i + 1) as f32 }).collect();
+        let got = fp8_scaled_blocks(&q, &s, rows, cols, block).unwrap();
+        for (i, g) in got.iter().enumerate() {
+            let want = (e4m3_f64(q[i]) * s[(i / cols / 8) * gc + (i % cols) / 8] as f64) as f32;
+            assert_eq!(g.to_bits(), want.to_bits(), "row {}, column {}", i / cols, i % cols);
+        }
+        assert_eq!(fp8_scaled(&q[..256 * 2], &[0.5, 0.3], 2, 256).unwrap(), fp8_scaled_blocks(&q[..256 * 2], &[0.5, 0.3], 2, 256, [128, 128]).unwrap());
+        assert!(fp8_scaled_blocks(&q, &s[1..], rows, cols, block).is_err() && fp8_scaled_blocks(&q, &s, rows, cols, [0, 8]).is_err());
+        assert_eq!(grid_block(rows, cols, &[3, 4], &[block]), Some(block));
+        assert_eq!(grid_block(192, 320, &[2, 3], &[]), Some([128, 128]));
+        assert_eq!(grid_block(192, 320, &[2, 3], &[[8, 8]]), Some([128, 128]), "a given block of another grid is not the scales'");
+        assert_eq!(grid_block(8192, 6144, &[8192, 192], &[]), Some([1, 32]));
+        assert_eq!(grid_block(8192, 6144, &[8192, 192], &[[1, 32]]), Some([1, 32]));
+        assert_eq!(grid_block(192, 320, &[6, 10], &[]), Some([32, 32]));
+        assert_eq!(
+            (grid_block(192, 320, &[1, 3], &[]), grid_block(192, 320, &[2], &[]), grid_block(192, 320, &[2, 3], &[[0, 0]])),
+            (None, None, Some([128, 128]))
+        );
+    }
+
+    /// FP8 with a byte's power-of-two scale a run of 32 columns of a row (block [1, 32]): W = e4m3(code) x 2^(scale - 127), exactly, whatever the scale
+    /// tensor is named; a row whose columns do not divide by 32 has a short last run. Every code under scales from 2^-27 to 2^13 is the formula in f64 to
+    /// the bit; a scale of 255 (NaN) and a product past bf16 are refused.
+    #[test]
+    fn fp8_with_a_power_of_two_scale_a_run_of_32() {
+        let (rows, cols) = (41usize, 80usize);
+        let q = codes(3, rows * cols);
+        let s: Vec<u8> = (0..rows * 3).map(|i| 100 + (i % 41) as u8).collect();
+        let got = fp8_blocks(&q, &s, rows, cols, [1, 32]).unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        for (i, g) in got.iter().enumerate() {
+            let e = s[i / cols * 3 + (i % cols) / 32];
+            seen.insert((q[i], e));
+            let want = e4m3_f64(q[i]) * 2f64.powi(e as i32 - 127);
+            assert_eq!(
+                f32::from_bits((*g as u32) << 16).to_bits(),
+                (want as f32).to_bits(),
+                "row {}, column {}: code {:#04x}, scale {e}",
+                i / cols,
+                i % cols,
+                q[i]
+            );
+            assert_eq!(f32::from_bits((*g as u32) << 16) as f64, want, "exact");
+        }
+        assert!((0..=255u8).filter(|b| b & 0x7F != 0x7F).all(|b| seen.iter().any(|x| x.0 == b)) && (100..=140u8).all(|e| seen.iter().any(|x| x.1 == e)));
+        assert!(fp8_blocks(&q[..32], &[255], 1, 32, [1, 32]).is_err(), "a NaN scale");
+        assert!(fp8_blocks(&[0x7E; 32], &[254], 1, 32, [1, 32]).is_err(), "448 x 2^127 is past bf16");
+        assert!(fp8_blocks(&q, &s[1..], rows, cols, [1, 32]).is_err());
+    }
+
+    /// A described matrix is read with the scales its description names, whatever their suffix: fp32 scales a block of 128 under `X.qscale_weight`, fp32
+    /// scales of the description's own block, and a byte's power of two a run of 32 under `X.weight_scale_inv`: none of them read without the
+    /// description. A matrix the description names scales for and the checkpoint holds as bf16 is the bf16; a format the description's reader does not
+    /// take is read as before.
+    #[test]
+    fn a_described_matrix_is_read_with_the_scales_its_description_names() {
+        let dir = std::env::temp_dir().join(format!("glyd-formats-described-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f32s = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
+        let (r, c) = (192usize, 320usize);
+        let (qa, sa): (Vec<u8>, Vec<f32>) = (codes(0, r * c), (0..6).map(|i| 2f32.powi(i - 7)).collect());
+        let (rb, cb) = (20usize, 28usize);
+        let (qb, sb): (Vec<u8>, Vec<f32>) = (codes(7, rb * cb), (0..12).map(|i| 0.011 * (i + 1) as f32).collect());
+        let (rc, cc) = (6usize, 96usize);
+        let (qc, sc): (Vec<u8>, Vec<u8>) = (codes(11, rc * cc), (0..rc * 3).map(|i| 118 + i as u8).collect());
+        let bf: Vec<u8> = (0..8u16).flat_map(|i| (0x3F00 + i * 16).to_le_bytes()).collect();
+        let (sa_b, sb_b) = (f32s(&sa), f32s(&sb));
+        let names = [
+            ("layers.0.attention.wq.weight", "F8_E4M3", vec![r as u64, c as u64], &qa[..]),
+            ("layers.0.attention.wq.qscale_weight", "F32", vec![2, 3], &sa_b[..]),
+            ("layers.0.attention.wo.weight", "F8_E4M3", vec![rb as u64, cb as u64], &qb[..]),
+            ("layers.0.attention.wo.qscale_weight", "F32", vec![3, 4], &sb_b[..]),
+            ("model.layers.0.self_attn.q_proj.weight", "F8_E4M3", vec![rc as u64, cc as u64], &qc[..]),
+            ("model.layers.0.self_attn.q_proj.weight_scale_inv", "U8", vec![rc as u64, 3], &sc[..]),
+            ("model.layers.0.self_attn.k_proj.weight", "BF16", vec![2, 4], &bf[..]),
+            ("layers.1.attn.wq_a.weight", "F8_E4M3", vec![rc as u64, cc as u64], &qc[..]),
+            ("layers.1.attn.wq_a.scale", "F8_E8M0", vec![rc as u64, 3], &sc[..]),
+        ];
+        crate::pack::write_safetensors(&dir.join("model.safetensors"), &[("format", "pt".to_string())], &names).unwrap();
+        let ck = Checkpoint::open(&dir).unwrap();
+        let st = Stored {
+            scales: [(0, 1), (2, 3), (4, 5), (7, 8)]
+                .into_iter()
+                .map(|(w, s)| (names[w].0.to_string(), names[s].0.to_string()))
+                .chain([("model.layers.0.self_attn.k_proj.weight".to_string(), "model.layers.0.self_attn.k_proj.weight_scale_inv".to_string())])
+                .collect(),
+            block: Some(8),
+        };
+        let want_a: Vec<f32> = (0..r * c).map(|i| (e4m3_f64(qa[i]) * sa[i / c / 128 * 3 + i % c / 128] as f64) as f32).collect();
+        let want_b: Vec<f32> = (0..rb * cb).map(|i| (e4m3_f64(qb[i]) * sb[i / cb / 8 * 4 + i % cb / 8] as f64) as f32).collect();
+        let want_c: Vec<f32> = (0..rc * cc).map(|i| (e4m3_f64(qc[i]) * 2f64.powi(sc[i / cc * 3 + i % cc / 32] as i32 - 127)) as f32).collect();
+        assert_eq!(st.tensor(&ck, names[0].0), Some((vec![r, c], want_a)), "fp32 scales a block of 128, the block read from their shape");
+        assert_eq!(st.tensor(&ck, names[2].0), Some((vec![rb, cb], want_b)), "fp32 scales of the description's block");
+        assert_eq!(st.tensor(&ck, names[4].0), Some((vec![rc, cc], want_c.clone())), "a byte's power of two a run of 32");
+        for n in [names[0].0, names[2].0, names[4].0] {
+            assert_eq!(tensor(&ck, n), None, "{n}: not read without its description");
+            assert_eq!(Stored::default().tensor(&ck, n), None, "{n}: nor by a description that names no scales for it");
+        }
+        assert_eq!(st.tensor(&ck, names[6].0), tensor(&ck, names[6].0), "a described matrix held as bf16");
+        assert!(st.tensor(&ck, names[6].0).is_some_and(|(s, v)| s == [2, 4] && v[1] == f32::from_bits(0x3F10_0000)));
+        assert_eq!(
+            (st.tensor(&ck, names[7].0), tensor(&ck, names[7].0)),
+            (Some((vec![rc, cc], want_c.clone())), Some((vec![rc, cc], want_c))),
+            "E8M0 scales as before"
+        );
+        // (a description whose scales are of no block's shape: not read)
+        let odd = Stored { scales: [(names[0].0.to_string(), names[3].0.to_string())].into_iter().collect(), block: None };
+        assert_eq!(odd.tensor(&ck, names[0].0), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -837,12 +837,12 @@ fn ref_model(d: &Path) -> Result<crate::runtime::reference::model::RefModel> {
 
 /// `ref_model` of the description `edit` changes (a test's: another rounding point, say).
 fn ref_model_with(d: &Path, edit: fn(&mut crate::runtime::describe::Described)) -> Result<crate::runtime::reference::model::RefModel> {
-    use crate::runtime::reference::model::{checkpoint_tensor, RefModel};
+    use crate::runtime::reference::model::{described_source, RefModel};
     let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(d.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
     let mut desc = crate::runtime::describe::describe(&cfg)?;
     edit(&mut desc);
     let ck = io(glyd_gpu::safetensors::Checkpoint::open(d))?;
-    let mut m = RefModel::load(&desc, &|n: &str| checkpoint_tensor(&ck, n))?;
+    let mut m = RefModel::load(&desc, &described_source(&ck, &desc))?;
     put_token_map(&mut m, d)?;
     Ok(m)
 }
@@ -1993,12 +1993,12 @@ pub struct HeadRef {
 /// sequence: a row at a position the head has run before takes its place, `RefMtp::step_streams` or `RefMtp::step` by the head's form).
 pub fn ref_head(dir: &Path, rows: &[HeadRow], edit: fn(&mut crate::runtime::describe::Described)) -> Result<HeadRef> {
     use crate::runtime::kinds::{Body, Ffn, Mixer, MtpInput};
-    use crate::runtime::reference::{mla::LatentCache, model::checkpoint_tensor, mtp::RefMtp, SeqState};
+    use crate::runtime::reference::{mla::LatentCache, model::described_source, mtp::RefMtp, SeqState};
     let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(dir.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
     let mut desc = crate::runtime::describe::describe(&cfg)?;
     edit(&mut desc);
     let ck = io(glyd_gpu::safetensors::Checkpoint::open(dir))?;
-    let src = |n: &str| checkpoint_tensor(&ck, n);
+    let src = described_source(&ck, &desc);
     let m = crate::runtime::reference::model::RefModel::load(&desc, &src)?;
     let mut h = RefMtp::load(&desc, 0, &src)?;
     let moe: Vec<usize> = (0..h.blocks.len()).filter(|&b| matches!(h.blocks[b].block.body, Body::Ffn(Ffn::Moe(_)))).collect();
@@ -2046,11 +2046,11 @@ pub fn ref_head(dir: &Path, rows: &[HeadRow], edit: fn(&mut crate::runtime::desc
 /// The DSpark drafter of the model in `dir` (its description's first draft head) on the CPU reference of the kinds (`RefDSpark::load`), and the model's
 /// embedding and LM head (f32 [vocab, hidden]) its block reads.
 pub fn ref_dspark(dir: &Path) -> Result<(Vec<f32>, Vec<f32>, crate::runtime::reference::mtp::RefDSpark)> {
-    use crate::runtime::reference::{model::checkpoint_tensor, mtp::RefDSpark};
+    use crate::runtime::reference::{model::described_source, mtp::RefDSpark};
     let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(dir.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
     let desc = crate::runtime::describe::describe(&cfg)?;
     let ck = io(glyd_gpu::safetensors::Checkpoint::open(dir))?;
-    let src = |n: &str| checkpoint_tensor(&ck, n);
+    let src = described_source(&ck, &desc);
     let t = |n: &str| src(n).map(|x| x.1).ok_or_else(|| Error(format!("the checkpoint has no tensor {n}")));
     let (embed, head) = (t(&desc.embed)?, t(desc.head.as_deref().unwrap_or(&desc.embed))?);
     Ok((embed, head, RefDSpark::load(&desc, &src)?))
@@ -3499,11 +3499,11 @@ fn carry_lines(dir: &Path, fx: &Fixture, own: &RefRun, d: &Apart) -> Result<()> 
 
 /// The CPU f32 reference's residual after each layer of a prompt of the model in `dir` (from its description).
 fn cpu_layers(dir: &Path, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
-    use crate::runtime::reference::model::{checkpoint_tensor, RefModel};
+    use crate::runtime::reference::model::{described_source, RefModel};
     let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(dir.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
     let desc = crate::runtime::describe::describe(&cfg)?;
     let ck = io(glyd_gpu::safetensors::Checkpoint::open(dir))?;
-    let mut m = RefModel::load(&desc, &|n: &str| checkpoint_tensor(&ck, n))?;
+    let mut m = RefModel::load(&desc, &described_source(&ck, &desc))?;
     m.record = Some(Vec::new());
     m.forward(tokens, 0)?;
     Ok(m.record.take().unwrap_or_default())

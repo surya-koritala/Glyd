@@ -74,6 +74,13 @@ pub fn checkpoint_tensor(ck: &glyd_gpu::safetensors::Checkpoint, name: &str) -> 
     crate::formats::tensor(ck, name)
 }
 
+/// A described model's tensors from its checkpoint, as f32: `checkpoint_tensor`, and a quantized matrix whose scales the description names
+/// (`Described::scales`) decoded with those, under whatever name the release stores them (`formats::Stored::tensor`).
+pub fn described_source<'a>(ck: &'a glyd_gpu::safetensors::Checkpoint, d: &Described) -> impl Fn(&str) -> Option<(Vec<usize>, Vec<f32>)> + 'a {
+    let stored = d.stored();
+    move |name: &str| stored.tensor(ck, name)
+}
+
 /// One logit from the head's product `z`: times the head's scale, through its soft-cap, rounded where the head rounds (`Head::rounding`).
 pub fn logit(h: &Head, z: f32) -> f32 {
     let (product, ops) = match h.rounding {

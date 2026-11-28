@@ -149,6 +149,12 @@ impl Described {
         self.blocks.iter().chain(heads).flatten().filter(|(r, _)| r.starts_with("experts_")).flat_map(|(_, s)| s.names()).collect()
     }
 
+    /// The stored formats as the description says them, for a reader of the checkpoint (`formats::Stored::tensor`): each quantized matrix's scales and
+    /// the FP8 matrices' block.
+    pub fn stored(&self) -> crate::formats::Stored {
+        crate::formats::Stored { scales: self.scales.clone(), block: self.fp8_block }
+    }
+
     /// Whether a checkpoint of the tensor names `have` is slim: it holds none of the routed experts the description reads (in any stored form, `stored`),
     /// where it reads some; a codes pack holds them (Glyd's release of Qwen3.8-Flash-Next: `model/` beside its packs).
     pub fn slim(&self, have: &BTreeSet<String>) -> bool {
@@ -3835,8 +3841,9 @@ const MISTRAL_FP8: &[(&str, &str)] = &[
 /// The norms are RMS norms computed in fp32, cast, then times the weight (`Rounding::Twice`).
 /// Stored formats: the checkpoint is Mistral's consolidated one, in Mistral's names (`names::MISTRAL`). `quantization_config` (fp8, blocks of
 /// `weight_block_size`): every product of a layer but the modules of `modules_to_not_convert` is FP8 E4M3 with an fp32 scale a block, W = code x scale, in a
-/// tensor named `X.qscale_weight` beside `X.weight` (the scales of DeepSeek's `weight_scale_inv`, under Mistral's name; no loader of the engine reads that
-/// name yet). As released the key-value latent's two products, the indexer's key product and head weights, the routers, the embedding and the head are bf16.
+/// tensor named `X.qscale_weight` beside `X.weight` (the scales of DeepSeek's `weight_scale_inv`, under Mistral's name: the CPU reference reads them by
+/// the description's `scales`, `formats::Stored`; the executor's loaders read `weight_scale_inv` alone). As released the key-value latent's two
+/// products, the indexer's key product and head weights, the routers, the embedding and the head are bf16.
 /// Left unread: the vision encoder, its norm, patch merger and adapter (`vision_config` and the wrapper's projector keys), and the draft model under
 /// `mtp_dspark.`, which the config says nothing of.
 fn mistral_large4(c: &ModelConfig) -> Result<Described> {
