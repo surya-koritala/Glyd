@@ -4,8 +4,9 @@
 //! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, DeepSeek-V4, Nemotron 3
 //! (`nemotron_h`), LFM3 (`lfm3`), Ling 3 (`bailing_hybrid`: described, its layers lowered to the executor and its random model a case of the
 //! checks; its release is in no row of what the engine runs yet), ERNIE 5.5 (`ernie5_5_moe`: described, not run yet), Hy4 Flash
-//! (`hy_v4_flash`: described, not run yet), Mistral Large (`mistral_large4_text`: described, not run yet), MiniMax M3 (`minimax_m3_vl`:
-//! described, not run yet), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
+//! (`hy_v4_flash`: described, not run yet), Mistral Large (`mistral_large4_text`: described, its layers lowered to the executor and its random model a
+//! case of the checks; its release is in no row of what the engine runs yet), MiniMax M3 (`minimax_m3_vl`: described, not run yet), and the
+//! Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
 //! through the tables of their naming convention (`names`); a format detail such as Kimi-K3's MXFP4 experts (`.weight_packed` for
 //! `.weight`) is the loader's. The config comes parsed once (`config::ModelConfig`).
 //!
