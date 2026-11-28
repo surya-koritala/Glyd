@@ -250,11 +250,6 @@ pub struct Stored {
 }
 
 impl Stored {
-    /// Whether the description names nothing a reader needs: no scales and no shards (a model of bf16 weights, read by the checkpoint's own names).
-    pub fn is_plain(&self) -> bool {
-        self.scales.is_empty() && self.shards.is_empty()
-    }
-
     /// Whether the checkpoint holds the matrix `name` quantized, with scales its description names: FP8 bytes or 4-bit codes, which a loader reads by
     /// `words`. Not a matrix the description names scales for that the checkpoint holds as bf16 (a random model's), nor a tensor with no scales named.
     pub fn quantized(&self, ck: &Checkpoint, name: &str) -> bool {
