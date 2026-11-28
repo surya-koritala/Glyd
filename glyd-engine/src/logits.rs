@@ -2009,7 +2009,6 @@ pub fn ref_head(dir: &Path, rows: &[HeadRow], edit: fn(&mut crate::runtime::desc
     let idx: Vec<usize> = (0..h.blocks.len())
         .filter(|&b| matches!(&h.blocks[b].block.body, Body::Mixer(Mixer::Mla(x)) if x.indexer.as_ref().is_some_and(|i| !i.shared)))
         .collect();
-    let d = desc.desc.hidden;
     let mut out = HeadRef { logits: Vec::new(), states: Vec::new(), routes: Vec::new(), picks: Vec::new() };
     for r in rows {
         for &b in &moe {
@@ -2031,9 +2030,7 @@ pub fn ref_head(dir: &Path, rows: &[HeadRow], edit: fn(&mut crate::runtime::desc
                 (y.clone(), y)
             }
         };
-        out.logits.push(
-            crate::runtime::reference::matvec_w(m.head_w(), d, &y).into_iter().map(|z| crate::runtime::reference::model::logit(&desc.desc.head, z)).collect(),
-        );
+        out.logits.push(m.logits_of(&y)?);
         out.states.push(x);
         let c = moe.first().and_then(|&b| h.blocks[b].routed.as_mut().and_then(Vec::pop));
         out.routes.push(c.map_or((Vec::new(), Vec::new()), |c| (c.own, c.ids)));

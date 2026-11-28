@@ -434,6 +434,7 @@ mod tests {
                 scale: 1.0,
                 collapse: crate::runtime::kinds::Collapse::None,
                 rounding: crate::runtime::kinds::Rounding::F32,
+                correction: false,
             },
             mtp: Vec::new(),
             vision: None,

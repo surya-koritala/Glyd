@@ -86,6 +86,51 @@ pub fn logit(h: &Head, z: f32) -> f32 {
     h.softcap.map_or(z, |c| r(c * r(r(z / c, ops).ltanh(), ops), ops))
 }
 
+/// The logits' four-part correction of one logit `x` (`Head::correction`; `ranges` r and `ts` t, four values each): x + t0 relu(r0 - x) + t1 relu(x - r1) +
+/// t2 relu(r2 - x)^2 + t3 relu(x - r3)^2, the terms added in that order; where the head rounds `Twice`, each relu, square, product and sum rounded to bf16.
+/// A relu keeps a NaN.
+pub fn correct(h: &Head, ranges: &[f32], ts: &[f32], x: f32) -> f32 {
+    let twice = h.rounding == Rounding::Twice;
+    let r = |v: f32| if twice { super::bf16(v) } else { v };
+    let relu = |v: f32| if v > 0.0 || v.is_nan() { v } else { 0.0 };
+    let (lower, upper) = (r(relu(ranges[0] - x)), r(relu(x - ranges[1])));
+    let (lower_sq, upper_sq) = (r(relu(ranges[2] - x)), r(relu(x - ranges[3])));
+    let y = r(x + r(ts[0] * lower));
+    let y = r(y + r(ts[1] * upper));
+    let y = r(y + r(ts[2] * r(lower_sq * lower_sq)));
+    r(y + r(ts[3] * r(upper_sq * upper_sq)))
+}
+
+/// A head's logits from its products: each through the head's scale, cap and rounding (`logit`), then the four-part correction where the head has one
+/// (`fix`: its ranges and its factors).
+#[derive(Clone, Debug)]
+pub struct Logits {
+    pub head: Head,
+    pub fix: Option<(Vec<f32>, Vec<f32>)>,
+}
+
+impl Logits {
+    /// The head `h` with the correction's roles from `p` (the model's own: `logit_ranges`, `logit_ts`) where it has one.
+    pub fn of(h: &Head, p: &Params) -> Result<Logits> {
+        let fix = if h.correction {
+            let (r, t) = (p.vec("logit_ranges")?.to_vec(), p.vec("logit_ts")?.to_vec());
+            if r.len() != 4 || t.len() != 4 {
+                return err(format!("the logits' correction: {} ranges and {} factors, where each is four", r.len(), t.len()));
+            }
+            Some((r, t))
+        } else {
+            None
+        };
+        Ok(Logits { head: *h, fix })
+    }
+
+    /// One logit from the head's product `z`.
+    pub fn one(&self, z: f32) -> f32 {
+        let x = logit(&self.head, z);
+        self.fix.as_ref().map_or(x, |(r, t)| correct(&self.head, r, t, x))
+    }
+}
+
 /// Kimi-K3's depth mix for one token: the completed groups' sums (the sources) and the open group's partial sum.
 #[derive(Clone, Debug)]
 pub struct Depth {
@@ -296,13 +341,19 @@ impl RefModel {
             }
         }
         seen(&mut x);
-        let h = self.desc.head;
         let mut out = Vec::with_capacity(tokens.len());
         for (t, xt) in x.chunks(n * d).enumerate() {
             let y = self.final_h_with(xt, Some(&depth[t]), &lag[t])?;
-            out.push(super::matvec_w(self.head_w(), d, &y).into_iter().map(|z| logit(&h, z)).collect());
+            out.push(self.logits_of(&y)?);
         }
         Ok(out)
+    }
+
+    /// The logits of the head's input `y` (a final-normed row; a draft head's output): the head's product, its scale, cap and rounding, and its
+    /// four-part correction where it has one (`Logits`).
+    pub fn logits_of(&self, y: &[f32]) -> Result<Vec<f32>> {
+        let l = Logits::of(&self.desc.head, &self.p)?;
+        Ok(super::matvec_w(self.head_w(), self.desc.hidden, y).into_iter().map(|z| l.one(z)).collect())
     }
 
     /// The token's per-layer inputs (`kinds::PerLayerIn`), every layer's in order (none where the model has none): its row of `ple_embed` times sqrt(dim),
@@ -492,7 +543,7 @@ mod tests {
             embed: Embed { scale: 1.0, norm: None, streams: N, per_layer: None, table: TableAt::Gpu },
             blocks: layers.iter().map(|l| l.block.clone()).collect(),
             final_norm: Norm::rms(1e-6),
-            head: Head { tied: false, softcap: None, scale: 1.0, collapse, rounding: Rounding::F32 },
+            head: Head { tied: false, softcap: None, scale: 1.0, collapse, rounding: Rounding::F32, correction: false },
             mtp: Vec::new(),
             vision: None,
             rope: None,
@@ -690,12 +741,73 @@ mod tests {
         assert_eq!(Source::Transposed("w".into()).names(), ["w"]);
     }
 
+    /// The logits' four-part correction (`Head::correction`). In f32 it is the formula, region by region, by hand: nothing between the ranges, a line
+    /// below the first and above the second, a square added below the third and above the fourth. Where the head rounds `Twice` every operation rounds
+    /// to bf16: written out a second time step by step on values no step of which is exact, and another number than the f32 form's. A NaN stays one. A
+    /// model's logits are its head's, corrected with the model's own two roles; a head that says the correction without them is refused.
+    #[test]
+    fn the_logits_correction_is_the_formula_and_rounds_every_operation_where_the_head_does() {
+        use crate::runtime::reference::bf16;
+        let h = |rounding| Head { tied: false, softcap: None, scale: 1.0, collapse: Collapse::Mean, rounding, correction: true };
+        let (r, t) = ([-3.0f32, 5.0, -8.0, 10.0], [0.25f32, -0.125, 0.0625, -0.03125]);
+        let f = h(Rounding::F32);
+        assert_eq!(correct(&f, &r, &t, 1.0), 1.0);
+        assert_eq!(correct(&f, &r, &t, -4.0), -4.0 + 0.25 * 1.0);
+        assert_eq!(correct(&f, &r, &t, 7.0), 7.0 - 0.125 * 2.0);
+        assert_eq!(correct(&f, &r, &t, -10.0), -10.0 + 0.25 * 7.0 + 0.0625 * 4.0);
+        assert_eq!(correct(&f, &r, &t, 12.0), 12.0 - 0.125 * 7.0 - 0.03125 * 4.0);
+        assert!(correct(&f, &r, &t, f32::NAN).is_nan());
+        // (rounded: ranges and factors as a checkpoint holds them, bf16 values, and bf16 logits)
+        let tw = h(Rounding::Twice);
+        let (r, t) = ([-3.137f32, 5.291, -8.513, 10.77].map(bf16), [0.2713f32, -0.1317, 0.0619, -0.0331].map(bf16));
+        let (b, relu) = (bf16, |v: f32| v.max(0.0));
+        let mut differ = 0;
+        for x in [-11.3371f32, 13.7719, 0.4321, -3.3001, 5.4007, -8.6113, 10.9003, -47.11, 63.02].map(bf16) {
+            let (lo, hi, lo2, hi2) = (b(relu(r[0] - x)), b(relu(x - r[1])), b(relu(r[2] - x)), b(relu(x - r[3])));
+            let y = b(x + b(t[0] * lo));
+            let y = b(y + b(t[1] * hi));
+            let y = b(y + b(t[2] * b(lo2 * lo2)));
+            let y = b(y + b(t[3] * b(hi2 * hi2)));
+            assert_eq!(correct(&tw, &r, &t, x), y, "{x}");
+            assert_eq!(y, bf16(y), "a bf16 logit out");
+            differ += (correct(&f, &r, &t, x) != y) as usize;
+        }
+        assert!(differ >= 4, "the rounded form is another number on {differ} of 9");
+        // (a model: the head's logits, each corrected, by the model's own roles)
+        let tokens = [3u32, 7, 1];
+        let plain = {
+            let mut m = model(streams(false), Collapse::Mean);
+            m.desc.head.rounding = Rounding::Twice;
+            m.forward(&tokens, 0).unwrap()
+        };
+        let mut m = model(streams(false), Collapse::Mean);
+        m.desc.head = tw;
+        assert!(m.forward(&tokens, 0).unwrap_err().msg.contains("logit_ranges"));
+        m.p.put("logit_ranges", &[4], vec![-0.25, 0.25, -0.5, 0.5].into_iter().map(bf16).collect());
+        m.p.put("logit_ts", &[4], t.to_vec());
+        let got = m.forward(&tokens, 0).unwrap();
+        let (mr, mut moved) = (m.p.vec("logit_ranges").unwrap().to_vec(), 0);
+        for (g, p) in got.iter().zip(&plain) {
+            for (a, &z) in g.iter().zip(p) {
+                assert_eq!(*a, correct(&tw, &mr, &t, z));
+                moved += (*a != z) as usize;
+            }
+        }
+        assert!(moved > 8, "{moved} logits past a range");
+        m.p.put("logit_ts", &[3], vec![0.0; 3]);
+        assert!(m.forward(&tokens, 0).unwrap_err().msg.contains("where each is four"));
+        // (said in a description's text only where it is set)
+        assert!(
+            format!("{tw:?}").ends_with("rounding: Twice, correction: true }") && !format!("{:?}", Head { correction: false, ..tw }).contains("correction")
+        );
+    }
+
     /// The head's rounding points (`Head::rounding`): none in f32; the product's output alone; or a bf16 tensor between operations, as transformers
     /// soft-caps a bf16 model's logits (`/ cap`, `tanh`, `* cap`, each rounded), which the engine's g4_softcap does too. By hand.
     #[test]
     fn the_head_rounds_where_it_says() {
         use crate::runtime::reference::bf16;
-        let h = |rounding, scale| Head { tied: true, softcap: Some(30.0), scale, collapse: Collapse::None, rounding };
+        let h = |rounding, scale| Head { tied: true, softcap: Some(30.0), scale, collapse: Collapse::None, rounding, correction: false };
         let z = 23.456_79f32;
         assert_eq!(logit(&h(Rounding::F32, 1.0), z), 30.0 * (z / 30.0).ltanh());
         assert_eq!(logit(&h(Rounding::Once, 1.0), z), 30.0 * (bf16(z) / 30.0).ltanh());

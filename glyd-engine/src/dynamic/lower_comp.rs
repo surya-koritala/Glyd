@@ -130,6 +130,7 @@ struct Made {
 /// The executor's description of a model of compressed attention layers for stage `st` (`vo`: what the level and the switches make of its products and caches),
 /// and its loader's plan. Each layer is an optional n-gram block, the compressed attention, the experts, each attention and experts block on the streams.
 pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Opts) -> Result<(ModelDesc, Plan)> {
+    super::split::runs(d)?;
     let m = &d.desc;
     let what = "a compressed attention model";
     // (the release's quantizations the kernels simulate, by the form its FP8 blocks name (`Sim`: of 128, or of 32); a release of other blocks runs without them,

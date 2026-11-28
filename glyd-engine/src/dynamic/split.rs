@@ -1033,7 +1033,15 @@ pub fn not_run(d: &crate::runtime::describe::Described) -> Option<&'static str> 
     if router(&|r| r.expert_scale) {
         return Some(Router::EXPERT_SCALE_NOT_RUN);
     }
+    if d.desc.head.correction {
+        return Some(crate::runtime::kinds::Head::CORRECTION_NOT_RUN);
+    }
     None
+}
+
+/// `not_run` as a lowering asks it: the refusal of the first part of `d` the executor has no operation for, by its name.
+pub fn runs(d: &crate::runtime::describe::Described) -> Result<()> {
+    not_run(d).map_or(Ok(()), err)
 }
 
 /// The layer kinds a loader of the dynamic route lowers, as a description tells them apart (`lowering`).
@@ -1304,7 +1312,7 @@ mod tests {
         ) else {
             panic!("lowered")
         };
-        assert!(e.msg.contains("block 5") && e.msg.contains(StreamsP::EPS_OUTSIDE_NOT_RUN), "{}", e.msg);
+        assert_eq!(e.msg, StreamsP::EPS_OUTSIDE_NOT_RUN);
         // (two routers whose scores add; a learned scale an expert: on a layer's experts, and where the experts' kind is made the executor's)
         use crate::runtime::kinds::{Body, Ffn, Router};
         let moe = |d: &mut Described, b: usize, f: &dyn Fn(&mut Router)| {
@@ -1320,6 +1328,19 @@ mod tests {
         let m = moe(&mut d, 9, &|r| r.expert_scale = true);
         refused(&d, Router::EXPERT_SCALE_NOT_RUN);
         assert!(crate::dynamic::experts::cfg(&m, 4096, 2048).unwrap_err().msg.contains(Router::EXPERT_SCALE_NOT_RUN));
+        // (the logits' four-part correction)
+        let mut d = base.clone();
+        d.desc.head.correction = true;
+        refused(&d, crate::runtime::kinds::Head::CORRECTION_NOT_RUN);
+        // (and by each lowering itself, whatever chose it: the dense one's, of a plain decoder with the correction)
+        let plain = serde_json::json!({"architectures": ["X"], "model_type": "llama", "hidden_size": 256, "intermediate_size": 512, "num_hidden_layers": 2,
+            "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 64, "vocab_size": 1024, "rms_norm_eps": 1e-5, "rope_theta": 10000.0,
+            "max_position_embeddings": 4096, "hidden_act": "silu", "tie_word_embeddings": false});
+        let mut d = crate::runtime::describe::describe(&plain).unwrap();
+        assert!(crate::dynamic::lower::dense(&d, vec![2], 4096).is_ok());
+        d.desc.head.correction = true;
+        let Err(e) = crate::dynamic::lower::dense(&d, vec![2], 4096) else { panic!("lowered") };
+        assert_eq!(e.msg, crate::runtime::kinds::Head::CORRECTION_NOT_RUN);
     }
 
     /// A plan of experts in the computer's memory across GPUs opens the latent block's cache across them (src/dynamic/tp_cache.rs) by the description's

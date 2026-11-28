@@ -1027,16 +1027,29 @@ pub struct Head {
     /// (the division, the tanh, the product) rounded (Gemma 4 as released: models/gemma4/modeling_gemma4.py takes `lm_head`'s bf16 output through
     /// `/ cap`, `tanh`, `* cap`; vLLM's head in the model's type does the same).
     pub rounding: Rounding,
+    /// The logits' four-part correction (ERNIE's `multimax` on its head), after the scale and the soft-cap, with the model's roles `logit_ranges` [4]
+    /// (r) and `logit_ts` [4] (t): y = x + t0 relu(r0 - x) + t1 relu(x - r1) + t2 relu(r2 - x)^2 + t3 relu(x - r3)^2, the four terms added in that
+    /// order. Where the head rounds `Twice` every operation of it rounds to bf16: each relu, each square, each product by a t, each sum (a bf16
+    /// tensor between operations, as the family's one reader computes it). A draft head's logits take it too, before its own biases.
+    pub correction: bool,
 }
 
-/// The derived form, with `rounding` said only where the logits round: the other heads' descriptions read as they did before the field (the
-/// digests of tests/fixtures/descriptions.json are of this text).
+impl Head {
+    /// The refusal of a head whose logits take the four-part correction: the CPU reference computes it, the executor's head is the product, its scale and its cap.
+    pub const CORRECTION_NOT_RUN: &'static str = "the logits' four-part correction, which the executor does not run yet";
+}
+
+/// The derived form, with `rounding` said only where the logits round and `correction` only where they are corrected: the other heads' descriptions
+/// read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Head {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Head");
         s.field("tied", &self.tied).field("softcap", &self.softcap).field("scale", &self.scale).field("collapse", &self.collapse);
         if self.rounding != Rounding::F32 {
             s.field("rounding", &self.rounding);
+        }
+        if self.correction {
+            s.field("correction", &self.correction);
         }
         s.finish()
     }

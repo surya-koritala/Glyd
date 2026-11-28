@@ -107,6 +107,9 @@ pub struct RefDSpark {
     pub p: Params,
     pub blocks: Vec<RefLayer>,
     pub collapse: Collapse,
+    /// The model's head's arithmetic on the base logits (its rounding, and its four-part correction where it has one: `model::Logits`), before the
+    /// Markov bias; None: the product as it is.
+    pub logits: Option<super::model::Logits>,
 }
 
 /// One drafted block: each position's base logits (the blocks' and the model's head), its logits with the Markov bias, the chosen token and, with
@@ -140,7 +143,9 @@ impl RefDSpark {
             return err("a DSpark head's layers are not its blocks");
         }
         let layers = head.blocks.iter().zip(blocks).map(|(b, r)| Ok(RefLayer::new(b.clone(), d.desc.hidden, params(r)?))).collect::<Result<Vec<_>>>()?;
-        Ok(RefDSpark { head: head.clone(), hidden: d.desc.hidden, p: params(own)?, blocks: layers, collapse: d.desc.head.collapse })
+        // (the model's head on the draft's logits: the correction's roles are the model's own)
+        let logits = super::model::Logits::of(&d.desc.head, &params(&d.extra)?)?;
+        Ok(RefDSpark { head: head.clone(), hidden: d.desc.hidden, p: params(own)?, blocks: layers, collapse: d.desc.head.collapse, logits: Some(logits) })
     }
 
     /// The block after the context `ctx` (for each position before the anchor, the target's attention inputs at the head's target layers,
@@ -233,7 +238,10 @@ impl RefDSpark {
                 Collapse::None if n == 1 => x.clone(),
                 c => return err(format!("a DSpark head's collapse {c:?}")),
             };
-            let base = matvec(head, d, &norm(&self.head.final_norm, &h, self.p.opt("final_norm"), None));
+            let mut base = matvec(head, d, &norm(&self.head.final_norm, &h, self.p.opt("final_norm"), None));
+            if let Some(l) = &self.logits {
+                base.iter_mut().for_each(|z| *z = l.one(*z));
+            }
             let e =
                 w1.get(prev as usize * rank..(prev as usize + 1) * rank).ok_or_else(|| crate::ffi::Error(format!("token {prev} past the Markov embedding")))?;
             let logits: Vec<f32> = base.iter().zip(matvec(w2, rank, e)).map(|(a, b)| a + b).collect();
@@ -322,7 +330,7 @@ mod tests {
             dspark: Some(dspark),
             input: MtpInput::Joined,
         };
-        RefDSpark { head: h, hidden: D, p, blocks: layers, collapse: Collapse::LastPre }
+        RefDSpark { head: h, hidden: D, p, blocks: layers, collapse: Collapse::LastPre, logits: None }
     }
 
     /// A head of `n` streams of `D` (`MtpInput::Streams`) of `blocks` (each a gated-residual attention of 2 heads of 8 over 1 key head, no rotary),
@@ -379,6 +387,36 @@ mod tests {
         let pn = Norm::rms_plus_one(1e-6);
         let head = MtpHead { blocks: vec![block; blocks], norm_embed: pn, norm_hidden: pn, final_norm: pn, dspark: None, input: MtpInput::Streams };
         RefMtp::new(head, D, p, layers).unwrap()
+    }
+
+    /// A drafter of a model whose head corrects its logits: each position's base logits are the head's product through the model's head (its
+    /// rounding, then the four-part correction), and the Markov bias is added after it; the blocks' rows are the uncorrected drafter's.
+    #[test]
+    fn a_drafters_base_logits_take_the_models_correction() {
+        use crate::runtime::kinds::{Head, Rounding};
+        use crate::runtime::reference::model::{correct, Logits};
+        let embed = fill("fix.embed", V * D, -1.0, 1.0);
+        let lm = fill("fix.head", V * D, -0.5, 0.5);
+        let ctx: Vec<Vec<f32>> = (0..5).map(|t| fill(&format!("fix.ctx{t}"), 2 * D, -1.0, 1.0)).collect();
+        let plain = head(4).draft(&ctx, 3, &embed, &lm).unwrap();
+        let hd = Head { tied: false, softcap: None, scale: 1.0, collapse: Collapse::LastPre, rounding: Rounding::Twice, correction: true };
+        let (r, t) = (vec![-0.25f32, 0.25, -0.5, 0.5], vec![0.25f32, -0.125, 0.0625, -0.03125]);
+        let mut fixed = head(4);
+        fixed.logits = Some(Logits { head: hd, fix: Some((r.clone(), t.clone())) });
+        // (the plain drafter's tokens taken, so that each position's Markov bias is of the same token before it)
+        let got = fixed.draft_taking(&ctx, 3, &embed, &lm, &plain.tokens).unwrap();
+        let (w1, w2) = (fixed.p.vec("markov_embed").unwrap(), fixed.p.vec("markov_head").unwrap());
+        let mut prev = 3usize;
+        for j in 0..4 {
+            let bias = matvec(w2, 4, &w1[prev * 4..][..4]);
+            for v in 0..V {
+                let x = crate::runtime::reference::bf16(plain.base[j][v]);
+                assert_eq!(got.base[j][v], correct(&hd, &r, &t, x), "position {j}, token {v}");
+                assert_eq!(got.logits[j][v], got.base[j][v] + bias[v], "position {j}, token {v}");
+            }
+            prev = plain.tokens[j] as usize;
+        }
+        assert!(got.base != plain.base && got.confidence == plain.confidence);
     }
 
     /// The head of the model's streams by its parts: each stream fc_hidden of its part of the streams normed as one vector, plus fc_embedding of the
