@@ -5172,7 +5172,7 @@ fn hy4_on_the_reference_runs_both_sorts_of_layer_the_streams_the_memory_and_the_
 }
 
 /// A tensor as a test writes it: its name, type, shape and bytes.
-type Written = (String, &'static str, Vec<u64>, Vec<u8>);
+pub(crate) type Written = (String, &'static str, Vec<u64>, Vec<u8>);
 
 /// A fixed stream of numbers a tensor: its name's bytes seed it.
 fn stream(n: &str) -> impl FnMut() -> u64 {
@@ -5203,7 +5203,7 @@ fn small_codes(next: &mut dyn FnMut() -> u64, n: usize) -> Vec<u8> {
 /// config.json: `plain`, every tensor bf16; and `released`, where a matrix the description names scales for is what `store` writes for it (its name,
 /// its scales' name, its shape as the description gives it: the stored tensors, and the values they stand for, which `plain` holds as bf16 and must
 /// be bf16 exactly; None: the matrix as bf16 in both). The scales' own tensors are `store`'s to write.
-fn twins(
+pub(crate) fn twins(
     tag: &str,
     cfg: &serde_json::Value,
     d: &super::describe::Described,
@@ -5249,17 +5249,24 @@ fn twins(
 }
 
 /// The twins of `twins` on the CPU reference, each read through its description (`model::described_source`): every matrix the description names
-/// scales for is, in the released form, the values the plain form holds, to the bit, and so are the logits of `tokens`. The matrices so held, and
-/// those of them the checkpoint's own names do not read (`model::checkpoint_tensor`).
+/// scales for is, in the released form, the values the plain form holds, to the bit, and so are the logits of `tokens`; and the bf16 words the
+/// executor's loader reads of it (`weights::item_words_as`) are the plain form's. The matrices so held, and those of them the checkpoint's own
+/// names do not read (`model::checkpoint_tensor`).
 fn twins_agree(d: &super::describe::Described, plain: &std::path::Path, released: &std::path::Path, tokens: &[u32]) -> (usize, usize) {
     use super::reference::model::{checkpoint_tensor, described_source};
     let (cp, cr) = (glyd_gpu::safetensors::Checkpoint::open(plain).unwrap(), glyd_gpu::safetensors::Checkpoint::open(released).unwrap());
     let (sp, sr) = (described_source(&cp, d), described_source(&cr, d));
     let (mut held, mut by_description) = (0, 0);
+    let stored = d.stored();
     for n in d.scales.keys().filter(|n| d.shapes.contains_key(*n)) {
         let (a, b) = (sp(n).unwrap_or_else(|| panic!("{n}: plain")), sr(n).unwrap_or_else(|| panic!("{n}: not read as released")));
         assert_eq!(a.0, b.0, "{n}");
         assert!(a.1.iter().zip(&b.1).all(|(x, y)| x.to_bits() == y.to_bits()), "{n}: the released form's values are the plain form's");
+        // (and where the executor's loader reads a matrix, `weights::item_words_as` with the description's stored formats: the released form's
+        // words are the plain form's bf16, to the bit, whatever the scales' name, block or type, and 4-bit codes under any name)
+        let it = crate::weights::Item { members: vec![n.clone()], rows: a.0[0], cols: a.0[1] };
+        let words = crate::weights::item_words_as(&cr, &it, &stored).unwrap_or_else(|e| panic!("{n}: {}", e.msg));
+        assert!(words == crate::weights::item_words(&cp, &it).unwrap(), "{n}: the loader's words of the released form are the plain form's");
         if cr.get(n).is_some_and(|(_, t)| t.dtype != "BF16") {
             held += 1;
             by_description += checkpoint_tensor(&cr, n).is_none() as usize;
@@ -5372,7 +5379,7 @@ fn a_release_with_a_scale_a_run_is_its_weights_on_the_reference() {
 }
 
 /// `fp8_grid` of a matrix cut in `shards` equal parts of its rows, a grid a shard, one after another: a shard's scales start at its first row.
-fn fp8_shard_grids(n: &str, scales: &str, shape: &[usize], block: usize, shards: usize, next: &mut dyn FnMut() -> u64) -> (Vec<Written>, Vec<f32>) {
+pub(crate) fn fp8_shard_grids(n: &str, scales: &str, shape: &[usize], block: usize, shards: usize, next: &mut dyn FnMut() -> u64) -> (Vec<Written>, Vec<f32>) {
     let (each, cols) = (shape[0] / shards, shape[1]);
     let (mut q, mut s, mut values) = (Vec::new(), Vec::new(), Vec::new());
     for _ in 0..shards {
@@ -5422,7 +5429,7 @@ fn mimo_v2s_fused_matrix_as_released_in_fp8_is_its_weights_on_the_reference() {
 /// An MXFP4 matrix as `twins` stores one under the names a release gives the two tensors: 4-bit codes two a byte along a row, the even column in the
 /// low four bits, and a byte's power-of-two scale (2^(s - 127), here 1/32 to 1/8) a run of 32; each weight its code's E2M1 value (a sign, two bits of
 /// exponent, one of fraction, here in f64) times its run's scale.
-fn mxfp4_runs(n: &str, scales: &str, shape: &[usize], next: &mut dyn FnMut() -> u64) -> (Vec<Written>, Vec<f32>) {
+pub(crate) fn mxfp4_runs(n: &str, scales: &str, shape: &[usize], next: &mut dyn FnMut() -> u64) -> (Vec<Written>, Vec<f32>) {
     let (rows, cols) = (shape[0], shape[1]);
     assert_eq!(cols % 32, 0, "{n}");
     let packed: Vec<u8> = (0..rows * cols / 2).map(|_| next() as u8).collect();

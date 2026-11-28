@@ -187,6 +187,55 @@ pub fn fp8_scaled_shards(q: &[u8], scales: &[f32], rows: usize, cols: usize, blo
     Ok(out)
 }
 
+/// The E4M3 byte nearest `v` (to nearest, ties to even; past 448, E4M3's largest, that): what a writer of an FP8 matrix stores of a value over its
+/// block's scale.
+pub fn e4m3_code(v: f32) -> u8 {
+    let r = crate::cpu_fp4::e4m3_round(if v.is_nan() { 0.0 } else { v.clamp(-448.0, 448.0) });
+    let (a, sign) = (r.abs(), ((r.to_bits() >> 31) as u8) << 7);
+    let e = ((a.to_bits() >> 23) & 0xFF) as i32 - 127;
+    if e < -6 {
+        // (below 2^-6: the fraction's eighths of 2^-6, 0 to 7)
+        return sign | (a * 512.0) as u8;
+    }
+    sign | (((e + 7) as u8) << 3) | ((a.to_bits() >> 20) & 7) as u8
+}
+
+/// A matrix [rows, cols] written as FP8 with fp32 scales a block of `block` rows and columns, as a release stores one: each block's scale its largest
+/// magnitude over 448 (1e-4 where the block is smaller), each byte the E4M3 code nearest its value over that scale (`e4m3_code`); the bytes, and the
+/// scales row-major over [ceil(rows / block[0]), ceil(cols / block[1])]. `fp8_scaled_blocks` reads it back. A random model's (src/logits.rs).
+pub fn fp8_encode(v: &[f32], rows: usize, cols: usize, block: [usize; 2]) -> (Vec<u8>, Vec<f32>) {
+    let (gr, gc) = (rows.div_ceil(block[0]), cols.div_ceil(block[1]));
+    let mut amax = vec![0f32; gr * gc];
+    for (i, x) in v.iter().enumerate() {
+        let b = &mut amax[(i / cols) / block[0] * gc + (i % cols) / block[1]];
+        *b = b.max(x.abs());
+    }
+    let scales: Vec<f32> = amax.iter().map(|a| a.max(1e-4) / 448.0).collect();
+    let q = v.iter().enumerate().map(|(i, x)| e4m3_code(x / scales[(i / cols) / block[0] * gc + (i % cols) / block[1]])).collect();
+    (q, scales)
+}
+
+/// A matrix [rows, cols] written as MXFP4, as `mxfp4` reads it: a byte's power-of-two scale a run of 32 of a row (the least that holds the run's
+/// largest magnitude under 6, E2M1's largest: 2^ceil(log2(amax / 6))), each value the E2M1 code nearest it over that scale, two codes a byte, the
+/// even column in the low four bits; the codes' bytes [rows, cols / 2] and the scales' [rows, cols / 32]. A random model's (src/logits.rs).
+pub fn mxfp4_encode(v: &[f32], rows: usize, cols: usize) -> Result<(Vec<u8>, Vec<u8>)> {
+    if cols % 32 != 0 || v.len() != rows * cols {
+        return err(format!("{} values for an MXFP4 matrix of {rows} x {cols}", v.len()));
+    }
+    let (mut codes, mut scales) = (vec![0u8; v.len() / 2], Vec::with_capacity(v.len() / 32));
+    for (r, run) in v.chunks_exact(32).enumerate() {
+        let amax = run.iter().fold(0f32, |m, x| m.max(x.abs())).max(6.0 * f32::MIN_POSITIVE);
+        let s = crate::cpu_fp4::pow2_scale(amax, 1.0 / 6.0);
+        scales.push((s.to_bits() >> 23) as u8);
+        for (j, x) in run.iter().enumerate() {
+            let q = crate::cpu_fp4::e2m1_round((x / s).clamp(-6.0, 6.0));
+            let code = E2M1[..8].iter().position(|m| *m == q.abs()).unwrap_or(0) as u8 | (((q.to_bits() >> 31) as u8) << 3);
+            codes[(r * 32 + j) / 2] |= code << (4 * (j % 2));
+        }
+    }
+    Ok((codes, scales))
+}
+
 /// The stored formats of a checkpoint as its description says them (`describe::Described::stored`): which tensor holds a quantized matrix's scales, and
 /// the FP8 matrices' block where the config gives one.
 #[derive(Clone, Debug, Default)]
@@ -201,6 +250,58 @@ pub struct Stored {
 }
 
 impl Stored {
+    /// Whether the checkpoint holds the matrix `name` quantized, with scales its description names: FP8 bytes or 4-bit codes, which a loader reads by
+    /// `words`. Not a matrix the description names scales for that the checkpoint holds as bf16 (a random model's), nor a tensor with no scales named.
+    pub fn quantized(&self, ck: &Checkpoint, name: &str) -> bool {
+        self.scales.contains_key(name) && ck.get(name).is_some_and(|(_, t)| matches!(t.dtype.as_str(), "F8_E4M3" | "U8"))
+    }
+
+    /// The rows and columns of the matrix `name` as it decodes, where the checkpoint holds it quantized (`quantized`): an FP8 matrix's own shape, 4-bit
+    /// codes' rows and twice their bytes a row. The header alone is read. None for any other tensor: its shape is its own.
+    pub fn dims(&self, ck: &Checkpoint, name: &str) -> Option<(usize, usize)> {
+        let (_, t) = ck.get(name).filter(|_| self.quantized(ck, name))?;
+        let [rows, cols] = t.shape[..] else { return None };
+        Some((rows as usize, cols as usize * if t.dtype == "U8" { 2 } else { 1 }))
+    }
+
+    /// The blocks a described FP8 matrix's scales may be of, before the sizes `grid_block` tries: the description's, then the config's.
+    fn given(&self, ck: &Checkpoint) -> Vec<[usize; 2]> {
+        self.block.map(|b| [b, b]).into_iter().chain(ck.fp8_block).collect()
+    }
+
+    /// Whether the FP8 matrix `name` is read a shard at a time with a grid of scales that is not one grid over the whole matrix: the description cuts
+    /// it in shards, its scales' shape is a grid a shard's (`grid_block`), and a shard is not whole blocks of rows. Such scales can have the very shape
+    /// one grid would (two shards of 100 rows in blocks of 128: two rows of scales either way), so a reader that knows no shards (the library's FP8 as
+    /// released, the packer's) would take each scale for other rows. The header alone is read.
+    pub fn restarts(&self, ck: &Checkpoint, name: &str) -> bool {
+        let Some(&k) = self.shards.get(name).filter(|&&k| k > 1) else { return false };
+        let (Some((_, t)), Some((_, st))) = (ck.get(name), self.scales.get(name).and_then(|s| ck.get(s))) else { return false };
+        let [rows, cols] = t.shape[..] else { return false };
+        let (rows, cols) = (rows as usize, cols as usize);
+        t.dtype == "F8_E4M3" && matches!(grid_block(rows, cols, &st.shape, &self.given(ck), k), Some((b, n)) if n > 1 && !(rows / n).is_multiple_of(b[0]))
+    }
+
+    /// The matrix `name` as the bf16 words a loader packs, where the checkpoint holds it quantized (`quantized`): the values `described` decodes, each
+    /// rounded to bf16 once (to nearest, ties to even). A code times a power of two (FP8 with a byte's scale, MXFP4) is a bf16 exactly, so those words
+    /// are the release's weights; a code times an fp32 scale (FP8 with fp32 scales a block, NVFP4) is the bf16 nearest the fp32 product, as
+    /// `glyd_gpu::fp8::dequant` makes an FP8 matrix's and as transformers' dequantisation to bf16 does. None for a tensor that is not so held (a loader
+    /// reads it the ordinary way). An Err, in words, where the stored form is none `described` takes, or a weight is not finite.
+    pub fn words(&self, ck: &Checkpoint, name: &str) -> Result<Option<(usize, usize, Vec<u16>)>> {
+        if !self.quantized(ck, name) {
+            return Ok(None);
+        }
+        let Some((shape, v)) = self.described(ck, name) else {
+            let of = |n: &str| ck.get(n).map_or_else(|| "missing".to_string(), |(_, t)| format!("{} {:?}", t.dtype, t.shape));
+            let s = &self.scales[name];
+            return err(format!("{name} ({}) with its scales {s} ({}): a stored form this engine does not read", of(name), of(s)));
+        };
+        let w: Vec<u16> = v.iter().map(|&x| crate::weights::bf16_bits(x)).collect();
+        if let Some(i) = w.iter().position(|x| x & 0x7F80 == 0x7F80) {
+            return err(format!("{name}: the weight at row {}, column {} is not finite ({})", i / shape[1], i % shape[1], v[i]));
+        }
+        Ok(Some((shape[0], shape[1], w)))
+    }
+
     /// Tensor `name` as f32: a matrix the description names scales for, decoded with those scales (`described`); any other tensor, a matrix stored in
     /// another type than the description says (a random model's bf16), and a format `described` does not take, by what the checkpoint holds (`tensor`).
     pub fn tensor(&self, ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
@@ -221,6 +322,8 @@ impl Stored {
     /// A matrix the description cuts in shards whose scales are a grid a shard is decoded a shard at a time, each with its grid.
     ///
     /// None where the description names no scales for it, or the two tensors are not one of these.
+    ///
+    /// (The f32 values of `described` are the CPU reference's; a loader that packs the matrix takes them as bf16: `words`.)
     fn described(&self, ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
         let sn = self.scales.get(name)?;
         let ((_, t), (_, st)) = (ck.get(name)?, ck.get(sn)?);
@@ -229,8 +332,7 @@ impl Stored {
         let bf16 = |w: u16| f32::from_bits((w as u32) << 16);
         match (t.dtype.as_str(), st.dtype.as_str()) {
             ("F8_E4M3", "F32" | "U8" | "F8_E8M0") => {
-                let given: Vec<[usize; 2]> = self.block.map(|b| [b, b]).into_iter().chain(ck.fp8_block).collect();
-                let (block, shards) = grid_block(rows, cols, &st.shape, &given, self.shards.get(name).copied().unwrap_or(1))?;
+                let (block, shards) = grid_block(rows, cols, &st.shape, &self.given(ck), self.shards.get(name).copied().unwrap_or(1))?;
                 let (q, s) = (ck.read(name).ok()?, ck.read(sn).ok()?);
                 let v = if st.dtype == "F32" {
                     let s: Vec<f32> = s.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
@@ -743,6 +845,47 @@ mod tests {
         let uncut = Stored { scales, ..Stored::default() };
         assert_eq!((uncut.tensor(&ck, w), uncut.tensor(&ck, we), tensor(&ck, w)), (None, None, None), "8 rows of blocks, where the whole matrix has 7");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The writers of a random model's stored forms hold what they are given where it is a code's value, and the nearest code elsewhere: every E4M3
+    /// byte but the NaNs is the code of its own value, and a value between two codes takes the nearer; an FP8 matrix written a block's scale and read
+    /// back (`fp8_scaled_blocks`) is within half a step of each value; an MXFP4 matrix read back (`mxfp4`) is too, and written again is the same
+    /// values.
+    #[test]
+    fn a_random_models_writers_take_the_nearest_code() {
+        for b in 0..=255u8 {
+            if b & 0x7F != 0x7F {
+                assert_eq!(e4m3_code(glyd_gpu::fp8::e4m3(b)), b, "{b:#04x}");
+            }
+        }
+        assert_eq!((e4m3_code(1.06), e4m3_code(1.07), e4m3_code(1000.0), e4m3_code(-1e-9)), (0x38, 0x39, 0x7E, 0x80));
+        let (rows, cols) = (40usize, 96usize);
+        let mut x = 0x2026_1128u64;
+        let v: Vec<f32> = (0..rows * cols)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                ((x >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 0.25
+            })
+            .collect();
+        let (q, s) = fp8_encode(&v, rows, cols, [16, 32]);
+        assert_eq!((q.len(), s.len()), (rows * cols, 3 * 3));
+        let back = fp8_scaled_blocks(&q, &s, rows, cols, [16, 32]).unwrap();
+        // (half a step is at most a 28th of the block's largest: 16 of its 448)
+        let worst = v.iter().zip(&back).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(worst > 0.0 && worst <= 0.125 / 28.0, "{worst}");
+        assert!(back.iter().any(|b| b.abs() == s[0] * 448.0), "a block's largest is its scale times 448");
+        let (codes, scales) = mxfp4_encode(&v, rows, cols).unwrap();
+        assert_eq!((codes.len(), scales.len()), (rows * cols / 2, rows * cols / 32));
+        let back = mxfp4(&codes, &scales, rows, cols).unwrap();
+        let worst = v.iter().zip(&back).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        // (half a step is at most the run's scale, a third of its largest; a matrix of codes' values is written as itself, under a smaller scale
+        // where a run's largest code was not its top one)
+        assert!(worst > 0.0 && worst <= 0.125 / 3.0, "{worst}");
+        let (again, scales2) = mxfp4_encode(&back, rows, cols).unwrap();
+        assert_eq!(mxfp4(&again, &scales2, rows, cols).unwrap(), back);
+        assert!(mxfp4_encode(&v, rows, 40).is_err());
     }
 
     /// E2M1's definition in f64: a sign, two bits of exponent with bias 1, one of fraction; exponent 0 subnormal (0 or a half).

@@ -10,6 +10,7 @@
 use super::{MoeOp, ResidentMoe, Slot};
 use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Error, Lib, Result, Stream, Words};
+use crate::formats::Stored;
 use crate::hb_pack::HbDir;
 use crate::hbg_store::HbCaching;
 use crate::kern35::Mat;
@@ -20,7 +21,7 @@ use crate::offload::{ExpertStore, HostHalf, PinnedPack};
 use crate::qwen35::Pack35;
 use crate::runtime::describe::{Described, Source};
 use crate::runtime::kinds::{self, Body, Ffn, NormKind, NormWeight, RouterScore};
-use crate::weights::{as_bytes, item_words, ordered, pack_words, read_pack, upload_bytes, upload_packed, Item, Layout, PackBuf, Packed};
+use crate::weights::{as_bytes, item_words_as, ordered, pack_words, read_pack_as, upload_bytes, upload_packed, Item, Layout, PackBuf, Packed};
 use glyd_gpu::json::Value;
 use glyd_gpu::pack::Tiered;
 use glyd_gpu::safetensors::Checkpoint;
@@ -296,6 +297,10 @@ pub struct Held<'a> {
     pub dense: Option<Layout>,
     pub codebooks: Option<&'a Rc<crate::moe_hb::HbShared>>,
     pub codes: Option<crate::moe_cb::Codes<'a>>,
+    /// The stored formats the model's description names (`Described::stored`), where the stage's loader reads a release by them: a matrix of the block
+    /// the checkpoint holds quantized with scales the description names (4-bit codes with their runs' scales; FP8 with scales under a release's own
+    /// name) is dequantised to bf16 as it is read (`weights::item_words_as`), then held at the level as a bf16 one is. None: by the checkpoint's names.
+    pub stored: Option<&'a Stored>,
 }
 
 /// The experts and the shared expert held in the library's FP8 format as released (src/f8.rs: E4M3 bytes bit for bit, their 128 x 128 block scales), where the
@@ -420,14 +425,23 @@ fn f8_tp_rows(rows: usize) -> Result<(usize, usize)> {
 
 /// A role's experts as the checkpoint holds them: a tensor (or its rows stacked) an expert, or one tensor of them all [experts, rows, cols].
 enum Stacked<'a> {
-    Each(&'a [Vec<String>]),
+    Each(&'a [Vec<String>], &'a Stored),
     One(&'a str),
 }
 
+/// No stored formats named: every matrix by the checkpoint's own names.
+static PLAIN: Stored = Stored { scales: std::collections::BTreeMap::new(), block: None, shards: std::collections::BTreeMap::new() };
+
 impl Stacked<'_> {
+    #[cfg(test)]
     fn of<'a>(src: Option<&'a Source>, experts: usize, role: &str) -> Result<Stacked<'a>> {
+        Stacked::stored(src, experts, role, &PLAIN)
+    }
+
+    /// `of`, an expert's tensors read by the stored formats the model's description names (`st`: `Held::stored`).
+    fn stored<'a>(src: Option<&'a Source>, experts: usize, role: &str, st: &'a Stored) -> Result<Stacked<'a>> {
         match src {
-            Some(Source::Experts(v)) if v.len() == experts && experts > 0 => Ok(Stacked::Each(v)),
+            Some(Source::Experts(v)) if v.len() == experts && experts > 0 => Ok(Stacked::Each(v, st)),
             Some(Source::Tensor(n)) => Ok(Stacked::One(n)),
             other => {
                 err(format!("the experts' role {role} is {other:?}, where a tensor (or its rows) an expert is, {experts} of them, or one tensor of them all"))
@@ -438,7 +452,7 @@ impl Stacked<'_> {
     /// The name in an error.
     fn name(&self) -> String {
         match self {
-            Stacked::Each(v) => v.iter().flatten().cloned().collect::<Vec<_>>().join(" + "),
+            Stacked::Each(v, _) => v.iter().flatten().cloned().collect::<Vec<_>>().join(" + "),
             Stacked::One(n) => n.to_string(),
         }
     }
@@ -446,7 +460,7 @@ impl Stacked<'_> {
     /// Expert `e`'s name in an error.
     fn name_of(&self, e: usize) -> String {
         match self {
-            Stacked::Each(v) => v[e].join(" + "),
+            Stacked::Each(v, _) => v[e].join(" + "),
             Stacked::One(n) => format!("{n}: expert {e}"),
         }
     }
@@ -454,7 +468,7 @@ impl Stacked<'_> {
     /// An expert's rows and its columns (where a glyd-v7 directory holds it packed, `v7`, its pack's shape).
     fn dims(&self, ck: &Checkpoint, v7: V7, experts: usize) -> Result<(usize, usize)> {
         match self {
-            Stacked::Each(v) => rows_cols(ck, v7, &v[0]),
+            Stacked::Each(v, st) => rows_cols(ck, v7, &v[0], st),
             Stacked::One(n) => {
                 let (_, t) = ck.get(n).ok_or_else(|| Error(format!("no tensor {n}")))?;
                 if t.dtype != "BF16" || t.shape.len() != 3 || t.shape[0] as usize != experts {
@@ -469,7 +483,7 @@ impl Stacked<'_> {
     /// alone (a layer's stacked tensor of a large release is tens of GB, never read whole).
     fn expert(&self, ck: &Checkpoint, e: usize, rows: usize, cols: usize) -> Result<Vec<u16>> {
         match self {
-            Stacked::Each(v) => item_words(ck, &Item { members: v[e].clone(), rows, cols }),
+            Stacked::Each(v, st) => item_words_as(ck, &Item { members: v[e].clone(), rows, cols }, st),
             Stacked::One(n) => {
                 let mut w = vec![0u16; rows * cols];
                 ck.read_rows_bf16(n, e * rows, (e + 1) * rows, &mut w).map_err(|x| Error(format!("{n}: expert {e}: {x}")))?;
@@ -484,7 +498,7 @@ impl Stacked<'_> {
         let mut w = Vec::with_capacity(experts * rn * cols);
         for e in 0..experts {
             match self {
-                Stacked::Each(_) => w.extend_from_slice(&self.expert(ck, e, rows, cols)?[r0 * cols..(r0 + rn) * cols]),
+                Stacked::Each(..) => w.extend_from_slice(&self.expert(ck, e, rows, cols)?[r0 * cols..(r0 + rn) * cols]),
                 Stacked::One(n) => {
                     let at = w.len();
                     w.resize(at + rn * cols, 0);
@@ -544,9 +558,12 @@ impl Stacked<'_> {
 /// A glyd-v7 directory's level and glyd.json, where the checkpoint is one (`weights::v7_manifest`): the packs it holds are read as saved.
 type V7<'a> = Option<&'a (Layout, Value)>;
 
-/// Tensor `n`'s [rows, cols]: its shape, or where a glyd-v7 directory holds it packed (`v7`) its weight's as its pack's entry says (a row layout's pack is the
-/// weight's transpose).
-fn dims_of(ck: &Checkpoint, v7: V7, n: &str) -> Result<(usize, usize)> {
+/// Tensor `n`'s [rows, cols]: its shape (a matrix held quantized as the description `st` says: the matrix's it decodes to, `Stored::dims`), or where a
+/// glyd-v7 directory holds it packed (`v7`) its weight's as its pack's entry says (a row layout's pack is the weight's transpose).
+fn dims_of(ck: &Checkpoint, v7: V7, n: &str, st: &Stored) -> Result<(usize, usize)> {
+    if let Some(d) = st.dims(ck, n) {
+        return Ok(d);
+    }
     if let Some((_, t)) = ck.get(n) {
         return match t.shape[..] {
             [r, c] => Ok((r as usize, c as usize)),
@@ -562,12 +579,12 @@ fn dims_of(ck: &Checkpoint, v7: V7, n: &str) -> Result<(usize, usize)> {
 
 /// Each of `members`' [rows, cols] (`dims_of`), where a glyd-v7 directory holds them as one pack under the first's name (a save fuses an expert's gate and
 /// up so, `pack::described`): each its tensor's shape as that pack's entry names it.
-fn dims_all(ck: &Checkpoint, v7: V7, members: &[String]) -> Result<Vec<(usize, usize)>> {
+fn dims_all(ck: &Checkpoint, v7: V7, members: &[String], st: &Stored) -> Result<Vec<(usize, usize)>> {
     let fused = match (v7, members) {
         (Some((_, m)), [first, _, ..]) if ck.get(first).is_none() => m.get("packs").and_then(|p| p.get(Pack35::saved(first))),
         _ => None,
     };
-    let Some(e) = fused else { return members.iter().map(|n| dims_of(ck, v7, n)).collect() };
+    let Some(e) = fused else { return members.iter().map(|n| dims_of(ck, v7, n, st)).collect() };
     let tensors = e.get("tensors").and_then(Value::as_array).unwrap_or(&[]);
     let shape = |n: &str| tensors.iter().find(|t| t.get("name").and_then(Value::as_str) == Some(n)).and_then(|t| t.get("shape")).and_then(Value::as_u64s);
     members
@@ -580,9 +597,9 @@ fn dims_all(ck: &Checkpoint, v7: V7, members: &[String]) -> Result<Vec<(usize, u
 }
 
 /// Matrices stacked along their rows: their rows' sum and their columns.
-fn rows_cols(ck: &Checkpoint, v7: V7, members: &[String]) -> Result<(usize, usize)> {
+fn rows_cols(ck: &Checkpoint, v7: V7, members: &[String], st: &Stored) -> Result<(usize, usize)> {
     let (mut rows, mut cols) = (0, 0);
-    for (n, (r, c)) in members.iter().zip(dims_all(ck, v7, members)?) {
+    for (n, (r, c)) in members.iter().zip(dims_all(ck, v7, members, st)?) {
         if cols != 0 && cols != c {
             return err(format!("{n}: {r} x {c}, where a matrix of {cols} columns is stacked"));
         }
@@ -594,16 +611,21 @@ fn rows_cols(ck: &Checkpoint, v7: V7, members: &[String]) -> Result<(usize, usiz
 /// The matrix of `members` stacked by rows at `layout`, as the checkpoint holds it: a glyd-v7 directory's pack as saved, in the layout its entry names (`v7`),
 /// else packed here from its weights.
 pub(crate) fn pack_of(ck: &Checkpoint, v7: V7, members: &[String], layout: Layout) -> Result<Packed> {
-    let (_, cols) = rows_cols(ck, v7, members)?;
-    let parts = members.iter().cloned().zip(dims_all(ck, v7, members)?.into_iter().map(|d| d.0)).collect();
-    read_pack(ck, v7, &Pack35 { key: Pack35::saved(&members[0]).to_string(), parts, cols }, layout)
+    pack_as(ck, v7, members, layout, &PLAIN)
+}
+
+/// `pack_of`, a member the checkpoint holds quantized as the description `st` says dequantised as it is packed (`weights::read_pack_as`).
+fn pack_as(ck: &Checkpoint, v7: V7, members: &[String], layout: Layout, st: &Stored) -> Result<Packed> {
+    let (_, cols) = rows_cols(ck, v7, members, st)?;
+    let parts = members.iter().cloned().zip(dims_all(ck, v7, members, st)?.into_iter().map(|d| d.0)).collect();
+    read_pack_as(ck, v7, &Pack35 { key: Pack35::saved(&members[0]).to_string(), parts, cols }, layout, st)
 }
 
 /// Expert `e`'s matrix of `s` ([rows, cols]) as a pack of `layout` (a row layout: its transpose, a row a neuron), as the checkpoint holds it (`pack_of`; its
 /// rows of the one tensor of them all, read alone).
 fn expert_pack(ck: &Checkpoint, v7: V7, s: &Stacked, e: usize, (rows, cols): (usize, usize), layout: Layout) -> Result<Tiered> {
     let p = match s {
-        Stacked::Each(v) => pack_of(ck, v7, &v[e], layout),
+        Stacked::Each(v, st) => pack_as(ck, v7, &v[e], layout, st),
         Stacked::One(_) => pack_words(&s.expert(ck, e, rows, cols)?, rows, cols, layout, &s.name_of(e)),
     }?;
     let Words::Tiered { tiers, .. } = p.words else { return err(format!("{}: an expert that is not in a block or row layout", s.name_of(e))) };
@@ -701,7 +723,9 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
     };
     let (e, gated, norm) = (m.experts, m.expert.gated, normed(m));
     let up_role = if gated { "experts_gate_up" } else { "experts_up" };
-    let (up, down) = (Stacked::of(find(up_role), e, up_role)?, Stacked::of(find("experts_down"), e, "experts_down")?);
+    // (the stored formats the description names, where the stage's loader reads a release by them: a matrix held quantized is dequantised as it is read)
+    let st = at.and_then(|(_, h)| h.stored).unwrap_or(&PLAIN);
+    let (up, down) = (Stacked::stored(find(up_role), e, up_role, st)?, Stacked::stored(find("experts_down"), e, "experts_down", st)?);
     // (the experts' width: a hummingbird directory's record's, which holds no matrix of theirs; else their first matrix's rows)
     let inter = match at.and_then(|(x, h)| h.hb.map(|d| (d, x.layer))) {
         Some((d, l)) => d.layer(2 * l + 1).ok_or_else(|| Error(format!("{}: no experts for decoder layer {l}", d.dir.display())))?.inter,
@@ -718,7 +742,7 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
     let (c, shared_act) = cfg_shared(m, hidden, inter)?;
     // (the shared expert's matrices at the stage's layout of the block's other matrices, where it gives one)
     let dense = at.and_then(|(_, h)| h.dense).unwrap_or(level);
-    let packed = |members: Vec<String>| -> Result<PackBuf> { upload_packed(pack_of(ck, v7, &members, dense)?) };
+    let packed = |members: Vec<String>| -> Result<PackBuf> { upload_packed(pack_as(ck, v7, &members, dense, st)?) };
     // (the normed experts' router is read by its fp32 weights, `MoeLayer::forward_normed`; another's is a bf16 product)
     let router = {
         let n = one("router")?;
@@ -737,7 +761,7 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
     // multiple of 128s; `F8`)
     let f8 = at.and_then(|(_, h)| h.f8);
     let f8x = match (f8, &up, &down) {
-        (Some(f), Stacked::Each(u), Stacked::Each(d)) if lossless => match (f.shape(ck, &u[0])?, f.shape(ck, &d[0])?) {
+        (Some(f), Stacked::Each(u, _), Stacked::Each(d, _)) if lossless => match (f.shape(ck, &u[0])?, f.shape(ck, &d[0])?) {
             (Some(a), Some(b)) => Some((f, *u, *d, a, b)),
             _ => None,
         },
@@ -750,7 +774,7 @@ pub fn held(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Chec
         Some(_) => {
             let first = if gated { vec![one("shared_gate")?, one("shared_up")?] } else { vec![one("shared_up")?] };
             // (its width: its first matrices' rows, a gate's and an up's where gated, as a glyd-v7 directory holds them too: one pack)
-            let (rows, _) = rows_cols(ck, v7, &first)?;
+            let (rows, _) = rows_cols(ck, v7, &first, st)?;
             let inter = if gated { rows / 2 } else { rows };
             let second = vec![one("shared_down")?];
             let gate = if m.shared_gate { Some(upload_bytes(&bf16(&one("shared_router")?)?)?) } else { None };
@@ -903,7 +927,7 @@ pub fn block(m: &kinds::Moe, roles: &[(String, Source)], hidden: usize, ck: &Che
                     Some(Source::Tensor(n)) => n.clone(),
                     other => return err(format!("the latent's role {r} is {other:?}, where one tensor is")),
                 };
-                Ok(Mat::Packed(upload_packed(pack_of(ck, v7.as_ref(), &[n], dense)?)?))
+                Ok(Mat::Packed(upload_packed(pack_as(ck, v7.as_ref(), &[n], dense, h.stored.unwrap_or(&PLAIN))?)?))
             };
             Some((mat("latent_down")?, mat("latent_up")?))
         }
@@ -1760,6 +1784,7 @@ mod tests {
                         Some(Source::Experts(v)) => &v[0],
                         _ => panic!("an expert's tensors"),
                     },
+                    &super::PLAIN,
                 )
                 .unwrap(),
                 up.dims(&b, v7.as_ref(), m.experts).unwrap(),
@@ -1776,7 +1801,10 @@ mod tests {
                 _ => panic!("{r}"),
             };
             let first = vec![one("shared_gate"), one("shared_up")];
-            assert_eq!((rows_cols(&a, None, &first).unwrap(), rows_cols(&b, v7.as_ref(), &first).unwrap()), ((256, 1024), (256, 1024)));
+            assert_eq!(
+                (rows_cols(&a, None, &first, &super::PLAIN).unwrap(), rows_cols(&b, v7.as_ref(), &first, &super::PLAIN).unwrap()),
+                ((256, 1024), (256, 1024))
+            );
             for members in [first, vec![one("shared_down")]] {
                 let (pa, pb) = (pack_of(&a, None, &members, Layout::Int5).unwrap(), pack_of(&b, v7.as_ref(), &members, Layout::Int5).unwrap());
                 assert!(pa.data == pb.data && pa.b1 == pb.b1 && pa.b2 == pb.b2 && (pa.rows, pa.cols) == (pb.rows, pb.cols), "{members:?}");
@@ -1816,7 +1844,7 @@ mod tests {
                 (["experts_gate_up", "experts_down"].map(|r| find(re, r).unwrap()), ["experts_gate_up", "experts_down"].map(|r| find(rs, r).unwrap()));
             let (ue, de_) = (Stacked::of(Some(&fe[0]), e, "up").unwrap(), Stacked::of(Some(&fe[1]), e, "down").unwrap());
             let (us, ds_) = (Stacked::of(Some(&fs[0]), e, "up").unwrap(), Stacked::of(Some(&fs[1]), e, "down").unwrap());
-            assert!(matches!((&ue, &us), (Stacked::Each(_), Stacked::One(_))), "a tensor an expert's, and one of them all");
+            assert!(matches!((&ue, &us), (Stacked::Each(..), Stacked::One(_))), "a tensor an expert's, and one of them all");
             for (a, b) in [(&ue, &us), (&de_, &ds_)] {
                 let (r, c) = a.dims(&ce, None, e).unwrap();
                 assert_eq!(b.dims(&cs, None, e).unwrap(), (r, c));
@@ -2134,6 +2162,108 @@ mod tests {
         let said = super::held(m, roles, hid, &ck, Layout::Int3, None).err().unwrap().msg;
         assert!(said.contains("penguin, kestrel, linnet and wren levels"), "{said}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A release stored quantized loads as its bf16 twin, on the host, up to the upload: MiMo's small model (the logits case's config, 512 wide) written
+    /// twice, once every matrix bf16 and once as the family releases it, in blocks of 128. Each fused q-k-v matrix is FP8 with a grid of fp32 scales a
+    /// shard (the whole-context layers' 2 shards of 1,088 rows: 2 x 9 rows of blocks, where one grid over the 2,176 rows would be 17; the sliding
+    /// layers' 2 of 1,408: 2 x 11, the whole matrix's 22, a shard whole blocks), the other products FP8 with one grid, and every expert's matrix 4-bit
+    /// codes two a byte under `X.weight` with a byte's scale a run of 32 under `X.weight_scale`. Through the loader's own readers with the stored
+    /// formats the dense lowering carries (`ModelDesc::stored`, `Held::stored`): every matrix's words (`weights::item_words_as`) and its pack at each
+    /// level (`weights::pack_item_as`), every expert's words, the experts' one lossless pack at penguin and their joined packs at kestrel, linnet and
+    /// wren (`block_packs`) are those of the bf16 twin, to the byte. Read by the checkpoint's names alone, the fused matrix and the experts are refused
+    /// or are other shapes. A save of the release is refused by name (the packer's reader takes neither form).
+    #[test]
+    fn a_release_stored_quantized_loads_as_its_bf16_twin() {
+        use super::Stacked;
+        use crate::moe_rows::DownHost;
+        use crate::runtime::describe_tests::{fp8_shard_grids, mxfp4_runs, twins};
+        use crate::weights::{item_words, item_words_as, pack_item_as, pack_item_map, Layout, Packed};
+        use glyd_gpu::safetensors::Checkpoint;
+        let manifest: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/mimo_tiny_manifest.json")).unwrap();
+        let mut cfg: serde_json::Value = serde_json::from_str(manifest["config"].as_str().unwrap()).unwrap();
+        cfg["quantization_config"] = serde_json::json!({"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128], "store_dtype": "mxfp4",
+            "mxfp4_block_size": 32, "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]});
+        let kinds = crate::runtime::describe::describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        let st = kinds.stored();
+        let (plain, released) = twins("mimo-load", &cfg, &kinds, &|n, s, shape, next| {
+            if n.contains(".experts.") {
+                return Some(mxfp4_runs(n, s, shape, next));
+            }
+            Some(fp8_shard_grids(n, s, shape, 128, st.shards.get(n).copied().unwrap_or(1), next))
+        });
+        let (cp, cr) = (Checkpoint::open(&plain).unwrap(), Checkpoint::open(&released).unwrap());
+        let d = super::super::lower::dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        let same = |a: &Packed, b: &Packed| {
+            a.data == b.data && a.b1 == b.b1 && a.b2 == b.b2 && (a.rows, a.cols) == (b.rows, b.cols) && format!("{:?}", a.words) == format!("{:?}", b.words)
+        };
+        // the dense matrices, as `load_part` reads each: held as saved or packed at the level
+        let fused = |l: usize| format!("model.layers.{l}.self_attn.qkv_proj.weight");
+        let grid = |n: &str| cr.get(&format!("{n}_scale_inv")).unwrap().1.shape.clone();
+        assert_eq!((grid(&fused(0)), grid(&fused(1)), st.shards.get(&fused(0)), st.shards.get(&fused(1))), (vec![18, 4], vec![22, 4], Some(&2), Some(&2)));
+        assert!(st.restarts(&cr, &fused(0)) && !st.restarts(&cr, &fused(1)) && !st.restarts(&cp, &fused(0)));
+        assert!(crate::f8::released_shape(&cr, &[fused(0)]).is_none() && crate::f8::released_shape(&cr, &[fused(1)]).is_some());
+        let rows_of = |n: &str| cr.get(n).map(|(_, t)| t.shape[0] as usize);
+        let (mut quantized, mut packed) = (0, 0);
+        for (k, it) in d.mats.iter().enumerate() {
+            let name = it.members.join(" + ");
+            let held = it.members.iter().filter(|m| st.quantized(&cr, m)).count();
+            assert!(held == 0 || held == it.members.len(), "{name}");
+            quantized += (held > 0) as usize;
+            let want = item_words(&cp, it).unwrap();
+            assert!(item_words_as(&cr, it, &d.stored).unwrap_or_else(|e| panic!("{name}: {}", e.msg)) == want, "{name}: the words");
+            assert!(held == 0 || item_words_as(&cp, it, &d.stored).unwrap() == want, "{name}: a bf16 twin is read as it is");
+            if super::super::held_as_saved(&d, k, &rows_of) {
+                continue;
+            }
+            packed += 1;
+            for level in [Layout::Tiered, Layout::Int6, Layout::Int5, Layout::Int4] {
+                let (got, want) = (pack_item_as(&cr, it, level, &d.stored).unwrap(), pack_item_map(&cp, it, level, &|_| {}).unwrap());
+                assert!(same(&got, &want), "{name} at {}", level.name());
+            }
+        }
+        // (every matrix but the embedding, the head and the first layer's `o`: four fused ones, three more `o`, the first layer's two MLP products)
+        assert_eq!((d.mats.len(), quantized, packed), (12, 9, 12));
+        // (by the checkpoint's names alone the fused matrix of scales a shard is refused: its grid is not the whole matrix's)
+        let k = d.mats.iter().position(|it| it.members == [fused(0)]).unwrap();
+        assert!(item_words(&cr, &d.mats[k]).unwrap_err().msg.contains("block scales"));
+        // the experts, as `held` reads them with the stage's stored formats
+        let (mut blocks, mut experts) = (0, 0);
+        for (_, m, roles) in super::of_layers(&kinds, (0, 4), 2) {
+            let e = m.experts;
+            let find = |r: &str| roles.iter().find(|(n, _)| n == r).map(|(_, s)| s);
+            let (up, down) = (Stacked::stored(find("experts_gate_up"), e, "up", &st).unwrap(), Stacked::stored(find("experts_down"), e, "down", &st).unwrap());
+            let (pu, pd) = (Stacked::of(find("experts_gate_up"), e, "up").unwrap(), Stacked::of(find("experts_down"), e, "down").unwrap());
+            for (r, p, shape) in [(&up, &pu, (512, 512)), (&down, &pd, (512, 256))] {
+                let (rows, cols) = r.dims(&cr, None, e).unwrap();
+                assert_eq!(((rows, cols), p.dims(&cp, None, e).unwrap()), (shape, shape));
+                for x in 0..e {
+                    assert!(r.expert(&cr, x, rows, cols).unwrap() == p.expert(&cp, x, rows, cols).unwrap(), "{}", r.name_of(x));
+                    experts += 1;
+                }
+                // (penguin: the stack's one lossless pack)
+                assert!(same(&r.lossless(&cr, e, Layout::Tiered).unwrap(), &p.lossless(&cp, e, Layout::Tiered).unwrap()), "{}: penguin", r.name());
+                // (by the checkpoint's names alone: the codes' bytes are not a matrix of these columns)
+                assert_ne!(p.dims(&cr, None, e).unwrap(), shape);
+            }
+            for level in [Layout::Int6, Layout::Int5, Layout::Int4] {
+                let (ju, jd) = super::block_packs(&up, &down, &cr, None, e, level, m.expert.act).unwrap();
+                let (wu, wd) = super::block_packs(&pu, &pd, &cp, None, e, level, m.expert.act).unwrap();
+                assert!(ju.data == wu.data && ju.scales == wu.scales && (ju.tag, ju.experts, ju.rows, ju.cols) == (wu.tag, e, 512, 512), "{level:?}: up");
+                let (DownHost::Block(a), DownHost::Block(b)) = (&jd, &wd) else { panic!("{level:?}: SwiGLU experts' second matrices are in the block layout") };
+                assert!(a.data == b.data && a.scales == b.scales && (a.tag, a.experts, a.rows, a.cols) == (b.tag, e, 512, 256), "{level:?}: down");
+            }
+            blocks += 1;
+        }
+        assert_eq!((blocks, experts), (3, 3 * 2 * 8));
+        // a save of the release: refused by name before anything is written
+        let config = crate::runtime::config::ModelConfig::load(&released).unwrap();
+        let said = crate::pack::level_plan(&released, Layout::Int5, Some(&config), None).unwrap_err().msg;
+        assert!(said.contains("a stored form the packer does not save from yet") && said.contains("is stored"), "{said}");
+        assert!(crate::pack::level_plan(&plain, Layout::Int5, Some(&config), None).unwrap().is_some());
+        for dir in [plain, released] {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     /// What a tiny model of grid weights relies on of the packers (all three block layouts): weights that are integers of at most the layout's largest code

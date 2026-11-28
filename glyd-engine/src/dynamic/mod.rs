@@ -68,7 +68,7 @@ use crate::launch;
 use crate::runtime::config::ModelConfig;
 use crate::runtime::kinds::Rounding;
 use crate::sched::Sample;
-use crate::weights::{choose_layout, ordered, pack_item_map, upload_bytes, upload_packed, Item, Layout, PackBuf};
+use crate::weights::{choose_layout, ordered, upload_bytes, upload_packed, Item, Layout, PackBuf};
 pub use attn::AttnOp;
 use glyd_gpu::safetensors::Checkpoint;
 pub use mla::{Cand, IdxKeys, IdxPick, IdxScore, KeyNorm, MlaIn, MlaIndexer, MlaOp, PickTrace};
@@ -705,10 +705,14 @@ pub struct ModelDesc {
     /// A block draft head's context (`MtpFront::Block`, DSpark's): its operations on the model's taps of the rows it keeps (Hid: each row's `Op::Tap`s), its
     /// main projection and norm, then each layer's key of it into the layer's window (`Op::CompKv`), at the rows' positions; empty for any other description.
     pub context: Vec<Op>,
+    /// The stored formats the model's description names (`Described::stored`: each quantized matrix's scales, the FP8 block, the shards of a fused
+    /// matrix), where its lowering hands them to the loader (the dense lowering's): a matrix the checkpoint holds so is dequantised to bf16 as it is
+    /// read (`weights::item_words_as`). Empty for a lowering whose loader reads the checkpoint by its own names.
+    pub(crate) stored: crate::formats::Stored,
 }
 
 /// The derived form, with `host` and `context` said only where they hold something: the other descriptions read as they did before the fields (a lowering's
-/// recorded digest is of this text).
+/// recorded digest is of this text). `stored` is not said: it is how the checkpoint is read, not what the executor runs.
 impl std::fmt::Debug for ModelDesc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("ModelDesc");
@@ -1323,10 +1327,11 @@ fn load_part(
             (Some((l, m)), _) if !parts.is_empty() => crate::weights::read_v7(&ck, m, *l, &parts, it.cols),
             (_, Some(t)) => {
                 let (r0, rn) = t.rows(it.rows);
-                let w = crate::weights::item_words(&ck, it)?;
+                let w = crate::weights::item_words_as(&ck, it, &d.stored)?;
                 crate::weights::pack_words(&w[r0 * it.cols..(r0 + rn) * it.cols], rn, it.cols, level(k), &it.members.join(" + "))
             }
-            _ => pack_item_map(&ck, it, level(k), &|_| {}),
+            // (a matrix its description says is stored quantized: dequantised to bf16 here, then packed as any other, `weights::item_words_as`)
+            _ => crate::weights::pack_item_as(&ck, it, level(k), &d.stored),
         }
     };
     let rows_of = |n: &str| ck.get(n).map(|(_, t)| t.shape[0] as usize);
@@ -1339,9 +1344,12 @@ fn load_part(
     }
     // (a matrix released in FP8 with its block scales, at a lossless level, on the GPU: held as released, the E4M3 bytes bit for bit; this GPU's whole
     // blocks of its rows where every layer is across a group of GPUs)
+    // (not a matrix its description cuts in shards whose scales start again at each, a shard not whole blocks: one grid over the matrix is another
+    // reading of scales of the same shape, `Stored::restarts`, and that matrix is dequantised, `weights::item_words_as`)
+    let by_shard = |it: &Item| it.members.iter().any(|m| d.stored.restarts(&ck, m));
     let as_f8 = |k: usize| -> Option<(usize, usize)> {
         let it = &d.mats[k];
-        (matches!(level(k), Layout::Tiered | Layout::Twelve) && v7.is_none() && in_ram(k).is_none() && k != d.embed && !tables::on_host(&d, k))
+        (matches!(level(k), Layout::Tiered | Layout::Twelve) && v7.is_none() && in_ram(k).is_none() && k != d.embed && !tables::on_host(&d, k) && !by_shard(it))
             .then(|| crate::f8::released_shape(&ck, &it.members))
             .flatten()
     };
@@ -1423,7 +1431,7 @@ fn load_part(
             }
             (None, _, _) if want.is_none_or(|w| w[k]) && saved[k] => {
                 let it = &d.mats[k];
-                mats.push(Mat::Dense(upload_bytes(crate::weights::as_bytes(&crate::weights::item_words(&ck, it)?))?, it.rows, it.cols));
+                mats.push(Mat::Dense(upload_bytes(crate::weights::as_bytes(&crate::weights::item_words_as(&ck, it, &d.stored)?))?, it.rows, it.cols));
             }
             _ => mats.push(Mat::Dense(Buf::new(2)?, 0, 0)),
         }

@@ -438,5 +438,6 @@ pub(crate) fn kimi_desc(k: &KimiDims, ls: &[KimiLayer], starts: &[bool], st: &St
         logit_mult: 0.0,
         host: Vec::new(),
         context: Vec::new(),
+        stored: Default::default(),
     }
 }

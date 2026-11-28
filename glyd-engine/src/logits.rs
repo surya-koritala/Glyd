@@ -2138,10 +2138,83 @@ pub fn lfm3_random(out: &Path) -> Result<()> {
 /// values of 128 times 0.707, the three products one matrix stored in 2 shards: the first and last layers attend over the whole context, 8 query heads over
 /// 2, the rotary's base 1e7; the middle two slide over 8 positions and the query's own, 8 over 4, a sink a head, base 1e4; the first layer's feed-forward a
 /// gated MLP of 1024, the others' 8 experts of 256, sigmoid scores with a choice bias (fp32, as released), the best 2 renormalised, no shared expert): the
-/// family's case, no release's. Every matrix is bf16: the release's FP8 fused matrices and packed 4-bit experts are forms the loader refuses by name. No draft
-/// layer: the executor does not run the family's.
+/// family's case, no release's. Every matrix is bf16: the release's FP8 fused matrices and packed 4-bit experts are forms the loader dequantises to bf16 as
+/// it reads them (held to this model's bf16 twin on the host: `dynamic::experts::tests`). No draft layer: the executor does not run the family's.
 pub fn mimo_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/mimo_tiny_manifest.json"), out, 0x2026_1128_0000_0061, true, "MiMo model")
+}
+
+/// MiMo's small model as the family releases it (the `mimo-released` case): `mimo_random`'s manifest drawn by the same rules from a seed of its own,
+/// each matrix its description names scales for then written in the release's stored form, in the release's blocks. Its config has the release's
+/// quantization_config (fp8, e4m3, blocks of 128 x 128, the experts stored as MXFP4 in runs of 32, the first layer's `o` left out). The products are
+/// FP8 with fp32 scales a block under `X.weight_scale_inv` (`formats::fp8_encode`), the fused q-k-v matrix a grid of scales a shard, one after
+/// another: the whole-context layers' 2 shards of 1,088 rows hold 2 x 9 rows of scales where one grid over the matrix would be 17, and the sliding
+/// layers' 2 of 1,408 hold the whole matrix's 22. Every expert's matrix is 4-bit codes two a byte under `X.weight` (U8) with a byte's scale a run of
+/// 32 under `X.weight_scale` (`formats::mxfp4_encode`). The weights are so the nearest codes to the draw's, not its bits: the case's reference reads
+/// the stored forms by the description (`model::described_source`), as its loader does.
+///
+/// The seed is one of 80 tried, of the 7 whose routers are past `kindcheck::NEAR` from a tie on every row the fixture holds (the least gap between
+/// the last expert chosen and the first left out, over the largest score, `reference::ffn::margin`: 1.47e-2 here), the one of them whose rows the
+/// storage roundings move least with its routers free (`the_released_cases_draw_is_far_from_a_tie_on_the_rows_it_holds`; a choice taken the other
+/// way on a row the fixture does not hold still reaches the long prompt's last row through the attention: 2.1e-4 of KL on another of the 7). The
+/// case is held on its routers' choices all the same (`Case::on_choices`), as a case with free routers must be: the draw first recorded had a gap of
+/// 2.8e-3 on one such row (the first block of experts, the eleventh decode token: scores of 0.6747 and 0.6728), which an RTX 4080 SUPER's bf16
+/// arithmetic took the other way, that row 3.0e-2 of KL from the reference and every other row within the bound. The rounding of the FP8 values to
+/// bf16 was not what moved it (on the reference: KL 7e-7 at most, no choice apart on those rows).
+pub fn mimo_released_random(out: &Path) -> Result<()> {
+    mimo_released_draw(out, MIMO_RELEASED_SEED)
+}
+
+/// The seed of `mimo_released_random`'s draw.
+pub const MIMO_RELEASED_SEED: u64 = 0x2026_1128_0000_0095;
+
+/// `mimo_released_random` drawn from `seed` (not 0).
+pub fn mimo_released_draw(out: &Path, seed: u64) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/mimo_tiny_manifest.json"), out, seed, true, "MiMo model")?;
+    let path = out.join("config.json");
+    let mut cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(&path))?).map_err(|e| Error(e.to_string()))?;
+    cfg["quantization_config"] = json!({"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128], "store_dtype": "mxfp4",
+        "mxfp4_block_size": 32, "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]});
+    let d = crate::runtime::describe::describe(&cfg)?;
+    let st = d.stored();
+    let ck = glyd_gpu::safetensors::Checkpoint::open(out).map_err(|e| Error(e.to_string()))?;
+    let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
+    for name in ck.names() {
+        let (t, bytes) = (ck.get(name).map(|x| x.1.clone()).ok_or_else(|| Error(format!("no tensor {name}")))?, io(ck.read(name))?);
+        let dtype = match t.dtype.as_str() {
+            "BF16" => "BF16",
+            "F32" => "F32",
+            other => return err(format!("{name}: {other}, where MiMo's small model holds bf16 and fp32")),
+        };
+        let (Some(scales), "BF16", &[rows, cols]) = (st.scales.get(name), dtype, &t.shape[..]) else {
+            tensors.push((name.to_string(), dtype, t.shape.clone(), bytes));
+            continue;
+        };
+        let v: Vec<f32> = bytes.chunks_exact(2).map(|b| f32::from_bits((u16::from_le_bytes([b[0], b[1]]) as u32) << 16)).collect();
+        let (r, c) = (rows as usize, cols as usize);
+        if scales.ends_with("_scale_inv") {
+            let shards = st.shards.get(name).copied().unwrap_or(1);
+            let each = r / shards;
+            let (mut q, mut grids) = (Vec::with_capacity(r * c), Vec::new());
+            for part in v.chunks_exact(each * c) {
+                let (codes, s) = crate::formats::fp8_encode(part, each, c, [128, 128]);
+                q.extend(codes);
+                grids.extend(s.iter().flat_map(|x| x.to_le_bytes()));
+            }
+            tensors.push((name.to_string(), "F8_E4M3", t.shape.clone(), q));
+            tensors.push((scales.clone(), "F32", vec![(shards * each.div_ceil(128)) as u64, cols.div_ceil(128)], grids));
+        } else {
+            let (codes, s) = crate::formats::mxfp4_encode(&v, r, c)?;
+            tensors.push((name.to_string(), "U8", vec![rows, cols / 2], codes));
+            tensors.push((scales.clone(), "U8", vec![rows, cols / 32], s));
+        }
+    }
+    drop(ck);
+    io(std::fs::write(&path, cfg.to_string()))?;
+    let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = tensors.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), &b[..])).collect();
+    crate::pack::write_safetensors(&out.join("model.safetensors"), &[("format", "pt".to_string())], &refs)?;
+    println!("{}: as released, {} tensors, {:.0} MB", out.display(), tensors.len(), tensors.iter().map(|t| t.3.len()).sum::<usize>() as f64 / 1e6);
+    Ok(())
 }
 
 /// Ling's small model (six layers in groups of three: two of the Kimi delta attention, two heads of 128 with each of q, k and v through its own convolution
@@ -2805,6 +2878,17 @@ pub fn cases() -> Vec<Case> {
             cpu: Some(described_cpu),
             vocab: 4096,
             on_choices: None,
+            also: None,
+        },
+        Case {
+            id: "mimo-released",
+            family: "MiMo as released (fused products FP8 with a grid of scales a shard, experts packed 4-bit codes: read by the description's scales)",
+            weights: Weights::Random(mimo_released_random),
+            engine: dense_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            // (its routers take 2 experts of 8 by sigmoid scores: near ties that a bf16 engine takes either way)
+            on_choices: Some(ref_drive),
             also: None,
         },
         Case {
@@ -4105,15 +4189,49 @@ mod tests {
         assert_eq!(file.get("model.embed_tokens.weight").unwrap().bytes, 64 * 32 * 2, "the embedding two bytes a value");
     }
 
-    /// A case's noise floor: the CPU reference of the layer kinds against itself with `stored`'s roundings, on the fixture's tokens, as `compare`
-    /// measures an engine against `bound`; where the case is held on its routers' choices (`Case::on_choices`), the rounded run takes the
-    /// reference's own.
-    fn noise_floor(dir: &Path, fx: &Fixture, on_choices: bool, bound: &Bound) -> Result<Verdict> {
-        noise_floor_with(dir, fx, on_choices, bound, stored)
+    /// `ref_model_with` reading each matrix the checkpoint holds quantized with scales its description names (`formats::Stored::quantized`) as the
+    /// bf16 nearest each value: what a loader of the engine holds of a matrix it dequantises (`formats::Stored::words`, `glyd_gpu::fp8::dequant`),
+    /// where the reference computes with the unrounded product of an FP8 code and its fp32 scale. A code times a power of two is a bf16 already.
+    fn ref_model_held(d: &Path, edit: fn(&mut crate::runtime::describe::Described)) -> Result<crate::runtime::reference::model::RefModel> {
+        let cfg: Value = serde_json::from_str(&io(std::fs::read_to_string(d.join("config.json")))?).map_err(|e| Error(format!("config.json: {e}")))?;
+        let mut desc = crate::runtime::describe::describe(&cfg)?;
+        edit(&mut desc);
+        let ck = io(glyd_gpu::safetensors::Checkpoint::open(d))?;
+        let st = desc.stored();
+        let held = |n: &str| -> Option<(Vec<usize>, Vec<f32>)> {
+            let (shape, v) = st.tensor(&ck, n)?;
+            if !st.quantized(&ck, n) {
+                return Some((shape, v));
+            }
+            Some((shape, v.iter().map(|&x| f32::from_bits((crate::weights::bf16_bits(x) as u32) << 16)).collect()))
+        };
+        let mut m = crate::runtime::reference::model::RefModel::load(&desc, &held)?;
+        put_token_map(&mut m, d)?;
+        Ok(m)
     }
 
-    /// `noise_floor` with `edit`'s description in the place of `stored`'s (`ModelDesc::f32_arithmetic`: the floor against fp32).
+    /// A case's noise floor: the CPU reference of the layer kinds against itself with the storage roundings an engine makes and it does not, on the
+    /// fixture's tokens, as `compare` measures an engine against `bound`: `stored`'s (the norms' outputs, the embedding's scale) and each quantized
+    /// matrix's values as a loader holds them dequantised (`ref_model_held`). Where the case is held on its routers' choices (`Case::on_choices`),
+    /// the rounded run takes the reference's own.
+    fn noise_floor(dir: &Path, fx: &Fixture, on_choices: bool, bound: &Bound) -> Result<Verdict> {
+        noise_floor_by(dir, fx, on_choices, bound, &|d| ref_model_held(d, stored))
+    }
+
+    /// The floor of the reference with `edit`'s description in the place of `stored`'s roundings (`ModelDesc::f32_arithmetic`: the floor against
+    /// fp32), its matrices as the reference reads them.
     fn noise_floor_with(dir: &Path, fx: &Fixture, on_choices: bool, bound: &Bound, edit: fn(&mut crate::runtime::describe::Described)) -> Result<Verdict> {
+        noise_floor_by(dir, fx, on_choices, bound, &|d| ref_model_with(d, edit))
+    }
+
+    /// The reference against the reference `load` makes of the same directory.
+    fn noise_floor_by(
+        dir: &Path,
+        fx: &Fixture,
+        on_choices: bool,
+        bound: &Bound,
+        load: &dyn Fn(&Path) -> Result<crate::runtime::reference::model::RefModel>,
+    ) -> Result<Verdict> {
         let base = ref_drive(dir, fx, None, None)?;
         let take: Option<Choices> = on_choices.then(|| base.routed.iter().map(|l| l.iter().map(|r| r.ids.clone()).collect()).collect());
         // (and its indexers' picks, where it has any)
@@ -4125,9 +4243,40 @@ mod tests {
                 })
                 .collect()
         });
-        let rounded = ref_drive_with(dir, fx, take.as_ref(), picks.as_ref(), edit)?;
+        let rounded = ref_drive_by(dir, fx, take.as_ref(), picks.as_ref(), load)?;
         let own = Fixture { rows: base.rows.iter().map(|r| Row::from_logits(r)).collect::<Result<_>>()?, ..fx.clone() };
         Ok(compare(&own, bound, &rounded.rows))
+    }
+
+    /// MiMo's released case is held on its routers' choices, and its draw does not lean on that: on every row its fixture holds (the prompt's last
+    /// token, each decode token, the long prompt's last), each of its three routers' gap between the last expert chosen and the first left out is
+    /// past `kindcheck::NEAR` of its largest score; and with the routers free, the reference with the storage roundings (`noise_floor`: the norms'
+    /// outputs, and the FP8 values as the loader holds them dequantised) is within a tenth of the bound of the reference without them. The draw
+    /// first recorded had a gap of 2.8e-3 on one such row, which a GPU took the other way: one row 3.0e-2 of KL apart.
+    #[test]
+    fn the_released_cases_draw_is_far_from_a_tie_on_the_rows_it_holds() {
+        let fx = Fixture::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/logits/mimo-released.json.gz")).unwrap();
+        let dir = std::env::temp_dir().join(format!("glyd-released-margin-{}", std::process::id()));
+        mimo_released_random(&dir).unwrap();
+        let base = ref_drive(&dir, &fx, None, None).unwrap();
+        let tenth = Bound::Kl { mean: 1e-5, max: 2.5e-5, top1: 0.85 };
+        let free = noise_floor(&dir, &fx, false, &tenth).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        let held = fx.prompt.len() + fx.decode.len();
+        assert_eq!(base.routed.len(), 3);
+        let mut least = f32::INFINITY;
+        for (l, rows) in base.routed.iter().enumerate() {
+            assert_eq!(rows.len(), held + fx.long.len(), "block {l}");
+            for i in (fx.prompt.len() - 1..held).chain([rows.len() - 1]) {
+                assert!(rows[i].gap > crate::dynamic::kindcheck::NEAR, "block {l}, token {i}: a gap of {:.2e}", rows[i].gap);
+                least = least.min(rows[i].gap);
+            }
+        }
+        println!(
+            "mimo-released: the least gap on a row it holds {least:.2e}; with free routers, noise floor KL mean {:.2e} max {:.2e}, best token {}/{}",
+            free.mean_kl, free.max_kl, free.top1.0, free.top1.1
+        );
+        assert!(free.ok, "{:?}", free.notes);
     }
 
     /// The family's draft head (`qwen4x_mtp_random`: the `qwen4x` case's model with one MTP layer) is well conditioned for the bound the family is held to
@@ -4270,6 +4419,9 @@ mod tests {
     /// below the change the input's rounding (about 2^-9 of it) makes in the router's scores, and both scale with the router's weights, so no
     /// router draw clears it short of one that takes the same experts for every token (Muse, before it was held on choices: 187 of 744 choices
     /// apart under these roundings, a floor of 2.2e-3; qwen35moe 18, one row 1.9e-4).
+    ///
+    /// The roundings are `stored`'s and those of a quantized matrix's values as an engine's loader holds them dequantised (`ref_model_held`: an FP8
+    /// code times its fp32 scale, which the reference keeps unrounded, as the bf16 nearest it).
     ///
     /// Each case's reference is its description's on the layer kinds (DeepSeek-V4's case is held to src/dsv4_ref.rs, without its simulated
     /// quantizations: that reference's floor is `deepseek_v4_noise_floor`). Where a description already rounds every norm (Kimi-K3's, GLM-5.3-Flash's) and
@@ -5937,7 +6089,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
             Dyn::new(dir, &crate::runtime::config::ModelConfig::load(dir)?, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
         "qwen35" | "qwen35-wide" | "qwen35moe" => crate::dynamic::qwen35::load(dir, o)?,
-        "dense" | "domynedge" | "granite-swa" | "mellum" | "lfm3" | "mimo" => crate::dynamic::dense::load(dir, o)?,
+        "dense" | "domynedge" | "granite-swa" | "mellum" | "lfm3" | "mimo" | "mimo-released" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" | "kimi-dsa" => crate::dynamic::kimi::load(dir, o)?,
         "glm-dsa" | "glm-dsa-f8" | "ling" => crate::dynamic::glm::load_plain(dir, o)?,
@@ -6025,6 +6177,7 @@ fn random_model_of(case: &str, dir: &Path) -> Result<()> {
         "mellum" => mellum_random(dir),
         "lfm3" => lfm3_random(dir),
         "mimo" => mimo_random(dir),
+        "mimo-released" => mimo_released_random(dir),
         "ling" => ling_random(dir),
         "muse" => crate::muse_ref::random(dir),
         "kimi" => crate::kimi_ref::random(dir, 1, true, 8),

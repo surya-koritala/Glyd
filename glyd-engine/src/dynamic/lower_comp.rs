@@ -521,6 +521,7 @@ pub fn lower(d: &Described, eos: Vec<i64>, max_pos: usize, st: &Stage, vo: &V4Op
         logit_mult: 0.0,
         host,
         context: Vec::new(),
+        stored: Default::default(),
         v4: Some(V4Dims { heads: nh, idx_heads: ih, topk: itop, window: c0.window, all_ratio, sim, o_groups: og, idx_ratio }),
     };
     Ok((desc, plan))
