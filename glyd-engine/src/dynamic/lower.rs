@@ -3194,6 +3194,10 @@ mod tests {
             [(1, plain, None), (2, plain, None), (3, after(1.0), Some(plain)), (4, after(1.0), Some(after(0.75))), (5, after(0.5), Some(after(1.5)))]
         );
         assert_eq!(crate::runtime::config::ModelConfig::parse(text).unwrap().family(), None);
+        // (the blocks are not alike: one of each activation is what the engine's one scratch is made for, `Dyn::new`. Made for the first alone it held
+        // no rows for the limited layers' activation: their kernels wrote past it on a GPU)
+        let acts: Vec<Act> = blocks.iter().map(|b| b.1).collect();
+        assert_eq!(crate::moe::first_of_each(&acts), [0, 2, 4]);
     }
 
     /// LFM's small model (the logits checks' random one): the description reads every tensor of its manifest at the manifest's shape, and the dense lowering
