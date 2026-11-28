@@ -61,7 +61,7 @@ jobs:
           [ -x "$CARGO_HOME/bin/cargo" ] || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
           nvidia-smi
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: The checkout's files get the times their content last changed
@@ -73,7 +73,7 @@ jobs:
           export GLYD_ENGINE="$CARGO_TARGET_DIR/release/glyd-engine" WORK="$LLAMA_SERVER_DIR"
           mkdir -p "$GGUF_DIR"
           bash scripts/consumer_bench.sh "consumer-${GITHUB_REF_NAME//\//-}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: consumer-bench
