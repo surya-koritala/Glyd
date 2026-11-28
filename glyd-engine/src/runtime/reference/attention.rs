@@ -1,5 +1,5 @@
 //! MHA, GQA and MQA attention (`kinds::Attn`): full or sliding window, optional q/k/v norms, rope (full, partial, proportional or none),
-//! learned sinks, a score soft-cap, an output gate, and the rounding points of `kinds::AttnRounding`. Query head h reads KV head
+//! learned sinks, a score soft-cap, a factor on the values, an output gate, and the rounding points of `kinds::AttnRounding`. Query head h reads KV head
 //! h / (heads / kv_heads). One token at a time against the sequence's cache; a prompt is its tokens in order. With Condor's indexer
 //! (`IndexForm::Mean`) a query attends only to the tokens it picks (`mean_picks`).
 
@@ -154,6 +154,10 @@ pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>,
     if store.is_none() {
         prep(&mut k, &a.k_norm, "k_norm", hd, true, 1.0);
         prep(&mut v, &a.v_norm, "v_norm", vd, false, 1.0);
+        // (the values' factor, on the values the cache holds)
+        if a.v_scale != 1.0 {
+            v.iter_mut().for_each(|x| *x = r16(*x * a.v_scale));
+        }
     }
     // (the indexer's queries, normed and rotated as the attention's, and this token's raw key, from one product)
     let iq = match &a.indexer {
@@ -264,6 +268,7 @@ mod tests {
             indexer: None,
             rounding: AttnRounding::F32,
             kv_from: None,
+            v_scale: 1.0,
         };
         let mut p = Params::new();
         let bfv = |v: Vec<f32>| v.into_iter().map(bf16).collect::<Vec<_>>();

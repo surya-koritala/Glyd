@@ -346,6 +346,7 @@ mod tests {
             indexer: None,
             rounding: AttnRounding::F32,
             kv_from: None,
+            v_scale: 1.0,
         };
         let block = Block {
             norm_in: Norm::rms_plus_one(1e-6),

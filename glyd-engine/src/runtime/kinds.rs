@@ -342,10 +342,12 @@ pub struct Attn {
     /// KV sharing (Gemma 4's `num_kv_shared_layers`): the queries attend to the keys and values that block `kv_from`'s attention (an earlier
     /// block of the same heads, window and rope) holds for the sequence; this attention has no keys or values of its own and no cache.
     pub kv_from: Option<usize>,
+    /// The values' factor: each value times it after its product, before it is cached and weighed (MiMo V2's `attention_value_scale`); 1 elsewhere.
+    pub v_scale: f32,
 }
 
-/// The derived form, with `kv_from` said only where it is set: the other attentions' descriptions read as they did before the field (the
-/// digests of tests/fixtures/descriptions.json are of this text).
+/// The derived form, with `kv_from` said only where it is set and `v_scale` only where it is not 1: the other attentions' descriptions read as
+/// they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Attn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Attn");
@@ -355,6 +357,9 @@ impl std::fmt::Debug for Attn {
         s.field("k_eq_v", &self.k_eq_v).field("indexer", &self.indexer).field("rounding", &self.rounding);
         if let Some(j) = self.kv_from {
             s.field("kv_from", &j);
+        }
+        if self.v_scale != 1.0 {
+            s.field("v_scale", &self.v_scale);
         }
         s.finish()
     }

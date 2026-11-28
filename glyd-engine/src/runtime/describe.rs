@@ -26,13 +26,15 @@ pub enum Source {
     Rows(Vec<String>),
     /// One entry per expert (each its rows stacked), as [experts, rows, cols].
     Experts(Vec<Vec<String>>),
+    /// Ranges of one matrix's rows [from, to), joined in order (a query, key or value product of a checkpoint that holds the three as one matrix).
+    RowsOf(String, Vec<(usize, usize)>),
 }
 
 impl Source {
     /// The checkpoint's tensors the source reads.
     pub fn names(&self) -> Vec<String> {
         match self {
-            Source::Tensor(n) => vec![n.clone()],
+            Source::Tensor(n) | Source::RowsOf(n, _) => vec![n.clone()],
             Source::Rows(v) => v.clone(),
             Source::Experts(v) => v.iter().flatten().cloned().collect(),
         }
@@ -584,6 +586,7 @@ pub fn describe_config_in(c: &ModelConfig, have: Option<&BTreeSet<String>>) -> R
         "granite_swa" => granite_swa(tc, prefix, mt, tied_top),
         "mellum" => layer_typed(tc, prefix, mt, tied_top, &MELLUM),
         "aion_instruct" => layer_typed(tc, prefix, mt, tied_top, &AION),
+        "mimo_v2" => mimo_v2(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
         "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
         "" => err("config.json names no model_type"),
         m => err(format!("model_type {m} has no description builder yet")),
@@ -665,6 +668,7 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
             indexer: None,
             rounding: AttnRounding::F32,
             kv_from: None,
+            v_scale: 1.0,
         };
         let p = names::HF.layer(prefix, l);
         let (ar, fr) = (
@@ -793,6 +797,7 @@ fn domyn_edge(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<
             indexer: None,
             rounding: AttnRounding::F32,
             kv_from: None,
+            v_scale: 1.0,
         };
         let p = names::HF.layer(prefix, l);
         let (ar, fr) = (names::roles(part::DOMYN_ATTN, &p, 0, all), names::roles(part::DOMYN_MLP, &p, 0, all));
@@ -929,6 +934,7 @@ fn granite_swa(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option
             indexer: None,
             rounding: AttnRounding::F32,
             kv_from: None,
+            v_scale: 1.0,
         };
         let p = names::HF.layer(prefix, l);
         let mut ar = names::roles(part::ATTN, &p, 0, |r| !r.ends_with("_bias") && !matches!(r, "q_norm" | "k_norm"));
@@ -1096,6 +1102,7 @@ fn layer_typed(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option
             indexer: None,
             rounding: AttnRounding::F32,
             kv_from: None,
+            v_scale: 1.0,
         };
         let p = names::HF.layer(prefix, l);
         let ar = names::roles(part::ATTN, &p, 0, |r| !r.ends_with("_bias"));
@@ -1141,6 +1148,365 @@ fn layer_typed(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option
         shapes.insert(h.clone(), vec![vocab, d]);
     }
     out.shapes = shapes;
+    Ok(out)
+}
+
+/// MiMo V2's `quantization_config` as released: FP8 E4M3 matrices in square blocks, each with its scales (`weight_scale_inv`), but the modules of
+/// `ignored_layers` (bf16); the routed experts stored as MXFP4 (`store_dtype`: 4-bit floats two a byte in runs of `mxfp4_block_size` 32 along a row, a
+/// byte's power-of-two scale a run, `weight_scale`). Anything else is refused with what differs.
+struct MimoQuant {
+    block: usize,
+    ignored: Vec<String>,
+}
+
+fn mimo_quant(q: &Value, mt: &str) -> Result<MimoQuant> {
+    let what = format!("{mt}: quantization_config");
+    let Some(o) = q.as_object() else { return err(format!("{what} = {q} is not an object")) };
+    let k = Keys::new(o, &what);
+    let (method, fmt, store) = (k.str("quant_method")?, k.str("fmt")?, k.str("store_dtype")?);
+    if method != Some("fp8") || fmt != Some("e4m3") {
+        return err(format!("{what}: {method:?} {fmt:?}, where the description reads fp8 e4m3"));
+    }
+    let block = match k.raw("weight_block_size").and_then(Value::as_array).map(|a| a.iter().map(Value::as_u64).collect::<Vec<_>>()).as_deref() {
+        Some([Some(a), Some(b)]) if a == b && *a > 0 => *a as usize,
+        _ => {
+            return err(format!(
+                "{what}: weight_block_size {} is not supported: square blocks of scales are",
+                o.get("weight_block_size").unwrap_or(&Value::Null)
+            ))
+        }
+    };
+    // (the experts' format: the one the release's loader reads, bytes of two 4-bit floats and a byte's exponent a run of 32)
+    if store != Some("mxfp4") {
+        return err(format!("{what}: store_dtype {store:?}: the experts' stored format is read as mxfp4 only"));
+    }
+    k.expect("mxfp4_block_size", &Value::from(32))?;
+    // (the activations' quantization is the serving engine's choice of arithmetic, not the weights': only the release's own is taken)
+    k.expect("activation_scheme", &Value::from("dynamic"))?;
+    let ignored = match k.raw("ignored_layers") {
+        None => Vec::new(),
+        Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+        Some(v) => return err(format!("{what}: ignored_layers = {v} is not a list of modules")),
+    };
+    k.finish()?;
+    Ok(MimoQuant { block, ignored })
+}
+
+/// One sort of MiMo V2 layer's attention: the layers over the whole context, or the sliding ones.
+struct MimoSort {
+    heads: usize,
+    kv: usize,
+    hd: usize,
+    vd: usize,
+    sinks: bool,
+    window: Option<usize>,
+    rope: Rope,
+}
+
+/// MiMo V2 (`mimo_v2`, MiMoV2ForCausalLM): a pre-norm decoder of two sorts of attention layer and, a layer, a gated MLP or a mixture of experts, read as
+/// the release's own serving code reads its config (SGLang's `mimo_v2.py`).
+///  - `hybrid_layer_pattern` says a layer 0 (attention over the whole context: `num_attention_heads`, `num_key_value_heads`, `head_dim`, `v_head_dim`,
+///    the rotary's base `rope_theta`) or 1 (sliding: the `swa_` keys of the same names, base `swa_rope_theta`). The queries and keys are `head_dim` wide
+///    and the values `v_head_dim` (192 and 128 in the releases), so `o` reads heads x `v_head_dim`; the scores are scaled by 1 / sqrt(head_dim);
+///  - a sliding layer's query sees `sliding_window_size` positions before it and its own (SGLang gives the size to the kernel as the window's left edge;
+///    transformers' earlier class says the same as a `sliding_window` of the size + 1). The config's `sliding_window`, which the release's code does not
+///    read, must be one of those two;
+///  - `add_full_attention_sink_bias` and `add_swa_attention_sink_bias` give a layer sort a learned logit a head, `attention_sink_bias`, that takes part
+///    in the softmax and attends to nothing;
+///  - `attention_value_scale` multiplies the values after their product (`Attn::v_scale`); `partial_rotary_factor` rotates that part of a head, from its
+///    first channel (int(head_dim x factor) channels); no q or k norm, no biases;
+///  - `attention_projection_layout` "fused_qkv" stores the three products as one matrix, `qkv_proj`, cut for `num_key_value_heads` shards (the whole-context
+///    sort's count, on the sliding layers too): shard i's rows are its query heads', then its key heads', then its value heads', so the matrix is not
+///    q, then k, then v (SGLang's `load_mimo_v2_qkv_proj_weight`, vLLM's `_shard_fp8_qkv_proj`). The description cuts it into the kind's `q`, `k` and `v`
+///    (`Source::RowsOf`). "split" or unsaid: a matrix a product;
+///  - `moe_layer_freq` says a layer 0 (a gated SiLU MLP of `intermediate_size`) or 1 (`n_routed_experts` of `moe_intermediate_size`: the sigmoid of the
+///    router's logits, a choice bias `e_score_correction_bias`, the best `num_experts_per_tok` kept and, with `norm_topk_prob`, divided by their sum; no
+///    shared expert, and the experts' sum is not scaled: the release's code gives 1 for `routed_scaling_factor` whatever the config says);
+///  - `num_nextn_predict_layers` draft layers under `model.mtp.layers.`: each a draft head of DeepSeek-V3's form (`MtpInput::Joined`: `enorm`, `hnorm`,
+///    `eh_proj`, `final_layernorm`, the model's embedding and head) whose block is a sliding layer's attention and a dense MLP (SGLang's
+///    `mimo_v2_nextn.py`; layer j drafts step j, vLLM's `mimo_v2_mtp.py`).
+/// Stored formats (`quantization_config`, `mimo_quant`): the fused products and the dense MLPs FP8 with their block scales, which on a fused matrix
+/// start again at every shard (a shard's rows are not a whole number of blocks); `o`, the routers, the norms, the embedding and the head bf16; the
+/// routed experts MXFP4, `weight` the codes and `weight_scale` the scales, the format Kimi-K3's experts are packed in under compressed-tensors' names.
+/// Where the references differ: an unsaid `rope_theta` is 10,000 in SGLang and 1,000,000 in vLLM (SGLang's is taken); transformers' earlier class has
+/// one set of heads with twice the key heads on sliding layers and a rotary a layer type in `rope_parameters`, where this layout says each sort's keys.
+/// The audio encoder, the speech embeddings and the vision tower (`audio_config`, `vision_config`, `processor_config`, `vision_model_type`) are left
+/// unread (`names::MIMO`). `attention_chunk_size` is another family's chunked local attention's key in the release's code, which this attention does not
+/// turn on: read, and nothing is selected by it.
+fn mimo_v2(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, quant: Option<&Value>) -> Result<Described> {
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab) = (k.usize("hidden_size")?, k.usize("num_hidden_layers")?, k.usize("vocab_size")?);
+    let eps = k.f64("layernorm_epsilon")? as f32;
+    let tied = k.bool("tie_word_embeddings", tied_top.unwrap_or(false))?;
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    k.expect("attention_bias", &Value::Bool(false))?;
+    k.expect("hidden_act", &Value::from("silu"))?;
+    let embed_x = k.opt_f64("scale_emb")?.unwrap_or(1.0) as f32;
+    for tower in ["audio_config", "vision_config", "processor_config", "vision_model_type", "attention_chunk_size"] {
+        k.raw(tower);
+    }
+    // (the audio encoder's block size where a config says it at the top: not a key of the text model's that the release's code reads)
+    k.expect("hybrid_block_size", &Value::Null)?;
+    let flags = |key: &str| -> Result<Vec<bool>> {
+        per_layer(&k, key, layers)?
+            .iter()
+            .enumerate()
+            .map(|(l, v)| match v.as_u64() {
+                Some(0) => Ok(false),
+                Some(1) => Ok(true),
+                _ => err(format!("{mt}: {key}[{l}] = {v} is not supported (0 or 1)")),
+            })
+            .collect()
+    };
+    let (sliding, sparse) = (flags("hybrid_layer_pattern")?, flags("moe_layer_freq")?);
+    let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
+    // the rotary: plain, a base a layer sort, a part of the head
+    let theta = k.opt_f64("rope_theta")?.unwrap_or(10_000.0);
+    let swa_theta = k.opt_f64("swa_rope_theta")?.unwrap_or(theta);
+    let partial = k.opt_f64("partial_rotary_factor")?.unwrap_or(1.0);
+    // (transformers 5 writes the model's rotary again as `rope_parameters`, which the release's code reads as `rope_scaling` and takes for none where its type
+    // is "default": it must say what the keys above say; a scaled rotary is not described)
+    for key in ["rope_parameters", "rope_scaling"] {
+        let o = match k.raw(key) {
+            None => continue,
+            Some(Value::Object(o)) => o,
+            Some(v) => return err(format!("{mt}: {key} = {v} is not a rotary's parameters")),
+        };
+        let ty = o.get("rope_type").or(o.get("type")).and_then(Value::as_str).unwrap_or("default");
+        if ty != "default" {
+            return err(format!("{mt}: {key}.rope_type {ty} is not supported (only the plain rotary, default)"));
+        }
+        for (name, want) in [("rope_theta", theta), ("partial_rotary_factor", partial)] {
+            if let Some(v) = o.get(name).filter(|v| v.as_f64() != Some(want)) {
+                return err(format!("{mt}: {key}.{name} = {v}, where the config's {name} is {want}"));
+            }
+        }
+        not_understood(&format!("{mt} {key}"), o.keys().filter(|x| !matches!(x.as_str(), "rope_type" | "type" | "rope_theta" | "partial_rotary_factor")))?;
+    }
+    let rope_of = |base: f64, hd: usize, what: &str| -> Result<Rope> {
+        let p = Map::from_iter([
+            ("rope_type".to_string(), Value::from("default")),
+            ("rope_theta".to_string(), Value::from(base)),
+            ("partial_rotary_factor".to_string(), Value::from(partial)),
+        ]);
+        rope(&p, hd, max_pos, &format!("{mt} {what}"))
+    };
+    // the two sorts of attention; a sort no layer is (and no draft layer: those are sliding) may be left unsaid
+    let size = k.opt_usize("sliding_window_size")?;
+    if let (Some(s), Some(w)) = (size, k.opt_usize("sliding_window")?) {
+        if w != s && w != s + 1 {
+            return err(format!("{mt}: sliding_window = {w}, where sliding_window_size {s} is a window of {} with the query's own position", s + 1));
+        }
+    }
+    let fused = match k.str("attention_projection_layout")? {
+        None | Some("split") => false,
+        Some("fused_qkv") => true,
+        Some(o) => return err(format!("{mt}: attention_projection_layout {o} is not supported (fused_qkv or split)")),
+    };
+    let sort = |pre: &str, theta: f64, sink_key: &str, window: Option<Option<usize>>, used: bool| -> Result<Option<MimoSort>> {
+        let key = |x: &str| format!("{pre}{x}");
+        let (heads, kv, hd) = (k.opt_usize(&key("num_attention_heads"))?, k.opt_usize(&key("num_key_value_heads"))?, k.opt_usize(&key("head_dim"))?);
+        let (vd, sinks) = (k.opt_usize(&key("v_head_dim"))?, k.bool(sink_key, false)?);
+        if !used {
+            return Ok(None);
+        }
+        let need = |v: Option<usize>, x: &str| v.filter(|n| *n > 0).ok_or_else(|| Error(format!("{mt}: no {}", key(x))));
+        let (heads, kv, hd) = (need(heads, "num_attention_heads")?, need(kv, "num_key_value_heads")?, need(hd, "head_dim")?);
+        if heads % kv != 0 {
+            return err(format!(
+                "{mt}: {} {heads} is not a whole number of heads a key head ({} {kv})",
+                key("num_attention_heads"),
+                key("num_key_value_heads")
+            ));
+        }
+        let window = match window {
+            None => None,
+            Some(w) => Some(w.ok_or_else(|| Error(format!("{mt}: no sliding_window_size, which its sliding layers read")))? + 1),
+        };
+        Ok(Some(MimoSort { heads, kv, hd, vd: vd.unwrap_or(hd), sinks, window, rope: rope_of(theta, hd, &format!("{pre}rope_theta"))? }))
+    };
+    let full = sort("", theta, "add_full_attention_sink_bias", None, sliding.iter().any(|s| !s))?;
+    let swa = sort("swa_", swa_theta, "add_swa_attention_sink_bias", Some(size), sliding.iter().any(|s| *s) || mtp_layers > 0)?;
+    let v_scale = k.opt_f64("attention_value_scale")?.unwrap_or(1.0) as f32;
+    if !v_scale.is_finite() || v_scale == 0.0 {
+        return err(format!("{mt}: attention_value_scale = {v_scale} is not a factor"));
+    }
+    // (a fused matrix's shards: the whole-context sort's key heads, whichever sort the layer is; each shard holds whole heads of each product)
+    let shards = k.opt_usize("num_key_value_heads")?.unwrap_or(0);
+    if fused {
+        for s in full.iter().chain(&swa) {
+            if shards == 0 || s.heads % shards != 0 || s.kv % shards != 0 {
+                return err(format!("{mt}: a fused qkv_proj of {shards} shards (num_key_value_heads) does not hold {} heads over {} key heads", s.heads, s.kv));
+            }
+        }
+    }
+    // the feed-forward
+    let inter = k.usize("intermediate_size")?;
+    let any_sparse = sparse.iter().any(|s| *s);
+    let count = |key: &str| -> Result<usize> {
+        match k.opt_usize(key)? {
+            Some(n) => Ok(n),
+            None if !any_sparse => Ok(0),
+            None => err(format!("{mt}: no {key}")),
+        }
+    };
+    let (moe_inter, ne, top_k) = (count("moe_intermediate_size")?, count("n_routed_experts")?, count("num_experts_per_tok")?);
+    k.expect("scoring_func", &Value::from("sigmoid"))?;
+    k.expect("topk_method", &Value::from("noaux_tc"))?;
+    // (the router's product is in this type and its logits are float32 either way: the same sums of the same bf16 values)
+    match k.str("moe_router_dtype")? {
+        None | Some("float32" | "bfloat16") => {}
+        Some(o) => return err(format!("{mt}: moe_router_dtype {o} is not supported (float32 or bfloat16)")),
+    }
+    if k.opt_usize("n_shared_experts")?.unwrap_or(0) != 0 {
+        return err(format!("{mt}: n_shared_experts is not supported: the layout's mixture has no shared expert"));
+    }
+    if let Some(f) = k.opt_f64("routed_scaling_factor")?.filter(|f| *f != 1.0) {
+        return err(format!("{mt}: routed_scaling_factor = {f} is not supported: the release's code weighs the experts' sum by 1 whatever the config says"));
+    }
+    let (ng, tg) = (k.opt_usize("n_group")?.unwrap_or(1), k.opt_usize("topk_group")?.unwrap_or(1));
+    let moe = Moe {
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias: true,
+            groups: (ng > 1).then_some((ng, tg)),
+            top_k,
+            renorm: k.bool("norm_topk_prob", true)?,
+            scale: 1.0,
+            hash: false,
+        },
+        experts: ne,
+        expert: gated(Act::Silu),
+        shared: None,
+        shared_gate: false,
+        latent: None,
+    };
+    k.raw("quantization_config");
+    let quant = quant.map(|q| mimo_quant(q, mt)).transpose()?;
+    // (a matrix the release holds in FP8: one its quantization_config does not leave out, under its own module's name or the one the release's draft model
+    // gives a draft layer's, `model.decoder.`)
+    let fp8 = |w: &str, alias: Option<(&str, &str)>| {
+        quant.as_ref().is_some_and(|q| {
+            let m = w.strip_suffix(".weight").unwrap_or(w);
+            !q.ignored.iter().any(|x| x == m || alias.is_some_and(|(at, a)| m.strip_prefix(at).is_some_and(|rest| *x == format!("{a}{rest}"))))
+        })
+    };
+    let n = Norm::rms(eps);
+    let (mut shapes, mut scales) = (BTreeMap::new(), BTreeMap::new());
+    // (a layer's two blocks and their roles: under `p`, of sort `s`, its feed-forward the experts or the dense MLP under `mlp`'s names)
+    let mut layer = |p: &str, s: &MimoSort, experts: bool, mlp: names::Roles, alias: Option<(&str, &str)>| -> (Vec<Block>, Vec<Vec<(String, Source)>>) {
+        let a = Attn {
+            heads: s.heads,
+            kv_heads: s.kv,
+            head_dim: s.hd,
+            v_head_dim: s.vd,
+            window: s.window,
+            sinks: s.sinks,
+            rope: Some(s.rope.clone()),
+            q_norm: None,
+            k_norm: None,
+            v_norm: None,
+            gate: None,
+            softcap: None,
+            bias: false,
+            scale: (s.hd as f32).powf(-0.5),
+            k_eq_v: false,
+            indexer: None,
+            rounding: AttnRounding::F32,
+            kv_from: None,
+            v_scale,
+        };
+        let (q, kw, vw) = (s.heads * s.hd, s.kv * s.hd, s.kv * s.vd);
+        let mut ar = Vec::new();
+        for (role, src) in names::roles(if fused { part::MIMO_ATTN } else { part::MIMO_ATTN_SPLIT }, p, 0, |r| s.sinks || r != "sinks") {
+            match (role.as_str(), src) {
+                // (shard i of the fused matrix: its queries' rows, its keys', its values')
+                ("qkv", Source::Tensor(w)) => {
+                    let each = (q + kw + vw) / shards;
+                    let cut = |from: usize, len: usize| (0..shards).map(|i| (i * each + from, i * each + from + len)).collect::<Vec<_>>();
+                    shapes.insert(w.clone(), vec![q + kw + vw, d]);
+                    let parts = [("q", cut(0, q / shards)), ("k", cut(q / shards, kw / shards)), ("v", cut((q + kw) / shards, vw / shards))];
+                    ar.extend(parts.map(|(x, rows)| (x.to_string(), Source::RowsOf(w.clone(), rows))));
+                }
+                (_, src) => ar.push((role, src)),
+            }
+        }
+        shape_roles(
+            &mut shapes,
+            &ar,
+            &[("norm_in", vec![d]), ("q", vec![q, d]), ("k", vec![kw, d]), ("v", vec![vw, d]), ("o", vec![d, s.heads * s.vd]), ("sinks", vec![s.heads])],
+        );
+        let (fr, body) = if experts {
+            let fr = names::roles(part::MIMO_MOE, p, ne, all);
+            shape_roles(
+                &mut shapes,
+                &fr,
+                &[
+                    ("norm_in", vec![d]),
+                    ("router", vec![ne, d]),
+                    ("choice_bias", vec![ne]),
+                    ("experts_gate_up", vec![moe_inter, d]),
+                    ("experts_down", vec![d, moe_inter]),
+                ],
+            );
+            (fr, Ffn::Moe(moe.clone()))
+        } else {
+            let fr = names::roles(mlp, p, 0, all);
+            shape_roles(&mut shapes, &fr, &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
+            (fr, Ffn::Mlp(gated(Act::Silu)))
+        };
+        // (the stored formats: the products FP8 with their scales, an expert's matrices MXFP4 with theirs)
+        for (role, src) in ar.iter().chain(&fr) {
+            match (role.as_str(), src) {
+                ("q" | "k" | "v" | "o" | "gate" | "up" | "down", Source::Tensor(w) | Source::RowsOf(w, _)) if fp8(w, alias) => {
+                    scales.insert(w.clone(), format!("{w}_scale_inv"));
+                }
+                (_, Source::Experts(e)) if quant.is_some() => scales.extend(e.iter().flatten().map(|w| (w.clone(), format!("{w}_scale")))),
+                _ => {}
+            }
+        }
+        let block = |body: Body| Block { norm_in: n, body, norm_out: None, residual: Residual::Add };
+        (vec![block(Body::Mixer(Mixer::Attention(a))), block(Body::Ffn(body))], vec![ar, fr])
+    };
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for l in 0..layers {
+        let s = if sliding[l] { &swa } else { &full }.as_ref().expect("a sort a layer is was read");
+        let (b, r) = layer(&names::MIMO.layer(prefix, l), s, sparse[l], part::MLP, None);
+        blocks.extend(b);
+        roles.extend(r);
+    }
+    // (the draft layers: each a head of its own, a sliding layer's attention and a dense MLP between the head's own roles)
+    let (mut mtp, mut mtp_roles, mut own_shapes) = (Vec::new(), Vec::new(), BTreeMap::new());
+    for j in 0..mtp_layers {
+        let p = format!("{prefix}mtp.layers.{j}");
+        let (at, s) = (format!("{p}."), swa.as_ref().expect("the sliding sort was read for the draft layers"));
+        let (b, r) = layer(&p, s, false, part::MIMO_MTP_MLP, Some((&at, "model.decoder.")));
+        let own = names::roles(part::MIMO_MTP, &p, 0, all);
+        shape_roles(&mut own_shapes, &own, &[("eh_proj", vec![d, 2 * d]), ("norm_embed", vec![d]), ("norm_hidden", vec![d]), ("final_norm", vec![d])]);
+        mtp.push(MtpHead { blocks: b, norm_embed: n, norm_hidden: n, final_norm: n, dspark: None, input: MtpInput::Joined });
+        mtp_roles.push((r, own));
+    }
+    shapes.extend(own_shapes);
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: embed_x, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: n,
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32 },
+        mtp,
+        vision: None,
+        rope: full.as_ref().or(swa.as_ref()).map(|s| s.rope.clone()),
+    };
+    let mut out = finish(&k, desc, &names::MIMO, prefix, roles, mtp_layers)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    (out.shapes, out.scales, out.mtp) = (shapes, scales, mtp_roles);
+    out.fp8_block = quant.map(|q| q.block);
     Ok(out)
 }
 
@@ -1263,6 +1629,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                     indexer: None,
                     rounding: AttnRounding::Flash,
                     kv_from: None,
+                    v_scale: 1.0,
                 };
                 let sh = vec![
                     ("q", vec![heads * hd * if gate { 2 } else { 1 }, d]),
@@ -1519,6 +1886,7 @@ fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             k_eq_v: false,
             rounding: AttnRounding::Flash,
             kv_from: None,
+            v_scale: 1.0,
             indexer: Some(ix.clone()),
         };
         let mut r = names::roles(part::ATTN, p, 0, |r| r != "norm_in" && !r.ends_with("_bias"));
@@ -1893,6 +2261,7 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             indexer: None,
             rounding: AttnRounding::Eager,
             kv_from,
+            v_scale: 1.0,
         };
         let p = names::GEMMA.layer(prefix, l);
         let own_kv = kv_from.is_none();
@@ -2833,6 +3202,7 @@ fn muse(c: &ModelConfig) -> Result<Described> {
             indexer: None,
             rounding: AttnRounding::Sdpa,
             kv_from: None,
+            v_scale: 1.0,
         };
         let p = names::MUSE.layer(prefix, l);
         blocks.push(Block {
@@ -3695,6 +4065,7 @@ fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
             indexer: None,
             rounding: AttnRounding::Flash,
             kv_from: None,
+            v_scale: 1.0,
         }
     };
     let moe_keys =
