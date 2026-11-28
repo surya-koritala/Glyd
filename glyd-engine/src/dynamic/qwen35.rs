@@ -147,6 +147,7 @@ pub(crate) fn attention(d: usize, nq: usize, nk: usize, rotary: usize, qk: (usiz
         k_off: nq * 2 * d,
         v_off: Some(nq * 2 * d + nk * d),
         d,
+        dv: d,
         nq,
         nk,
         writes: true,

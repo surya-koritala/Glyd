@@ -1,8 +1,10 @@
 // The attention layer kind's kernels (src/runtime/kinds.rs `Attn`; the description executor's `Op::Attn`, src/dynamic/attn.rs, runs them for every dense-attention layer
 // of every family). One set, its arithmetic and shapes in `AttnArgs`: the preparation (the q and k norms, the rotary, the cache write, the values' norm), the decode
 // step's attention (the keys in parts, then combined), a prompt chunk's attention for heads of 64 and 128 on the tensor cores (heads of 256 and 512: the GPU library's
-// glyd_gpu_kv_prefill_bf16, the kernel of its 12-bit pages too), a warp-per-head kernel for any shape, and the output gate. Head widths 64, 128, 256 and 512 are template
-// instances. Included by engine.cu after qwen35.cu (bf2, warp_max); the next product's prefetch (NextPf) is engine.cu's.
+// glyd_gpu_kv_prefill_bf16, the kernel of its 12-bit pages too), a warp-per-head kernel for any shape, and the output gate. Head widths 64, 128, 192, 256 and 512 are
+// template instances (192: the preparation, the warp kernel and the parts kernel alone). The values' head may be narrower than the queries' and keys' (`dv`): the ring
+// holds a value head in a key head's room, zeros after its dv values, and the output's heads are dv apart; the warp kernel and the parts kernel with its merge take such
+// a layer. Included by engine.cu after qwen35.cu (bf2, warp_max); the next product's prefetch (NextPf) is engine.cu's.
 //
 // Arithmetic (the kind's rounding points, src/runtime/kinds.rs `AttnRounding`): bf16 in memory, fp32 inside. `round` (Eager, Sdpa): transformers' bf16 rounding
 // points in the preparation and the gate (a norm rounds once, the queries' scale rounds, each rotary product and their sum round, the gate's sigmoid rounds before
@@ -12,7 +14,7 @@
 
 // Every argument of the kind's kernels (src/dynamic/attn.rs `AttnArgs`, field for field).
 struct AttnArgs {
-    const bf16* src;   // the projection's rows, `stride` apart: query head h at h q_step, key head j at k_off + j d, value head j at v_off + j d (v_off < 0: the key's projection)
+    const bf16* src;   // the projection's rows, `stride` apart: query head h at h q_step, key head j at k_off + j d, value head j at v_off + j dv (v_off < 0: the key's projection)
     const bf16* qw;    // the q and k norms' weights [d] (norm 1 or 2)
     const bf16* kw;
     const bf16* cs;    // the rotary's cos and sin, bf16 [positions, pairs] (null: no rotary)
@@ -20,10 +22,10 @@ struct AttnArgs {
     const int* qpos;   // each row's position (its query's, its key's)
     const int* kpos;   // the last key each row reads (a draft model's queries read another's)
     bf16* qo;          // the prepared queries [n, nq d]
-    bf16* kc;          // the ring's keys and values [places, nk, d]
+    bf16* kc;          // the ring's keys and values [places, nk, d] (a value head of dv < d: its dv values, then zeros)
     bf16* vc;
     const int* tab;    // the sequence's block table (16-token blocks) or null: position modulo cap
-    bf16* out;         // the attention's output, rows `os` apart, head h at h d
+    bf16* out;         // the attention's output, rows `os` apart, head h at h dv
     const bf16* gate;  // the output gate's values, head h of row t at t gs + h g_step: a value a dim, or one for the head (g_head); null: no gate
     float* part;       // a decode step's parts [(t nq + h) S + z][d + 2]
     const int* rpos;   // each row's M-RoPE position (t, h, w) at 6 r (src/dynamic/images.rs), each angle turning by the one `rax` names; null: qpos alone
@@ -38,6 +40,7 @@ struct AttnArgs {
     int n, nq, nk, window;
     int os, gs, g_step, gnorm;
     int g_head;        // the gate is one value a head (every dim of head h times the sigmoid of the value at t gs + h g_step), not a value a dim
+    int dv;            // the values' head width where it is not the queries' and keys' (`kinds::Attn::v_head_dim` below head_dim); 0: d
     int round, sbf16, S;
     float q_scale, eps, scale, sl2, softcap;
     float v_scale;     // the values times this as the cache takes them (`kinds::Attn::v_scale`); 0 or 1: as they are
@@ -47,6 +50,9 @@ struct AttnArgs {
 __device__ __forceinline__ size_t at_place(const int* tab, int p, int cap) { return tab ? (size_t)tab[p >> 4] * 16 + (p & 15) : (size_t)(p % cap); }
 
 __device__ __forceinline__ float at_r(float x, int round) { return round ? b2f(f2b(x)) : x; }
+
+// The values' head width: the queries' and keys' where `dv` does not say another.
+__device__ __forceinline__ int at_dv(const AttnArgs& a) { return a.dv > 0 ? a.dv : a.d; }
 
 // A norm's factor over d values whose squares sum to ss.
 __device__ __forceinline__ float at_rs(float ss, int d, float eps, int round) { return round ? 1.f / sqrtf(ss / (float)d + eps) : rsqrtf(ss / (float)d + eps); }
@@ -71,7 +77,8 @@ __device__ __forceinline__ float at_sink(const AttnArgs& a, int h, float m) { re
 // ---- the preparation --------------------------------------------------------------------------------------------------------------------------------------------------
 // Row r's head hh (a query head below nq, else key head hh - nq with its values): the norm (one block sum), the queries' scale, the rotary (value j < span with
 // its pair j +- span / 2, angle j mod span / 2 where that is below `pairs`; an M-RoPE row's angle k from the table's row of the position its section turns by),
-// the query to qo, the key and the value (normed or as it is, then times `v_scale` where the kind has one) to the ring at the row's position. Block (row, head), d / 2 threads: thread t holds t and t + d / 2.
+// the query to qo, the key and the value (normed or as it is, then times `v_scale` where the kind has one) to the ring at the row's position; a value head of dv < d
+// is its dv values and zeros to d. Block (row, head), d / 2 threads: thread t holds t and t + d / 2.
 // Grid y: nq + nk heads, or nq where no keys are written (a draft model's). blockIdx.z above 0: `pf`'s prefetch of the next product. A padding row (a negative
 // position: a decode step padded to its graph's rows) writes nothing.
 __device__ __forceinline__ float at_rot(const AttnArgs& a, const float* xs, int j, float v, int p, int r) {
@@ -130,10 +137,11 @@ __device__ __forceinline__ void attn_prep_t(const AttnArgs& a) {
     o[t] = f2b(v0);
     o[t + H] = f2b(v1);
     if (isq) return;
-    const bf16* xv = a.v_off >= 0 ? row + a.v_off + kh * D : x;
-    float u0 = b2f(xv[t]), u1 = b2f(xv[t + H]);
+    const int DV = at_dv(a);
+    const bf16* xv = a.v_off >= 0 ? row + a.v_off + kh * DV : x;
+    float u0 = t < DV ? b2f(xv[t]) : 0.f, u1 = t + H < DV ? b2f(xv[t + H]) : 0.f;
     if (a.v_norm) {
-        const float s = at_rs(block_sum(u0 * u0 + u1 * u1), D, a.eps, a.round);
+        const float s = at_rs(block_sum(u0 * u0 + u1 * u1), DV, a.eps, a.round);
         u0 *= s;
         u1 *= s;
     }
@@ -156,6 +164,10 @@ extern "C" __global__ void __launch_bounds__(64) attn_prep128(AttnArgs a, NextPf
     AT_PF;
     attn_prep_t<128>(a);
 }
+extern "C" __global__ void __launch_bounds__(96) attn_prep192(AttnArgs a, NextPf pf) {
+    AT_PF;
+    attn_prep_t<192>(a);
+}
 extern "C" __global__ void __launch_bounds__(128) attn_prep256(AttnArgs a, NextPf pf) {
     AT_PF;
     attn_prep_t<256>(a);
@@ -170,7 +182,8 @@ extern "C" __global__ void __launch_bounds__(256) attn_prep512(AttnArgs a, NextP
 
 // Causal attention of the n rows of qo over the ring: row t sees keys lo_t .. kpos[t], lo_t = kpos[t] - window + 1 (0 for window 0, and at least 0). A block takes R rows
 // and the G = nq / nk query heads of one key-value head (a warp each), the keys AT_KB at a time through shared memory: lane j scores key j, then each lane sums D / 32 output
-// dims. Dynamic shared memory: (AT_KB (D/2 + 1) + AT_KB D/2 + R G D/2) * 4 bytes.
+// dims (of the ring's D: a value head of dv < D is zeros past dv, and the output's head is its first dv dims, dv apart). Dynamic shared memory:
+// (AT_KB (D/2 + 1) + AT_KB D/2 + R G D/2) * 4 bytes.
 // SPLIT (a decode step, R = 1): block z takes the S-th part z of the row's keys and writes its outputs, maximum (log2 units) and sum to part [(t nq + h) S + z][D + 2]; the
 // block's warps past the first G only fill the tiles (more loads in flight). Its row's own table (tstride: the rows of several sequences in one launch); a padding row (a negative
 // position) has no keys.
@@ -275,18 +288,22 @@ __device__ __forceinline__ void attn_rows_t(const AttnArgs& a, int R) {
         }
         return;
     }
-    bf16* o = a.out + (size_t)t * a.os + h * D + lane * PER;
+    const int DV = at_dv(a);
+    bf16* o = a.out + (size_t)t * a.os + h * DV + lane * PER;
     const float den = l_run + at_sink(a, h, m_run);
 #pragma unroll
-    for (int e = 0; e < PER; e++) o[e] = f2b(acc[e] / den);
+    for (int e = 0; e < PER; e++)
+        if (lane * PER + e < DV) o[e] = f2b(acc[e] / den);
 }
 
 extern "C" __global__ void __launch_bounds__(512) attn_rows64(AttnArgs a, int R) { attn_rows_t<64, false>(a, R); }
 extern "C" __global__ void __launch_bounds__(512) attn_rows128(AttnArgs a, int R) { attn_rows_t<128, false>(a, R); }
+extern "C" __global__ void __launch_bounds__(512) attn_rows192(AttnArgs a, int R) { attn_rows_t<192, false>(a, R); }
 extern "C" __global__ void __launch_bounds__(512) attn_rows256(AttnArgs a, int R) { attn_rows_t<256, false>(a, R); }
 extern "C" __global__ void __launch_bounds__(512) attn_rows512(AttnArgs a, int R) { attn_rows_t<512, false>(a, R); }
 extern "C" __global__ void __launch_bounds__(512) attn_parts64(AttnArgs a) { attn_rows_t<64, true>(a, 1); }
 extern "C" __global__ void __launch_bounds__(512) attn_parts128(AttnArgs a) { attn_rows_t<128, true>(a, 1); }
+extern "C" __global__ void __launch_bounds__(512) attn_parts192(AttnArgs a) { attn_rows_t<192, true>(a, 1); }
 extern "C" __global__ void __launch_bounds__(512) attn_parts256(AttnArgs a) { attn_rows_t<256, true>(a, 1); }
 extern "C" __global__ void __launch_bounds__(512) attn_parts512(AttnArgs a) { attn_rows_t<512, true>(a, 1); }
 
@@ -300,9 +317,11 @@ __device__ __forceinline__ float at_gated(const AttnArgs& a, float o, int t, int
 }
 
 // The S parts of a decode step combined: out = bf16(sum of the parts' outputs, each times 2^(its maximum - the largest), / the sum likewise), then the gate where
-// there is one. Block (row, query head), d threads (a dim each). A row with no keys (a padding row) is zeros, as the library's decode gives it.
+// there is one. Block (row, query head), d threads (a dim each; the parts are d wide, and of values of dv < d the output's head is the first dv, which no gate
+// follows). A row with no keys (a padding row) is zeros, as the library's decode gives it.
 extern "C" __global__ void attn_merge(AttnArgs a) {
-    const int D = a.d, S = a.S, t = blockIdx.x, h = blockIdx.y, d = threadIdx.x;
+    const int D = a.d, DV = at_dv(a), S = a.S, t = blockIdx.x, h = blockIdx.y, d = threadIdx.x;
+    if (d >= DV) return;
     const float* pp = a.part + (size_t)(t * a.nq + h) * S * (D + 2);
     float mx = -INFINITY;
     for (int z = 0; z < S; z++) mx = fmaxf(mx, pp[z * (D + 2) + D]);
@@ -314,7 +333,7 @@ extern "C" __global__ void attn_merge(AttnArgs a) {
         l = fmaf(pp[z * (D + 2) + D + 1], wz, l);
         acc = fmaf(pp[z * (D + 2) + d], wz, acc);
     }
-    bf16* o = a.out + (size_t)t * a.os + h * D + d;
+    bf16* o = a.out + (size_t)t * a.os + h * DV + d;
     if (mx > -INFINITY) l += at_sink(a, h, mx);
     const float v = l > 0.f ? acc / l : 0.f;
     *o = a.gate ? f2b(at_gated(a, b2f(f2b(v)), t, h, d)) : f2b(v);

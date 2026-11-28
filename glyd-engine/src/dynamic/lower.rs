@@ -255,7 +255,8 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         small.push(n);
         small.len() - 1
     };
-    let (mut proj_w, mut q_w, mut inter_w, mut first) = (0, 0, 0, None);
+    // (the widest first product's rows, queries, attention output (its heads the values' width) and MLP)
+    let (mut proj_w, mut q_w, mut att_w, mut inter_w, mut first) = (0, 0, 0, 0, None);
     let mut n_moe = 0usize;
     // (a short convolution's state a sequence, a layer: `Op::ShortConv`)
     let mut states: Vec<usize> = Vec::new();
@@ -317,8 +318,9 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         }
         let (norm_in, post) = (name(&mut small, one(ar, "norm_in")?), name(&mut small, one(fr, "norm_in")?));
         let w = mats.len();
-        // (the mixer's operations, from the block's normed input in H to its output in O; the width of its first product's rows, and of its queries)
-        let (mixer, stride, heads_w): (Vec<Op>, usize, usize) = if let Some(a) = a {
+        // (the mixer's operations, from the block's normed input in H to its output in O; the width of its first product's rows, of its queries, and of its
+        // attention's output)
+        let (mixer, stride, heads_w, out_w): (Vec<Op>, usize, usize, usize) = if let Some(a) = a {
             if a.q_norm.is_some_and(|n| n.eps != eps) {
                 return err(format!("{what}: layer {l}'s q and k norms have eps {:?}, where the model's is {eps}", a.q_norm.map(|n| n.eps)));
             }
@@ -360,6 +362,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
                 (Some(NormWeight::None), _) => None,
                 (Some(_), _) => Some((name(&mut small, one(ar, "q_norm")?), name(&mut small, one(ar, "k_norm")?))),
             };
+            // (the ring's heads are the keys' width: a narrower value head is held in a key head's room, zeros after its values, `AttnOp::dv`)
             let ring = rings.len();
             rings.push(Ring::kv(a.head_dim, a.kv_heads, a.window.unwrap_or(0)));
             let mut attn = match a.sinks {
@@ -387,7 +390,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
                 Op::Attn(attn),
                 Op::Linear { w: w + 1, x: Slot::Att, y: Slot::O, name: "attention: o product" },
             ];
-            (ops, stride, a.heads * a.head_dim)
+            (ops, stride, a.heads * a.head_dim, a.heads * a.v_head_dim)
         } else {
             let Body::Mixer(Mixer::ShortConv(c)) = &ab.body else { unreachable!() };
             // (the kind's biases are on its two products as well as its convolution: the executor's products have none)
@@ -417,7 +420,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
                 Op::ShortConv { w: taps, state, d: m.hidden, taps: c.taps, row: 3 * m.hidden },
                 Op::Linear { w: w + 1, x: Slot::Xc, y: Slot::O, name: "short convolution: out product" },
             ];
-            (ops, 3 * m.hidden, 0)
+            (ops, 3 * m.hidden, 0, 0)
         };
         let inter = if experts {
             0
@@ -454,7 +457,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
             layer.extend(feed(Slot::D));
             layer.push(Op::AddNorm { y: Slot::D, post: post_mlp, scalar: None, next });
             ops.push(layer);
-            (proj_w, q_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), inter_w.max(inter));
+            (proj_w, q_w, att_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), att_w.max(out_w), inter_w.max(inter));
             continue;
         }
         if let Some((alpha, beta)) = gate {
@@ -472,7 +475,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
                 layer.push(Op::RmsNorm { x: Slot::X, w, y: Slot::H, weight: NormW::Plain, eps });
             }
             ops.push(layer);
-            (proj_w, q_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), inter_w.max(inter));
+            (proj_w, q_w, att_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), att_w.max(out_w), inter_w.max(inter));
             continue;
         }
         match l {
@@ -483,7 +486,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         layer.push(Op::NormAdd { y: Slot::O, w: post, plus1: false });
         layer.extend(feed(Slot::D));
         ops.push(layer);
-        (proj_w, q_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), inter_w.max(inter));
+        (proj_w, q_w, att_w, inter_w) = (proj_w.max(stride), q_w.max(heads_w), att_w.max(out_w), inter_w.max(inter));
     }
     let final_norm = match final_at {
         Some(at) => at,
@@ -505,7 +508,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         (Slot::H, m.hidden),
         (Slot::Proj, proj_w),
         (Slot::Qo, q_w),
-        (Slot::Att, q_w),
+        (Slot::Att, att_w),
         (Slot::O, m.hidden),
         (Slot::Gu, 2 * inter_w),
         (Slot::M, inter_w),
