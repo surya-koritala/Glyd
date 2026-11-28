@@ -195,6 +195,9 @@ fn glm53_latent_attention() {
         scale: 16f32.lpowf(-0.5),
         absorbed: false,
         indexer: None,
+        pos_scale: false,
+        kv_from: None,
+        rope_learned: false,
     };
     let p = params(
         &f,
@@ -372,6 +375,9 @@ fn glm53_mtp_head() {
         scale: 16f32.lpowf(-0.5),
         absorbed: false,
         indexer: None,
+        pos_scale: false,
+        kv_from: None,
+        rope_learned: false,
     };
     let moe_kind = Moe {
         router: Router { score: RouterScore::Sigmoid, logit_scale: 1.0, bias: true, groups: Some((4, 2)), top_k: 2, renorm: true, scale: 2.5, hash: false },

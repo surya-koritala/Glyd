@@ -574,6 +574,13 @@ fn roles(b: &Block) -> Vec<String> {
         "indexer_k_norm",
         "indexer_k_norm_bias",
         "indexer_pool_ape",
+        "indexer_q_norm",
+        "indexer_q_norm_bias",
+        "indexer_scale_s",
+        "indexer_scale_b",
+        "q_scale_s",
+        "q_scale_b",
+        "rope_alpha",
         "index_qk",
         "index_q_norm",
         "index_k_norm",
@@ -786,9 +793,18 @@ impl RefLayer {
                 y
             }
             Body::Mixer(Mixer::Mla(m)) => {
+                // (a layer that shares an earlier block's latents reads that block's cache of the sequence)
+                let shared = match (m.kv_from, store) {
+                    (None, _) => None,
+                    (Some(j), Some(s)) => match s.seqs.get(&seq) {
+                        Some(SeqState::Mla(c)) => Some(c),
+                        _ => return err(format!("sequence {seq}: no latents in block {j}, which this one shares")),
+                    },
+                    (Some(j), None) => return err(format!("a latent attention that shares block {j}'s latents runs with that block (`body_with`)")),
+                };
                 let st = self.seqs.entry(seq).or_insert_with(|| SeqState::Mla(mla::LatentCache::default()));
                 let SeqState::Mla(c) = st else { return err("a sequence's state is not a latent cache") };
-                let y = mla::step(m, p, c, h, pos);
+                let y = mla::step_with(m, p, c, shared, h, pos);
                 self.margin = c.margin;
                 y
             }
@@ -954,10 +970,11 @@ impl RefLayer {
         Ok(self.norm_out(o))
     }
 
-    /// The block whose keys and values this one's attention shares (`Attn::kv_from`).
+    /// The block whose keys and values this one's attention shares (`Attn::kv_from`), or whose latents its latent attention does (`Mla::kv_from`).
     pub fn kv_from(&self) -> Option<usize> {
         match &self.block.body {
             Body::Mixer(Mixer::Attention(a)) => a.kv_from,
+            Body::Mixer(Mixer::Mla(m)) => m.kv_from,
             _ => None,
         }
     }

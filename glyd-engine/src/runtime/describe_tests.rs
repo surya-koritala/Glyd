@@ -1224,6 +1224,8 @@ fn kimi_k31_pros_weight_map_is_its_index() {
         shared: false,
         form: IndexForm::Gated { key: Norm { kind: NormKind::Layer, ..Norm::rms(cfg["text_config"]["rms_norm_eps"].as_f64().unwrap() as f32) } },
         rope: 0,
+        q_in: None,
+        pos_scale: false,
     };
     let mut latent = 0;
     for (b, was) in d.desc.blocks.iter().zip(&d3.desc.blocks) {
@@ -3448,4 +3450,409 @@ fn ernie_5_5_holds_every_key_to_the_form_its_reader_computes() {
     // (a key no builder knows is named, with every other one, before the parts are)
     let e = refusal(serde_json::json!({"attn_merger_rank": 16, "vha_rank": 16}));
     assert_eq!(keys_named(&e), ["attn_merger_rank", "vha_rank"], "{e}");
+}
+
+/// Mistral Large as released (Mistral-Large-4-1T-A52B's config and header): 72 layers, each a latent attention with an indexer, then a gated MLP (the
+/// first layer) or 128 experts and a shared MLP. Every fourth layer has no positions (no shared key part, keys of 128 from the latent); the others
+/// rotate 64 channels by YaRN with learned factors. Every layer scales its queries by position. Layers 39, 43, ... 71 attend to layer 35's latents and
+/// have no key-value latent product; from layer 17 two layers in four take the picks of the layer before. The checkpoint is in Mistral's names, its
+/// products FP8 with `qscale_weight` scales but those the config leaves out; the vision encoder, its adapter and the draft model are left unread.
+#[test]
+fn mistral_large_describes_its_latent_attentions_their_indexers_and_its_experts() {
+    use super::kinds::{Act, Body, Ffn, IndexForm, Mixer, Mla, NormKind, Rope, RopeScaling, RopeStyle, RouterScore};
+    let h = fixture("headers/Mistral-Large-4-1T-A52B.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((d.desc.blocks.len(), d.desc.head.tied, d.desc.final_norm.eps, d.desc.embed.scale, d.fp8_block), (144, false, 1e-5, 1.0, Some(128)));
+    assert_eq!((d.desc.hidden, d.desc.vocab, d.convention, d.desc.head.softcap), (6144, 204800, "Mistral (consolidated)", Some(30.0)));
+    assert!(d.desc.mtp.is_empty() && d.mtp.is_empty() && d.mtp_layers == 0 && d.desc.vision.is_none());
+    let yarn = RopeScaling::Yarn {
+        factor: 2048.0,
+        original_max: 512,
+        beta_fast: 32.0,
+        beta_slow: 1.0,
+        mscale: None,
+        mscale_all_dim: None,
+        attention_factor: Some(1.0),
+        truncate: true,
+    };
+    let rope = Rope { style: RopeStyle::Interleaved, scaling: yarn, ..Rope::plain(1e4, 64) };
+    assert_eq!(d.desc.rope, Some(rope.clone()));
+    let (mut nope, mut lent, mut shared, mut dense, mut sparse) = (0, 0, 0, 0, 0);
+    for (i, b) in d.desc.blocks.iter().enumerate() {
+        let l = i / 2;
+        assert!(b.norm_out.is_none() && b.residual == super::kinds::Residual::Add && b.norm_in.eps == 1e-5, "block {i}");
+        match &b.body {
+            Body::Mixer(Mixer::Mla(x)) => {
+                let turns = l % 4 != 3;
+                assert_eq!((x.heads, x.q_lora, x.kv_lora, x.v_dim, x.scale, x.gate), (64, None, 512, 128, 128f32.powf(-0.5), None), "layer {l}");
+                assert_eq!((x.nope, x.rope_dim, x.rope.as_ref()), if turns { (64, 64, Some(&rope)) } else { (128, 0, None) }, "layer {l}");
+                assert_eq!((x.pos_scale, x.rope_learned, x.kv_norm.eps), (true, turns, 1e-5), "layer {l}");
+                assert_eq!(x.kv_from, (l > 35 && !turns).then_some(70), "layer {l}: layer 35's block");
+                let ix = x.indexer.as_ref().unwrap();
+                assert_eq!((ix.heads, ix.head_dim, ix.top_k, ix.block, ix.form), (32, 128, 2048, 1, IndexForm::LAYER_KEYS), "layer {l}");
+                assert_eq!((ix.shared, ix.rope, ix.pos_scale), (l >= 17 && matches!(l % 4, 1 | 2), if turns { 64 } else { 0 }, true), "layer {l}");
+                assert!(matches!(ix.q_in, Some(n) if n.kind == NormKind::Layer && n.eps == 1e-6), "layer {l}");
+                assert_eq!(x.not_run(), Some(Mla::POS_SCALE_NOT_RUN));
+                (nope, lent, shared) = (nope + !turns as usize, lent + x.kv_from.is_some() as usize, shared + ix.shared as usize);
+            }
+            Body::Ffn(Ffn::Mlp(m)) => {
+                assert!(l == 0 && m.gated && !m.bias && m.act == Act::Silu && m.clamp.is_none(), "layer {l}");
+                dense += 1;
+            }
+            Body::Ffn(Ffn::Moe(m)) => {
+                let r = &m.router;
+                assert_eq!(
+                    (m.experts, r.top_k, r.groups, r.renorm, r.bias, r.scale, r.score),
+                    (128, 4, None, true, false, 1.0, RouterScore::Softmax),
+                    "layer {l}"
+                );
+                assert!(!r.hash && m.latent.is_none() && !m.shared_gate && m.shared.is_some() && m.expert.clamp.is_none(), "layer {l}");
+                sparse += 1;
+            }
+            _ => panic!("block {i}"),
+        }
+    }
+    assert_eq!((nope, lent, shared, dense, sparse), (18, 9, 28, 1, 71));
+    assert_eq!((d.embed.as_str(), d.final_norm.as_str(), d.head.as_deref()), ("tok_embeddings.weight", "norm.weight", Some("output.weight")));
+    // every tensor the description reads, at the checkpoint's shape and in the stored format the description says
+    let have = header_names(&h);
+    let tensors = header_tensors(&h);
+    let scale_names: BTreeSet<&String> = d.scales.values().collect();
+    let (mut fp8, mut plain) = (0, 0);
+    for n in d.names() {
+        let (dtype, shape, _) = &tensors[&n];
+        match (dtype.as_str(), d.scales.get(&n)) {
+            // (an FP8 matrix: its scales a block of 128 x 128, under Mistral's name beside it)
+            ("F8_E4M3", Some(s)) => {
+                assert_eq!((s, d.shapes.get(&n)), (&format!("{}.qscale_weight", n.strip_suffix(".weight").unwrap()), Some(shape)), "{n}");
+                assert_eq!((tensors[s].0.as_str(), &tensors[s].1[..]), ("F32", &[shape[0].div_ceil(128), shape[1].div_ceil(128)][..]), "{s}");
+                fp8 += 1;
+            }
+            (_, None) if scale_names.contains(&n) => {}
+            (_, None) => {
+                assert_eq!(dtype, "BF16", "{n}: with no scales named");
+                assert_eq!(d.shapes.get(&n), Some(shape), "{n}");
+                plain += 1;
+            }
+            (t, s) => panic!("{n}: {t}, scales {s:?}"),
+        }
+    }
+    // (72 layers' query and output products, 44 indexers' query products, the dense MLP's three matrices, 71 shared MLPs' and 71 layers of 128 experts')
+    assert_eq!(fp8, 72 * 2 + 44 + 3 + 71 * 3 + 71 * 128 * 3);
+    assert_eq!(d.names().len(), 2 * fp8 + plain);
+    // (bf16 as released: the key-value latent's two products, the indexer's key product and head weights, the routers, the scales by position)
+    for n in [
+        "layers.0.attention.wkv_a_with_mqa.weight",
+        "layers.0.attention.wkv_b.weight",
+        "layers.0.attention.indexer.wk.weight",
+        "layers.0.attention.indexer.weights_proj.weight",
+        "layers.1.gate.weight",
+        "layers.0.attention.ssmax_scaling.s",
+        "lerope.alpha",
+    ] {
+        assert!(d.names().contains(n) && !d.scales.contains_key(n) && tensors[n].0 == "BF16", "{n}");
+    }
+    // (the shapes the layers' sorts make: a layer with no positions has no shared key part and wider keys; a layer that shares has no latent product)
+    assert_eq!(d.shapes["layers.0.attention.wkv_a_with_mqa.weight"], [576, 6144]);
+    assert_eq!(d.shapes["layers.3.attention.wkv_a_with_mqa.weight"], [512, 6144]);
+    assert_eq!((&d.shapes["layers.0.attention.wkv_b.weight"], &d.shapes["layers.3.attention.wkv_b.weight"]), (&vec![12288, 512], &vec![16384, 512]));
+    assert_eq!((&d.shapes["layers.5.attention.indexer.wq_b.weight"], &d.shapes["lerope.alpha"]), (&vec![4096, 6144], &vec![32]));
+    for l in 0..72 {
+        let own = !(l > 35 && l % 4 == 3);
+        let full = !(l >= 17 && matches!(l % 4, 1 | 2));
+        assert_eq!(d.names().contains(&format!("layers.{l}.attention.wkv_a_with_mqa.weight")), own, "layer {l}");
+        assert_eq!(d.names().contains(&format!("layers.{l}.attention.kv_a_norm.weight")), own, "layer {l}");
+        assert_eq!(d.names().contains(&format!("layers.{l}.attention.indexer.q_input_norm.bias")), full, "layer {l}");
+        assert_eq!(d.blocks[2 * l].iter().any(|(r, _)| r == "rope_alpha"), l % 4 != 3, "layer {l}");
+    }
+    assert_eq!(d.unread, ["vision_encoder.", "pre_mm_projector_norm.", "patch_merger.", "vision_language_adapter.", "mtp_dspark."]);
+    for left in ["vision_encoder.patch_conv.weight", "vision_language_adapter.w_in.weight", "mtp_dspark.backbone.mask_embedding"] {
+        assert!(have.contains(left) && !d.names().contains(left), "{left}");
+    }
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    // (described, not run: the executor names what it lacks)
+    let e = crate::dynamic::split::loader(&d).err().map(|e| e.msg).unwrap_or_default();
+    assert_eq!(e, format!("its layers hold {}", Mla::POS_SCALE_NOT_RUN));
+}
+
+/// A small config of the Mistral Large layout in its wrapper with `keys` over its text config: eight layers, every fourth without positions, the
+/// last attending to layer 3's latents; indexers of two heads of 8 keeping 4 tokens, layers 2, 5 and 6 taking the picks of the layer before; the first
+/// layer's feed-forward dense and the others 8 experts of which 2 a token; YaRN over 8 positions by 4.
+fn mistral_tiny(keys: serde_json::Value) -> serde_json::Value {
+    let mut text = serde_json::json!({
+        "model_type": "mistral_large4_text", "hidden_size": 32, "num_hidden_layers": 8, "vocab_size": 61, "rms_norm_eps": 1e-5,
+        "max_position_embeddings": 4096, "num_attention_heads": 2, "num_key_value_heads": 2, "head_dim": 4, "hidden_act": "silu", "attention_bias": false,
+        "kv_lora_rank": 12, "qk_nope_head_dim": 8, "qk_rope_head_dim": 4, "qk_head_dim": 12, "v_head_dim": 6,
+        "rope_parameters": {"rope_type": "yarn", "rope_theta": 10000.0, "factor": 4, "original_max_position_embeddings": 8, "beta_fast": 32, "beta_slow": 1,
+            "attention_factor": 1.0},
+        "no_rope_layers": [1, 1, 1, 0, 1, 1, 1, 0], "no_rope_layer_interval": 4, "kv_source_layers": [0, 1, 2, 3, 4, 5, 6, 3],
+        "layer_types": ["indexed_attention", "indexed_attention", "indexed_attention", "indexed_attention", "indexed_attention", "indexed_attention",
+            "indexed_attention", "indexed_attention"],
+        "index_n_heads": 2, "index_head_dim": 8, "index_topk": 4, "indexer_types": ["full", "full", "shared", "full", "full", "shared", "shared", "full"],
+        "intermediate_size": 48, "first_k_dense_replace": 1, "mlp_layer_types": ["dense", "sparse", "sparse", "sparse", "sparse", "sparse", "sparse", "sparse"],
+        "n_routed_experts": 8, "n_shared_experts": 1, "num_experts_per_tok": 2, "moe_intermediate_size": 16, "n_group": 1, "topk_group": 1,
+        "routed_scaling_factor": 1.0, "final_logit_softcapping": 30.0, "tie_word_embeddings": false, "attention_dropout": 0.0, "use_cache": true,
+    });
+    text.as_object_mut().unwrap().extend(keys.as_object().unwrap().clone());
+    serde_json::json!({
+        "architectures": ["MistralLarge4ForConditionalGeneration"], "model_type": "mistral_large4", "tie_word_embeddings": false, "image_token_index": 10,
+        "projector_hidden_act": "gelu", "vision_feature_layer": -1, "multimodal_projector_bias": false, "spatial_merge_size": 2,
+        "transformers_weights": "consolidated.safetensors.index.json", "vision_config": {"model_type": "pixtral", "num_hidden_layers": 2}, "text_config": text,
+    })
+}
+
+/// The Mistral Large builder reads a config as transformers' config class does: the layers without positions from the list or from the interval; each
+/// layer's latents its own or an earlier layer's; the indexers' types from the list or the schedule; the dense layers from the list or the count;
+/// the class's defaults where a key is absent; a quantization_config's FP8 products named with Mistral's scales. What the builder does not support,
+/// and what the references read differently, is refused in words.
+#[test]
+fn mistral_large_reads_its_config_as_transformers_does() {
+    use super::kinds::{Body, Ffn, Mixer, Mla, RopeScaling};
+    let ok = |keys: serde_json::Value| describe(&mistral_tiny(keys)).unwrap_or_else(|e| panic!("{}", e.msg));
+    let mla = |d: &super::describe::Described, l: usize| -> Mla {
+        match &d.desc.blocks[2 * l].body {
+            Body::Mixer(Mixer::Mla(x)) => x.clone(),
+            b => panic!("layer {l}: {b:?}"),
+        }
+    };
+    let d = ok(serde_json::json!({}));
+    assert_eq!((0..8).map(|l| mla(&d, l).rope.is_some()).collect::<Vec<_>>(), [true, true, true, false, true, true, true, false]);
+    assert_eq!((0..8).map(|l| mla(&d, l).kv_from).collect::<Vec<_>>(), [None, None, None, None, None, None, None, Some(6)], "layer 3's mixer is block 6");
+    assert_eq!((0..8).map(|l| mla(&d, l).indexer.unwrap().shared).collect::<Vec<_>>(), [false, false, true, false, false, true, true, false]);
+    assert_eq!((mla(&d, 0).nope, mla(&d, 0).rope_dim, mla(&d, 3).nope, mla(&d, 3).rope_dim), (8, 4, 12, 0));
+    assert_eq!(
+        (mla(&d, 0).scale, mla(&d, 3).scale, mla(&d, 0).indexer.unwrap().rope, mla(&d, 3).indexer.unwrap().rope),
+        (12f32.powf(-0.5), 12f32.powf(-0.5), 4, 0)
+    );
+    assert!(
+        matches!(&d.desc.blocks[1].body, Body::Ffn(Ffn::Mlp(_))) && d.desc.blocks.iter().skip(3).step_by(2).all(|b| matches!(b.body, Body::Ffn(Ffn::Moe(_))))
+    );
+    assert_eq!((&d.shapes["layers.0.attention.wkv_a_with_mqa.weight"], &d.shapes["layers.3.attention.wkv_a_with_mqa.weight"]), (&vec![16, 32], &vec![12, 32]));
+    assert_eq!((&d.shapes["layers.0.attention.wkv_b.weight"], &d.shapes["layers.7.attention.wkv_b.weight"]), (&vec![28, 12], &vec![36, 12]));
+    assert_eq!((&d.shapes["layers.0.attention.wq.weight"], &d.shapes["layers.3.attention.wq.weight"]), (&vec![24, 32], &vec![24, 32]));
+    assert!(!d.names().contains("layers.7.attention.wkv_a_with_mqa.weight") && !d.names().contains("layers.7.attention.kv_a_norm.weight"));
+    assert!(d.names().contains("layers.7.attention.indexer.wk.weight") && !d.names().contains("layers.2.attention.indexer.wk.weight"));
+    assert!(d.names().contains("lerope.alpha") && d.scales.is_empty() && d.fp8_block.is_none());
+    assert_eq!(d.shapes["layers.1.experts.7.w3.weight"], [16, 32]);
+    // (the text model alone, with no wrapper: the same description)
+    let alone = describe(&mistral_tiny(serde_json::json!({}))["text_config"]).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((format!("{:?}", alone.desc), alone.names()), (format!("{:?}", d.desc), d.names()));
+    // (the config class's defaults: every (interval)-th layer without positions, 4 where unsaid; every layer its own latents and indexer; the first
+    // layer dense; the rotary YaRN over 512 positions by 2048 with no magnitude factor; eps 1e-5; a cap of 30; the head its own matrix)
+    let bare = ok(serde_json::json!({"no_rope_layers": null, "no_rope_layer_interval": null, "kv_source_layers": null, "indexer_types": null,
+        "mlp_layer_types": null, "first_k_dense_replace": null, "rope_parameters": null, "rms_norm_eps": null, "final_logit_softcapping": null,
+        "layer_types": null, "routed_scaling_factor": null, "n_group": null, "topk_group": null, "n_shared_experts": null, "head_dim": null, "qk_head_dim": null}));
+    assert_eq!((0..8).map(|l| mla(&bare, l).rope.is_some()).collect::<Vec<_>>(), [true, true, true, false, true, true, true, false]);
+    assert!((0..8).all(|l| mla(&bare, l).kv_from.is_none() && !mla(&bare, l).indexer.unwrap().shared));
+    assert!(matches!(&bare.desc.blocks[1].body, Body::Ffn(Ffn::Mlp(_))) && matches!(&bare.desc.blocks[3].body, Body::Ffn(Ffn::Moe(_))));
+    assert!(
+        matches!(bare.desc.rope.as_ref().unwrap().scaling, RopeScaling::Yarn { factor, original_max: 512, attention_factor: Some(a), .. } if factor == 2048.0 && a == 1.0)
+    );
+    assert_eq!((bare.desc.final_norm.eps, bare.desc.head.softcap, bare.desc.head.tied), (1e-5, Some(30.0), false));
+    let third = ok(serde_json::json!({"no_rope_layers": null, "no_rope_layer_interval": 3, "kv_source_layers": null}));
+    assert_eq!((0..8).map(|l| mla(&third, l).rope.is_some()).collect::<Vec<_>>(), [true, true, false, true, true, false, true, true]);
+    // (the indexers' schedule where the list is absent, as transformers makes it: a pattern, or a frequency and an offset)
+    let pat = ok(serde_json::json!({"indexer_types": null, "index_topk_pattern": "FFSFFSSF"}));
+    assert_eq!((format!("{:?}", pat.desc), pat.names()), (format!("{:?}", d.desc), d.names()));
+    let freq = ok(serde_json::json!({"indexer_types": null, "index_topk_freq": 2, "index_skip_topk_offset": 3}));
+    assert_eq!((0..8).map(|l| mla(&freq, l).indexer.unwrap().shared).collect::<Vec<_>>(), [false, false, false, true, false, true, false, true]);
+    // (the dense layers by the count; the older name of the experts' count; a tied head; YaRN's factor on every channel squares into the scores')
+    let two = ok(serde_json::json!({"mlp_layer_types": null, "first_k_dense_replace": 2}));
+    assert!(matches!(&two.desc.blocks[3].body, Body::Ffn(Ffn::Mlp(_))) && two.names().contains("layers.1.feed_forward.w1.weight"));
+    let named = ok(serde_json::json!({"num_experts": 4}));
+    assert!(matches!(&named.desc.blocks[3].body, Body::Ffn(Ffn::Moe(m)) if m.experts == 4) && !named.names().contains("layers.1.experts.4.w1.weight"));
+    let tied = ok(serde_json::json!({"tie_word_embeddings": true}));
+    assert!(tied.desc.head.tied && tied.head.is_none());
+    let ms = ok(serde_json::json!({"rope_parameters": {"rope_type": "yarn", "rope_theta": 10000.0, "factor": 4, "original_max_position_embeddings": 8,
+        "mscale": 1.0, "mscale_all_dim": 1.0}}));
+    let f = 0.1 * 4f64.ln() + 1.0;
+    assert_eq!(mla(&ms, 0).scale, 12f32.powf(-0.5) * (f * f) as f32);
+    // (a quantization_config names the FP8 products' scales, Mistral's `qscale_weight`, and leaves out what it lists by transformers' module names)
+    let mut q = mistral_tiny(serde_json::json!({}));
+    q["quantization_config"] = serde_json::json!({"quant_method": "fp8", "activation_scheme": "dynamic", "weight_block_size": [128, 128],
+        "modules_to_not_convert": ["model.vision_tower", "model.multi_modal_projector", "lm_head", "kv_b_proj", "indexer.wk", "indexer.weights_proj",
+            "kv_a_proj_with_mqa"]});
+    let q = describe(&q).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!(q.fp8_block, Some(128));
+    for held in [
+        "layers.0.attention.wq.weight",
+        "layers.7.attention.wo.weight",
+        "layers.3.attention.indexer.wq_b.weight",
+        "layers.0.feed_forward.w2.weight",
+        "layers.1.shared_experts.w1.weight",
+        "layers.7.experts.7.w3.weight",
+    ] {
+        assert_eq!(q.scales.get(held), Some(&held.replace(".weight", ".qscale_weight")), "{held}");
+    }
+    for left in [
+        "layers.0.attention.wkv_a_with_mqa.weight",
+        "layers.7.attention.wkv_b.weight",
+        "layers.0.attention.indexer.wk.weight",
+        "layers.0.attention.indexer.weights_proj.weight",
+        "layers.1.gate.weight",
+        "layers.0.attention.kv_a_norm.weight",
+        "layers.0.attention.ssmax_scaling.b",
+        "lerope.alpha",
+        "tok_embeddings.weight",
+        "output.weight",
+    ] {
+        assert!(q.names().contains(left) && !q.scales.contains_key(left), "{left}");
+    }
+    assert!(q.names().contains("layers.0.attention.wq.qscale_weight") && q.names().len() == d.names().len() + q.scales.len());
+    let refused = |c: serde_json::Value| describe(&c).err().map(|e| e.msg).unwrap_or_default();
+    for (keys, word) in [
+        (serde_json::json!({"q_lora_rank": 8}), "q_lora_rank = 8 is not supported"),
+        (serde_json::json!({"hidden_act": "gelu"}), "hidden_act"),
+        (serde_json::json!({"attention_bias": true}), "attention_bias"),
+        (serde_json::json!({"num_key_value_heads": 1}), "num_key_value_heads"),
+        (serde_json::json!({"qk_rope_head_dim": 3}), "qk_rope_head_dim = 3"),
+        (serde_json::json!({"layer_types": ["indexed_attention", "full_attention"]}), "layer_types is not 8 layers of indexed_attention"),
+        (serde_json::json!({"no_rope_layers": [1, 1, 1]}), "no_rope_layers = [1,1,1] is not a value a layer"),
+        (serde_json::json!({"no_rope_layers": [1, 1, 1, 0, 1, 1, 2, 0]}), "no_rope_layers[6] = 2"),
+        (serde_json::json!({"no_rope_layers": null, "no_rope_layer_interval": 0}), "no_rope_layer_interval = 0"),
+        (serde_json::json!({"rope_parameters": {"rope_type": "axial", "rope_theta": 10000.0}}), "rope_type axial is not supported"),
+        (serde_json::json!({"rope_parameters": 5}), "rope_parameters = 5"),
+        (serde_json::json!({"kv_source_layers": [0, 1, 2]}), "kv_source_layers = [0,1,2] is not a layer's number a layer"),
+        (serde_json::json!({"kv_source_layers": [0, 1, 2, 3, 4, 5, 7, 7]}), "kv_source_layers[6] = 7 is not an earlier layer"),
+        (serde_json::json!({"kv_source_layers": [0, 1, 2, 3, 4, 5, 6, 4]}), "a layer without positions attending to the latents of one with"),
+        (serde_json::json!({"kv_source_layers": [0, 0, 1, 3, 4, 5, 6, 7]}), "kv_source_layers[2] = 1 is not an earlier layer that makes its own latents"),
+        (serde_json::json!({"kv_source_layers": [0, 0, 2, 3, 4, 4, 0, 7]}), "with layer 4 lending its latents between them"),
+        (serde_json::json!({"indexer_types": ["shared", "full"]}), "the first layer's indexer is shared"),
+        (serde_json::json!({"indexer_types": ["full", "full"]}), "indexer_types has 2 entries for 8 layers"),
+        (serde_json::json!({"indexer_types": ["full", "pooled"]}), "an indexer of type"),
+        (serde_json::json!({"index_head_dim": 2}), "an indexer of 2 heads of 2"),
+        (serde_json::json!({"mlp_layer_types": ["dense", "latent", "sparse", "sparse", "sparse", "sparse", "sparse", "sparse"]}), "mlp_layer_types[1]"),
+        (serde_json::json!({"n_group": 2}), "n_group = 2"),
+        (serde_json::json!({"topk_group": 2}), "topk_group = 2"),
+        (serde_json::json!({"n_shared_experts": 0}), "n_shared_experts = 0"),
+        (serde_json::json!({"num_experts_per_tok": 9}), "num_experts_per_tok = 9 of 8 experts"),
+        (serde_json::json!({"final_logit_softcapping": 0.0}), "final_logit_softcapping = 0"),
+        (serde_json::json!({"scoring_func": "sigmoid", "swiglu_limit": 7.0}), "config keys scoring_func, swiglu_limit are not understood"),
+    ] {
+        let e = refused(mistral_tiny(keys));
+        assert!(e.contains(word), "{word}: {e}");
+    }
+    // (the wrapper's own keys; a quantization of another format)
+    for (key, v, word) in [
+        ("audio_config", serde_json::json!({}), "config key audio_config is not understood"),
+        ("quantization_config", serde_json::json!({"quant_method": "fp8"}), "weight_block_size"),
+        ("quantization_config", serde_json::json!({"quant_method": "awq", "weight_block_size": [128, 128]}), "quantization awq"),
+    ] {
+        let mut c = mistral_tiny(serde_json::json!({}));
+        c[key] = v;
+        let e = refused(c);
+        assert!(e.contains(word), "{word}: {e}");
+    }
+    // (described, not run: the planner's lowering and the loader name what the executor lacks)
+    let Err(e) = crate::dynamic::split::lowered_described(&d, 8, 4096) else { panic!("a scale by position lowered") };
+    assert!(e.msg.contains("queries are scaled by their position, which the executor does not run yet"), "{}", e.msg);
+}
+
+/// The Mistral Large layout on the CPU reference, a random model of the small config (every tensor of the shape its description gives). A prompt at
+/// once, the same prompt a token at a time and a prompt then its next tokens are the same bits (the latent caches, the indexers' keys, the lent picks
+/// and the lent latents kept between the calls), and a later token changes no earlier row. Each of the layout's forms is read: scales by position of
+/// zero with biases of one are, to the bit, the model with no scale by position, and the scales as drawn are another answer; learned factors of zero
+/// are the rotary as it is, to the bit; the lent latents, the lent picks, the positions and the cap each change the answer.
+#[test]
+fn mistral_large_on_the_reference_steps_as_it_prompts_and_reads_each_of_its_forms() {
+    use super::kinds::{Body, Mixer, ModelDesc};
+    // (a fixed draw a tensor: its name's bytes seed it; a norm's weights and a scale by position's bias near 1)
+    fn draw(n: &str, len: usize) -> Vec<f32> {
+        let mut s = n.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |a, b| (a ^ b as u64).wrapping_mul(0x0100_0000_01B3));
+        let near_one = (n.contains("norm") && !n.ends_with(".bias")) || n.ends_with("ssmax_scaling.b");
+        (0..len)
+            .map(|_| {
+                s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                let u = ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5;
+                if near_one {
+                    1.0 + 0.2 * u
+                } else {
+                    0.6 * u
+                }
+            })
+            .collect()
+    }
+    // (`edit`: a change to the description before it is loaded; `set`: a value for every element of the tensors whose names end so, in the draw's place)
+    let load = |cfg: &serde_json::Value, edit: &dyn Fn(&mut ModelDesc), set: &[(&str, f32)]| -> RefModel {
+        let mut d = describe(cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        edit(&mut d.desc);
+        let src = |n: &str| {
+            let shape = d.shapes.get(n)?.clone();
+            let len: usize = shape.iter().product();
+            let v = match set.iter().find(|(end, _)| n.ends_with(end)) {
+                Some(&(_, x)) => vec![x; len],
+                None => draw(n, len),
+            };
+            Some((shape, v))
+        };
+        RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg))
+    };
+    let same = |_: &mut ModelDesc| {};
+    let on_mla = |d: &mut ModelDesc, f: &dyn Fn(&mut super::kinds::Mla)| {
+        for b in d.blocks.iter_mut() {
+            if let Body::Mixer(Mixer::Mla(x)) = &mut b.body {
+                f(x);
+            }
+        }
+    };
+    let run = |cfg: &serde_json::Value, toks: &[u32]| load(cfg, &same, &[]).forward(toks, 0).unwrap_or_else(|e| panic!("{}", e.msg));
+    let a: [u32; 9] = [5, 9, 13, 17, 21, 25, 29, 33, 37];
+    let base = mistral_tiny(serde_json::json!({}));
+    let rows = run(&base, &a);
+    assert_eq!((rows.len(), rows[8].len()), (9, 61));
+    assert!(rows.iter().flatten().all(|x| x.is_finite() && x.abs() < 30.0) && rows[8].iter().any(|&x| x != rows[8][0]), "finite, under the cap, not one value");
+    // (causal)
+    let mut later = a;
+    later[8] = 44;
+    assert_eq!(rows[..8], run(&base, &later)[..8], "a later token changes no earlier row");
+    // (a token at a time, and a prompt then its next tokens: the same bits)
+    let mut m = load(&base, &same, &[]);
+    let mut by_step = Vec::new();
+    for (t, &tok) in a.iter().enumerate() {
+        by_step.extend(m.forward(&[tok], t as u32).unwrap_or_else(|e| panic!("{}", e.msg)));
+    }
+    assert_eq!(by_step, rows, "a token at a time is the prompt");
+    let mut m = load(&base, &same, &[]);
+    let mut parts = m.forward(&a[..5], 0).unwrap();
+    parts.extend(m.forward(&a[5..], 5).unwrap());
+    assert_eq!(parts, rows, "a prompt, then its next tokens");
+    // the scale by position: a factor of one is the model without it, the attention's and the indexer's; as drawn it is another answer, and it is
+    // the position that scales (the first row, whose factor is the bias, is the one with every scale at zero)
+    let unscaled = |d: &mut ModelDesc| {
+        on_mla(d, &|x| {
+            x.pos_scale = false;
+            x.indexer.as_mut().unwrap().pos_scale = false;
+        })
+    };
+    let ones = load(&base, &same, &[("ssmax_scaling.s", 0.0), ("ssmax_scaling.b", 1.0)]).forward(&a, 0).unwrap();
+    assert_eq!(ones, load(&base, &unscaled, &[]).forward(&a, 0).unwrap(), "a factor of one");
+    assert_ne!(rows[8], ones[8], "the scales as drawn");
+    let flat = load(&base, &same, &[("ssmax_scaling.s", 0.0)]).forward(&a, 0).unwrap();
+    assert_eq!(rows[0], flat[0], "position 0: the bias alone");
+    assert_ne!(rows[8], flat[8], "position 8: the scale times ln 9");
+    // the learned frequencies: factors of zero are the rotary as it is
+    let plain_rope = |d: &mut ModelDesc| on_mla(d, &|x| x.rope_learned = false);
+    let zero = load(&base, &same, &[("lerope.alpha", 0.0)]).forward(&a, 0).unwrap();
+    assert_eq!(zero, load(&base, &plain_rope, &[]).forward(&a, 0).unwrap(), "exp(0) = 1");
+    assert_ne!(rows[8], zero[8], "the factors as drawn");
+    // the positions are read (the rotary and the scales): the same tokens further on are another answer
+    assert_ne!(rows[8], load(&base, &same, &[]).forward(&a, 7).unwrap()[8]);
+    // the lent latents and the lent picks are read: every layer its own is another answer, and the indexers bite (keeping every token is another)
+    assert_ne!(rows[8], run(&mistral_tiny(serde_json::json!({"kv_source_layers": null})), &a)[8], "layer 7 on layer 3's latents");
+    assert_ne!(rows[8], run(&mistral_tiny(serde_json::json!({"indexer_types": null})), &a)[8], "layers 2, 5 and 6 on the picks before them");
+    let all = run(&mistral_tiny(serde_json::json!({"index_topk": 64})), &a);
+    assert_eq!(rows[..4], all[..4], "four tokens kept of four");
+    assert_ne!(rows[8], all[8], "four tokens kept of nine");
+    // the cap, cap tanh(logit / cap): in f32 and with a cap among the logits' own sizes, the head's product through the formula
+    let head = |cap: Option<f32>| {
+        move |d: &mut ModelDesc| {
+            d.head.softcap = cap;
+            d.head.rounding = super::kinds::Rounding::F32;
+        }
+    };
+    let uncapped = load(&base, &head(None), &[]).forward(&a, 0).unwrap();
+    let capped = load(&base, &head(Some(0.05)), &[]).forward(&a, 0).unwrap();
+    let want: Vec<f32> = uncapped[8].iter().map(|&x| 0.05 * (x / 0.05).tanh()).collect();
+    assert!(super::reference::testing::rel(&capped[8], &want) < 1e-5 && super::reference::testing::rel(&capped[8], &uncapped[8]) > 1e-2);
 }

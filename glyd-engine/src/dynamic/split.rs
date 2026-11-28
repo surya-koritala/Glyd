@@ -1046,6 +1046,13 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
     if linear(LinearKind::KimiDelta) && plain {
         return err(DELTA_PLAIN_NOT_RUN);
     }
+    // (a latent attention of a form the reference has and the kernels do not, Mistral Large's: named, the first of them a layer holds)
+    if let Some(why) = blocks.iter().find_map(|b| match &b.body {
+        Body::Mixer(Mixer::Mla(m)) => m.not_run(),
+        _ => None,
+    }) {
+        return err(format!("its layers hold {why}"));
+    }
     Ok(if mixer(&|m| matches!(m, Mixer::Compressed(_))) {
         Lowering::Compressed
     } else if mixer(&|m| matches!(m, Mixer::Mamba2(_))) && plain {
