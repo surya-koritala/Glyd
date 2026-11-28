@@ -330,6 +330,20 @@ pub(crate) fn level_plan(dir: &Path, level: Layout, config: Option<&ModelConfig>
     // (the checkpoint's own form of its experts, by its index: a tensor an expert's matrix, or each layer's experts stacked)
     let (held, _) = crate::runtime::describe::describe_dir_of(dir, c)?;
     let ck = io(Checkpoint::open(dir))?;
+    // (a release stored in a form the packer's reader does not take, which reads bf16 and FP8 with one grid of scales under `X.weight_scale_inv`: 4-bit
+    // codes, or FP8 scales that start again at each shard of a matrix. The executor's loader dequantises both as it reads them, so the release runs as
+    // it is; a save of it is refused here, by name, before anything is written)
+    let stored = held.stored();
+    let unsaved = stored.scales.keys().filter(|n| stored.quantized(&ck, n)).find_map(|n| match ck.get(n).map(|(_, t)| t.dtype.as_str()) {
+        Some("U8") => Some(format!("{n} is stored as packed 4-bit codes with its scales {}", stored.scales[n])),
+        _ if stored.restarts(&ck, n) => Some(format!("{n} is stored in FP8 with block scales that start again at each of its {} shards", stored.shards[n])),
+        _ => None,
+    });
+    if let Some(what) = unsaved {
+        return err(format!(
+            "{label}: {what}, a stored form the packer does not save from yet (the release runs as it is: its weights are read and packed at the level as it loads)"
+        ));
+    }
     let f32 = |n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32");
     let shape = |n: &str| ck.get(n).map(|(_, t)| t.shape.iter().map(|&x| x as usize).collect());
     plan(c, level, &form, Some(&held), &f32, &shape).map(Some).map_err(|e| e.context(&label))

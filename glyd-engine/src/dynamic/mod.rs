@@ -1343,10 +1343,9 @@ fn load_part(
     }
     // (a matrix released in FP8 with its block scales, at a lossless level, on the GPU: held as released, the E4M3 bytes bit for bit; this GPU's whole
     // blocks of its rows where every layer is across a group of GPUs)
-    // (not a matrix its description cuts in shards whose scales may start again at each: a grid a shard is another reading of the same scales' shape
-    // wherever a shard is not whole blocks of 128 rows, and that matrix is dequantised, `weights::item_words_as`)
-    let by_shard =
-        |it: &Item| it.members.iter().any(|m| d.stored.shards.get(m).is_some_and(|&n| n > 1 && rows_of(m).is_none_or(|r| !r.is_multiple_of(128 * n))));
+    // (not a matrix its description cuts in shards whose scales start again at each, a shard not whole blocks: one grid over the matrix is another
+    // reading of scales of the same shape, `Stored::restarts`, and that matrix is dequantised, `weights::item_words_as`)
+    let by_shard = |it: &Item| it.members.iter().any(|m| d.stored.restarts(&ck, m));
     let as_f8 = |k: usize| -> Option<(usize, usize)> {
         let it = &d.mats[k];
         (matches!(level(k), Layout::Tiered | Layout::Twelve) && v7.is_none() && in_ram(k).is_none() && k != d.embed && !tables::on_host(&d, k) && !by_shard(it))

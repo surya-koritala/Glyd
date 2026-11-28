@@ -220,6 +220,23 @@ impl Stored {
         Some((rows as usize, cols as usize * if t.dtype == "U8" { 2 } else { 1 }))
     }
 
+    /// The blocks a described FP8 matrix's scales may be of, before the sizes `grid_block` tries: the description's, then the config's.
+    fn given(&self, ck: &Checkpoint) -> Vec<[usize; 2]> {
+        self.block.map(|b| [b, b]).into_iter().chain(ck.fp8_block).collect()
+    }
+
+    /// Whether the FP8 matrix `name` is read a shard at a time with a grid of scales that is not one grid over the whole matrix: the description cuts
+    /// it in shards, its scales' shape is a grid a shard's (`grid_block`), and a shard is not whole blocks of rows. Such scales can have the very shape
+    /// one grid would (two shards of 100 rows in blocks of 128: two rows of scales either way), so a reader that knows no shards (the library's FP8 as
+    /// released, the packer's) would take each scale for other rows. The header alone is read.
+    pub fn restarts(&self, ck: &Checkpoint, name: &str) -> bool {
+        let Some(&k) = self.shards.get(name).filter(|&&k| k > 1) else { return false };
+        let (Some((_, t)), Some((_, st))) = (ck.get(name), self.scales.get(name).and_then(|s| ck.get(s))) else { return false };
+        let [rows, cols] = t.shape[..] else { return false };
+        let (rows, cols) = (rows as usize, cols as usize);
+        t.dtype == "F8_E4M3" && matches!(grid_block(rows, cols, &st.shape, &self.given(ck), k), Some((b, n)) if n > 1 && !(rows / n).is_multiple_of(b[0]))
+    }
+
     /// The matrix `name` as the bf16 words a loader packs, where the checkpoint holds it quantized (`quantized`): the values `described` decodes, each
     /// rounded to bf16 once (to nearest, ties to even). A code times a power of two (FP8 with a byte's scale, MXFP4) is a bf16 exactly, so those words
     /// are the release's weights; a code times an fp32 scale (FP8 with fp32 scales a block, NVFP4) is the bf16 nearest the fp32 product, as
@@ -271,8 +288,7 @@ impl Stored {
         let bf16 = |w: u16| f32::from_bits((w as u32) << 16);
         match (t.dtype.as_str(), st.dtype.as_str()) {
             ("F8_E4M3", "F32" | "U8" | "F8_E8M0") => {
-                let given: Vec<[usize; 2]> = self.block.map(|b| [b, b]).into_iter().chain(ck.fp8_block).collect();
-                let (block, shards) = grid_block(rows, cols, &st.shape, &given, self.shards.get(name).copied().unwrap_or(1))?;
+                let (block, shards) = grid_block(rows, cols, &st.shape, &self.given(ck), self.shards.get(name).copied().unwrap_or(1))?;
                 let (q, s) = (ck.read(name).ok()?, ck.read(sn).ok()?);
                 let v = if st.dtype == "F32" {
                     let s: Vec<f32> = s.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();

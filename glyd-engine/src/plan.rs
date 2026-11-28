@@ -6407,9 +6407,9 @@ mod tests {
     /// bytes at each lower one, penguin's under bf16's), a ring a layer of that layer's own head width and window (Domyn Edge's 12 layers of 256 over the whole
     /// context and 24 of 64 in a window, where one head width for every layer would be wrong), no state, and the dense engine as its loader; Mellum 2's experts
     /// are placed. LFM's short convolutions keep a state a sequence, which the description gives and the plan counts: each of its 13 conv layers' 2,048
-    /// channels' last 6 values, fp32. The plain dense kind's own models keep their row. MiMo as released is not planned: its fused q-k-v matrices are FP8
-    /// with block scales that start again at every shard, a stored form the loader does not read, and the sizing says so by name at every level (its
-    /// packed 4-bit experts are the next such form).
+    /// channels' last 6 values, fp32. The plain dense kind's own models keep their row. MiMo as released (its fused q-k-v matrices FP8 with block scales
+    /// that start again at every shard, its experts packed 4-bit codes: forms the loader dequantises to bf16 and packs at the level) is sized at each
+    /// level as the bf16 model its description makes, not at its files' bytes, and planned where a level's weights have room.
     #[test]
     fn a_described_family_is_sized_from_its_description() {
         use crate::weights::Layout;
@@ -6444,10 +6444,27 @@ mod tests {
                 .collect();
             assert!(by_level.windows(2).all(|w| w[0] > w[1]) && *by_level.last().unwrap() > 0, "{name}: {by_level:?}");
         }
+        // (MiMo as released, by its recorded header: its fused matrices FP8 with a grid of scales a shard and its experts 4-bit codes, which the loader
+        // dequantises to bf16 and packs at the level. Sized as the bf16 model the description's shapes make, 617.6 GB of it, at each level's bits: more
+        // at every level than the 172.9 GB the release's files hold, wren's 4.5 bits a weight included)
+        let (_, header) = recorded_release("MiMo-V2.6-Flash-RL");
+        let released: u64 = header.rows.iter().map(|r| r.bytes).sum();
+        let mut before = u64::MAX;
         for l in [Layout::Tiered, Layout::Int6, Layout::Int5, Layout::Int4] {
-            let Err(e) = level("MiMo-V2.6-Flash-RL", l) else { panic!("MiMo as released, sized at {l:?}") };
-            assert!(format!("{e:?}").contains("qkv_proj.weight is stored in FP8 with block scales that start again at each of its 4 shards"), "{e:?}");
+            let lv = level("MiMo-V2.6-Flash-RL", l).unwrap_or_else(|e| panic!("MiMo as released at {l:?}: {e:?}"));
+            assert_eq!((lv.kind, lv.row.name, lv.state, lv.draft, lv.bf16), (Kind::Qwen3, "described layers", 0, None, 617_557_585_792), "{l:?}");
+            assert_eq!(lv.layers.as_ref().unwrap().low.layers.len(), 48, "{l:?}");
+            let c = lv.experts.as_ref().unwrap().as_ref().unwrap_or_else(|m| panic!("its experts at {l:?}: {m}"));
+            assert_eq!((c.experts, c.top_k, c.moe.iter().filter(|x| **x).count()), (256, 8, 47), "{l:?}");
+            assert!(
+                released < lv.weights && lv.weights < before.min(lv.bf16),
+                "{l:?}: {} after {before}, of bf16 {} and {released} released",
+                lv.weights,
+                lv.bf16
+            );
+            before = lv.weights;
         }
+        assert_eq!((released, before), (172_923_364_096, 174_917_248_679));
         // (Mellum's experts at penguin: 64 of them in each of 28 layers, a place the two matrices' bf16 bytes at the penguin share)
         let lv = level("Mellum2.1-12B-A2.5B-Instruct", Layout::Tiered).unwrap();
         let cache = lv.experts.as_ref().unwrap().as_ref().unwrap();
@@ -6496,13 +6513,26 @@ mod tests {
             assert!(lv.weights < before && lv.weights < lv.bf16, "{l:?}: {} after {before}, of bf16 {}", lv.weights, lv.bf16);
             before = lv.weights;
         }
-        // (MiMo as released: `fit` chooses no plan, and each level says the stored form the loader does not read)
+        // (MiMo as released: `fit` plans it where a level's weights have room, its experts in the computer's memory with places on the GPU. On an A100 of
+        // 80 GB with 200 GB of memory, linnet (kestrel's experts are 235 GiB); on a machine of H100s with more memory, kestrel, on one of them: the row
+        // cuts no layers over GPUs. Penguin, 391 GiB with every expert on the GPU, fits none; an RTX 4080 SUPER and an RTX 4090 hold no level)
         let (text, _) = recorded_release("MiMo-V2.6-Flash-RL");
         let dir = model_dir("described", "MiMo-V2.6-Flash-RL", &text);
-        let plan = planned(&args(&["fit", dir.to_str().unwrap(), "--machine", "a100-80g"])).unwrap().plan;
-        assert!(plan.chosen.is_none() && plan.options.len() == 4, "{plan:?}");
-        for o in &plan.options {
-            assert!(o.load.is_none() && o.why.as_deref().is_some_and(|w| w.contains("stored in FP8 with block scales that start again")), "{o:?}");
+        for (machine, want) in [("a100-80g", Some("linnet")), ("8xh100", Some("kestrel")), ("rtx4080s", None), ("rtx4090", None)] {
+            let plan = planned(&args(&["fit", dir.to_str().unwrap(), "--machine", machine])).unwrap().plan;
+            assert_eq!(plan.options.len(), 4, "{machine}: {plan:?}");
+            let chosen = plan.chosen.as_ref().and_then(|c| c.load.as_ref());
+            assert_eq!(chosen.map(|p| p.level), want, "{machine}: {chosen:?}");
+            if let Some(p) = chosen {
+                let x = p.experts.as_ref().unwrap_or_else(|| panic!("{machine}: its experts on the GPU: {p:?}"));
+                assert!(
+                    p.kind == Kind::Qwen3 && p.spread.is_none() && (x.layers, x.experts) == (47, 256) && x.slots >= 16 && x.ram > 150 << 30,
+                    "{machine}: {p:?}"
+                );
+            }
+            let penguin = plan.options.iter().find(|o| o.level == "penguin").unwrap();
+            assert!(penguin.load.is_none() && penguin.why.as_deref().is_some_and(|w| w.contains("takes about 390.9 GiB of GPU memory")), "{penguin:?}");
+            assert!(plan.options.iter().all(|o| o.why.as_deref().is_none_or(|w| !w.contains("stored"))), "{machine}: {plan:?}");
         }
         // (and Mellum lossless where the GPU holds it whole: an A100 of 80 GB, every expert on it, none in the computer's memory)
         let (text, _) = recorded_release("Mellum2.1-12B-A2.5B-Instruct");

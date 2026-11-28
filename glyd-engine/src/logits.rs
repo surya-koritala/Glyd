@@ -2138,8 +2138,8 @@ pub fn lfm3_random(out: &Path) -> Result<()> {
 /// values of 128 times 0.707, the three products one matrix stored in 2 shards: the first and last layers attend over the whole context, 8 query heads over
 /// 2, the rotary's base 1e7; the middle two slide over 8 positions and the query's own, 8 over 4, a sink a head, base 1e4; the first layer's feed-forward a
 /// gated MLP of 1024, the others' 8 experts of 256, sigmoid scores with a choice bias (fp32, as released), the best 2 renormalised, no shared expert): the
-/// family's case, no release's. Every matrix is bf16: the release's FP8 fused matrices and packed 4-bit experts are forms the loader refuses by name. No draft
-/// layer: the executor does not run the family's.
+/// family's case, no release's. Every matrix is bf16: the release's FP8 fused matrices and packed 4-bit experts are forms the loader dequantises to bf16 as
+/// it reads them (held to this model's bf16 twin on the host: `dynamic::experts::tests`). No draft layer: the executor does not run the family's.
 pub fn mimo_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/mimo_tiny_manifest.json"), out, 0x2026_1128_0000_0061, true, "MiMo model")
 }

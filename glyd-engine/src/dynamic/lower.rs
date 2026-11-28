@@ -218,7 +218,8 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
 /// has a norm after it as well (Domyn Edge), `x + rmsnorm(block(rmsnorm(x) w)) post` (`Op::AddNorm`, the sandwich residual); the final norm on the last rows,
 /// the head the embedding's matrix where tied. Each matrix of a layer is its checkpoint tensors stacked (q, k and v; gate and up), sized by the shapes the
 /// description gives. A layer's experts are the Moe kind's block as its loader takes them (`experts::block`: a softmax router, or sigmoid scores with a
-/// choice bias, the best kept and renormalised, with or without a shared expert; MiMo's as released, packed 4-bit codes, are refused by name). The products
+/// choice bias, the best kept and renormalised, with or without a shared expert; MiMo's as released, packed 4-bit codes, are read by the scales the
+/// description names). The products
 /// are the library's at every row count, a long chunk's decoded and multiplied dense where its route says so: the products,
 /// norms, activation, embedding and head of the dense engine this replaces, kernel for kernel. A layer's mixer may be the gated short convolution in the
 /// attention's place (LFM's conv layers: its input product into Proj, `Op::ShortConv` over the sequence's state into Xc, its output product; a state a
@@ -410,12 +411,8 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
                             it.rows
                         ));
                     }
-                    // (FP8 as released: a fused matrix's block scales start again at every shard, a grid no reader of the engine's takes)
-                    if d.scales.contains_key(*w) {
-                        return err(format!(
-                            "{what}: layer {l}'s fused q, k and v matrix {w} is stored in FP8 with block scales that start again at each of its {shards} shards, which the loader does not read yet"
-                        ));
-                    }
+                    // (FP8 as released, its block scales starting again at every shard: the loader decodes it a shard at a time by the description's
+                    // shards, `ModelDesc::stored`, and packs the bf16 it stands for)
                     attn = attn.sharded(shards).map_err(|e| e.context(&format!("{what}: layer {l}")))?;
                     it
                 }
@@ -469,15 +466,8 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
             (ops, 3 * m.hidden, 0, 0)
         };
         let inter = if experts {
-            // (experts stored as packed 4-bit codes with a byte's scale a run, MiMo's as released: the description names their scales, which are not an FP8
-            // matrix's block scales; the loader of this lowering's experts reads bf16 and FP8 matrices)
-            let packed = fr.iter().filter(|(r, _)| r.starts_with("experts_")).flat_map(|(_, s)| s.names()).find_map(|w| {
-                let s = d.scales.get(&w).filter(|s| !s.ends_with("_scale_inv"))?;
-                Some((w.clone(), s.clone()))
-            });
-            if let Some((w, s)) = packed {
-                return err(format!("{what}: layer {l}'s experts are stored as packed 4-bit codes ({w}, its scales {s}), which the loader does not read yet"));
-            }
+            // (experts stored as packed 4-bit codes with a byte's scale a run, MiMo's as released: read by the scales the description names,
+            // `experts::Held::stored`, each matrix the bf16 it stands for)
             0
         } else {
             let gate_up = item(vec![one(fr, "gate")?, one(fr, "up")?], &shape)?;
@@ -3037,7 +3027,8 @@ mod tests {
     /// MiMo's attention on the dense lowering: the fused matrix as stored is the product's one member, and the attention reads its heads by the shards (2: on
     /// the first layer each 4 query heads, a key head and a value head; on a sliding one 4, 2 and 2); values of 128 under heads of 192, so the output is 8 x 128
     /// wide where the queries are 8 x 192 and the ring's heads 192; the values' factor; a sliding layer's window and sinks. With a matrix a product the same
-    /// operation with no shards, its three matrices stacked. The fused matrix stored in FP8, whose block scales start again at every shard, is refused by name.
+    /// operation with no shards, its three matrices stacked. The fused matrix stored in FP8, whose block scales start again at every shard, lowers as the
+    /// bf16 one does: the description's scales, block and shards go to the loader with it (`ModelDesc::stored`).
     #[test]
     fn a_fused_product_in_shards_and_narrower_values_lower() {
         let d = dense(&mimo_config(serde_json::json!({})), vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
@@ -3060,8 +3051,18 @@ mod tests {
         // (FP8 as released)
         let quant = serde_json::json!({"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128], "store_dtype": "mxfp4", "mxfp4_block_size": 32,
             "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]});
-        let Err(e) = dense(&mimo_config(serde_json::json!({"quantization_config": quant})), vec![2], 4096) else { panic!("a fused FP8 matrix, and lowered") };
-        assert!(e.msg.contains("qkv_proj.weight is stored in FP8 with block scales that start again at each of its 2 shards"), "{}", e.msg);
+        let q = dense(&mimo_config(serde_json::json!({"quantization_config": quant})), vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert_eq!(
+            (format!("{:?}", q.layers), format!("{:?}", q.mats)),
+            (format!("{:?}", d.layers), format!("{:?}", d.mats)),
+            "the operations of the bf16 model"
+        );
+        let fused = "model.layers.0.self_attn.qkv_proj.weight";
+        assert_eq!(
+            (q.stored.shards.get(fused), q.stored.block, q.stored.scales.get(fused).map(String::as_str)),
+            (Some(&2), Some(128), Some("model.layers.0.self_attn.qkv_proj.weight_scale_inv"))
+        );
+        assert!(d.stored.scales.is_empty() && d.stored.shards.len() == 3, "{:?}", d.stored);
     }
 
     /// Where the preparation's kernel finds each head of a fused matrix is where the description cuts it: for every attention layer of MiMo's released config
@@ -3111,8 +3112,8 @@ mod tests {
 
     /// MiMo's experts on the dense lowering: a layer's feed-forward the Moe kind's block where the config says experts, whose shape and arithmetic the block's
     /// loader takes from the kind (sigmoid scores, a choice bias, the best 2 of 8 renormalised, no shared expert, SwiGLU experts; no group of choices); the
-    /// first layer keeps its dense MLP. As released the experts are packed 4-bit codes, which the lowering refuses by name (the split layout here: its FP8
-    /// products are matrices the loader reads).
+    /// first layer keeps its dense MLP. As released the experts are packed 4-bit codes: the lowering is the bf16 model's, and each expert's matrix goes to the
+    /// loader with the scales the description names for it.
     #[test]
     fn sigmoid_routed_experts_with_a_choice_bias_lower() {
         use crate::moe::{Act, Scoring};
@@ -3137,8 +3138,10 @@ mod tests {
         let mut quant = sparse;
         quant["quantization_config"] = serde_json::json!({"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128], "store_dtype": "mxfp4",
             "mxfp4_block_size": 32, "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]});
-        let Err(e) = dense(&mimo_config(quant), vec![2], 4096) else { panic!("experts packed at 4 bits, and lowered") };
-        assert!(e.msg.contains("layer 1's experts are stored as packed 4-bit codes (model.layers.1.mlp.experts.0.gate_proj.weight"), "{}", e.msg);
+        let q = dense(&mimo_config(quant), vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert_eq!(format!("{:?}", q.layers), format!("{:?}", d.layers), "the operations of the bf16 model");
+        let gate = "model.layers.1.mlp.experts.0.gate_proj.weight";
+        assert_eq!(q.stored.scales.get(gate).map(String::as_str), Some("model.layers.1.mlp.experts.0.gate_proj.weight_scale"));
     }
 
     /// A plain dense decoder's config (the model type the description builder reads it by, the attention's settings) of three layers of hidden 256, 4 query heads over 2

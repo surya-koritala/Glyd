@@ -49,9 +49,9 @@ pub enum Family {
     /// layer's mixer the gated short convolution in the attention's place on most layers, whose state a sequence (each conv layer's channels' last values,
     /// fp32) the description's lowering gives the plan and the scheduler; its convolution's biases, which no release has on, are refused by name. MiMo is
     /// one in its layout (queries and keys of 192 with values of 128 times a factor, the three products one matrix in shards, sliding layers with sinks,
-    /// sigmoid-routed experts with a choice bias), in bf16: as released its fused matrices are FP8 whose block scales start again at every shard and its
-    /// experts packed 4-bit codes, two stored forms the lowering refuses by name, so `fit` and `run` of the release say what is missing; its draft layers
-    /// are not read.
+    /// sigmoid-routed experts with a choice bias): as released its fused matrices are FP8 whose block scales start again at every shard and its experts
+    /// packed 4-bit codes, two stored forms the dense loader dequantises to bf16 as it reads them, by the scales the description names
+    /// (`weights::item_words_as`), and then packs at the plan's level; its draft layers are not read.
     Layers,
 }
 
