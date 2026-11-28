@@ -231,6 +231,7 @@ impl MlaOp {
             (k.sinks, kinds::Mla::SINKS_NOT_RUN),
             (k.window.is_some(), kinds::Mla::WINDOW_NOT_RUN),
             (k.indexer.as_ref().is_some_and(|x| x.rope_style.is_some()), kinds::Indexer::ROPE_STYLE_NOT_RUN),
+            (k.indexer.as_ref().is_some_and(|x| matches!(x.form, kinds::IndexForm::Grouped { .. })), kinds::Indexer::GROUPED_NOT_RUN),
             (k.gate.is_some_and(|g| g.from == kinds::GateFrom::Latent), kinds::GateFrom::LATENT_NOT_RUN),
         ];
         if let Some((_, part)) = not_run.iter().find(|x| x.0) {

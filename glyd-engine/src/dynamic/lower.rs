@@ -689,6 +689,9 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         match &b.body {
             Body::Ngram(n) => {
                 let Ngram { order, heads, dim, conv, dilation, streams, eos: end, .. } = *n;
+                if n.form == crate::runtime::kinds::NgramForm::EngramNormed {
+                    return err(format!("{what}: {}", Ngram::NORMED_NOT_RUN));
+                }
                 if (order, conv, dilation, streams, hc) != (3, 4, 3, 4, 4)
                     || n.form != crate::runtime::kinds::NgramForm::Segmented
                     || n.norm.weight != NormWeight::PlusOne
@@ -1698,6 +1701,7 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
     let layers = m.blocks.len() / 2;
     let (hc, round) = match &m.blocks[0].residual {
         Residual::Streams(s) if s.eps_outside => return err(format!("GLM-5.3-Flash: {}", crate::runtime::kinds::StreamsP::EPS_OUTSIDE_NOT_RUN)),
+        Residual::Streams(s) if s.apart.is_some() => return err(format!("GLM-5.3-Flash: {}", crate::runtime::kinds::StreamsP::APART_NOT_RUN)),
         Residual::Streams(s) if !s.lagged => ((s.eps, s.sinkhorn_iters as i32), s.rounding),
         r => return err(format!("GLM-5.3-Flash: a residual of {r:?}, not mHC's streams")),
     };
