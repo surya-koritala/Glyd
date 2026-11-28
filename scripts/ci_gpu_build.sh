@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The engine and the GPU library for the CI runner's GPU (gpu-tests.yml), reusing what an earlier run built where the sources are the same:
-# cargo's target directory persists (CARGO_TARGET_DIR; scripts/ci_restore_mtimes.py keeps a fresh checkout from looking changed to it), and
+# cargo's target directory persists (CARGO_TARGET_DIR; cargo xtask ci-restore-mtimes keeps a fresh checkout from looking changed to it), and
 # the GPU library, which is nvcc's alone and takes minutes, is kept by the hash of what makes it. Needs GLYD_ENGINE_ARCHS, NVCC and CARGO_TARGET_DIR.
 # Appends GLYD_GPU_LIB_BUILT (the library's path) and E (the engine) to $GITHUB_ENV: the engine loads no library unless GLYD_GPU_LIB names one, which
 # the steps that compare with the library or check it (foldcheck, packcheck --gpu, glyd-gpu verify) set from GLYD_GPU_LIB_BUILT.

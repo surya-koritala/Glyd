@@ -1,10 +1,11 @@
 //! bump-version against what scripts/bump_version.py did (the script through v0.35.0), recorded from it once: tests/bump/NAME.txt is one run of the script on the
 //! small tree of tests/bump/base.txt with the case's own files over it (IN, or NOT: no such file), and holds its arguments, every file it wrote (OUT) or removed
-//! (GONE), what it printed and its exit code. GIT: the tree is a repository, and these files were added by commits at these times, in this order. A file's lines
-//! start with `|` (the last with `\` when no newline ends it), and <CR> is a carriage return. The task must do the same, byte for byte; of its messages, only the
+//! (GONE), what it printed and its exit code. GIT: the tree is a repository, and these files were added by commits at these times, in this order (record.rs: the
+//! records' form). The task must do the same, byte for byte; of its messages, only the
 //! commands they name differ (cargo xtask, where the script named itself). Exit 2 is the command line's own error, whose text (argparse's) is not compared.
 
 use super::*;
+use crate::record;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -22,30 +23,16 @@ struct Case {
 }
 
 fn fixtures() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/bump")
+    record::folder("bump")
 }
 
-/// A fixture's sections: (heading, text).
-fn sections(text: &str) -> Vec<(String, String)> {
-    let mut all: Vec<(String, String)> = Vec::new();
-    for line in text.lines() {
-        if let Some(head) = line.strip_prefix("--- ") {
-            all.push((head.to_string(), String::new()));
-        } else {
-            let body = &mut all.last_mut().expect("a fixture starts with a heading").1;
-            *body += &line[1..].replace("<CR>", "\r");
-            if line.starts_with('|') {
-                body.push('\n');
-            }
-        }
-    }
-    all
+fn sections(name: &str) -> Vec<(String, String)> {
+    record::read(&fixtures().join(format!("{name}.txt"))).0
 }
 
 fn case(name: &str) -> Case {
-    let text = std::fs::read_to_string(fixtures().join(format!("{name}.txt"))).unwrap();
     let mut c = Case::default();
-    for (head, body) in sections(&text) {
+    for (head, body) in sections(name) {
         let lines = || body.lines().map(str::to_string);
         match head.split_once(' ').unwrap_or((&head, "")) {
             ("ARGS", _) => c.args = lines().collect(),
@@ -94,10 +81,8 @@ fn git(root: &Path, when: &str, args: &[&str]) {
 /// The case's tree made in a new folder, the task run on it; what differs from the record.
 fn differs(name: &str) -> Vec<String> {
     let c = case(name);
-    let mut files: BTreeMap<String, Option<String>> = sections(&std::fs::read_to_string(fixtures().join("base.txt")).unwrap())
-        .into_iter()
-        .map(|(head, body)| (head.strip_prefix("IN ").unwrap().to_string(), Some(body)))
-        .collect();
+    let mut files: BTreeMap<String, Option<String>> =
+        sections("base").into_iter().map(|(head, body)| (head.strip_prefix("IN ").unwrap().to_string(), Some(body))).collect();
     files.extend(c.files.clone());
     let before: Files = files.into_iter().filter_map(|(p, t)| Some((p, t?))).collect();
     let root = std::env::temp_dir().join(format!("xtask-bump-{}-{name}", std::process::id()));

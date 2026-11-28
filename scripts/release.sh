@@ -5,7 +5,7 @@
 #     scripts/release.sh 0.30.0 --private-notes FILE --public-notes FILE [--post FILE] [--dry-run] [--from STEP] [--only STEP]
 #
 # Run it from the glyd-gpu worktree on the release's pull request branch (not main; it commits the version files there). It needs git,
-# cargo, python3, curl, and gh signed in. FILE: the CHANGELOG entry that goes under `## Unreleased` (the private one may link and name
+# cargo, curl, and gh signed in. FILE: the CHANGELOG entry that goes under `## Unreleased` (the private one may link and name
 # formats and kernels; the public one never does), and the public notes are also the GitHub release's. --post: the site's release post
 # (an .mdx with a description of at most 155 characters). Steps, in order:
 #     private-bump  public-pr  shim  private-merge  private-tag  pypi-gpu  public-merge  public-tag  release-page  pypi-glyd
@@ -178,12 +178,7 @@ step_site() { # install.sh from the tag byte for byte, release.json, the post; t
   check "public/install.sh is the tag's, byte for byte" tag_install_is "$SITEWT/public/install.sh"
   check "it installs $V" grep -q "^GLYD_VERSION=.*$V" "$SITEWT/public/install.sh"
   run sh -c "cd '$SITEWT' && npm run sync"
-  run python3 - "$SITEWT/data/release.json" "$T" <<'PY'
-import json, sys
-path, tag = sys.argv[1:]
-d = json.load(open(path)); d["release"] = d["installScript"] = tag
-json.dump(d, open(path, "w"), indent=2, ensure_ascii=False); open(path, "a").write("\n")
-PY
+  run cargo xtask site-release "$SITEWT/data/release.json" "$T"
   approve "edit $SITEWT/data/release.json by hand (highlights, history, gaps: RELEASING.md step 2) and data/releases/$T.json if a GPU run was made"
   if [ -n "$POST" ]; then
     check "the post's description is at most 155 characters" bash -c "d=\$(sed -n 's/^description: *//p' '$POST' | head -1 | sed -E 's/^[\"]|[\"]\$//g'); [ -n \"\$d\" ] && [ \${#d} -le 155 ]"

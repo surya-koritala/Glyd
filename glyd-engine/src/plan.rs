@@ -9032,7 +9032,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The GPU job's script (scripts/ci_plan_check.py) accepts the report of a load that took what the plan said, from the JSON `fit --json` prints, and fails one that took
+    /// The GPU job's check (cargo xtask ci-plan-check: xtask/src/ci_plan_check.rs) accepts the report of a load that took what the plan said, from the JSON `fit --json` prints, and fails one that took
     /// more of the GPU than planned or loaded another plan.
     #[test]
     fn the_gpu_check_reads_the_plan_and_the_report() {
@@ -9046,10 +9046,14 @@ mod tests {
         let run = |report: String| {
             std::fs::write(out.join("fit.json"), c.json("m", &f.machine)).unwrap();
             std::fs::write(out.join("loaded.json"), report).unwrap();
-            let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/ci_plan_check.py");
-            std::process::Command::new("python3").arg(script).arg(out.join("fit.json")).arg(out.join("loaded.json")).output()
+            // (the task as the job runs it: cargo builds xtask, the standard library only, beside this build)
+            let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../Cargo.toml");
+            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+            let task = ["run", "--quiet", "--package", "xtask", "--manifest-path"];
+            let files = [out.join("fit.json"), out.join("loaded.json")];
+            std::process::Command::new(cargo).args(task).arg(workspace).args(["--", "ci-plan-check"]).args(files).output()
         };
-        let Ok(ok) = run(lp.report("m", lp.weights_on_gpu() + 1000, lp.gpu_total() - lp.reserve - (300 << 20))) else { return }; // (no python3 here)
+        let Ok(ok) = run(lp.report("m", lp.weights_on_gpu() + 1000, lp.gpu_total() - lp.reserve - (300 << 20))) else { return }; // (no cargo here)
         assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stdout));
         let over = run(lp.report("m", lp.weights_on_gpu(), lp.gpu_total() - lp.reserve + (1 << 30))).unwrap();
         assert!(!over.status.success() && String::from_utf8_lossy(&over.stdout).contains("the load took"), "{}", String::from_utf8_lossy(&over.stdout));
