@@ -225,6 +225,17 @@ impl MlaOp {
         if let Some(why) = k.not_run() {
             return err(why);
         }
+        // (the parts of a latent attention the CPU reference computes and no kernel does: each refused by its name, before the kind is read further)
+        let not_run = [
+            (k.head_mix != 0, kinds::HEAD_MIX_NOT_RUN),
+            (k.sinks, kinds::Mla::SINKS_NOT_RUN),
+            (k.window.is_some(), kinds::Mla::WINDOW_NOT_RUN),
+            (k.indexer.as_ref().is_some_and(|x| x.rope_style.is_some()), kinds::Indexer::ROPE_STYLE_NOT_RUN),
+            (k.gate.is_some_and(|g| g.from == kinds::GateFrom::Latent), kinds::GateFrom::LATENT_NOT_RUN),
+        ];
+        if let Some((_, part)) = not_run.iter().find(|x| x.0) {
+            return err(format!("a latent attention: {part}"));
+        }
         let q_rank = k.q_lora.ok_or_else(|| Error("a latent attention whose query has no low rank: not an operation of this executor".into()))?;
         let rot = match (&k.rope, table) {
             (None, _) => None,
@@ -242,6 +253,7 @@ impl MlaOp {
             (Some(g), _) if g.from == kinds::GateFrom::Head => {
                 return err("a latent attention with an output gate of one value a head, which the executor does not run yet")
             }
+            (Some(g), _) if g.from == kinds::GateFrom::Latent => return err(format!("a latent attention: {}", kinds::GateFrom::LATENT_NOT_RUN)),
             (Some(g), MlaIn::Fused { .. }) if g.act == kinds::Act::Sigmoid && g.norm.is_none() => true,
             (Some(g), _) => return err(format!("a latent attention's gate of {g:?}: the kernels take a sigmoid gate in a fused input product")),
         };
@@ -1045,9 +1057,13 @@ mod tests {
                 shared: false,
                 form: crate::runtime::kinds::IndexForm::LAYER_KEYS,
                 rope: 0,
+                rope_style: None,
                 q_in: None,
                 pos_scale: false,
             }),
+            head_mix: 0,
+            sinks: false,
+            window: None,
             pos_scale: false,
             kv_from: None,
             rope_learned: false,

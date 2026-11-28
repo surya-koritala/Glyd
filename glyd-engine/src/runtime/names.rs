@@ -87,6 +87,21 @@ pub const LFM: Convention = Convention { name: "LFM", final_norm: "{p}embedding_
 /// model's under the same names (`model.layers.{L}.`) and are read as draft heads.
 pub const LING: Convention = Convention { name: "Ling", embed: "{p}word_embeddings.weight", unread: &["model.visual.", "linear_proj."], ..HF };
 
+/// ERNIE 5.5's: Hugging Face's layout under `model.`, with the hyper-head's roles (`mhc_contract`: its matrix stored transposed) and the logits'
+/// correction's two (`model.lm_head.multimax_*`, beside the head `lm_head.weight`). Its drafter is under `model.mtp.` and is read (`part::ERNIE_DRAFT`).
+pub const ERNIE: Convention = Convention {
+    name: "ERNIE",
+    extra: &[
+        ("out_hc_fn", "^mhc_contract.hc_head_fn"),
+        ("out_hc_base", "mhc_contract.hc_head_base"),
+        ("out_hc_scale", "mhc_contract.hc_head_scale"),
+        ("logit_ranges", "lm_head.multimax_ranges"),
+        ("logit_ts", "lm_head.multimax_ts"),
+    ],
+    unread: &[],
+    ..HF
+};
+
 /// Mistral's own names, as its consolidated checkpoints hold them (Mistral Large's release, whose config's `transformers_weights` points transformers at
 /// that checkpoint): no prefix, the embedding `tok_embeddings`, the head `output`; the vision encoder, its norm, patch merger and adapter into the text
 /// model's width, and the draft model (`mtp_dspark.`), which the text model does not run.
@@ -655,6 +670,94 @@ pub mod part {
         ("shared_down", "ffn.shared_experts.w2.weight"),
     ];
 
+    // ---- ERNIE 5.5: a layer's attention under `self_attn` (the compressed attention's products under names of its own, the latent attention's as
+    // DeepSeek-V3's), its parts that are no product under `self_attn.core_attention`; the experts under `block_sparse_moe` as Kimi's. `^`: a matrix stored
+    // transposed; `|`: tensors stacked, or scalars joined
+    /// The compressed attention: the query latent and its norm, the queries, the one key-value product and its norm, the grouped low-rank output
+    /// (`linear_o_group_proj`, a tensor with no `.weight`) and the output product, the output gate of the query latent, the heads' mix, the sinks.
+    pub const ERNIE_COMP_ATTN: Roles = &[
+        ("norm_in", "input_layernorm.weight"),
+        ("q_a", "self_attn.linear_q_down_proj.weight"),
+        ("q_a_norm", "self_attn.q_layernorm.weight"),
+        ("q_b", "self_attn.linear_q_up_proj.weight"),
+        ("kv", "self_attn.linear_kv_proj.weight"),
+        ("kv_norm", "self_attn.kv_layernorm.weight"),
+        ("o_a", "self_attn.linear_o_group_proj"),
+        ("o_b", "self_attn.o_proj.weight"),
+        ("g", "self_attn.gate_proj.weight"),
+        ("mix_u", "self_attn.vha_postmix_U"),
+        ("mix_v", "self_attn.vha_postmix_V"),
+        ("sinks", "self_attn.core_attention.attn_sink"),
+    ];
+    /// A compressing layer's compressor.
+    pub const ERNIE_COMP: Roles = &[
+        ("comp_kv", "self_attn.core_attention.compressor.linear_wkv.weight"),
+        ("comp_gate", "self_attn.core_attention.compressor.linear_wgate.weight"),
+        ("comp_ape", "self_attn.core_attention.compressor.ape"),
+        ("comp_norm", "self_attn.core_attention.compressor.norm.weight"),
+    ];
+    /// The latent attention: its products, the output gate of the query latent, the heads' mix, the sinks (`softmax_offset`), and its indexer's tensors.
+    pub const ERNIE_MLA: Roles = &[
+        ("norm_in", "input_layernorm.weight"),
+        ("q_a", "self_attn.q_a_proj.weight"),
+        ("q_a_norm", "self_attn.q_a_layernorm.weight"),
+        ("q_b", "self_attn.q_b_proj.weight"),
+        ("kv_a", "self_attn.kv_a_proj_with_mqa.weight"),
+        ("kv_a_norm", "self_attn.kv_a_layernorm.weight"),
+        ("kv_b", "self_attn.kv_b_proj.weight"),
+        ("o", "self_attn.o_proj.weight"),
+        ("g", "self_attn.gate_proj.weight"),
+        ("mix_u", "self_attn.vha_postmix_U"),
+        ("mix_v", "self_attn.vha_postmix_V"),
+        ("sinks", "self_attn.core_attention.softmax_offset"),
+        ("indexer_wq_b", "self_attn.core_attention.indexer.wq_b.weight"),
+        ("indexer_wk", "self_attn.core_attention.indexer.wk.weight"),
+        ("indexer_k_norm", "self_attn.core_attention.indexer.k_norm.weight"),
+        ("indexer_k_norm_bias", "self_attn.core_attention.indexer.k_norm.bias"),
+        ("indexer_weights", "self_attn.core_attention.indexer.weights_proj.weight"),
+    ];
+    /// The residual streams around a block: the mixing matrix stored transposed, its bias, and its three scales as scalars apart (the input's, the
+    /// output's, the streams' mixing's, in `hc_scale`'s order).
+    pub const ERNIE_HC_ATTN: Roles = &[
+        ("hc_fn", "^self_attention_hyper_connection.mapping_proj.weight"),
+        ("hc_base", "self_attention_hyper_connection.bias"),
+        ("hc_scale", "self_attention_hyper_connection.alpha_pre|self_attention_hyper_connection.alpha_post|self_attention_hyper_connection.alpha_res"),
+    ];
+    pub const ERNIE_HC_FFN: Roles = &[
+        ("hc_fn", "^mlp_hyper_connection.mapping_proj.weight"),
+        ("hc_base", "mlp_hyper_connection.bias"),
+        ("hc_scale", "mlp_hyper_connection.alpha_pre|mlp_hyper_connection.alpha_post|mlp_hyper_connection.alpha_res"),
+    ];
+    /// The experts in a latent: the two routers' rows stacked, the choice bias, the learned scale an expert, the latent's two projections and its norm,
+    /// the experts (w1 the gate, w3 the up, w2 the down) and the shared expert named as they are.
+    pub const ERNIE_MOE: Roles = &[
+        ("norm_in", "post_attention_layernorm.weight"),
+        ("router", "block_sparse_moe.gate.weight|block_sparse_moe.gate.weight_1"),
+        ("choice_bias", "block_sparse_moe.e_score_correction_bias"),
+        ("expert_scale", "block_sparse_moe.gate.routed_scaling_factor_param"),
+        ("latent_down", "block_sparse_moe.fc1_latent_proj.weight"),
+        ("latent_up", "block_sparse_moe.fc2_latent_proj.weight"),
+        ("latent_norm_out", "block_sparse_moe.latent_norm.weight"),
+        ("shared_gate", "block_sparse_moe.shared_experts.w1.weight"),
+        ("shared_up", "block_sparse_moe.shared_experts.w3.weight"),
+        ("shared_down", "block_sparse_moe.shared_experts.w2.weight"),
+        ("experts_gate_up", "block_sparse_moe.experts.{E}.w1.weight|block_sparse_moe.experts.{E}.w3.weight"),
+        ("experts_down", "block_sparse_moe.experts.{E}.w2.weight"),
+    ];
+    /// The drafter's own roles under `model.mtp`: main_x's product and norm, the Markov head's two factors (the embedding stored transposed), the
+    /// confidence head, the final norm and the drafter's hyper-head.
+    pub const ERNIE_DRAFT: Roles = &[
+        ("main_proj", "feature_projection.weight"),
+        ("main_norm", "feature_norm.weight"),
+        ("markov_embed", "^markov_head.markov_w1.weight"),
+        ("markov_head", "markov_head.markov_w2.weight"),
+        ("confidence", "confidence_head.projection.weight"),
+        ("final_norm", "norm.weight"),
+        ("out_hc_fn", "^mhc_contract.hc_head_fn"),
+        ("out_hc_base", "mhc_contract.hc_head_base"),
+        ("out_hc_scale", "mhc_contract.hc_head_scale"),
+    ];
+
     // ---- Nemotron-H: a layer is one block, `norm` then the mixer
     pub const NH_MAMBA: Roles = &[
         ("norm_in", "norm.weight"),
@@ -682,7 +785,8 @@ pub mod part {
     ];
 }
 
-/// The roles of `table` that `keep` keeps, named under the path `at` (`experts` of them where a role is each expert's).
+/// The roles of `table` that `keep` keeps, named under the path `at` (`experts` of them where a role is each expert's). A pattern says its source's
+/// form: `{E}`, a tensor an expert; `a|b`, tensors stacked by rows (vectors joined); `^a`, a matrix stored transposed; else one tensor.
 pub fn roles(table: Roles, at: &str, experts: usize, keep: impl Fn(&str) -> bool) -> Vec<(String, Source)> {
     let name = |m: &str| if at.is_empty() { m.to_string() } else { format!("{at}.{m}") };
     table
@@ -693,6 +797,8 @@ pub fn roles(table: Roles, at: &str, experts: usize, keep: impl Fn(&str) -> bool
                 Source::Experts((0..experts).map(|e| pat.split('|').map(|m| name(&m.replace("{E}", &e.to_string()))).collect()).collect())
             } else if pat.contains('|') {
                 Source::Rows(pat.split('|').map(name).collect())
+            } else if let Some(turned) = pat.strip_prefix('^') {
+                Source::Transposed(name(turned))
             } else {
                 Source::Tensor(name(pat))
             };

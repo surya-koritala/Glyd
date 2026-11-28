@@ -187,6 +187,9 @@ impl AttnOp {
         if a.sinks || a.bias || a.indexer.is_some() {
             return err("attention with sinks, a bias or an indexer: not an operation of this executor");
         }
+        if a.gate.is_some_and(|g| g.from == kinds::GateFrom::Latent) {
+            return err(format!("attention: {}", kinds::GateFrom::LATENT_NOT_RUN));
+        }
         let in_query = a.gate.is_some_and(|g| g.from == kinds::GateFrom::InQuery);
         let q_step = if in_query { 2 * d } else { d };
         let k_off = nq * q_step;

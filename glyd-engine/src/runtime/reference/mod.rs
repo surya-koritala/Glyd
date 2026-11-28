@@ -534,7 +534,7 @@ fn roles(b: &Block) -> Vec<String> {
         Body::Mixer(Mixer::Attention(_)) => &["q", "k", "v", "o", "g"],
         Body::Mixer(Mixer::Mla(_)) => &["q", "q_a", "q_b", "kv_a", "kv_b", "o", "g", "indexer_wq_b", "indexer_wk", "indexer_weights", "indexer_pool_gate"],
         Body::Mixer(Mixer::Linear(_)) => &["qkv", "q", "k", "v", "beta", "decay", "gate", "o"],
-        Body::Mixer(Mixer::Compressed(_)) => &["q_a", "q_b", "kv", "o_a", "o_b", "comp_kv", "comp_gate", "idx_kv", "idx_gate", "idx_q_b", "idx_weights"],
+        Body::Mixer(Mixer::Compressed(_)) => &["q_a", "q_b", "kv", "o_a", "o_b", "g", "comp_kv", "comp_gate", "idx_kv", "idx_gate", "idx_q_b", "idx_weights"],
         Body::Mixer(Mixer::Mamba2(_) | Mixer::ShortConv(_)) => &["in", "o"],
         Body::Ngram(_) => &["key", "value"],
         Body::PerLayer(_) => &["gate", "proj"],
@@ -590,6 +590,9 @@ fn roles(b: &Block) -> Vec<String> {
         "ngram",
         "norm_key",
         "norm_conv",
+        "mix_u",
+        "mix_v",
+        "expert_scale",
     ];
     let mut r: Vec<String> = Vec::new();
     for p in prods {
@@ -648,6 +651,28 @@ pub fn gated_mix(
     Ok((input, inj))
 }
 
+/// The low-rank mix of an attention's heads' outputs with each other (`Comp::head_mix`, `Mla::head_mix`): `o` [heads, width] becomes (I + V U^T) o over the
+/// head axis, each head's output plus sum_r V[h][r] (sum_g U[g][r] o_g), channel by channel; `u` and `v` [heads, rank]. The sums in f64, the result f32.
+pub fn head_mix(u: &[f32], v: &[f32], heads: usize, rank: usize, o: &mut [f32]) -> Result<()> {
+    let w = o.len() / heads.max(1);
+    if rank == 0 || u.len() != heads * rank || v.len() != heads * rank || w * heads != o.len() {
+        return err(format!("a mix of the heads' outputs: U of {}, V of {} values for {heads} heads at rank {rank}, on {} values", u.len(), v.len(), o.len()));
+    }
+    let mut low = vec![0f64; rank * w];
+    for (r, row) in low.chunks_mut(w.max(1)).enumerate() {
+        for (ch, l) in row.iter_mut().enumerate() {
+            *l = (0..heads).map(|g| u[g * rank + r] as f64 * o[g * w + ch] as f64).sum();
+        }
+    }
+    for h in 0..heads {
+        for ch in 0..w {
+            let add: f64 = (0..rank).map(|r| v[h * rank + r] as f64 * low[r * w + ch]).sum();
+            o[h * w + ch] = (o[h * w + ch] as f64 + add) as f32;
+        }
+    }
+    Ok(())
+}
+
 /// mHC's weights for one token: the input's weights over the streams (pre), the output's (post) and the streams' mixing comb[j][k]
 /// (from stream j into stream k), from the streams x [n, hidden] (transformers' `DeepseekV4HyperConnection`).
 /// mHC's collapse of a token's streams `xt` (n of `d`) into a block's input by the weights `w`: the fp32 sum, rounded once where the streams round (`Once`, the
@@ -659,7 +684,7 @@ pub fn collapse(s: &crate::runtime::kinds::StreamsP, w: &[f32], xt: &[f32], d: u
 
 pub fn hc_weights(s: &crate::runtime::kinds::StreamsP, p: &Params, x: &[f32]) -> Result<(Vec<f32>, Vec<f32>, Vec<Vec<f32>>)> {
     let n = s.streams;
-    let r = 1.0 / (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32 + s.norm_eps).sqrt();
+    let r = s.norm_factor(x);
     let xn: Vec<f32> = x.iter().map(|v| v * r).collect();
     let (f, base, scale) = (p.vec("hc_fn")?, p.vec("hc_base")?, p.vec("hc_scale")?);
     if f.len() != (2 + n) * n * x.len() || base.len() != (2 + n) * n || scale.len() != 3 {
@@ -1088,6 +1113,37 @@ mod tests {
     use super::testing::{assert_close, Fixture};
     use super::*;
     use crate::runtime::kinds::{Decay, Linear, LinearKind, Norm};
+
+    /// The low-rank mix of the heads' outputs (`head_mix`): o <- (I + V U^T) o over the head axis. By hand for two heads at rank 1; against the second
+    /// formulation, the heads' matrix I + V U^T made first and applied to each channel's column, for three heads at rank 2; nothing with a V of zero, to
+    /// the bit; and U and V of other shapes than the heads' are refused.
+    #[test]
+    fn the_heads_mix_is_one_plus_v_u_transposed() {
+        use super::testing::fill;
+        let mut o = vec![1.0f32, 2.0, 3.0, 4.0];
+        head_mix(&[0.5, -1.0], &[2.0, 0.25], 2, 1, &mut o).unwrap();
+        // (U^T o = 0.5 [1, 2] - [3, 4] = [-2.5, -3]; head 0 adds twice it, head 1 a quarter of it)
+        assert_eq!(o, [-4.0, -4.0, 2.375, 3.25]);
+        let (h, r, w) = (3usize, 2usize, 5usize);
+        let (u, v, x) = (fill("mix.u", h * r, -0.7, 0.7), fill("mix.v", h * r, -0.7, 0.7), fill("mix.o", h * w, -2.0, 2.0));
+        let mut got = x.clone();
+        head_mix(&u, &v, h, r, &mut got).unwrap();
+        let m: Vec<f64> =
+            (0..h * h).map(|i| ((i / h == i % h) as u32) as f64 + (0..r).map(|k| v[(i / h) * r + k] as f64 * u[(i % h) * r + k] as f64).sum::<f64>()).collect();
+        for a in 0..h {
+            for ch in 0..w {
+                let want = (0..h).map(|b| m[a * h + b] * x[b * w + ch] as f64).sum::<f64>() as f32;
+                assert!((got[a * w + ch] - want).abs() <= 4.0 * f32::EPSILON * want.abs().max(1.0), "head {a}, channel {ch}: {} {want}", got[a * w + ch]);
+            }
+        }
+        assert_ne!(got, x);
+        let mut same = x.clone();
+        head_mix(&u, &vec![0.0; h * r], h, r, &mut same).unwrap();
+        assert_eq!(same, x);
+        assert!(
+            head_mix(&u[..5], &v, h, r, &mut same).is_err() && head_mix(&u, &v, h, 0, &mut same).is_err() && head_mix(&u, &v, h, r, &mut same[..14]).is_err()
+        );
+    }
 
     /// Ibis's gated residual by hand on one token of two streams of 4 (a rank of 3): each stream normed with its own part of the weight, the
     /// bottleneck's mix, the mean over the streams, the streams' weights of the output; a block between gated residuals takes no other norm and

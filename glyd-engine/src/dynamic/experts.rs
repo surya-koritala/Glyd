@@ -123,6 +123,7 @@ fn normed(m: &kinds::Moe) -> Option<kinds::Norm> {
 /// other operations' (`MoeOp`'s variants, a family's own block), a logit scale the normed experts' alone.
 pub fn cfg(m: &kinds::Moe, hidden: usize, inter: usize) -> Result<MoeCfg> {
     let r = &m.router;
+    r.one_scored().map_err(|e| e.context("experts"))?;
     if r.hash || r.groups.is_some() {
         return err(format!("experts of {m:?}: hash routing and grouped choices are not the resident block's"));
     }
@@ -1654,7 +1655,18 @@ mod tests {
     fn qwen() -> Moe {
         let mlp = Mlp { act: kinds::Act::Silu, gated: true, bias: false, clamp: None };
         Moe {
-            router: Router { score: RouterScore::Softmax, logit_scale: 1.0, bias: false, groups: None, top_k: 10, renorm: true, scale: 1.0, hash: false },
+            router: Router {
+                score: RouterScore::Softmax,
+                logit_scale: 1.0,
+                bias: false,
+                groups: None,
+                top_k: 10,
+                renorm: true,
+                scale: 1.0,
+                hash: false,
+                routers: 1,
+                expert_scale: false,
+            },
             experts: 512,
             expert: mlp,
             shared: Some(mlp),

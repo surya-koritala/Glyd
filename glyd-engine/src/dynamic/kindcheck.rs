@@ -847,8 +847,7 @@ fn pass(
         dy.big.logits.read(0, &mut w)?;
         let logits: Vec<f32> = w.iter().map(|&b| f32::from_bits((b as u32) << 16)).collect();
         let h = &m.desc.head;
-        let want: Vec<f32> =
-            crate::runtime::reference::matvec_w(m.head_w(), d, &hin).into_iter().map(|z| crate::runtime::reference::model::logit(h, z)).collect();
+        let want: Vec<f32> = m.logits_of(&hin)?;
         let kind = format!(
             "head: the LM head{}{}",
             if h.scale != 1.0 { format!(", times {}", h.scale) } else { String::new() },
