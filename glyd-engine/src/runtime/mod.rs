@@ -11,7 +11,7 @@ pub mod context;
 pub mod cuda;
 pub mod describe;
 #[cfg(test)]
-mod describe_tests;
+pub(crate) mod describe_tests;
 pub mod kinds;
 #[cfg(all(target_os = "macos", feature = "mlx"))]
 pub mod mlx;

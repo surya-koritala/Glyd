@@ -2077,6 +2077,108 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A release stored quantized loads as its bf16 twin, on the host, up to the upload: MiMo's small model (the logits case's config, 512 wide) written
+    /// twice, once every matrix bf16 and once as the family releases it, in blocks of 128. Each fused q-k-v matrix is FP8 with a grid of fp32 scales a
+    /// shard (the whole-context layers' 2 shards of 1,088 rows: 2 x 9 rows of blocks, where one grid over the 2,176 rows would be 17; the sliding
+    /// layers' 2 of 1,408: 2 x 11, the whole matrix's 22, a shard whole blocks), the other products FP8 with one grid, and every expert's matrix 4-bit
+    /// codes two a byte under `X.weight` with a byte's scale a run of 32 under `X.weight_scale`. Through the loader's own readers with the stored
+    /// formats the dense lowering carries (`ModelDesc::stored`, `Held::stored`): every matrix's words (`weights::item_words_as`) and its pack at each
+    /// level (`weights::pack_item_as`), every expert's words, the experts' one lossless pack at penguin and their joined packs at kestrel, linnet and
+    /// wren (`block_packs`) are those of the bf16 twin, to the byte. Read by the checkpoint's names alone, the fused matrix and the experts are refused
+    /// or are other shapes. A save of the release is refused by name (the packer's reader takes neither form).
+    #[test]
+    fn a_release_stored_quantized_loads_as_its_bf16_twin() {
+        use super::Stacked;
+        use crate::moe_rows::DownHost;
+        use crate::runtime::describe_tests::{fp8_shard_grids, mxfp4_runs, twins};
+        use crate::weights::{item_words, item_words_as, pack_item_as, pack_item_map, Layout, Packed};
+        use glyd_gpu::safetensors::Checkpoint;
+        let manifest: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/mimo_tiny_manifest.json")).unwrap();
+        let mut cfg: serde_json::Value = serde_json::from_str(manifest["config"].as_str().unwrap()).unwrap();
+        cfg["quantization_config"] = serde_json::json!({"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128], "store_dtype": "mxfp4",
+            "mxfp4_block_size": 32, "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]});
+        let kinds = crate::runtime::describe::describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        let st = kinds.stored();
+        let (plain, released) = twins("mimo-load", &cfg, &kinds, &|n, s, shape, next| {
+            if n.contains(".experts.") {
+                return Some(mxfp4_runs(n, s, shape, next));
+            }
+            Some(fp8_shard_grids(n, s, shape, 128, st.shards.get(n).copied().unwrap_or(1), next))
+        });
+        let (cp, cr) = (Checkpoint::open(&plain).unwrap(), Checkpoint::open(&released).unwrap());
+        let d = super::super::lower::dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        let same = |a: &Packed, b: &Packed| {
+            a.data == b.data && a.b1 == b.b1 && a.b2 == b.b2 && (a.rows, a.cols) == (b.rows, b.cols) && format!("{:?}", a.words) == format!("{:?}", b.words)
+        };
+        // the dense matrices, as `load_part` reads each: held as saved or packed at the level
+        let fused = |l: usize| format!("model.layers.{l}.self_attn.qkv_proj.weight");
+        let grid = |n: &str| cr.get(&format!("{n}_scale_inv")).unwrap().1.shape.clone();
+        assert_eq!((grid(&fused(0)), grid(&fused(1)), st.shards.get(&fused(0)), st.shards.get(&fused(1))), (vec![18, 4], vec![22, 4], Some(&2), Some(&2)));
+        assert!(st.restarts(&cr, &fused(0)) && !st.restarts(&cr, &fused(1)) && !st.restarts(&cp, &fused(0)));
+        assert!(crate::f8::released_shape(&cr, &[fused(0)]).is_none() && crate::f8::released_shape(&cr, &[fused(1)]).is_some());
+        let rows_of = |n: &str| cr.get(n).map(|(_, t)| t.shape[0] as usize);
+        let (mut quantized, mut packed) = (0, 0);
+        for (k, it) in d.mats.iter().enumerate() {
+            let name = it.members.join(" + ");
+            let held = it.members.iter().filter(|m| st.quantized(&cr, m)).count();
+            assert!(held == 0 || held == it.members.len(), "{name}");
+            quantized += (held > 0) as usize;
+            let want = item_words(&cp, it).unwrap();
+            assert!(item_words_as(&cr, it, &d.stored).unwrap_or_else(|e| panic!("{name}: {}", e.msg)) == want, "{name}: the words");
+            assert!(held == 0 || item_words_as(&cp, it, &d.stored).unwrap() == want, "{name}: a bf16 twin is read as it is");
+            if super::super::held_as_saved(&d, k, &rows_of) {
+                continue;
+            }
+            packed += 1;
+            for level in [Layout::Tiered, Layout::Int6, Layout::Int5, Layout::Int4] {
+                let (got, want) = (pack_item_as(&cr, it, level, &d.stored).unwrap(), pack_item_map(&cp, it, level, &|_| {}).unwrap());
+                assert!(same(&got, &want), "{name} at {}", level.name());
+            }
+        }
+        // (every matrix but the embedding, the head and the first layer's `o`: four fused ones, three more `o`, the first layer's two MLP products)
+        assert_eq!((d.mats.len(), quantized, packed), (12, 9, 12));
+        // (by the checkpoint's names alone the fused matrix of scales a shard is refused: its grid is not the whole matrix's)
+        let k = d.mats.iter().position(|it| it.members == [fused(0)]).unwrap();
+        assert!(item_words(&cr, &d.mats[k]).unwrap_err().msg.contains("block scales"));
+        // the experts, as `held` reads them with the stage's stored formats
+        let (mut blocks, mut experts) = (0, 0);
+        for (_, m, roles) in super::of_layers(&kinds, (0, 4), 2) {
+            let e = m.experts;
+            let find = |r: &str| roles.iter().find(|(n, _)| n == r).map(|(_, s)| s);
+            let (up, down) = (Stacked::stored(find("experts_gate_up"), e, "up", &st).unwrap(), Stacked::stored(find("experts_down"), e, "down", &st).unwrap());
+            let (pu, pd) = (Stacked::of(find("experts_gate_up"), e, "up").unwrap(), Stacked::of(find("experts_down"), e, "down").unwrap());
+            for (r, p, shape) in [(&up, &pu, (512, 512)), (&down, &pd, (512, 256))] {
+                let (rows, cols) = r.dims(&cr, None, e).unwrap();
+                assert_eq!(((rows, cols), p.dims(&cp, None, e).unwrap()), (shape, shape));
+                for x in 0..e {
+                    assert!(r.expert(&cr, x, rows, cols).unwrap() == p.expert(&cp, x, rows, cols).unwrap(), "{}", r.name_of(x));
+                    experts += 1;
+                }
+                // (penguin: the stack's one lossless pack)
+                assert!(same(&r.lossless(&cr, e, Layout::Tiered).unwrap(), &p.lossless(&cp, e, Layout::Tiered).unwrap()), "{}: penguin", r.name());
+                // (by the checkpoint's names alone: the codes' bytes are not a matrix of these columns)
+                assert_ne!(p.dims(&cr, None, e).unwrap(), shape);
+            }
+            for level in [Layout::Int6, Layout::Int5, Layout::Int4] {
+                let (ju, jd) = super::block_packs(&up, &down, &cr, None, e, level, m.expert.act).unwrap();
+                let (wu, wd) = super::block_packs(&pu, &pd, &cp, None, e, level, m.expert.act).unwrap();
+                assert!(ju.data == wu.data && ju.scales == wu.scales && (ju.tag, ju.experts, ju.rows, ju.cols) == (wu.tag, e, 512, 512), "{level:?}: up");
+                let (DownHost::Block(a), DownHost::Block(b)) = (&jd, &wd) else { panic!("{level:?}: SwiGLU experts' second matrices are in the block layout") };
+                assert!(a.data == b.data && a.scales == b.scales && (a.tag, a.experts, a.rows, a.cols) == (b.tag, e, 512, 256), "{level:?}: down");
+            }
+            blocks += 1;
+        }
+        assert_eq!((blocks, experts), (3, 3 * 2 * 8));
+        // a save of the release: refused by name before anything is written
+        let config = crate::runtime::config::ModelConfig::load(&released).unwrap();
+        let said = crate::pack::level_plan(&released, Layout::Int5, Some(&config), None).unwrap_err().msg;
+        assert!(said.contains("a stored form the packer does not save from yet") && said.contains("is stored"), "{said}");
+        assert!(crate::pack::level_plan(&plain, Layout::Int5, Some(&config), None).unwrap().is_some());
+        for dir in [plain, released] {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
     /// What a tiny model of grid weights relies on of the packers (all three block layouts): weights that are integers of at most the layout's largest code
     /// times a power of two, with the largest code in every run of 32, come back exactly (the fit of the scale lands on the power of two).
     #[test]
