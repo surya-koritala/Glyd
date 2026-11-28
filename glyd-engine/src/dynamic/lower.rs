@@ -208,6 +208,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
         logit_mult: 0.0,
         host: Vec::new(),
         context: Vec::new(),
+        stored: Default::default(),
     })
 }
 
@@ -603,6 +604,8 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         logit_mult: if m.head.scale == 1.0 { 0.0 } else { m.head.scale },
         host: Vec::new(),
         context: Vec::new(),
+        // (the stored formats the description names: its loader reads a matrix held quantized by them)
+        stored: d.stored(),
     })
 }
 
@@ -906,6 +909,7 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         logit_mult: 0.0,
         host: super::tables::held(m, embed, lm, &tables),
         context: Vec::new(),
+        stored: Default::default(),
     })
 }
 
@@ -1336,6 +1340,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
         logit_mult: 0.0,
         host: Vec::new(),
         context: Vec::new(),
+        stored: Default::default(),
     })
 }
 
@@ -1503,6 +1508,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
         logit_mult: 0.0,
         host: Vec::new(),
         context: Vec::new(),
+        stored: Default::default(),
     })
 }
 
@@ -1666,6 +1672,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
         logit_mult: m.head.scale,
         host: Vec::new(),
         context: Vec::new(),
+        stored: Default::default(),
     })
 }
 
@@ -2073,6 +2080,7 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
         logit_mult: 0.0,
         host: Vec::new(),
         context: Vec::new(),
+        stored: Default::default(),
     })
 }
 

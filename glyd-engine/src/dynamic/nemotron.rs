@@ -77,6 +77,7 @@ pub fn load_cached_of(dir: &Path, m: &ModelConfig, o: &Opts, level: Layout, cach
         dense: Some(crate::nemotron::dense_layout(level)),
         codebooks: Some(&codebooks),
         codes: None,
+        stored: None,
     };
     let hidden = kinds.desc.hidden;
     let experts = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
@@ -247,5 +248,6 @@ pub fn describe(c: &crate::nemotron::ConfigNemotronH, st: &Stage) -> Result<Mode
         logit_mult: 0.0,
         host: Vec::new(),
         context: Vec::new(),
+        stored: Default::default(),
     })
 }

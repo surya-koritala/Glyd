@@ -138,7 +138,7 @@ pub fn load_stage(dir: &Path, m: &ModelConfig, o: &Opts, level: Layout, st: impl
     // (each layer's experts the Moe kind's block of its roles, every expert on the GPU at the level; the MTP layers' after the model's, each the expert cache's
     // next layer)
     let (kinds, _) = crate::runtime::describe::describe_dir_of(dir, m)?;
-    let held = super::experts::Held { hb: None, cache: None, ordinal: o.device, f8: None, dense: None, codebooks: None, codes: None };
+    let held = super::experts::Held { hb: None, cache: None, ordinal: o.device, f8: None, dense: None, codebooks: None, codes: None, stored: None };
     let hidden = kinds.desc.hidden;
     let blocks = |ck: &Checkpoint, _: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         super::experts::of_ffn_layers(&kinds, st.layers).map(|(ix, m, roles)| super::experts::block(m, roles, hidden, ck, level, (ix, &held))).collect()
@@ -353,7 +353,7 @@ pub fn load_cached_stage(dir: &Path, m: &ModelConfig, o: &Opts, k: &Caching, st:
         };
         // (each layer's experts the Moe kind's block at the codes pack's hummingbird level: its places in the stage's one store)
         let codes = Codes { pack: &pack, places, store: &store, common: &common };
-        let held = super::experts::Held { hb: None, cache: None, ordinal: dev, f8: None, dense: None, codebooks: None, codes: Some(codes) };
+        let held = super::experts::Held { hb: None, cache: None, ordinal: dev, f8: None, dense: None, codebooks: None, codes: Some(codes), stored: None };
         super::experts::of_ffn_layers(&kinds, st.layers)
             .map(|(ix, m, roles)| {
                 crate::status::STATUS.beat();

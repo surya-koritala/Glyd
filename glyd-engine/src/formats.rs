@@ -201,6 +201,46 @@ pub struct Stored {
 }
 
 impl Stored {
+    /// Whether the description names nothing a reader needs: no scales and no shards (a model of bf16 weights, read by the checkpoint's own names).
+    pub fn is_plain(&self) -> bool {
+        self.scales.is_empty() && self.shards.is_empty()
+    }
+
+    /// Whether the checkpoint holds the matrix `name` quantized, with scales its description names: FP8 bytes or 4-bit codes, which a loader reads by
+    /// `words`. Not a matrix the description names scales for that the checkpoint holds as bf16 (a random model's), nor a tensor with no scales named.
+    pub fn quantized(&self, ck: &Checkpoint, name: &str) -> bool {
+        self.scales.contains_key(name) && ck.get(name).is_some_and(|(_, t)| matches!(t.dtype.as_str(), "F8_E4M3" | "U8"))
+    }
+
+    /// The rows and columns of the matrix `name` as it decodes, where the checkpoint holds it quantized (`quantized`): an FP8 matrix's own shape, 4-bit
+    /// codes' rows and twice their bytes a row. The header alone is read. None for any other tensor: its shape is its own.
+    pub fn dims(&self, ck: &Checkpoint, name: &str) -> Option<(usize, usize)> {
+        let (_, t) = ck.get(name).filter(|_| self.quantized(ck, name))?;
+        let [rows, cols] = t.shape[..] else { return None };
+        Some((rows as usize, cols as usize * if t.dtype == "U8" { 2 } else { 1 }))
+    }
+
+    /// The matrix `name` as the bf16 words a loader packs, where the checkpoint holds it quantized (`quantized`): the values `described` decodes, each
+    /// rounded to bf16 once (to nearest, ties to even). A code times a power of two (FP8 with a byte's scale, MXFP4) is a bf16 exactly, so those words
+    /// are the release's weights; a code times an fp32 scale (FP8 with fp32 scales a block, NVFP4) is the bf16 nearest the fp32 product, as
+    /// `glyd_gpu::fp8::dequant` makes an FP8 matrix's and as transformers' dequantisation to bf16 does. None for a tensor that is not so held (a loader
+    /// reads it the ordinary way). An Err, in words, where the stored form is none `described` takes, or a weight is not finite.
+    pub fn words(&self, ck: &Checkpoint, name: &str) -> Result<Option<(usize, usize, Vec<u16>)>> {
+        if !self.quantized(ck, name) {
+            return Ok(None);
+        }
+        let Some((shape, v)) = self.described(ck, name) else {
+            let of = |n: &str| ck.get(n).map_or_else(|| "missing".to_string(), |(_, t)| format!("{} {:?}", t.dtype, t.shape));
+            let s = &self.scales[name];
+            return err(format!("{name} ({}) with its scales {s} ({}): a stored form this engine does not read", of(name), of(s)));
+        };
+        let w: Vec<u16> = v.iter().map(|&x| crate::weights::bf16_bits(x)).collect();
+        if let Some(i) = w.iter().position(|x| x & 0x7F80 == 0x7F80) {
+            return err(format!("{name}: the weight at row {}, column {} is not finite ({})", i / shape[1], i % shape[1], v[i]));
+        }
+        Ok(Some((shape[0], shape[1], w)))
+    }
+
     /// Tensor `name` as f32: a matrix the description names scales for, decoded with those scales (`described`); any other tensor, a matrix stored in
     /// another type than the description says (a random model's bf16), and a format `described` does not take, by what the checkpoint holds (`tensor`).
     pub fn tensor(&self, ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
@@ -221,6 +261,8 @@ impl Stored {
     /// A matrix the description cuts in shards whose scales are a grid a shard is decoded a shard at a time, each with its grid.
     ///
     /// None where the description names no scales for it, or the two tensors are not one of these.
+    ///
+    /// (The f32 values of `described` are the CPU reference's; a loader that packs the matrix takes them as bf16: `words`.)
     fn described(&self, ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
         let sn = self.scales.get(name)?;
         let ((_, t), (_, st)) = (ck.get(name)?, ck.get(sn)?);

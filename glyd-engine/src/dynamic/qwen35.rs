@@ -99,7 +99,16 @@ fn load_experts(dir: &Path, m: &ModelConfig, o: &Opts, st: Stage, kinds: &Descri
     let (eos, max_pos) = experts_config(dir, m)?;
     let d = super::lower::qwen35(kinds, eos, max_pos, &st)?;
     let store = caching.map(crate::hbg_store::store_for);
-    let held = super::experts::Held { hb: None, cache: caching.zip(store.as_ref()), ordinal: o.device, f8: None, dense: None, codebooks: None, codes: None };
+    let held = super::experts::Held {
+        hb: None,
+        cache: caching.zip(store.as_ref()),
+        ordinal: o.device,
+        f8: None,
+        dense: None,
+        codebooks: None,
+        codes: None,
+        stored: None,
+    };
     let hidden = kinds.desc.hidden;
     let experts = |ck: &Checkpoint, level: Layout| -> Result<Vec<Box<dyn MoeBlock>>> {
         super::experts::of_layers(kinds, st.layers, 2)
@@ -299,6 +308,7 @@ pub fn describe(c: &crate::qwen35::Config35, st: &Stage) -> Result<ModelDesc> {
         logit_mult: 0.0,
         host: Vec::new(),
         context: Vec::new(),
+        stored: Default::default(),
     })
 }
 

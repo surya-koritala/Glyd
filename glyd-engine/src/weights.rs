@@ -260,9 +260,24 @@ pub(crate) fn pack_item_map(ck: &Checkpoint, it: &Item, layout: Layout, transfor
     pack_words(&w, it.rows, it.cols, layout, &it.members.join(" + "))
 }
 
+/// `pack_item_map` with no transform, of an item whose members the checkpoint may hold quantized as its description says (`item_words_as`).
+pub(crate) fn pack_item_as(ck: &Checkpoint, it: &Item, layout: Layout, stored: &crate::formats::Stored) -> Result<Packed> {
+    pack_words(&item_words_as(ck, it, stored)?, it.rows, it.cols, layout, &it.members.join(" + "))
+}
+
 /// An item's members stacked, as bf16 words (an FP8 member as the bf16 it dequantises to), zeros after them where the item says so (`ZERO_ROWS`, its last
 /// member).
 pub(crate) fn item_words(ck: &Checkpoint, it: &Item) -> Result<Vec<u16>> {
+    item_words_as(ck, it, &crate::formats::Stored::default())
+}
+
+/// `item_words` of a model whose description names its stored formats (`stored`: `Described::stored`, which the dense lowering hands its loader). A
+/// member the checkpoint holds quantized with scales the description names (FP8 with block scales under any name, in blocks of any size, a grid a shard
+/// where the description cuts the matrix in shards; 4-bit codes two a byte with their runs' scales) is DEQUANTISED HERE to bf16 (`Stored::words`) and
+/// goes on as a bf16 matrix does: packed at the plan's level, or at penguin held lossless in the engine's own layout. A release stored quantized is so
+/// not held as released: at penguin its weights are the bf16 the release's codes and scales decode to (the release's values exactly where a scale is a
+/// power of two; the bf16 nearest each product where a scale is fp32), in packs the size bf16 weights take, not the release's bytes.
+pub(crate) fn item_words_as(ck: &Checkpoint, it: &Item, stored: &crate::formats::Stored) -> Result<Vec<u16>> {
     let mut w = vec![0u16; it.rows * it.cols];
     let mut at = 0usize;
     for (i, m) in it.members.iter().enumerate() {
@@ -278,6 +293,15 @@ pub(crate) fn item_words(ck: &Checkpoint, it: &Item) -> Result<Vec<u16>> {
             let v = crate::formats::nf4_words(ck, &q, it.cols)?;
             if at + v.len() > w.len() {
                 return err(format!("{}: {} weights past its {} x {}", it.members.join(" + "), at + v.len(), it.rows, it.cols));
+            }
+            w[at..at + v.len()].copy_from_slice(&v);
+            at += v.len();
+            continue;
+        }
+        // (a matrix its description names scales for, held quantized: the bf16 its codes and scales decode to)
+        if let Some((_, cols, v)) = stored.words(ck, m)? {
+            if cols != it.cols || at + v.len() > w.len() {
+                return err(format!("{m}: {} weights of {cols} columns, where {} x {} holds {at} before them", v.len(), it.rows, it.cols));
             }
             w[at..at + v.len()].copy_from_slice(&v);
             at += v.len();
@@ -660,10 +684,15 @@ pub(crate) fn saved_parts<'a>(ck: &Checkpoint, pk: &'a Pack35) -> Vec<(&'a str, 
 /// The pack `pk` in `level`, ready to upload: read from a glyd-v7 directory (`v7`: its level and glyd.json) where it holds the pack saved (in the layout its entry names, else `level`), else packed from the bf16 tensors
 /// in `level`.
 pub(crate) fn read_pack(ck: &Checkpoint, v7: Option<&(Layout, Value)>, pk: &Pack35, level: Layout) -> Result<Packed> {
+    read_pack_as(ck, v7, pk, level, &crate::formats::Stored::default())
+}
+
+/// `read_pack`, a part the checkpoint holds quantized as its description says (`stored`) dequantised as it is packed (`item_words_as`).
+pub(crate) fn read_pack_as(ck: &Checkpoint, v7: Option<&(Layout, Value)>, pk: &Pack35, level: Layout, stored: &crate::formats::Stored) -> Result<Packed> {
     let saved = saved_parts(ck, pk);
     match v7 {
         Some((_, manifest)) if !saved.is_empty() => read_v7(ck, manifest, level, &saved, pk.cols),
-        _ => pack_item_map(ck, &Item { members: pk.parts.iter().map(|x| x.0.clone()).collect(), rows: pk.rows(), cols: pk.cols }, level, &|_| {}),
+        _ => pack_item_as(ck, &Item { members: pk.parts.iter().map(|x| x.0.clone()).collect(), rows: pk.rows(), cols: pk.cols }, level, stored),
     }
 }
 

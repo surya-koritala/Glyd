@@ -61,7 +61,18 @@ pub fn load_cached(dir: &Path, m: &ModelConfig, o: &Opts, caching: Option<&crate
     }
     let st = super::Stage::whole(d.layers.len());
     let store = caching.map(crate::hbg_store::store_for);
-    let held = super::experts::Held { hb: None, cache: caching.zip(store.as_ref()), ordinal: o.device, f8: None, dense: None, codebooks: None, codes: None };
+    // (experts a release stores quantized, by the scales its description names: dequantised as they are read, then held at the level as bf16 ones are)
+    let stored = kinds.stored();
+    let held = super::experts::Held {
+        hb: None,
+        cache: caching.zip(store.as_ref()),
+        ordinal: o.device,
+        f8: None,
+        dense: None,
+        codebooks: None,
+        codes: None,
+        stored: Some(&stored),
+    };
     let hidden = kinds.desc.hidden;
     let experts = |ck: &glyd_gpu::safetensors::Checkpoint, level: crate::weights::Layout| -> Result<Vec<Box<dyn super::experts::MoeBlock>>> {
         super::experts::of_layers(&kinds, st.layers, 2)
