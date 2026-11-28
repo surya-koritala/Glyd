@@ -4183,6 +4183,405 @@ fn mistral_large_on_the_reference_steps_as_it_prompts_and_reads_each_of_its_form
     assert!(super::reference::testing::rel(&capped[8], &want) < 1e-5 && super::reference::testing::rel(&capped[8], &uncapped[8]) > 1e-2);
 }
 
+/// MiniMax M3 as released (MiniMax-M3.1-Flash's config and header): 60 layers of one attention and a feed-forward. Every attention 64 query heads over 4
+/// of 128, its queries and keys normed a head times (1 + weight), the first 64 channels of a head rotated at a base of 10,000,000, and the block-max
+/// indexer: 4 index heads of 128, one a key head, keeping 16 blocks of 128 positions, the query's own among them. The first three layers a dense MLP of
+/// 12,288, the other 57 a mixture of 128 experts of 3,072 with one shared expert, 4 a token by the sigmoid with a choice bias, their sum doubled; the
+/// gpt-oss SwiGLU at 1.702 and a limit of 7 everywhere. The products FP8 with a byte's scale a run of 32, the experts NVFP4 with their runs' scales and
+/// the scales' own scale, the routers fp32; the vision tower, its projectors and the experts' input scales are left unread, and the checkpoint is read whole.
+#[test]
+fn minimax_m3_1_flash_describes_its_sparse_attention_its_experts_and_its_stored_formats() {
+    use super::kinds::{Act, Body, Clamp, Ffn, IndexForm, Mixer, Norm, Rope, RouterScore};
+    let h = fixture("headers/MiniMax-M3.1-Flash.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    assert!(cfg["text_config"].get("model_type").is_none() && cfg["model_type"] == "minimax_m3_vl");
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let pn = Norm::rms_plus_one(1e-6);
+    let mlp = super::kinds::Mlp { act: Act::SwigluOai { alpha: 1.702 }, gated: true, bias: false, clamp: Some(Clamp::Gate(7.0)) };
+    assert_eq!((d.desc.blocks.len(), d.desc.head.tied, d.desc.final_norm, d.desc.embed.scale, d.fp8_block), (120, false, pn, 1.0, None));
+    assert_eq!((d.desc.hidden, d.desc.vocab, d.desc.rope.as_ref()), (6144, 200_064, Some(&Rope::plain(1e7, 64))));
+    assert!(d.desc.mtp.is_empty() && d.desc.vision.is_none() && d.mtp_layers == 0);
+    let (mut attentions, mut dense, mut sparse) = (0, 0, 0);
+    for (i, b) in d.desc.blocks.iter().enumerate() {
+        assert!(b.norm_in == pn && b.norm_out.is_none() && b.residual == super::kinds::Residual::Add, "block {i}");
+        match &b.body {
+            Body::Mixer(Mixer::Attention(a)) => {
+                assert_eq!((a.heads, a.kv_heads, a.head_dim, a.v_head_dim, a.scale), (64, 4, 128, 128, 128f32.powf(-0.5)), "layer {}", i / 2);
+                assert_eq!(
+                    (a.q_norm, a.k_norm, a.v_norm, a.gate, a.window, a.sinks, a.bias),
+                    (Some(pn), Some(pn), None, None, None, false, false),
+                    "layer {}",
+                    i / 2
+                );
+                // (the first 64 channels of a head, paired (i, i + 32), 32 angles over a span of 64)
+                assert_eq!(a.rope.as_ref(), Some(&Rope::plain(1e7, 64)), "layer {}", i / 2);
+                let ix = a.indexer.as_ref().unwrap();
+                assert_eq!((ix.heads, ix.head_dim, ix.top_k, ix.block, ix.shared), (4, 128, 16 * 128, 128, false), "layer {}", i / 2);
+                assert_eq!(ix.form, IndexForm::Max { norm: pn, local: 1 }, "layer {}", i / 2);
+                attentions += 1;
+            }
+            Body::Ffn(Ffn::Mlp(m)) => {
+                assert!(i < 6 && *m == mlp, "block {i}: {m:?}");
+                assert_eq!(m.not_run(), Some(Act::SWIGLU_OAI_NOT_RUN));
+                dense += 1;
+            }
+            Body::Ffn(Ffn::Moe(m)) => {
+                assert_eq!(
+                    (m.experts, m.router.top_k, m.router.renorm, m.router.bias, m.router.scale, m.router.logit_scale),
+                    (128, 4, true, true, 2.0, 1.0),
+                    "block {i}"
+                );
+                assert!(
+                    m.router.score == RouterScore::Sigmoid && m.router.groups.is_none() && !m.router.hash && m.latent.is_none() && !m.shared_gate,
+                    "block {i}"
+                );
+                assert_eq!((m.expert, m.shared), (mlp, Some(mlp)), "block {i}");
+                sparse += 1;
+            }
+            _ => panic!("block {i}"),
+        }
+    }
+    assert_eq!((attentions, dense, sparse), (60, 3, 57));
+    // every tensor the description reads, at the checkpoint's shape and in the stored format the description says
+    let have = header_names(&h);
+    let tensors = header_tensors(&h);
+    let (mut fp8, mut fp4, mut plain) = (0, 0, 0);
+    let scale_names: BTreeSet<&String> = d.scales.values().collect();
+    for n in d.names() {
+        let (dtype, shape, _) = &tensors[&n];
+        match (dtype.as_str(), d.scales.get(&n)) {
+            // (an expert's runs' scales, FP8 themselves, and their own scale: one fp32 number a matrix)
+            ("F8_E4M3", Some(g)) if n.ends_with(".weight_scale") => {
+                assert_eq!((g, &tensors[g].0, tensors[g].1.len()), (&n.replace(".weight_scale", ".weight_global_scale"), &"F32".to_string(), 0), "{n}");
+            }
+            // (a product: FP8, a byte's scale a run of 32 columns of a row)
+            ("F8_E4M3", Some(s)) => {
+                assert_eq!((s, d.shapes.get(&n)), (&format!("{n}_scale_inv"), Some(shape)), "{n}");
+                assert_eq!((tensors[s].0.as_str(), &tensors[s].1), ("U8", &vec![shape[0], shape[1] / 32]), "{s}");
+                fp8 += 1;
+            }
+            // (an expert's matrix: two 4-bit values a byte along a row, an FP8 scale a run of 16)
+            ("U8", Some(s)) if n.ends_with(".weight_packed") => {
+                let want = &d.shapes[&n];
+                assert_eq!((s, shape), (&n.replace(".weight_packed", ".weight_scale"), &vec![want[0], want[1] / 2]), "{n}");
+                assert_eq!((tensors[s].0.as_str(), &tensors[s].1), ("F8_E4M3", &vec![want[0], want[1] / 16]), "{s}");
+                fp4 += 1;
+            }
+            (_, None) if scale_names.contains(&n) => {}
+            (_, None) => {
+                let router = n.ends_with("block_sparse_moe.gate.weight") || n.ends_with("e_score_correction_bias");
+                assert_eq!(dtype, if router { "F32" } else { "BF16" }, "{n} with no scales named");
+                assert_eq!(d.shapes.get(&n), Some(shape), "{n}");
+                plain += 1;
+            }
+            (t, s) => panic!("{n}: {t}, scales {s:?}"),
+        }
+    }
+    // (60 layers of q, k, v, o and the indexer's two products, three dense MLPs and 57 shared experts of three matrices; 57 layers of 128 experts of three;
+    // 60 layers of two norms and four head norms, 57 routers and their biases, the embedding, the last norm and the head)
+    assert_eq!((fp8, fp4, plain), (60 * 6 + 3 * 3 + 57 * 3, 57 * 128 * 3, 60 * 6 + 57 * 2 + 3));
+    let l = "language_model.model.layers.59";
+    assert_eq!(d.shapes[&format!("{l}.self_attn.index_q_proj.weight")], [4 * 128, 6144]);
+    assert_eq!(d.shapes[&format!("{l}.self_attn.index_k_proj.weight")], [128, 6144]);
+    assert_eq!(d.shapes[&format!("{l}.block_sparse_moe.experts.127.w2.weight_packed")], [6144, 3072]);
+    assert_eq!(
+        d.scales[&format!("{l}.block_sparse_moe.shared_experts.up_proj.weight")],
+        format!("{l}.block_sparse_moe.shared_experts.up_proj.weight_scale_inv")
+    );
+    assert!(!d.scales.contains_key(&format!("{l}.block_sparse_moe.gate.weight")) && !d.scales.contains_key("language_model.lm_head.weight"));
+    // (left unread: the vision tower and its projectors, and each expert matrix's input scale)
+    assert_eq!(d.unread, ["vision_tower.", "multi_modal_projector.", "patch_merge_mlp.", "*.input_global_scale"]);
+    assert_eq!(have.iter().filter(|n| n.ends_with(".input_global_scale")).count(), 57 * 128 * 3);
+    assert!(["vision_tower.", "multi_modal_projector.", "patch_merge_mlp."].iter().all(|p| have.iter().any(|n| n.starts_with(p))));
+    assert!(!d.names().iter().any(|n| n.ends_with(".input_global_scale") || !n.starts_with("language_model.")));
+    assert_eq!((have.len(), d.names().len()), (89_632, 67_221));
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+}
+
+/// A small config of the MiniMax M3 layout with `keys` over its text model's (a key `sparse`: over its `sparse_attention_config`'s; `top`: over the
+/// wrapper's): three layers of 4 query heads over 2 of 8 with half a head rotated, the first and the last sparse (2 index heads of 8 keeping 2 blocks of 2
+/// positions, the query's own among them), the first a dense MLP and the others 6 experts of 2 a token with a shared expert.
+fn minimax_tiny(keys: serde_json::Value) -> serde_json::Value {
+    let sparse = serde_json::json!({
+        "use_sparse_attention": true, "sparse_index_dim": 8, "sparse_num_index_heads": 2, "sparse_topk_blocks": 2, "sparse_block_size": 2,
+        "sparse_score_type": "max", "sparse_init_block": 0, "sparse_local_block": 1, "sparse_attention_freq": [1, 0, 1],
+        "sparse_disable_index_value": [1, 1, 1],
+    });
+    let mut text = serde_json::json!({
+        "hidden_size": 32, "intermediate_size": 16, "num_hidden_layers": 3, "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 8,
+        "vocab_size": 61, "max_position_embeddings": 4096, "rms_norm_eps": 1e-6, "use_gemma_norm": true, "attention_output_gate": false,
+        "rope_theta": 10000000, "rotary_dim": 4, "partial_rotary_factor": 0.5, "hidden_act": "swigluoai", "use_qk_norm": true,
+        "tie_word_embeddings": false, "dense_intermediate_size": 48, "shared_intermediate_size": 16, "num_local_experts": 6, "num_experts_per_tok": 2,
+    });
+    text.as_object_mut().unwrap().extend(
+        serde_json::json!({
+            "n_shared_experts": 1, "scoring_func": "sigmoid", "use_routing_bias": true, "moe_layer_freq": [0, 1, 1], "qk_norm_type": "per_head",
+            "swiglu_alpha": 1.702, "swiglu_limit": 7.0, "routed_scaling_factor": 2.0, "sparse_attention_config": sparse,
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    let mut c = serde_json::json!({
+        "architectures": ["MiniMaxM3SparseForConditionalGeneration"], "model_type": "minimax_m3_vl", "image_token_index": 200025, "torch_dtype": "bfloat16",
+        "text_config": text,
+    });
+    let mut keys = keys.as_object().unwrap().clone();
+    if let Some(s) = keys.remove("sparse") {
+        c["text_config"]["sparse_attention_config"].as_object_mut().unwrap().extend(s.as_object().unwrap().clone());
+    }
+    if let Some(t) = keys.remove("top") {
+        c.as_object_mut().unwrap().extend(t.as_object().unwrap().clone());
+    }
+    c["text_config"].as_object_mut().unwrap().extend(keys);
+    c
+}
+
+/// The MiniMax M3 builder reads a config as the release's code does: the norms times the weight where `use_gemma_norm` is unsaid, the whole head rotated at
+/// 10,000 where the rotary's keys are, every layer a mixture where `moe_layer_freq` is, no shared expert, no choice bias and an unscaled sum where their
+/// keys are, no indexer without a `sparse_attention_config` and none on a layer its list says 0; a quantization_config's formats named as scales; and
+/// what it does not know, or what the references do not agree on, is refused by name.
+#[test]
+fn minimax_m3_reads_its_config_as_the_releases_code_does() {
+    use super::kinds::{Act, Attn, Body, Clamp, Ffn, IndexForm, Mixer, Moe, Norm, Rope};
+    let attn = |d: &super::describe::Described, layer: usize| -> Attn {
+        match &d.desc.blocks[2 * layer].body {
+            Body::Mixer(Mixer::Attention(a)) => a.clone(),
+            _ => panic!(),
+        }
+    };
+    let moe = |d: &super::describe::Described, layer: usize| -> Moe {
+        match &d.desc.blocks[2 * layer + 1].body {
+            Body::Ffn(Ffn::Moe(m)) => m.clone(),
+            b => panic!("layer {layer}: {b:?}"),
+        }
+    };
+    let d = describe(&minimax_tiny(serde_json::json!({}))).unwrap_or_else(|e| panic!("{}", e.msg));
+    let pn = Norm::rms_plus_one(1e-6);
+    let (a, b) = (attn(&d, 0), attn(&d, 1));
+    assert_eq!((a.heads, a.kv_heads, a.head_dim, a.q_norm, a.rope.as_ref()), (4, 2, 8, Some(pn), Some(&Rope::plain(1e7, 4))));
+    let ix = a.indexer.as_ref().unwrap();
+    assert_eq!((ix.heads, ix.head_dim, ix.top_k, ix.block, ix.form), (2, 8, 4, 2, IndexForm::Max { norm: pn, local: 1 }));
+    assert!(b.indexer.is_none() && attn(&d, 2).indexer == a.indexer);
+    assert!(matches!(&d.desc.blocks[1].body, Body::Ffn(Ffn::Mlp(m)) if m.act == Act::SwigluOai { alpha: 1.702 } && m.clamp == Some(Clamp::Gate(7.0))));
+    let m = moe(&d, 1);
+    assert_eq!((m.experts, m.router.top_k, m.router.bias, m.router.scale, m.shared, m.expert.clamp), (6, 2, true, 2.0, Some(m.expert), Some(Clamp::Gate(7.0))));
+    assert!(d.scales.is_empty() && d.fp8_block.is_none());
+    let l = |n: usize, rest: &str| format!("language_model.model.layers.{n}.{rest}");
+    assert_eq!((&d.shapes[&l(0, "self_attn.index_q_proj.weight")], &d.shapes[&l(0, "self_attn.index_k_norm.weight")]), (&vec![16, 32], &vec![8]));
+    assert_eq!((&d.shapes[&l(0, "mlp.gate_proj.weight")], &d.shapes[&l(2, "block_sparse_moe.experts.5.w3.weight")]), (&vec![48, 32], &vec![16, 32]));
+    assert_eq!(d.shapes[&l(1, "block_sparse_moe.shared_experts.down_proj.weight")], [32, 16]);
+    assert!(!d.names().iter().any(|n| n.starts_with(&l(1, "self_attn.index_"))) && d.names().contains(&l(1, "block_sparse_moe.e_score_correction_bias")));
+    assert_eq!((d.embed.as_str(), d.head.as_deref()), ("language_model.model.embed_tokens.weight", Some("language_model.lm_head.weight")));
+    // (unsaid: the norms times their weights, the whole head rotated at 10,000, every layer a mixture with no shared expert, no choice bias, an unscaled sum)
+    let mut plain = minimax_tiny(serde_json::json!({}));
+    for key in [
+        "use_gemma_norm",
+        "rotary_dim",
+        "partial_rotary_factor",
+        "rope_theta",
+        "moe_layer_freq",
+        "n_shared_experts",
+        "shared_intermediate_size",
+        "use_routing_bias",
+        "routed_scaling_factor",
+        "sparse_attention_config",
+        "dense_intermediate_size",
+        "use_qk_norm",
+        "attention_output_gate",
+    ] {
+        plain["text_config"].as_object_mut().unwrap().remove(key);
+    }
+    let p = describe(&plain).unwrap_or_else(|e| panic!("{}", e.msg));
+    let (a, m) = (attn(&p, 0), moe(&p, 0));
+    assert_eq!((a.q_norm, a.rope.as_ref(), a.indexer.as_ref(), p.desc.final_norm), (Some(Norm::rms(1e-6)), Some(&Rope::plain(1e4, 8)), None, Norm::rms(1e-6)));
+    assert_eq!((m.shared, m.router.bias, m.router.scale), (None, false, 1.0));
+    assert!(!p.names().iter().any(|n| n.contains("index_") || n.contains("shared_experts") || n.contains("e_score_correction_bias") || n.contains(".mlp.")));
+    // (a head's width unsaid is the model's over its heads)
+    let mut wide = minimax_tiny(serde_json::json!({"rotary_dim": 8, "partial_rotary_factor": 1.0}));
+    wide["text_config"].as_object_mut().unwrap().remove("head_dim");
+    assert_eq!(attn(&describe(&wide).unwrap_or_else(|e| panic!("{}", e.msg)), 1).head_dim, 8);
+    // (the release's quantization_config: the products FP8 with a scale a run of 32, but the modules it leaves out; the experts' codes, their runs' scales
+    // and the scales' own scale)
+    let quant = serde_json::json!({"quant_method": "mxfp8", "activation_scheme": "dynamic", "weight_block_size": [1, 32], "group_size": 16,
+        "moe_quant_algo": "NVFP4", "moe_quant_format": "nvfp4-pack-quantized",
+        "ignored_layers": ["language_model.model.layers.1.block_sparse_moe.gate", "lm_head", "model.embed_tokens", "vision_tower", "model.layers.2.self_attn.o_proj"]});
+    let q = describe(&minimax_tiny(serde_json::json!({"top": {"quantization_config": quant}}))).unwrap_or_else(|e| panic!("{}", e.msg));
+    let scale = |n: &str| q.scales.get(n).map(String::as_str);
+    for w in ["self_attn.q_proj", "self_attn.index_k_proj", "mlp.down_proj"] {
+        assert_eq!(scale(&l(0, &format!("{w}.weight"))), Some(l(0, &format!("{w}.weight_scale_inv")).as_str()), "{w}");
+    }
+    assert_eq!(
+        scale(&l(1, "block_sparse_moe.shared_experts.gate_proj.weight")),
+        Some(l(1, "block_sparse_moe.shared_experts.gate_proj.weight_scale_inv").as_str())
+    );
+    let e = l(1, "block_sparse_moe.experts.3.w1");
+    assert!(q.names().contains(&format!("{e}.weight_packed")) && !q.names().contains(&format!("{e}.weight")));
+    assert_eq!(scale(&format!("{e}.weight_packed")), Some(format!("{e}.weight_scale").as_str()));
+    assert_eq!(scale(&format!("{e}.weight_scale")), Some(format!("{e}.weight_global_scale").as_str()));
+    assert_eq!(q.shapes[&format!("{e}.weight_packed")], [16, 32]);
+    for left in
+        [l(2, "self_attn.o_proj.weight"), l(1, "block_sparse_moe.gate.weight"), l(0, "input_layernorm.weight"), "language_model.lm_head.weight".to_string()]
+    {
+        assert_eq!(scale(&left), None, "{left}");
+    }
+    assert_eq!((q.fp8_block, q.desc.blocks.len()), (None, 6));
+    let quant_with = |key: &str, v: serde_json::Value| {
+        let mut q = quant.clone();
+        q[key] = v;
+        serde_json::json!({"top": {"quantization_config": q}})
+    };
+    let sparse = |key: &str, v: serde_json::Value| serde_json::json!({"sparse": {key: v}});
+    for (keys, word) in [
+        (serde_json::json!({"use_qk_norm": false}), "use_qk_norm"),
+        (serde_json::json!({"qk_norm_type": "per_layer"}), "qk_norm_type per_layer"),
+        (serde_json::json!({"qk_norm_type": null}), "no qk_norm_type"),
+        (serde_json::json!({"attention_output_gate": true}), "attention_output_gate"),
+        (serde_json::json!({"num_key_value_heads": 3}), "not whole heads a key head"),
+        (serde_json::json!({"partial_rotary_factor": 0.25}), "partial_rotary_factor = 0.25"),
+        (serde_json::json!({"rotary_dim": 3}), "rotary_dim = 3"),
+        (serde_json::json!({"rope_scaling": {"type": "yarn", "factor": 4.0}}), "rope_scaling"),
+        (serde_json::json!({"hidden_act": "silu"}), "hidden_act"),
+        (serde_json::json!({"swiglu_limit": 0.0}), "swiglu_limit = 0"),
+        (serde_json::json!({"swiglu_alpha": null}), "no swiglu_alpha"),
+        (serde_json::json!({"scoring_func": "softmax"}), "scoring_func"),
+        (serde_json::json!({"shared_intermediate_size": 32}), "shared_intermediate_size = 32"),
+        (serde_json::json!({"moe_layer_freq": [0, 1]}), "moe_layer_freq has 2 entries for 3 layers"),
+        (serde_json::json!({"num_experts_per_tok": 7}), "num_experts_per_tok = 7"),
+        (serde_json::json!({"dense_intermediate_size": null}), "no dense_intermediate_size"),
+        (serde_json::json!({"intermediate_size": null}), "no intermediate_size"),
+        (serde_json::json!({"num_mtp_modules": 1}), "config key num_mtp_modules is not understood"),
+        (serde_json::json!({"sparse_attention_config": 4}), "sparse_attention_config = 4 is not an object"),
+        (sparse("sparse_score_type", "lse".into()), "sparse_score_type lse"),
+        (sparse("sparse_init_block", 1.into()), "sparse_init_block = 1"),
+        (sparse("sparse_init_tokens", 4.into()), "config key sparse_init_tokens is not understood"),
+        (sparse("sparse_num_index_heads", 4.into()), "sparse_num_index_heads = 4 for 2 key heads"),
+        (sparse("sparse_disable_index_value", serde_json::json!([1, 1, 0])), "does not say 1 for the sparse layer 2"),
+        (sparse("sparse_disable_index_value", serde_json::Value::Null), "does not say 1 for the sparse layer 0"),
+        (sparse("sparse_local_block", 3.into()), "keeping 2 blocks of 2, 3 of them the query's own"),
+        (sparse("sparse_index_dim", 2.into()), "under a rotary of 4"),
+        (sparse("use_sparse_attention", false.into()), "use_sparse_attention"),
+        (sparse("sparse_attention_freq", serde_json::json!([1, 1])), "sparse_attention_freq has 2 entries for 3 layers"),
+        (sparse("training_stage", "dash".into()), "config key training_stage is not understood"),
+        (serde_json::json!({"top": {"num_reward_heads": 2}}), "num_reward_heads = 2"),
+        (serde_json::json!({"top": {"dspark_block_size": 7}}), "config key dspark_block_size is not understood"),
+        (quant_with("quant_method", "fp8".into()), "where the description reads mxfp8"),
+        (quant_with("weight_block_size", serde_json::json!([128, 128])), "weight_block_size [128,128] is not supported"),
+        (quant_with("moe_quant_algo", "MXFP4".into()), "the experts' stored format is read as NVFP4"),
+        (quant_with("moe_quant_format", serde_json::Value::Null), "the experts' stored format is read as NVFP4"),
+        (quant_with("group_size", 32.into()), "group_size"),
+        (quant_with("activation_scheme", "static".into()), "activation_scheme"),
+        (quant_with("kv_cache_quant_algo", "FP8".into()), "config key kv_cache_quant_algo is not understood"),
+    ] {
+        let e = describe(&minimax_tiny(keys)).unwrap_err().msg;
+        assert!(e.contains(word), "{word}: {e}");
+    }
+    // (a sparse layer's indexer with no block of its own always kept, and a layer said dense whose flag of the indexer's values is then nothing)
+    let free = describe(&minimax_tiny(sparse("sparse_local_block", 0.into()))).unwrap();
+    assert_eq!(attn(&free, 0).indexer.unwrap().form, IndexForm::Max { norm: pn, local: 0 });
+    assert!(describe(&minimax_tiny(sparse("sparse_disable_index_value", serde_json::json!([1, 0, 1])))).is_ok());
+    // (the wrapper's type alone chooses the builder: another wrapper whose text model names no type has none)
+    let other = describe(&minimax_tiny(serde_json::json!({"top": {"model_type": "minimax_m2_vl"}}))).unwrap_err().msg;
+    assert_eq!(other, "model_type minimax_m2_vl has no description builder yet");
+}
+
+/// The MiniMax M3 layout on the CPU reference, a random model of each small config. It is causal, reads the whole context, and steps as it prompts (the
+/// indexer's keys are cached a token, its blocks are the positions'). While a query sees no more blocks than its indexer keeps, the sparse layers are the
+/// attention without an indexer, to the bit; from the first position of the third block on they are not, at every row; and an indexer that keeps every
+/// block is no indexer at any length. The SwiGLU's gain and limit are read, and it is not SiLU's gated pair: the up is shifted. The experts' sum is
+/// scaled: at 2 it is, to the bit, the one of a model at 1 whose experts' second matrices are doubled, and not the one whose shared expert's is too.
+#[test]
+fn minimax_m3_on_the_reference_keeps_blocks_a_key_head_and_shifts_the_up() {
+    use super::kinds::{Act, Body, Ffn, ModelDesc};
+    // (a fixed draw a tensor: its name's bytes seed it; a norm's weights, which are added to 1, near 0)
+    fn draw(n: &str, len: usize) -> Vec<f32> {
+        let mut s = n.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |a, b| (a ^ b as u64).wrapping_mul(0x0100_0000_01B3));
+        let x = if n.contains("norm") { 0.2 } else { 0.6 };
+        (0..len)
+            .map(|_| {
+                s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                x * (((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5)
+            })
+            .collect()
+    }
+    // (`edit`: a change to the description before it is loaded; `w2_x`: a factor on every routed expert's second matrix; `shared_x`: on every shared expert's)
+    let load = |cfg: &serde_json::Value, edit: &dyn Fn(&mut ModelDesc), w2_x: f32, shared_x: f32| -> RefModel {
+        let mut d = describe(cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        edit(&mut d.desc);
+        let src = |n: &str| {
+            let shape = d.shapes.get(n)?.clone();
+            let x = match n {
+                _ if n.ends_with(".w2.weight") => w2_x,
+                _ if n.ends_with(".shared_experts.down_proj.weight") => shared_x,
+                _ => 1.0,
+            };
+            Some((shape.clone(), draw(n, shape.iter().product()).into_iter().map(|v| v * x).collect()))
+        };
+        RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg))
+    };
+    let same = |_: &mut ModelDesc| {};
+    let run = |cfg: &serde_json::Value, toks: &[u32]| load(cfg, &same, 1.0, 1.0).forward(toks, 0).unwrap_or_else(|e| panic!("{}", e.msg));
+    let a: [u32; 9] = [5, 9, 13, 17, 21, 25, 29, 33, 37];
+    let base = minimax_tiny(serde_json::json!({}));
+    let rows = run(&base, &a);
+    assert_eq!((rows.len(), rows[8].len()), (9, 61));
+    assert!(rows.iter().flatten().all(|x| x.is_finite()) && rows[8].iter().any(|&x| x != rows[8][0]), "finite, and not one value");
+    // (causal, and the context is read: the middle layer attends to every token)
+    let mut later = a;
+    later[8] = 44;
+    assert_eq!(rows[..8], run(&base, &later)[..8], "a later token changes no earlier row");
+    let mut first = a;
+    first[0] = 44;
+    assert_ne!(rows[8], run(&base, &first)[8], "the last row reads the first token");
+    // (a token at a time, and a prompt then its next tokens: the same bits)
+    let mut m = load(&base, &same, 1.0, 1.0);
+    let mut by_step = Vec::new();
+    for (t, &tok) in a.iter().enumerate() {
+        by_step.extend(m.forward(&[tok], t as u32).unwrap_or_else(|e| panic!("{}", e.msg)));
+    }
+    assert_eq!(by_step, rows, "a token at a time is the prompt");
+    let mut m = load(&base, &same, 1.0, 1.0);
+    let mut parts = m.forward(&a[..5], 0).unwrap();
+    parts.extend(m.forward(&a[5..], 5).unwrap());
+    assert_eq!(parts, rows, "a prompt, then its next tokens");
+    // the indexer: 2 blocks of 2 positions kept
+    let sparse = |key: &str, v: serde_json::Value| minimax_tiny(serde_json::json!({"sparse": {key: v}}));
+    let full = run(&sparse("sparse_attention_freq", serde_json::json!([0, 0, 0])), &a);
+    for t in 0..9 {
+        assert_eq!(rows[t] == full[t], t < 4, "row {t}: two blocks hold the first four positions");
+    }
+    assert_eq!(run(&sparse("sparse_topk_blocks", 5.into()), &a), full, "an indexer that keeps every block is none");
+    assert_ne!(run(&sparse("sparse_topk_blocks", 4.into()), &a)[8], full[8], "four of five blocks are not the context");
+    assert_eq!(run(&sparse("sparse_topk_blocks", 4.into()), &a)[..8], full[..8], "four blocks hold the first eight positions");
+    assert_ne!(run(&sparse("sparse_local_block", 2.into()), &a), rows, "the own block and the one before it are another choice than the own and the best");
+    // the SwiGLU
+    assert_ne!(rows[8], run(&minimax_tiny(serde_json::json!({"swiglu_alpha": 1.0})), &a)[8], "the sigmoid's gain is read");
+    assert_ne!(rows[8], run(&minimax_tiny(serde_json::json!({"swiglu_limit": 0.05})), &a)[8], "a limit that bites is another answer");
+    let silu = |d: &mut ModelDesc| {
+        for b in d.blocks.iter_mut() {
+            match &mut b.body {
+                Body::Ffn(Ffn::Mlp(m)) => m.act = Act::Silu,
+                Body::Ffn(Ffn::Moe(m)) => {
+                    m.expert.act = Act::Silu;
+                    m.shared = m.shared.map(|s| super::kinds::Mlp { act: Act::Silu, ..s });
+                }
+                _ => {}
+            }
+        }
+    };
+    let gain_one = minimax_tiny(serde_json::json!({"swiglu_alpha": 1.0}));
+    assert_ne!(
+        run(&gain_one, &a)[8],
+        load(&gain_one, &silu, 1.0, 1.0).forward(&a, 0).unwrap()[8],
+        "at a gain of 1 the gate is SiLU's and the up is still shifted"
+    );
+    // the experts' sum, scaled; the shared expert is not
+    let unscaled = minimax_tiny(serde_json::json!({"routed_scaling_factor": 1.0}));
+    assert_ne!(rows[8], run(&unscaled, &a)[8], "the experts' sum doubled is another answer");
+    assert_eq!(rows, load(&unscaled, &same, 2.0, 1.0).forward(&a, 0).unwrap(), "the experts' sum doubled is their second matrices doubled");
+    assert_ne!(rows[8], load(&unscaled, &same, 2.0, 2.0).forward(&a, 0).unwrap()[8], "the shared expert is added as it is");
+}
+
 /// Hy4 Flash's config as released (the top level with its text model's and its tower's keys), with `text` over the text model's keys and `top` over the top
 /// level's. The lists a layer and the n-gram tables' sizes are made as the release has them: a layer of latent attention with the indexer first and on
 /// every fourth after layer 1, sliding ones between; a dense feed-forward on the first layer; the tables' sizes the 64 primes past 10,312,000 in order,

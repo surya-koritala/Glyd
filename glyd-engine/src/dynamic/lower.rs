@@ -302,6 +302,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
         // (the feed-forward: the gated SiLU MLP, or a mixture of experts, the layer's block of them in `Op::Moe`'s order: `experts::of_layers`)
         let experts = match &fb.body {
             Body::Ffn(Ffn::Mlp(mlp)) if mlp.act == Act::Silu && mlp.gated && !mlp.bias && mlp.clamp.is_none() => false,
+            Body::Ffn(Ffn::Mlp(mlp)) if mlp.not_run().is_some() => return err(format!("{what}: layer {l}'s MLP: {}", mlp.not_run().unwrap_or_default())),
             Body::Ffn(Ffn::Moe(_)) => true,
             b => return err(format!("{what}: layer {l}'s second block is {b:?}, where the executor's is the gated SiLU MLP or a mixture of experts")),
         };
@@ -702,6 +703,9 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                     }
                     Mixer::Attention(a) => {
                         let ix = a.indexer.as_ref().ok_or_else(|| Error(format!("{what}: an attention with no indexer")))?;
+                        if let IndexForm::Max { .. } = ix.form {
+                            return err(format!("{what}: {}", IndexForm::MAX_NOT_RUN));
+                        }
                         let IndexForm::Mean { norm: inorm } = ix.form else {
                             return err(format!("{what}: an indexer of {:?}, where the model's pools are mean-pooled", ix.form));
                         };

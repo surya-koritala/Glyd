@@ -279,6 +279,14 @@
     "plan": "ab1b183f4358d678",
     "family": "refused: m is a MiMoV2ForCausalLM model, which this engine has no description of yet"
   },
+  "headers/MiniMax-M3.1-Flash.json": {
+    "blocks": 120,
+    "tensors": 67221,
+    "kinds": "36b3d95b84f6f2eb",
+    "weights": "d9a5c827b4c57721",
+    "plan": "194189cdc0b77f67",
+    "family": "refused: m is a MiniMaxM3SparseForConditionalGeneration model, which this engine has no description of yet"
+  },
   "headers/Mistral-Large-4-1T-A52B.json": {
     "blocks": 144,
     "tensors": 56249,
