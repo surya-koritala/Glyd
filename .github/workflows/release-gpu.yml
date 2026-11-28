@@ -67,7 +67,7 @@ jobs:
       pythons: ${{ steps.plan.outputs.pythons }}
       wheels: ${{ steps.plan.outputs.wheels }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # every branch and tag: which branches hold the tag's commit
           persist-credentials: false
@@ -172,7 +172,7 @@ jobs:
       GLYD_GPU_COMPRESS: ${{ matrix.compress }}
       GLYD_GPU_NVCC_THREADS: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && !startsWith(github.ref, 'refs/tags/') && '2' || '2' }} # (GitHub's runner has 2 cores and 7 GB: one nvcc thread an architecture would be 6; on glyd-pc 4 threads ran ptxas out of its 10 GB, run 44943346511: 2 there too)
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
@@ -181,7 +181,7 @@ jobs:
       # (a run that is not a tag takes the library from the Actions cache where the GPU library's sources did not change; a tag builds it fresh. The check below runs either way.)
       - id: memo
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: lib
           key: gpulib-${{ matrix.name }}-cuda${{ matrix.cuda }}-${{ matrix.compress }}-${{ hashFiles('gpu/*.cu', 'gpu/*.h', 'gpu/build_lib.sh') }}-v1
@@ -209,11 +209,11 @@ jobs:
           done
           cd lib && for f in libglyd_gpu_cuda*.so; do sha256sum "$f" > "$f.sha256"; done && cat ./*.sha256
       - if: ${{ !startsWith(github.ref, 'refs/tags/') && steps.memo.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: lib
           key: gpulib-${{ matrix.name }}-cuda${{ matrix.cuda }}-${{ matrix.compress }}-${{ hashFiles('gpu/*.cu', 'gpu/*.h', 'gpu/build_lib.sh') }}-v1
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.artifact }}-${{ matrix.name }}-cuda${{ matrix.cuda }}
           path: |
@@ -255,13 +255,13 @@ jobs:
       CARGO_PROFILE_RELEASE_STRIP: symbols
       RUST_VERSION: "1.98.1"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
       - id: memo
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: .fatbin
           key: engine-fatbin-${{ matrix.name }}-cuda13.0.3-12.9-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h', 'gpu/glyd_gpu_kernels.h') }}-v1
@@ -299,11 +299,11 @@ jobs:
           done
           cd engine && sha256sum glyd-engine glyd > glyd-engine.sha256 && cat glyd-engine.sha256
       - if: ${{ !startsWith(github.ref, 'refs/tags/') && steps.memo.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: .fatbin
           key: engine-fatbin-${{ matrix.name }}-cuda13.0.3-12.9-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h', 'gpu/glyd_gpu_kernels.h') }}-v1
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: glyd-engine-${{ matrix.name }}
           path: |
@@ -333,7 +333,7 @@ jobs:
           - {name: linux-x86_64}
           - {name: linux-aarch64}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -359,7 +359,7 @@ jobs:
           tar -C out --owner=0 --group=0 -czf "out/$d.tar.gz" "$d"
           (cd out && sha256sum "$d.tar.gz" > "$d.tar.gz.sha256" && cat "$d.tar.gz.sha256" && tar -tzvf "$d.tar.gz")
           if tar -tzf "out/$d.tar.gz" | grep -i libglyd_gpu; then echo "the tarball holds a GPU library, which the engine no longer loads" >&2; exit 1; fi
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: engine-bundle-${{ matrix.name }}
           path: |
@@ -388,13 +388,13 @@ jobs:
       GLYD_ENGINE_NVCC_THREADS: "2"
       RUST_VERSION: "1.98.1"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
       - id: memo
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: .fatbin
           key: engine-fatbin-windows-cuda13.0.3-12.9.1-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h', 'gpu/glyd_gpu_kernels.h') }}-v1
@@ -422,11 +422,11 @@ jobs:
           if ($LASTEXITCODE) { throw 'cargo build glyd failed' }
           Get-ChildItem target\release\glyd.exe | Select-Object FullName, Length
       - if: ${{ !startsWith(github.ref, 'refs/tags/') && steps.memo.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: .fatbin
           key: engine-fatbin-windows-cuda13.0.3-12.9.1-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/hip.h', 'gpu/warp_emu.h', 'gpu/glyd_gpu_kernels.h') }}-v1
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: glyd-exe-windows
           path: target/release/glyd.exe
@@ -442,7 +442,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
@@ -488,7 +488,7 @@ jobs:
           if ($doctor -notmatch 'NVIDIA|GPU') { throw 'glyd doctor says nothing of the GPU' }
           # (doctor exits 1 here, rightly: this runner has no GPU. The step's result is the checks above, not doctor's exit code, which pwsh would return)
           exit 0
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: engine-bundle-windows-x86_64
           path: |
@@ -518,7 +518,7 @@ jobs:
       # (on glyd-pc a cap on the container's memory, swap included, and its cores, as kernels.yml has: ptxas cannot take the machine)
       options: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && !startsWith(github.ref, 'refs/tags/') && '--memory=12g --memory-swap=12g --cpus=8' || '' }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
@@ -580,7 +580,7 @@ jobs:
             /tmp/t/bin/python -m glyd_gpu --help | head -5
             echo "::endgroup::"
           done
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheels-${{ matrix.name }}
           path: glyd-gpu-py/dist/*.whl
@@ -625,7 +625,7 @@ jobs:
             size=$(stat -c %s "$w"); echo "$w: $size bytes"
             [ "$size" -lt 95000000 ] || { echo "$w is $size bytes: PyPI's limit is 100 MB (95 MB here, to keep room)"; exit 1; }
           done
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: glyd-gpu-wheels
           path: wheels/*.whl
@@ -668,7 +668,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
@@ -682,7 +682,7 @@ jobs:
           dir: bundles
           sums: SHA256SUMS-engine
           sbom: glyd-engine-${{ needs.plan.outputs.label }}.spdx.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: engine-signatures
           path: |
