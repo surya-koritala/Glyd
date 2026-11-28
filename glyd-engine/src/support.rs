@@ -97,6 +97,9 @@ pub struct Lossy {
     /// Its config read as its family's reader reads it before a plan is made: the reader's words where the engine does not run the model (Ok where the
     /// description and its lowering are the whole reading: `described`).
     pub reads: fn(&ModelConfig, Option<&str>) -> crate::ffi::Result<()>,
+    /// Whether its loader holds a model's experts lossless at penguin, every one on the GPU (the dense engine's, src/dynamic/dense.rs): the planner then sizes
+    /// them at that level and plans none in the computer's memory there. Elsewhere experts are held at the block levels on this route.
+    pub lossless_experts: bool,
 }
 
 /// A config the description and its lowering read whole (they refuse in words what the engine does not run).
@@ -243,7 +246,7 @@ pub static TABLE: [Support; 12] = [
         drafts: false,
         route: Route { bf16_twelve: true, expert_cache: ExpertCache::Release, ..ONE_GPU },
         saves: Some(SAVED),
-        lossy: Some(Lossy { kind: Kind::Qwen35, chunk: LOSSY_CHUNK, page: 1, draft: 0, pack: None, reads: described }),
+        lossy: Some(Lossy { kind: Kind::Qwen35, chunk: LOSSY_CHUNK, page: 1, draft: 0, pack: None, reads: described, lossless_experts: false }),
     },
     Support {
         family: Family::NemotronH,
@@ -257,7 +260,15 @@ pub static TABLE: [Support; 12] = [
         drafts: false,
         route: ONE_GPU,
         saves: Some(Saves { rest_at_wren: Some(crate::weights::Layout::Int6), ..SAVED }),
-        lossy: Some(Lossy { kind: Kind::NemotronH, chunk: LOSSY_CHUNK, page: 1, draft: 0, pack: Some(crate::nemotron::pack_layout), reads: nemotron_reads }),
+        lossy: Some(Lossy {
+            kind: Kind::NemotronH,
+            chunk: LOSSY_CHUNK,
+            page: 1,
+            draft: 0,
+            pack: Some(crate::nemotron::pack_layout),
+            reads: nemotron_reads,
+            lossless_experts: false,
+        }),
     },
     Support {
         family: Family::Gemma4,
@@ -271,7 +282,15 @@ pub static TABLE: [Support; 12] = [
         drafts: false,
         route: ONE_GPU,
         saves: Some(Saves { penguin: true, by_layer: true, ..SAVED }),
-        lossy: Some(Lossy { kind: Kind::Gemma4, chunk: GEMMA_CHUNK, page: 16, draft: GEMMA_DRAFT_BYTES, pack: None, reads: gemma4_reads }),
+        lossy: Some(Lossy {
+            kind: Kind::Gemma4,
+            chunk: GEMMA_CHUNK,
+            page: 16,
+            draft: GEMMA_DRAFT_BYTES,
+            pack: None,
+            reads: gemma4_reads,
+            lossless_experts: false,
+        }),
     },
     Support {
         family: Family::Kimi,
@@ -390,7 +409,7 @@ pub static TABLE: [Support; 12] = [
         route: ONE_GPU,
         saves: Some(SAVED),
         // (nothing of its own: the description and the dense lowering are the whole reading, the dense loader the engine)
-        lossy: Some(Lossy { kind: Kind::Qwen3, chunk: LOSSY_CHUNK, page: 1, draft: 0, pack: None, reads: described }),
+        lossy: Some(Lossy { kind: Kind::Qwen3, chunk: LOSSY_CHUNK, page: 1, draft: 0, pack: None, reads: described, lossless_experts: true }),
     },
 ];
 

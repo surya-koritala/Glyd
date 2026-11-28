@@ -1507,7 +1507,15 @@ fn open_lossy(a: &Args, plan: &LoadPlan, dir: &Path, m: &ModelConfig, gpu: &Gpu,
         (Box::new(e), bytes, vocab)
     } else if plan.kind == Kind::Qwen3 {
         // the executor (R3c, #139): a Llama-style dense model's description from its config, its products at the plan's level
-        let mut e = crate::dynamic::dense::load_of(dir, m, &o).map_err(|e| engine_refusal(e, name, plan, gpu))?;
+        // (a described family with experts the GPU does not hold whole: its experts in the expert cache of the plan's places, as the Qwen3.5 layout's)
+        let caching = match plan.experts {
+            Some(c) => {
+                let offload = crate::offload::offload_args(a).map_err(|e| Refusal::new(e.msg, "--cpu-threads takes a number of threads: --cpu-threads 8"))?;
+                Some(crate::hbg_store::HbCaching { places: c.slots, ram: None, offload, dense: 0 })
+            }
+            None => None,
+        };
+        let mut e = crate::dynamic::dense::load_cached(dir, m, &o, caching.as_ref()).map_err(|e| engine_refusal(e, name, plan, gpu))?;
         twelve_bit_pages(&mut e, plan, dir, m, name, ui)?;
         let (bytes, vocab) = (e.weights_bytes(), e.desc().vocab);
         (Box::new(e), bytes, vocab)

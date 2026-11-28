@@ -4165,7 +4165,11 @@ pub mod sizing {
         let max_pos = c.shared.max_position_embeddings.ok_or_else(|| refuse(crate::ffi::Error("no max_position_embeddings".into())))?;
         let low = crate::dynamic::split::lowered_described(&d, c.num("num_hidden_layers").unwrap_or(0), max_pos).map_err(refuse)?;
         // (its experts at this level, refused where they are not held at it)
-        let moe = MoeShape::of(&d, c);
+        let mut moe = MoeShape::of(&d, c);
+        // (the dense engine holds a described family's experts lossless, every one on the GPU: penguin is a level of theirs where the GPU holds the model)
+        if let Some(x) = moe.as_mut() {
+            x.lossless = lossy.lossless_experts;
+        }
         if let Some(Err(e)) = moe.as_ref().map(|x| x.place(layout)) {
             let fix = match layout {
                 Layout::Hummingbird => format!("Run it at the linnet or kestrel level: glyd run {model}:linnet"),
@@ -4306,7 +4310,9 @@ pub mod sizing {
                 Err(why) => also = format!("; in stages over its {} GPUs {why}", devs.len()),
             }
         }
-        if let Some(src) = lv.experts.as_ref().filter(|_| fitted.is_err() || cache.is_some()) {
+        // (not at penguin with the dense engine: the expert cache holds experts at a block level, and lossless they are all on the GPU or the level is refused)
+        let lossless_whole = layout == Layout::Tiered && lv.row.lossy.is_some_and(|l| l.lossless_experts);
+        if let Some(src) = lv.experts.as_ref().filter(|_| (fitted.is_err() || cache.is_some()) && !lossless_whole) {
             // (its context the one asked, else LOSSY_CTX, every one of its users holding it)
             let ctx = asked.unwrap_or(LOSSY_CTX).min(lv.max_pos.max(LOSSY_MIN_CTX));
             match src.as_ref().map_err(String::clone).and_then(|src| experts_in_ram(src, n.kv(n.users as u64, ctx), layout, free, host, cache, host_asked, gpu))
@@ -4627,6 +4633,9 @@ pub mod sizing {
         gated: bool,
         latent: usize,
         scaled: bool,
+        /// Whether its loader holds every expert lossless on the GPU at penguin (the dense engine's, `dynamic::dense`: the described layers'), so a place
+        /// has bytes at that level too; set by the level's sizing (`level_of`).
+        lossless: bool,
     }
 
     impl MoeShape {
@@ -4636,7 +4645,7 @@ pub mod sizing {
             use crate::runtime::describe::Source;
             use crate::runtime::kinds::{Body, Ffn};
             let (nl, nb) = (m.num("num_hidden_layers").unwrap_or(0), d.desc.blocks.len().max(1));
-            let mut x = MoeShape { moe: vec![false; nl], experts: 0, top_k: 0, inter: 0, width: 0, gated: false, latent: 0, scaled: false };
+            let mut x = MoeShape { moe: vec![false; nl], experts: 0, top_k: 0, inter: 0, width: 0, gated: false, latent: 0, scaled: false, lossless: false };
             let mut seen = false;
             for (b, (blk, roles)) in d.desc.blocks.iter().zip(&d.blocks).enumerate() {
                 let Body::Ffn(Ffn::Moe(e)) = &blk.body else { continue };
@@ -4675,6 +4684,11 @@ pub mod sizing {
                     ))
                 }
                 Layout::Hummingbird => return crate::moe_hb::expert_bytes_mean(self.experts, self.inter, self.latent),
+                // (lossless: its two matrices' bf16 bytes at the share the penguin level's packing leaves of them, as the other matrices are counted)
+                Layout::Tiered if self.lossless => {
+                    let up = if self.gated { 2 * self.inter } else { self.inter };
+                    return Ok(2 * (up * self.width + self.width * self.inter) as u64 * crate::dynamic::split::TIERED_PCT / 100);
+                }
                 Layout::Int6 => glyd_gpu::pack::INT6_TAG,
                 Layout::Int5 => glyd_gpu::pack::INT5_TAG,
                 Layout::Int4 => glyd_gpu::pack::INT4_TAG,
@@ -6093,7 +6107,7 @@ mod tests {
             ("cli.rs", "if plan.kind == Kind::Gemma4 {", "`open_lossy`: the one-GPU route's loader by the plan's engine (its row's `Lossy::kind`), each arm a family's weight map; a seam of that route's loaders is its own piece"),
             ("cli.rs", "crate::dynamic::gemma4::load_of(", "as above"),
             ("cli.rs", "} else if plan.kind == Kind::Qwen3 {", "as above"),
-            ("cli.rs", "crate::dynamic::dense::load_of(", "as above"),
+            ("cli.rs", "crate::dynamic::dense::load_cached(", "as above"),
             ("cli.rs", "} else if plan.kind == Kind::NemotronH {", "as above"),
             ("cli.rs", "crate::dynamic::nemotron::load_whole_of(", "as above"),
             ("cli.rs", "crate::dynamic::qwen35::", "as above (the arm of the rest: the Qwen3.5 layout's)"),
@@ -6404,8 +6418,8 @@ mod tests {
         for (name, layers, moe) in
             [("Domyn-Edge-Base", 36, false), ("granite-swash-2b", 24, false), ("Mellum2.1-12B-A2.5B-Instruct", 28, true), ("Aion-1.0-Instruct-2.3B", 28, false)]
         {
-            // (a mixture of experts on the one-GPU route holds its experts at the block levels: at penguin it is refused in that route's words for now)
-            let levels: &[Layout] = if moe { &[Layout::Int6, Layout::Int5, Layout::Int4] } else { &[Layout::Tiered, Layout::Int6, Layout::Int5, Layout::Int4] };
+            // (a mixture of experts too: the dense engine holds its experts lossless at penguin, and at the block levels in their layout)
+            let levels: &[Layout] = &[Layout::Tiered, Layout::Int6, Layout::Int5, Layout::Int4];
             let by_level: Vec<u64> = levels
                 .iter()
                 .map(|&l| {
@@ -6423,8 +6437,11 @@ mod tests {
                 .collect();
             assert!(by_level.windows(2).all(|w| w[0] > w[1]) && *by_level.last().unwrap() > 0, "{name}: {by_level:?}");
         }
-        let e = level("Mellum2.1-12B-A2.5B-Instruct", Layout::Tiered).err().expect("a mixture's penguin on this route");
-        assert!(format!("{e:?}").contains("kestrel"), "{e:?}");
+        // (Mellum's experts at penguin: 64 of them in each of 28 layers, a place the two matrices' bf16 bytes at the penguin share)
+        let lv = level("Mellum2.1-12B-A2.5B-Instruct", Layout::Tiered).unwrap();
+        let cache = lv.experts.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(cache.place, 2 * (2 * 896 * 2304 + 2304 * 896) as u64 * crate::dynamic::split::TIERED_PCT / 100);
+        assert!(cache.all == 28 * 64 * cache.place && cache.all < lv.weights, "{} of {}", cache.all, lv.weights);
         let lv = level("Domyn-Edge-Base", Layout::Tiered).unwrap();
         let low = &lv.layers.as_ref().unwrap().low;
         let rings: Vec<(usize, usize, usize)> = low.rings.iter().map(|r| (r.d, r.nk, r.window)).collect();
@@ -6452,6 +6469,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name}: no plan"));
             assert_eq!((p.level, p.kind), (want, Kind::Qwen3), "{name}: {p:?}");
         }
+        // (and Mellum lossless where the GPU holds it whole: an A100 of 80 GB, every expert on it, none in the computer's memory)
+        let (text, _) = recorded_release("Mellum2.1-12B-A2.5B-Instruct");
+        let dir = model_dir("described", "Mellum2.1-12B-A2.5B-Instruct", &text);
+        let p = planned(&args(&["fit", dir.to_str().unwrap(), "--machine", "a100-80g"])).unwrap().plan.chosen.and_then(|c| c.load).expect("a plan on an A100");
+        assert!(p.level == "penguin" && p.kind == Kind::Qwen3 && p.experts.is_none(), "{p:?}");
     }
 
     /// Both formats of the keys and values are lossless, so a plan takes the 12-bit pages GLYD_KV=lossless asks for only where they reserve no more than bf16
