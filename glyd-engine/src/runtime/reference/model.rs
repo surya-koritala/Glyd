@@ -44,6 +44,11 @@ pub fn load(src: Tensors, role: &str, s: &Source) -> Result<(Vec<usize>, Vec<f32
             let data: Vec<f32> = ranges.iter().flat_map(|&(a, b)| v[a * c..b * c].iter().copied()).collect();
             (vec![data.len() / c.max(1), c], data)
         }
+        Source::Transposed(n) => {
+            let (shape, v) = get(src, n)?;
+            let [c, r] = shape[..] else { return err(format!("{n}: {shape:?}, where a matrix is stored transposed")) };
+            (vec![r, c], (0..r).flat_map(|i| (0..c).map(move |j| (i, j))).map(|(i, j)| v[j * r + i]).collect())
+        }
         Source::Experts(v) => {
             let (mut shape, mut data) = (Vec::new(), Vec::new());
             for e in v {
@@ -79,6 +84,51 @@ pub fn logit(h: &Head, z: f32) -> f32 {
     let r = |v: f32, at: bool| if at { super::bf16(v) } else { v };
     let z = r(r(z, product) * h.scale, ops);
     h.softcap.map_or(z, |c| r(c * r(r(z / c, ops).ltanh(), ops), ops))
+}
+
+/// The logits' four-part correction of one logit `x` (`Head::correction`; `ranges` r and `ts` t, four values each): x + t0 relu(r0 - x) + t1 relu(x - r1) +
+/// t2 relu(r2 - x)^2 + t3 relu(x - r3)^2, the terms added in that order; where the head rounds `Twice`, each relu, square, product and sum rounded to bf16.
+/// A relu keeps a NaN.
+pub fn correct(h: &Head, ranges: &[f32], ts: &[f32], x: f32) -> f32 {
+    let twice = h.rounding == Rounding::Twice;
+    let r = |v: f32| if twice { super::bf16(v) } else { v };
+    let relu = |v: f32| if v > 0.0 || v.is_nan() { v } else { 0.0 };
+    let (lower, upper) = (r(relu(ranges[0] - x)), r(relu(x - ranges[1])));
+    let (lower_sq, upper_sq) = (r(relu(ranges[2] - x)), r(relu(x - ranges[3])));
+    let y = r(x + r(ts[0] * lower));
+    let y = r(y + r(ts[1] * upper));
+    let y = r(y + r(ts[2] * r(lower_sq * lower_sq)));
+    r(y + r(ts[3] * r(upper_sq * upper_sq)))
+}
+
+/// A head's logits from its products: each through the head's scale, cap and rounding (`logit`), then the four-part correction where the head has one
+/// (`fix`: its ranges and its factors).
+#[derive(Clone, Debug)]
+pub struct Logits {
+    pub head: Head,
+    pub fix: Option<(Vec<f32>, Vec<f32>)>,
+}
+
+impl Logits {
+    /// The head `h` with the correction's roles from `p` (the model's own: `logit_ranges`, `logit_ts`) where it has one.
+    pub fn of(h: &Head, p: &Params) -> Result<Logits> {
+        let fix = if h.correction {
+            let (r, t) = (p.vec("logit_ranges")?.to_vec(), p.vec("logit_ts")?.to_vec());
+            if r.len() != 4 || t.len() != 4 {
+                return err(format!("the logits' correction: {} ranges and {} factors, where each is four", r.len(), t.len()));
+            }
+            Some((r, t))
+        } else {
+            None
+        };
+        Ok(Logits { head: *h, fix })
+    }
+
+    /// One logit from the head's product `z`.
+    pub fn one(&self, z: f32) -> f32 {
+        let x = logit(&self.head, z);
+        self.fix.as_ref().map_or(x, |(r, t)| correct(&self.head, r, t, x))
+    }
 }
 
 /// Kimi-K3's depth mix for one token: the completed groups' sums (the sources) and the open group's partial sum.
@@ -291,13 +341,19 @@ impl RefModel {
             }
         }
         seen(&mut x);
-        let h = self.desc.head;
         let mut out = Vec::with_capacity(tokens.len());
         for (t, xt) in x.chunks(n * d).enumerate() {
             let y = self.final_h_with(xt, Some(&depth[t]), &lag[t])?;
-            out.push(super::matvec_w(self.head_w(), d, &y).into_iter().map(|z| logit(&h, z)).collect());
+            out.push(self.logits_of(&y)?);
         }
         Ok(out)
+    }
+
+    /// The logits of the head's input `y` (a final-normed row; a draft head's output): the head's product, its scale, cap and rounding, and its
+    /// four-part correction where it has one (`Logits`).
+    pub fn logits_of(&self, y: &[f32]) -> Result<Vec<f32>> {
+        let l = Logits::of(&self.desc.head, &self.p)?;
+        Ok(super::matvec_w(self.head_w(), self.desc.hidden, y).into_iter().map(|z| l.one(z)).collect())
     }
 
     /// The token's per-layer inputs (`kinds::PerLayerIn`), every layer's in order (none where the model has none): its row of `ple_embed` times sqrt(dim),
@@ -409,6 +465,7 @@ impl RefModel {
             norm_eps: 0.0,
             rounding: crate::runtime::kinds::Rounding::F32,
             lagged: false,
+            eps_outside: false,
         })
     }
 
@@ -426,11 +483,12 @@ impl RefModel {
             }
             Collapse::Weighted { eps, norm_eps } => {
                 let (f, base, sc) = (self.p.vec("out_hc_fn")?, self.p.vec("out_hc_base")?, self.p.vec("out_hc_scale")?[0]);
-                let r = 1.0 / (xt.iter().map(|v| v * v).sum::<f32>() / xt.len() as f32 + norm_eps).sqrt();
+                let sp = self.streams_p();
+                let r = StreamsP { norm_eps, ..sp }.norm_factor(xt);
                 let flat: Vec<f32> = xt.iter().map(|v| v * r).collect();
                 let mixes = super::matvec(f, flat.len(), &flat);
                 let pre: Vec<f32> = (0..n).map(|j| super::sigmoid(mixes[j] * sc + base[j]) + eps).collect();
-                super::collapse(&self.streams_p(), &pre, xt, d)
+                super::collapse(&sp, &pre, xt, d)
             }
             Collapse::DepthMix => {
                 let dp = depth.ok_or_else(|| Error("the depth mix's collapse without its sources".into()))?;
@@ -458,7 +516,7 @@ mod tests {
     const N: usize = 4;
 
     fn streams(lagged: bool) -> StreamsP {
-        StreamsP { streams: N, sinkhorn_iters: 20, eps: 1e-6, norm_eps: 1e-6, rounding: Rounding::F32, lagged }
+        StreamsP { streams: N, sinkhorn_iters: 20, eps: 1e-6, norm_eps: 1e-6, rounding: Rounding::F32, lagged, eps_outside: false }
     }
 
     fn mlp() -> Mlp {
@@ -485,7 +543,7 @@ mod tests {
             embed: Embed { scale: 1.0, norm: None, streams: N, per_layer: None, table: TableAt::Gpu },
             blocks: layers.iter().map(|l| l.block.clone()).collect(),
             final_norm: Norm::rms(1e-6),
-            head: Head { tied: false, softcap: None, scale: 1.0, collapse, rounding: Rounding::F32 },
+            head: Head { tied: false, softcap: None, scale: 1.0, collapse, rounding: Rounding::F32, correction: false },
             mtp: Vec::new(),
             vision: None,
             rope: None,
@@ -610,12 +668,146 @@ mod tests {
         assert!(again.record.is_none());
     }
 
+    /// The streams' norm with its epsilon outside the root (`StreamsP::eps_outside`): the mixing weights are of the streams times 1 / (rms + eps), by hand
+    /// from the definition, in a block and in the hyper-head (which norms as the model's streams do); the other form is 1 / sqrt(mean + eps), another
+    /// number wherever the epsilon is not nothing beside the streams, and the same one as the epsilon goes to 0.
+    #[test]
+    fn the_streams_norm_has_its_epsilon_where_the_kind_says() {
+        use crate::runtime::reference::{matvec, sigmoid};
+        let eps = 0.25f32;
+        let inside = StreamsP { norm_eps: eps, ..streams(false) };
+        let outside = StreamsP { eps_outside: true, ..inside };
+        let x = fill("outside.x", N * D, -2.0, 2.0);
+        let mean = x.iter().map(|v| v * v).sum::<f32>() / (N * D) as f32;
+        assert_eq!((inside.norm_factor(&x), outside.norm_factor(&x)), (1.0 / (mean + eps).sqrt(), 1.0 / (mean.sqrt() + eps)));
+        // (a block's weights: the input's by hand, pre_j = sigmoid((hc_fn x / (rms + eps))_j scale_0 + base_j) + hc_eps)
+        let l = block(0, outside);
+        let (pre, post, comb) = hc_weights(&outside, &l.p, &x).unwrap();
+        let r = 1.0 / (mean.sqrt() + eps);
+        let w = matvec(l.p.vec("hc_fn").unwrap(), N * D, &x.iter().map(|v| v * r).collect::<Vec<_>>());
+        let base = l.p.vec("hc_base").unwrap();
+        for j in 0..N {
+            assert_eq!(pre[j], sigmoid(w[j] * 0.7 + base[j]) + 1e-6, "pre {j}");
+            assert_eq!(post[j], 2.0 * sigmoid(w[N + j] * 0.9 + base[N + j]), "post {j}");
+        }
+        let (pre_in, post_in, comb_in) = hc_weights(&inside, &l.p, &x).unwrap();
+        assert!(pre != pre_in && post != post_in && comb != comb_in, "the two forms are two functions");
+        // (the same function as the epsilon goes: at 0 the two are the same bits or a rounding apart)
+        let (a, b) = (StreamsP { norm_eps: 0.0, ..inside }.norm_factor(&x), StreamsP { norm_eps: 0.0, ..outside }.norm_factor(&x));
+        assert!((a - b).abs() <= a * 2.0 * f32::EPSILON, "{a} {b}");
+        // (the hyper-head: the model's streams' form)
+        for s in [inside, outside] {
+            let mut m = model(s, Collapse::Weighted { eps: 1e-6, norm_eps: eps });
+            m.p.put("out_hc_fn", &[N, N * D], fill("outside.fn", N * N * D, -0.5, 0.5));
+            m.p.put("out_hc_base", &[N], fill("outside.base", N, -0.5, 0.5));
+            m.p.put("out_hc_scale", &[1], vec![0.8]);
+            let r = s.norm_factor(&x);
+            let mixes = matvec(m.p.vec("out_hc_fn").unwrap(), N * D, &x.iter().map(|v| v * r).collect::<Vec<_>>());
+            let w: Vec<f32> = (0..N).map(|j| sigmoid(mixes[j] * 0.8 + m.p.vec("out_hc_base").unwrap()[j]) + 1e-6).collect();
+            let folded: Vec<f32> = (0..D).map(|i| (0..N).map(|j| w[j] * x[j * D + i]).sum::<f32>()).collect();
+            assert_eq!(m.final_h(&x, None).unwrap(), norm(&m.desc.final_norm, &folded, Some(&m.final_norm), None), "{s:?}");
+        }
+        // (said in a description's text only where it is set)
+        assert!(!format!("{inside:?}").contains("eps_outside") && format!("{outside:?}").ends_with("eps_outside: true }"));
+    }
+
+    /// A matrix the checkpoint stores transposed loads turned, so that a product by the role is the stored matrix's by columns; three stored scalars load as
+    /// the one vector of their role, in the order named; a tensor that is no matrix is refused where it is to be turned.
+    #[test]
+    fn a_transposed_matrix_and_scalars_apart_load_as_their_roles() {
+        let stored = fill("turn.w", 5 * 3, -1.0, 1.0);
+        let src = |n: &str| match n {
+            "w" => Some((vec![5, 3], stored.clone())),
+            "a" => Some((vec![1], vec![0.25])),
+            "b" => Some((vec![1], vec![0.5])),
+            "c" => Some((vec![1], vec![0.75])),
+            "v" => Some((vec![7], vec![0.0; 7])),
+            _ => None,
+        };
+        let (shape, w) = load(&src, "hc_fn", &Source::Transposed("w".into())).unwrap();
+        assert_eq!(shape, [3, 5]);
+        for i in 0..3 {
+            for j in 0..5 {
+                assert_eq!(w[i * 5 + j], stored[j * 3 + i], "row {i}, column {j}");
+            }
+        }
+        // (the role's product of x is the stored matrix's columns weighed by x: x^T W_stored)
+        let x = fill("turn.x", 5, -1.0, 1.0);
+        let by_columns: Vec<f32> = (0..3).map(|i| (0..5).map(|j| stored[j * 3 + i] as f64 * x[j] as f64).sum::<f64>() as f32).collect();
+        assert_eq!(crate::runtime::reference::matvec(&w, 5, &x), by_columns);
+        let names = ["a", "b", "c"].map(String::from).to_vec();
+        assert_eq!(load(&src, "hc_scale", &Source::Rows(names)).unwrap(), (vec![3], vec![0.25, 0.5, 0.75]));
+        assert!(load(&src, "hc_fn", &Source::Transposed("v".into())).unwrap_err().msg.contains("stored transposed"));
+        assert_eq!(Source::Transposed("w".into()).names(), ["w"]);
+    }
+
+    /// The logits' four-part correction (`Head::correction`). In f32 it is the formula, region by region, by hand: nothing between the ranges, a line
+    /// below the first and above the second, a square added below the third and above the fourth. Where the head rounds `Twice` every operation rounds
+    /// to bf16: written out a second time step by step on values no step of which is exact, and another number than the f32 form's. A NaN stays one. A
+    /// model's logits are its head's, corrected with the model's own two roles; a head that says the correction without them is refused.
+    #[test]
+    fn the_logits_correction_is_the_formula_and_rounds_every_operation_where_the_head_does() {
+        use crate::runtime::reference::bf16;
+        let h = |rounding| Head { tied: false, softcap: None, scale: 1.0, collapse: Collapse::Mean, rounding, correction: true };
+        let (r, t) = ([-3.0f32, 5.0, -8.0, 10.0], [0.25f32, -0.125, 0.0625, -0.03125]);
+        let f = h(Rounding::F32);
+        assert_eq!(correct(&f, &r, &t, 1.0), 1.0);
+        assert_eq!(correct(&f, &r, &t, -4.0), -4.0 + 0.25 * 1.0);
+        assert_eq!(correct(&f, &r, &t, 7.0), 7.0 - 0.125 * 2.0);
+        assert_eq!(correct(&f, &r, &t, -10.0), -10.0 + 0.25 * 7.0 + 0.0625 * 4.0);
+        assert_eq!(correct(&f, &r, &t, 12.0), 12.0 - 0.125 * 7.0 - 0.03125 * 4.0);
+        assert!(correct(&f, &r, &t, f32::NAN).is_nan());
+        // (rounded: ranges and factors as a checkpoint holds them, bf16 values, and bf16 logits)
+        let tw = h(Rounding::Twice);
+        let (r, t) = ([-3.137f32, 5.291, -8.513, 10.77].map(bf16), [0.2713f32, -0.1317, 0.0619, -0.0331].map(bf16));
+        let (b, relu) = (bf16, |v: f32| v.max(0.0));
+        let mut differ = 0;
+        for x in [-11.3371f32, 13.7719, 0.4321, -3.3001, 5.4007, -8.6113, 10.9003, -47.11, 63.02].map(bf16) {
+            let (lo, hi, lo2, hi2) = (b(relu(r[0] - x)), b(relu(x - r[1])), b(relu(r[2] - x)), b(relu(x - r[3])));
+            let y = b(x + b(t[0] * lo));
+            let y = b(y + b(t[1] * hi));
+            let y = b(y + b(t[2] * b(lo2 * lo2)));
+            let y = b(y + b(t[3] * b(hi2 * hi2)));
+            assert_eq!(correct(&tw, &r, &t, x), y, "{x}");
+            assert_eq!(y, bf16(y), "a bf16 logit out");
+            differ += (correct(&f, &r, &t, x) != y) as usize;
+        }
+        assert!(differ >= 4, "the rounded form is another number on {differ} of 9");
+        // (a model: the head's logits, each corrected, by the model's own roles)
+        let tokens = [3u32, 7, 1];
+        let plain = {
+            let mut m = model(streams(false), Collapse::Mean);
+            m.desc.head.rounding = Rounding::Twice;
+            m.forward(&tokens, 0).unwrap()
+        };
+        let mut m = model(streams(false), Collapse::Mean);
+        m.desc.head = tw;
+        assert!(m.forward(&tokens, 0).unwrap_err().msg.contains("logit_ranges"));
+        m.p.put("logit_ranges", &[4], vec![-0.25, 0.25, -0.5, 0.5].into_iter().map(bf16).collect());
+        m.p.put("logit_ts", &[4], t.to_vec());
+        let got = m.forward(&tokens, 0).unwrap();
+        let (mr, mut moved) = (m.p.vec("logit_ranges").unwrap().to_vec(), 0);
+        for (g, p) in got.iter().zip(&plain) {
+            for (a, &z) in g.iter().zip(p) {
+                assert_eq!(*a, correct(&tw, &mr, &t, z));
+                moved += (*a != z) as usize;
+            }
+        }
+        assert!(moved > 8, "{moved} logits past a range");
+        m.p.put("logit_ts", &[3], vec![0.0; 3]);
+        assert!(m.forward(&tokens, 0).unwrap_err().msg.contains("where each is four"));
+        // (said in a description's text only where it is set)
+        assert!(
+            format!("{tw:?}").ends_with("rounding: Twice, correction: true }") && !format!("{:?}", Head { correction: false, ..tw }).contains("correction")
+        );
+    }
+
     /// The head's rounding points (`Head::rounding`): none in f32; the product's output alone; or a bf16 tensor between operations, as transformers
     /// soft-caps a bf16 model's logits (`/ cap`, `tanh`, `* cap`, each rounded), which the engine's g4_softcap does too. By hand.
     #[test]
     fn the_head_rounds_where_it_says() {
         use crate::runtime::reference::bf16;
-        let h = |rounding, scale| Head { tied: true, softcap: Some(30.0), scale, collapse: Collapse::None, rounding };
+        let h = |rounding, scale| Head { tied: true, softcap: Some(30.0), scale, collapse: Collapse::None, rounding, correction: false };
         let z = 23.456_79f32;
         assert_eq!(logit(&h(Rounding::F32, 1.0), z), 30.0 * (z / 30.0).ltanh());
         assert_eq!(logit(&h(Rounding::Once, 1.0), z), 30.0 * (bf16(z) / 30.0).ltanh());

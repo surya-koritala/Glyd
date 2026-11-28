@@ -221,6 +221,21 @@ impl MlaOp {
     /// the description's table `table` (made for the kind's rotary: `ModelDesc::ropes`). A gate takes a fused product.
     #[allow(clippy::too_many_arguments)]
     pub fn of(k: &kinds::Mla, input: MlaIn, q_b: usize, o: usize, s0: usize, ring: usize, tail: bool, table: Option<usize>) -> Result<MlaOp> {
+        // (the forms the CPU reference computes and no kernel does: refused by their names)
+        if let Some(why) = k.not_run() {
+            return err(why);
+        }
+        // (the parts of a latent attention the CPU reference computes and no kernel does: each refused by its name, before the kind is read further)
+        let not_run = [
+            (k.head_mix != 0, kinds::HEAD_MIX_NOT_RUN),
+            (k.sinks, kinds::Mla::SINKS_NOT_RUN),
+            (k.window.is_some(), kinds::Mla::WINDOW_NOT_RUN),
+            (k.indexer.as_ref().is_some_and(|x| x.rope_style.is_some()), kinds::Indexer::ROPE_STYLE_NOT_RUN),
+            (k.gate.is_some_and(|g| g.from == kinds::GateFrom::Latent), kinds::GateFrom::LATENT_NOT_RUN),
+        ];
+        if let Some((_, part)) = not_run.iter().find(|x| x.0) {
+            return err(format!("a latent attention: {part}"));
+        }
         let q_rank = k.q_lora.ok_or_else(|| Error("a latent attention whose query has no low rank: not an operation of this executor".into()))?;
         let rot = match (&k.rope, table) {
             (None, _) => None,
@@ -238,6 +253,7 @@ impl MlaOp {
             (Some(g), _) if g.from == kinds::GateFrom::Head => {
                 return err("a latent attention with an output gate of one value a head, which the executor does not run yet")
             }
+            (Some(g), _) if g.from == kinds::GateFrom::Latent => return err(format!("a latent attention: {}", kinds::GateFrom::LATENT_NOT_RUN)),
             (Some(g), MlaIn::Fused { .. }) if g.act == kinds::Act::Sigmoid && g.norm.is_none() => true,
             (Some(g), _) => return err(format!("a latent attention's gate of {g:?}: the kernels take a sigmoid gate in a fused input product")),
         };
@@ -1041,7 +1057,16 @@ mod tests {
                 shared: false,
                 form: crate::runtime::kinds::IndexForm::LAYER_KEYS,
                 rope: 0,
+                rope_style: None,
+                q_in: None,
+                pos_scale: false,
             }),
+            head_mix: 0,
+            sinks: false,
+            window: None,
+            pos_scale: false,
+            kv_from: None,
+            rope_learned: false,
         }
     }
 
@@ -1179,5 +1204,18 @@ mod tests {
         assert!(MlaOp::of(&kind(0, true, false), MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 0, 0, false, None).is_err());
         assert!(MlaOp::of(&kinds::Mla { rope: Some(kinds::Rope::plain(1e4, 64)), ..kind(64, false, false) }, MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false, None)
             .is_err());
+        // (Mistral Large's forms, which the CPU reference computes and no kernel does: each refused by its name)
+        let on_input = |x: Indexer| Indexer { q_in: Some(Norm::rms(1e-6)), pos_scale: true, ..x };
+        for (k, why) in [
+            (kinds::Mla { pos_scale: true, ..kind(0, false, false) }, kinds::Mla::POS_SCALE_NOT_RUN),
+            (kinds::Mla { kv_from: Some(0), ..kind(0, false, false) }, kinds::Mla::KV_FROM_NOT_RUN),
+            (kinds::Mla { rope_learned: true, ..kind(64, false, false) }, kinds::Mla::ROPE_LEARNED_NOT_RUN),
+            (kinds::Mla { indexer: kind(0, false, true).indexer.map(on_input), ..kind(0, false, false) }, kinds::Mla::INDEX_INPUT_NOT_RUN),
+        ] {
+            let Err(e) = MlaOp::of(&k, MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false, None) else { panic!("lowered: {why}") };
+            assert_eq!(e.msg, why);
+            assert!(why.ends_with("which the executor does not run yet"));
+        }
+        assert_eq!(kind(64, true, true).not_run(), None);
     }
 }

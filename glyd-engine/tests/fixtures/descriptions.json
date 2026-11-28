@@ -207,6 +207,14 @@
     "plan": "95218d17f177b31e",
     "family": "Layers"
   },
+  "headers/ERNIE-5.5-Flash-Preview-BF16.json": {
+    "blocks": 86,
+    "tensors": 70826,
+    "kinds": "060ed244d5ae39ce",
+    "weights": "05dfbe8989bd1f9b",
+    "plan": "7ef0a4a5f74d6ad1",
+    "family": "refused: m is a Ernie5_5_MoeForCausalLM model, which this engine has no description of yet"
+  },
   "headers/GLM-5.3.json": {
     "blocks": 156,
     "tensors": 118629,
@@ -262,6 +270,14 @@
     "weights": "a4359dec65860b12",
     "plan": "ab1b183f4358d678",
     "family": "Layers"
+  },
+  "headers/Mistral-Large-4-1T-A52B.json": {
+    "blocks": 144,
+    "tensors": 56249,
+    "kinds": "a66194f41870a4c3",
+    "weights": "7c1f64d6ebce060d",
+    "plan": "b5b110dd47de47f5",
+    "family": "refused: m is a MistralLarge4ForConditionalGeneration model, which this engine has no description of yet"
   },
   "headers/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.json": {
     "blocks": 52,

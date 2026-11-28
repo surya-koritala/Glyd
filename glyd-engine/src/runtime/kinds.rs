@@ -222,7 +222,21 @@ pub enum GateFrom {
     /// Its own product of one value a head, role `g` [heads, hidden]: every channel of a head's output times the head's one gate (LFM's
     /// `self_attn.gate_proj` on plain attention, Ling's `attention.g_proj` on the latent attention: its "head_wise" gate).
     Head,
+    /// Its own product of the attention's normed query latent (the low rank the queries are made from), not of the block's input, role `g` (ERNIE's
+    /// `self_attn.gate_proj`). On a latent attention [heads v_dim, q_lora]: each channel of the heads' outputs times the activation of its value,
+    /// before the output product. On a compressed attention [o_groups o_lora, q_lora]: the grouped low-rank output (after `o_a`) times it, before
+    /// `o_b`. An attention with no query latent has no such gate.
+    Latent,
 }
+
+impl GateFrom {
+    /// The refusal of an output gate from the query latent: the CPU reference computes it, the executor's gates are products of the block's input.
+    pub const LATENT_NOT_RUN: &'static str = "an attention's output gate from the query latent, which the executor does not run yet";
+}
+
+/// The refusal of an attention whose heads' outputs are mixed with each other in a low rank (`Comp::head_mix`, `Mla::head_mix`): the CPU reference computes
+/// it, the executor's attentions hand each head's output on as it is.
+pub const HEAD_MIX_NOT_RUN: &str = "the low-rank mix of an attention's heads' outputs, which the executor does not run yet";
 
 /// An attention output gate: `o = norm(o_head) * act(gate)` per head before the output product.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -254,10 +268,27 @@ pub struct Indexer {
     /// (the full-size GLM's indexer, its `qk_rope_head_dim`); 0: none (GLM-5.3-Flash, Kimi-K3.1, DeepSeek-V4). The mean form's
     /// queries and pools are rotated as `IndexForm::Mean` says, whatever this is.
     pub rope: usize,
+    /// How the indexer's own rotary pairs its `rope` channels where that is not the attention's pairing (the same frequencies and positions): ERNIE's
+    /// latent attention turns interleaved pairs and its indexer halves, (i, i + rope / 2). None: as the attention's rotary.
+    pub rope_style: Option<RopeStyle>,
+    /// The gated form's queries from the block's input and not from the attention's query latent: the input through this norm (roles `indexer_q_norm`
+    /// [hidden], and a LayerNorm's bias `indexer_q_norm_bias`), then `indexer_wq_b` [heads head_dim, hidden] (Mistral Large's, whose attention has no query
+    /// latent). None: the query latent's (GLM's, Kimi's).
+    pub q_in: Option<Norm>,
+    /// The gated form's queries scaled by their position before their rotary: head h's values times `indexer_scale_s`[h] ln(pos + 1) + `indexer_scale_b`[h]
+    /// (roles [heads]; pos the query's position, the first token's 0), as `Mla::pos_scale` scales the attention's (Mistral Large's).
+    pub pos_scale: bool,
 }
 
-/// The derived form, with `form` said only where it is not the gated form with LayerNorm-ed keys (`IndexForm::LAYER_KEYS`) and `rope` only where it
-/// rotates: those indexers' descriptions read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
+impl Indexer {
+    /// The refusal of an indexer whose rotary pairs its channels otherwise than its attention's: the CPU reference computes it, the executor turns the
+    /// indexer's channels by the attention's table.
+    pub const ROPE_STYLE_NOT_RUN: &'static str = "an indexer's rotary of another pairing than its attention's, which the executor does not run yet";
+}
+
+/// The derived form, with `form` said only where it is not the gated form with LayerNorm-ed keys (`IndexForm::LAYER_KEYS`), `rope` only where it
+/// rotates, `rope_style` only where it is its own, `q_in` only where the queries are the block's input's and `pos_scale` only where they are scaled:
+/// those indexers' descriptions read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Indexer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Indexer");
@@ -267,6 +298,15 @@ impl std::fmt::Debug for Indexer {
         }
         if self.rope != 0 {
             s.field("rope", &self.rope);
+        }
+        if let Some(st) = &self.rope_style {
+            s.field("rope_style", st);
+        }
+        if let Some(n) = &self.q_in {
+            s.field("q_in", n);
+        }
+        if self.pos_scale {
+            s.field("pos_scale", &self.pos_scale);
         }
         s.finish()
     }
@@ -373,9 +413,14 @@ impl std::fmt::Debug for Attn {
 ///
 /// Roles: `q` [heads * (nope + rope_dim), hidden] or with `q_lora` `q_a` [q_lora, hidden], `q_a_norm` [q_lora], `q_b` [heads * (nope +
 /// rope_dim), q_lora]; `kv_a` [kv_lora + rope_dim, hidden], `kv_a_norm` [kv_lora], `kv_b` [heads * (nope + v_dim), kv_lora], `o` [hidden,
-/// heads * v_dim]; `g` [heads * v_dim, hidden] with a gate ([heads, hidden] with a `Head` one). The cache holds per token the normed latent and the
-/// shared key part (kv_lora + rope_dim values); `absorbed` names how a backend computes it (the same function).
-#[derive(Clone, Debug, PartialEq)]
+/// heads * v_dim]; `g` [heads * v_dim, hidden] with a gate ([heads, hidden] with a `Head` one, [heads * v_dim, q_lora] with a `Latent` one).
+/// The cache holds per token the normed latent and the
+/// shared key part (kv_lora + rope_dim values); `absorbed` names how a backend computes it (the same function). With a `head_mix`, `mix_u` and `mix_v`
+/// [heads, head_mix]; with `sinks`, `sinks` [heads].
+///
+/// Mistral Large's forms of it: `pos_scale` (`q_scale_s`, `q_scale_b` [heads]), `kv_from` (no `kv_a`, no `kv_a_norm`, no cache of latents of its own) and
+/// `rope_learned` (`rope_alpha` [rope_dim / 2]).
+#[derive(Clone, PartialEq)]
 pub struct Mla {
     pub heads: usize,
     pub q_lora: Option<usize>,
@@ -391,6 +436,91 @@ pub struct Mla {
     pub scale: f32,
     pub absorbed: bool,
     pub indexer: Option<Indexer>,
+    /// The rank of the low-rank mix of the heads' outputs with each other, before the gate and the output product: o <- (I + V U^T) o over the head
+    /// axis, each head's output plus sum_r V[h][r] (sum_g U[g][r] o_g), channel by channel (ERNIE's `vha_postmix_U`, `vha_postmix_V`); 0: none.
+    pub head_mix: usize,
+    /// A learned logit a head that takes part in the softmax and attends to nothing (role `sinks`; ERNIE's `softmax_offset`): the value itself beside
+    /// the scaled scores, as `Attn::sinks`.
+    pub sinks: bool,
+    /// With an indexer of the layer's own: the query attends to its last `window` tokens whatever the indexer picks, and the indexer picks its
+    /// `top_k` among the tokens before them (ERNIE's latent layers: the model's `sliding_window`, so a query reads up to `top_k` + `window` tokens in
+    /// one softmax). None: the indexer picks among every token the query sees.
+    pub window: Option<usize>,
+    /// The queries scaled by their position ("scalable softmax"): each query head h, after its rotary, times `q_scale_s`[h] ln(pos + 1) + `q_scale_b`[h],
+    /// pos the query's own position (the first token's 0, whose factor is the bias alone); the keys are not scaled, so every score of the query, and the
+    /// sharpness of its softmax, moves with the logarithm of where the query stands, a factor a head. No state: a prompt's rows and a step's are the same.
+    pub pos_scale: bool,
+    /// Latent sharing (Mistral Large's `kv_source_layers`): the queries attend to the latents block `kv_from`'s latent attention (an earlier block of the
+    /// same latent width, shared key part and rotary) holds for the sequence, each token's normed latent and its shared key part as that block made and
+    /// turned them; this attention expands them by its OWN `kv_b`, has no `kv_a` and no `kv_a_norm`, and caches no latents. An indexer of its own
+    /// keeps its own keys.
+    pub kv_from: Option<usize>,
+    /// Learned rotary frequencies (Mistral Large's LeRoPE): angle i's inverse frequency, as the rotary's scaling makes it, times exp(`rope_alpha`[i])
+    /// (role [rope_dim / 2], one tensor of the model that every rotating layer reads; the indexer's rotary is the attention's and turns by them too).
+    pub rope_learned: bool,
+}
+
+impl Mla {
+    /// The refusal of a latent attention with sinks: the CPU reference computes them, the executor's latent attention has no sink.
+    pub const SINKS_NOT_RUN: &'static str = "a latent attention with sinks, which the executor does not run yet";
+    /// The refusal of a latent attention whose last tokens are attended beside the indexer's picks: the CPU reference computes it, the executor's
+    /// indexer picks among every token.
+    pub const WINDOW_NOT_RUN: &'static str =
+        "a latent attention that reads a window of its last tokens beside its indexer's picks, which the executor does not run yet";
+}
+
+/// The derived form, with `head_mix`, `sinks`, `window`, `pos_scale`, `kv_from` and `rope_learned` said only where they are set: the other latent
+/// attentions' descriptions read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Mla {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Mla");
+        s.field("heads", &self.heads).field("q_lora", &self.q_lora).field("kv_lora", &self.kv_lora).field("nope", &self.nope);
+        s.field("rope_dim", &self.rope_dim).field("v_dim", &self.v_dim).field("rope", &self.rope).field("q_norm", &self.q_norm);
+        s.field("kv_norm", &self.kv_norm).field("gate", &self.gate).field("scale", &self.scale).field("absorbed", &self.absorbed);
+        s.field("indexer", &self.indexer);
+        if self.head_mix != 0 {
+            s.field("head_mix", &self.head_mix);
+        }
+        if self.sinks {
+            s.field("sinks", &self.sinks);
+        }
+        if let Some(w) = &self.window {
+            s.field("window", w);
+        }
+        if self.pos_scale {
+            s.field("pos_scale", &self.pos_scale);
+        }
+        if let Some(j) = self.kv_from {
+            s.field("kv_from", &j);
+        }
+        if self.rope_learned {
+            s.field("rope_learned", &self.rope_learned);
+        }
+        s.finish()
+    }
+}
+
+impl Mla {
+    /// What of a latent attention the executor has no operation for yet (the CPU reference computes each), in words; None where it has none of them.
+    pub fn not_run(&self) -> Option<&'static str> {
+        if self.pos_scale {
+            Some(Mla::POS_SCALE_NOT_RUN)
+        } else if self.kv_from.is_some() {
+            Some(Mla::KV_FROM_NOT_RUN)
+        } else if self.rope_learned {
+            Some(Mla::ROPE_LEARNED_NOT_RUN)
+        } else if self.indexer.as_ref().is_some_and(|x| x.q_in.is_some() || x.pos_scale) {
+            Some(Mla::INDEX_INPUT_NOT_RUN)
+        } else {
+            None
+        }
+    }
+
+    pub const POS_SCALE_NOT_RUN: &'static str = "a latent attention whose queries are scaled by their position, which the executor does not run yet";
+    pub const KV_FROM_NOT_RUN: &'static str = "a latent attention that attends to another layer's latents, which the executor does not run yet";
+    pub const ROPE_LEARNED_NOT_RUN: &'static str = "a latent attention whose rotary's frequencies are learned, which the executor does not run yet";
+    pub const INDEX_INPUT_NOT_RUN: &'static str =
+        "a latent attention's indexer whose queries are the block's input's, scaled by their position, which the executor does not run yet";
 }
 
 /// DeepSeek-V4's attention: one KV head of `head_dim` whose keys are its values (K = V), `heads` query heads, rope on the trailing
@@ -404,7 +534,8 @@ pub struct Mla {
 /// `o_a` [o_groups o_lora, heads head_dim / o_groups], `o_b` [hidden, o_groups o_lora], `sinks` [heads]; with a ratio `comp_kv`,
 /// `comp_gate` [(1 + overlap) head_dim, hidden], `comp_ape` [ratio, (1 + overlap) head_dim], `comp_norm` [head_dim]; with an indexer
 /// the same four as `idx_kv`, `idx_gate`, `idx_ape`, `idx_norm` at the indexer's head dim, `idx_q_b` [heads head_dim, q_lora] and
-/// `idx_weights` [heads, hidden]. The query's per-head norm has no weight.
+/// `idx_weights` [heads, hidden]. The query's per-head norm has no weight. With a `gate` (`GateFrom::Latent`), `g` [o_groups o_lora, q_lora]; with a
+/// `head_mix`, `mix_u` and `mix_v` [heads, head_mix].
 ///
 /// DeepSeek-V4.1's form of it (CSA2): ratio 1 (each token its own entry, no gate) or 2 (windows of 2, no overlap), no position bias (`ape`
 /// false: no `comp_ape`), no per-head query norm (`q_head_norm` false), and the entries, the indexer's keys and its picks shared across
@@ -431,6 +562,12 @@ pub struct Comp {
     pub q_head_norm: bool,
     /// V4.1's sharing across layers; None: every part the layer's own (V4).
     pub share: Option<CompShare>,
+    /// An output gate from the query latent (`GateFrom::Latent`, the one source this attention has; no norm): the grouped low-rank output times the
+    /// activation of `g`'s product of the normed query latent, between `o_a` and `o_b` (ERNIE's); None: DeepSeek-V4's and V4.1's.
+    pub gate: Option<OutGate>,
+    /// The rank of the low-rank mix of the heads' outputs with each other (`Mla::head_mix`: the same rule), on the heads' outputs before they are
+    /// rotated back and grouped (the mix is over the heads and the rotation is each head's own, the same for all: the two commute); 0: none.
+    pub head_mix: usize,
 }
 
 /// Where a V4.1 compressed attention's parts come from: None, the layer's own; Some(b), block b's of the description (the most recent source
@@ -453,8 +590,8 @@ pub struct CompShare {
     pub publish: Option<(usize, usize)>,
 }
 
-/// The derived form, with V4.1's fields said only where they differ from DeepSeek-V4's: V4's descriptions read as they did before them (the
-/// digests of tests/fixtures/descriptions.json are of this text).
+/// The derived form, with V4.1's fields said only where they differ from DeepSeek-V4's and `gate` and `head_mix` only where there is one: V4's descriptions
+/// read as they did before them (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Comp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Comp");
@@ -471,6 +608,12 @@ impl std::fmt::Debug for Comp {
             .field("norm_eps", &self.norm_eps);
         if !self.ape || !self.q_head_norm || self.share.is_some() {
             s.field("ape", &self.ape).field("q_head_norm", &self.q_head_norm).field("share", &self.share);
+        }
+        if let Some(g) = &self.gate {
+            s.field("gate", g);
+        }
+        if self.head_mix != 0 {
+            s.field("head_mix", &self.head_mix);
         }
         s.finish()
     }
@@ -631,9 +774,10 @@ pub enum RouterScore {
     SqrtSoftplus,
 }
 
-/// How a MoE layer picks a token's experts and weighs them. Roles `router` [experts, hidden]; `choice_bias` [experts] with `bias`;
-/// `hash` [vocab, top_k] (expert ids as values) with `hash`.
-#[derive(Clone, Debug, PartialEq)]
+/// How a MoE layer picks a token's experts and weighs them. Roles `router` [experts, hidden] ([routers experts, hidden] with several routers, each
+/// router's rows together); `choice_bias` [experts] with `bias`; `hash` [vocab, top_k] (expert ids as values) with `hash`; `expert_scale` [experts]
+/// with `expert_scale`.
+#[derive(Clone, PartialEq)]
 pub struct Router {
     pub score: RouterScore,
     /// The logits' factor before the score (Muse: its output multiplier).
@@ -648,6 +792,47 @@ pub struct Router {
     pub scale: f32,
     /// Hash routing (DeepSeek-V4's first layers): the token id picks the experts from the table, the scores still weigh them.
     pub hash: bool,
+    /// Routers that score the same experts, each its own product of the block's input: an expert's score is the sum of the routers' scores of it
+    /// (ERNIE's two, sigmoid(`gate.weight` x) + sigmoid(`gate.weight_1` x)); 1 elsewhere.
+    pub routers: usize,
+    /// A learned factor an expert (role `expert_scale`): each chosen expert's weight times its own, after the chosen scores are divided by their sum
+    /// (ERNIE's `gate.routed_scaling_factor_param`, where the others' weights take the one `scale`).
+    pub expert_scale: bool,
+}
+
+impl Router {
+    /// The refusal of several routers whose scores add: the CPU reference computes them, the executor's routers score an expert by one product.
+    pub const ROUTERS_NOT_RUN: &'static str = "routers whose scores of the same experts add, which the executor does not run yet";
+    /// The refusal of a learned scale an expert: the CPU reference computes it, the executor's routers weigh by one factor.
+    pub const EXPERT_SCALE_NOT_RUN: &'static str = "a router's learned scale an expert, which the executor does not run yet";
+
+    /// The router as the executor's operations take one (one product's scores, one factor), or the refusal of the form they do not run, by its name.
+    pub fn one_scored(&self) -> crate::ffi::Result<()> {
+        if self.routers != 1 {
+            return crate::ffi::err(format!("{}: {}", Router::ROUTERS_NOT_RUN, self.routers));
+        }
+        if self.expert_scale {
+            return crate::ffi::err(Router::EXPERT_SCALE_NOT_RUN);
+        }
+        Ok(())
+    }
+}
+
+/// The derived form, with `routers` said only where there are several and `expert_scale` only where it is set: the other routers' descriptions read as
+/// they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Router {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Router");
+        s.field("score", &self.score).field("logit_scale", &self.logit_scale).field("bias", &self.bias).field("groups", &self.groups);
+        s.field("top_k", &self.top_k).field("renorm", &self.renorm).field("scale", &self.scale).field("hash", &self.hash);
+        if self.routers != 1 {
+            s.field("routers", &self.routers);
+        }
+        if self.expert_scale {
+            s.field("expert_scale", &self.expert_scale);
+        }
+        s.finish()
+    }
 }
 
 /// A latent MoE: experts run in a smaller space between two projections. Roles `latent_down` [dim, hidden], `latent_up` [hidden, dim],
@@ -844,9 +1029,28 @@ pub struct StreamsP {
     /// projection makes go to the next block (the model's last ones to the head: `Collapse::LastPre`). Its output's weights and the streams'
     /// mixing are its own, as mHC's.
     pub lagged: bool,
+    /// The weightless norm's epsilon outside the root: the flattened streams times 1 / (sqrt(mean x^2) + norm_eps), where the others' is
+    /// 1 / sqrt(mean x^2 + norm_eps) (ERNIE's residual streams, in its blocks and in its hyper-head: `Collapse::Weighted` norms as the model's streams do).
+    pub eps_outside: bool,
 }
 
-/// The derived form, with `lagged` said only where it is set: the other blocks' descriptions read as before the field (the digests of
+impl StreamsP {
+    /// The refusal of streams whose norm has its epsilon outside the root: the CPU reference computes it, the executor's kernels the other form.
+    pub const EPS_OUTSIDE_NOT_RUN: &'static str =
+        "residual streams whose norm has its epsilon outside the root (1 / (rms + eps)), which the executor does not run yet";
+
+    /// The factor of the streams' weightless norm for one token's flattened streams `x` (`eps_outside`).
+    pub fn norm_factor(&self, x: &[f32]) -> f32 {
+        let mean = x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32;
+        if self.eps_outside {
+            1.0 / (mean.sqrt() + self.norm_eps)
+        } else {
+            1.0 / (mean + self.norm_eps).sqrt()
+        }
+    }
+}
+
+/// The derived form, with `lagged` and `eps_outside` said only where they are set: the other blocks' descriptions read as before the fields (the digests of
 /// tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for StreamsP {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -858,6 +1062,9 @@ impl std::fmt::Debug for StreamsP {
             .field("rounding", &self.rounding);
         if self.lagged {
             s.field("lagged", &self.lagged);
+        }
+        if self.eps_outside {
+            s.field("eps_outside", &self.eps_outside);
         }
         s.finish()
     }
@@ -963,16 +1170,29 @@ pub struct Head {
     /// (the division, the tanh, the product) rounded (Gemma 4 as released: models/gemma4/modeling_gemma4.py takes `lm_head`'s bf16 output through
     /// `/ cap`, `tanh`, `* cap`; vLLM's head in the model's type does the same).
     pub rounding: Rounding,
+    /// The logits' four-part correction (ERNIE's `multimax` on its head), after the scale and the soft-cap, with the model's roles `logit_ranges` [4]
+    /// (r) and `logit_ts` [4] (t): y = x + t0 relu(r0 - x) + t1 relu(x - r1) + t2 relu(r2 - x)^2 + t3 relu(x - r3)^2, the four terms added in that
+    /// order. Where the head rounds `Twice` every operation of it rounds to bf16: each relu, each square, each product by a t, each sum (a bf16
+    /// tensor between operations, as the family's one reader computes it). A draft head's logits take it too, before its own biases.
+    pub correction: bool,
 }
 
-/// The derived form, with `rounding` said only where the logits round: the other heads' descriptions read as they did before the field (the
-/// digests of tests/fixtures/descriptions.json are of this text).
+impl Head {
+    /// The refusal of a head whose logits take the four-part correction: the CPU reference computes it, the executor's head is the product, its scale and its cap.
+    pub const CORRECTION_NOT_RUN: &'static str = "the logits' four-part correction, which the executor does not run yet";
+}
+
+/// The derived form, with `rounding` said only where the logits round and `correction` only where they are corrected: the other heads' descriptions
+/// read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Head {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Head");
         s.field("tied", &self.tied).field("softcap", &self.softcap).field("scale", &self.scale).field("collapse", &self.collapse);
         if self.rounding != Rounding::F32 {
             s.field("rounding", &self.rounding);
+        }
+        if self.correction {
+            s.field("correction", &self.correction);
         }
         s.finish()
     }
@@ -988,7 +1208,8 @@ pub enum Collapse {
     /// The depth mix of every source with the model's roles `out_mix_norm`, `out_mix_proj` (Kimi-K3).
     DepthMix,
     /// DeepSeek-V4's hyper-head: a weighted sum of the streams, the weights sigmoid(`out_hc_fn` rms(streams) `out_hc_scale` +
-    /// `out_hc_base`) + eps (roles [n, n hidden], [1], [n]).
+    /// `out_hc_base`) + eps (roles [n, n hidden], [1], [n]); rms the weightless norm of the flattened streams at `norm_eps`, its epsilon where the model's
+    /// streams have theirs (`StreamsP::eps_outside`).
     Weighted { eps: f32, norm_eps: f32 },
     /// Ibis's final mixer: the gated residuals' input mix (`GatedStreamsP`) with the model's roles `out_mix_down`, `out_mix_up`, each stream
     /// normed by the final norm (its weight [n hidden], a stream's each) before the mix, and no norm after it.
@@ -1049,13 +1270,35 @@ impl std::fmt::Debug for MtpHead {
 /// `final_norm`, the model's head: the base logits. Sequentially, position j's logits add `markov_head` [vocab, rank] `markov_embed`[prev]
 /// ([vocab, rank]: the Markov embedding of the token before it, the anchor at j = 0) and the token is chosen; with `confidence`,
 /// sigmoid(`confidence` [1, hidden + rank] [pre-norm hidden, Markov embedding]) estimates its acceptance.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct DSpark {
     pub block: usize,
     pub noise: u32,
     pub targets: Vec<usize>,
     pub markov_rank: usize,
     pub confidence: bool,
+    /// Where a target layer's features are read, the mean over the streams either way: false, the streams the layer's attention reads (before the
+    /// layer: DeepSeek's); true, the streams the layer leaves (after its feed-forward: ERNIE's).
+    pub after: bool,
+}
+
+impl DSpark {
+    /// The refusal of a drafter whose targets are read after their layers: the CPU reference's taps read them there, the executor's at a layer's input.
+    pub const AFTER_NOT_RUN: &'static str = "a drafter whose targets are read after their layers, which the executor does not run yet";
+}
+
+/// The derived form, with `after` said only where it is set: the other drafters' descriptions read as they did before the field (the digests of
+/// tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for DSpark {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("DSpark");
+        s.field("block", &self.block).field("noise", &self.noise).field("targets", &self.targets).field("markov_rank", &self.markov_rank);
+        s.field("confidence", &self.confidence);
+        if self.after {
+            s.field("after", &self.after);
+        }
+        s.finish()
+    }
 }
 
 /// A vision tower: the Qwen-VL vision transformer (Qwen3.8-Flash-Next's `Qwen4ExpVisionModel`). An image's patches of `channels` x `frames` x `patch` x `patch`

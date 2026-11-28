@@ -2009,7 +2009,6 @@ pub fn ref_head(dir: &Path, rows: &[HeadRow], edit: fn(&mut crate::runtime::desc
     let idx: Vec<usize> = (0..h.blocks.len())
         .filter(|&b| matches!(&h.blocks[b].block.body, Body::Mixer(Mixer::Mla(x)) if x.indexer.as_ref().is_some_and(|i| !i.shared)))
         .collect();
-    let d = desc.desc.hidden;
     let mut out = HeadRef { logits: Vec::new(), states: Vec::new(), routes: Vec::new(), picks: Vec::new() };
     for r in rows {
         for &b in &moe {
@@ -2031,9 +2030,7 @@ pub fn ref_head(dir: &Path, rows: &[HeadRow], edit: fn(&mut crate::runtime::desc
                 (y.clone(), y)
             }
         };
-        out.logits.push(
-            crate::runtime::reference::matvec_w(m.head_w(), d, &y).into_iter().map(|z| crate::runtime::reference::model::logit(&desc.desc.head, z)).collect(),
-        );
+        out.logits.push(m.logits_of(&y)?);
         out.states.push(x);
         let c = moe.first().and_then(|&b| h.blocks[b].routed.as_mut().and_then(Vec::pop));
         out.routes.push(c.map_or((Vec::new(), Vec::new()), |c| (c.own, c.ids)));
@@ -2060,15 +2057,25 @@ pub fn ref_dspark(dir: &Path) -> Result<(Vec<f32>, Vec<f32>, crate::runtime::ref
 }
 
 /// The CPU reference of the kinds on the model in `dir` over `tokens` (one sequence from position 0): each position's taps for its DSpark drafter
-/// (`kinds::DSpark::targets`), the mean of the streams each target layer's attention reads (after an n-gram block before it), the targets' side by side.
+/// (`kinds::DSpark::targets`), the mean of the streams each target layer's attention reads (after an n-gram block before it), or of the streams the
+/// layer leaves where the drafter reads its targets after them (`DSpark::after`: the next layer's input, the model's last streams after the last
+/// layer), the targets' side by side.
 pub fn ref_taps(dir: &Path, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
     let mut m = ref_model(dir)?;
     let ds = m.desc.mtp.first().and_then(|h| h.dspark.clone()).ok_or_else(|| Error("the description has no DSpark drafter".into()))?;
     // (the block of each target layer's attention: a layer's mixer the l-th of the blocks')
     let mixers: Vec<usize> =
         m.desc.blocks.iter().enumerate().filter(|(_, b)| matches!(b.body, crate::runtime::kinds::Body::Mixer(_))).map(|(i, _)| i).collect();
-    let at: Vec<usize> =
-        ds.targets.iter().map(|&t| mixers.get(t).copied().ok_or_else(|| Error(format!("target layer {t} of {}", mixers.len())))).collect::<Result<_>>()?;
+    let blocks = m.desc.blocks.len();
+    let at: Vec<usize> = ds
+        .targets
+        .iter()
+        .map(|&t| match (mixers.get(t), ds.after) {
+            (Some(&a), false) => Ok(a),
+            (Some(_), true) => Ok(mixers.get(t + 1).copied().unwrap_or(blocks)),
+            (None, _) => err(format!("target layer {t} of {}", mixers.len())),
+        })
+        .collect::<Result<_>>()?;
     let (n, d) = (m.desc.embed.streams.max(1), m.desc.hidden);
     let mut out = vec![vec![0f32; at.len() * d]; tokens.len()];
     let mut b = 0usize;
@@ -4855,7 +4862,18 @@ mod tests {
     fn picks_apart_are_judged_on_the_engines_inputs() {
         use crate::runtime::kinds::{IndexForm, Indexer};
         use crate::runtime::reference::mla::{choose, Picked};
-        let ix = Indexer { heads: 2, head_dim: 4, top_k: 2, block: 1, shared: false, form: IndexForm::LAYER_KEYS, rope: 0 };
+        let ix = Indexer {
+            heads: 2,
+            head_dim: 4,
+            top_k: 2,
+            block: 1,
+            shared: false,
+            form: IndexForm::LAYER_KEYS,
+            rope: 0,
+            q_in: None,
+            pos_scale: false,
+            rope_style: None,
+        };
         // (a key a token, scores rising with its first channel: tokens 3 and 4 the best two of 0..=4, token 2 near token 3 where `near`)
         let row = |near: bool, picks: Vec<usize>| {
             let s = [0.1f32, 0.2, if near { 0.6999 } else { 0.3 }, 0.7, 0.9];
@@ -5766,7 +5784,18 @@ mod tests {
         use crate::dynamic::{Choice, ChoiceFrom, ChoiceKind, RowRoute};
         use crate::runtime::kinds::{Act, Mlp, Moe, Router, RouterScore};
         let m = Moe {
-            router: Router { score: RouterScore::Softmax, logit_scale: 1.0, bias: false, groups: None, top_k: 1, renorm: true, scale: 1.0, hash: false },
+            router: Router {
+                score: RouterScore::Softmax,
+                logit_scale: 1.0,
+                bias: false,
+                groups: None,
+                top_k: 1,
+                renorm: true,
+                scale: 1.0,
+                hash: false,
+                routers: 1,
+                expert_scale: false,
+            },
             experts: 2,
             expert: Mlp { act: Act::Silu, gated: true, bias: false, clamp: None },
             shared: None,

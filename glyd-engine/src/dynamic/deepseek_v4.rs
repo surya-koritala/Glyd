@@ -503,6 +503,7 @@ type DenseFn<'a> = &'a dyn Fn(&str, usize, usize) -> Result<Vec<u16>>;
 fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) -> Result<Box<dyn MoeBlock>> {
     // (what the experts' packing threads read: the checkpoint, the scales' names, this GPU's place in a group)
     let (ck, l, m, scales, tpr) = (x.ck, ml.layer, &ml.moe, &x.kinds.scales, x.tpr);
+    m.router.one_scored().map_err(|e| e.context(format!("layer {l}'s experts")))?;
     if m.router.score != crate::runtime::kinds::RouterScore::SqrtSoftplus || m.router.groups.is_some() || !m.expert.gated || m.shared_gate || m.latent.is_some()
     {
         return err(format!("layer {l}'s experts: {m:?}: these experts run the sqrt-softplus router and SwiGLU experts with a shared one"));

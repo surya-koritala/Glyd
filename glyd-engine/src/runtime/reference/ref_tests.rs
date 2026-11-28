@@ -98,6 +98,12 @@ fn kimi_k3_mixers_against_kimi_ref() {
         scale: 192f32.lpowf(-0.5),
         absorbed: false,
         indexer: None,
+        head_mix: 0,
+        sinks: false,
+        window: None,
+        pos_scale: false,
+        kv_from: None,
+        rope_learned: false,
     };
     for l in [0usize, 3] {
         let a = format!("language_model.model.layers.{l}.self_attn");
@@ -268,6 +274,8 @@ fn kimi_k3_ffns_against_kimi_ref() {
             renorm: e.renorm,
             scale: e.scale,
             hash: false,
+            routers: 1,
+            expert_scale: false,
         },
         experts: e.experts,
         expert: situ,
@@ -343,6 +351,8 @@ fn muse_moe_against_muse_ref() {
             renorm: true,
             scale: c.route_scale,
             hash: false,
+            routers: 1,
+            expert_scale: false,
         },
         experts: ne,
         expert: Mlp { act: Act::Silu, gated: true, bias: false, clamp: None },

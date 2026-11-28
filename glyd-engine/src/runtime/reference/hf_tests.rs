@@ -195,6 +195,12 @@ fn glm53_latent_attention() {
         scale: 16f32.lpowf(-0.5),
         absorbed: false,
         indexer: None,
+        head_mix: 0,
+        sinks: false,
+        window: None,
+        pos_scale: false,
+        kv_from: None,
+        rope_learned: false,
     };
     let p = params(
         &f,
@@ -243,7 +249,18 @@ fn silu_mlp(clamp: Option<f32>) -> Mlp {
 fn glm53_moe() {
     let f = Fixture::load("glm53_moe");
     let m = Moe {
-        router: Router { score: RouterScore::Sigmoid, logit_scale: 1.0, bias: true, groups: Some((4, 2)), top_k: 2, renorm: true, scale: 2.5, hash: false },
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias: true,
+            groups: Some((4, 2)),
+            top_k: 2,
+            renorm: true,
+            scale: 2.5,
+            hash: false,
+            routers: 1,
+            expert_scale: false,
+        },
         experts: 8,
         expert: silu_mlp(None),
         shared: Some(silu_mlp(None)),
@@ -264,7 +281,18 @@ fn deepseek_v4_moe() {
     for (case, hash) in [("dsv4_hash_moe", true), ("dsv4_moe", false)] {
         let f = Fixture::load(case);
         let m = Moe {
-            router: Router { score: RouterScore::SqrtSoftplus, logit_scale: 1.0, bias: !hash, groups: None, top_k: 2, renorm: true, scale: 1.5, hash },
+            router: Router {
+                score: RouterScore::SqrtSoftplus,
+                logit_scale: 1.0,
+                bias: !hash,
+                groups: None,
+                top_k: 2,
+                renorm: true,
+                scale: 1.5,
+                hash,
+                routers: 1,
+                expert_scale: false,
+            },
             experts: 8,
             expert: silu_mlp(Some(1.0)),
             shared: Some(silu_mlp(Some(1.0))),
@@ -286,7 +314,18 @@ fn deepseek_v4_moe() {
 fn qwen38_moe() {
     let f = Fixture::load("qwen38_moe");
     let m = Moe {
-        router: Router { score: RouterScore::Softmax, logit_scale: 1.0, bias: false, groups: None, top_k: 3, renorm: true, scale: 1.0, hash: false },
+        router: Router {
+            score: RouterScore::Softmax,
+            logit_scale: 1.0,
+            bias: false,
+            groups: None,
+            top_k: 3,
+            renorm: true,
+            scale: 1.0,
+            hash: false,
+            routers: 1,
+            expert_scale: false,
+        },
         experts: 8,
         expert: silu_mlp(None),
         shared: Some(silu_mlp(None)),
@@ -372,9 +411,26 @@ fn glm53_mtp_head() {
         scale: 16f32.lpowf(-0.5),
         absorbed: false,
         indexer: None,
+        head_mix: 0,
+        sinks: false,
+        window: None,
+        pos_scale: false,
+        kv_from: None,
+        rope_learned: false,
     };
     let moe_kind = Moe {
-        router: Router { score: RouterScore::Sigmoid, logit_scale: 1.0, bias: true, groups: Some((4, 2)), top_k: 2, renorm: true, scale: 2.5, hash: false },
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias: true,
+            groups: Some((4, 2)),
+            top_k: 2,
+            renorm: true,
+            scale: 2.5,
+            hash: false,
+            routers: 1,
+            expert_scale: false,
+        },
         experts: 8,
         expert: silu_mlp(None),
         shared: Some(silu_mlp(None)),
@@ -441,7 +497,15 @@ fn deepseek_v4_mhc() {
         norm_in: Norm::rms(1e-6),
         body: Body::Ffn(Ffn::Mlp(silu_mlp(Some(10.0)))),
         norm_out: None,
-        residual: Residual::Streams(StreamsP { streams: 4, sinkhorn_iters: 20, eps: 1e-6, norm_eps: 1e-6, rounding: Rounding::F32, lagged: false }),
+        residual: Residual::Streams(StreamsP {
+            streams: 4,
+            sinkhorn_iters: 20,
+            eps: 1e-6,
+            norm_eps: 1e-6,
+            rounding: Rounding::F32,
+            lagged: false,
+            eps_outside: false,
+        }),
     };
     let p = params(
         &f,

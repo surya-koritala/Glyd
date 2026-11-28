@@ -616,7 +616,7 @@ fn released_nemotron_config() {
         let of = |role: &str| match &roles.iter().find(|(r, _)| r == role).unwrap_or_else(|| panic!("no role {role}")).1 {
             Source::Tensor(n) => shape(n),
             Source::Experts(e) => [vec![e.len()], shape(&e[0][0])].concat(),
-            Source::Rows(_) | Source::RowsOf(..) => panic!("{role}"),
+            Source::Rows(_) | Source::RowsOf(..) | Source::Transposed(_) => panic!("{role}"),
         };
         assert_eq!(of("norm_in"), [h]);
         match &b.body {
@@ -1224,6 +1224,9 @@ fn kimi_k31_pros_weight_map_is_its_index() {
         shared: false,
         form: IndexForm::Gated { key: Norm { kind: NormKind::Layer, ..Norm::rms(cfg["text_config"]["rms_norm_eps"].as_f64().unwrap() as f32) } },
         rope: 0,
+        rope_style: None,
+        q_in: None,
+        pos_scale: false,
     };
     let mut latent = 0;
     for (b, was) in d.desc.blocks.iter().zip(&d3.desc.blocks) {
@@ -1958,7 +1961,7 @@ fn deepseek_v41s_tiny_model_runs_on_the_reference() {
     for (b, roles) in d.blocks.iter().enumerate() {
         for (role, src) in roles {
             let names = match src {
-                Source::Tensor(x) | Source::RowsOf(x, _) => vec![x.clone()],
+                Source::Tensor(x) | Source::RowsOf(x, _) | Source::Transposed(x) => vec![x.clone()],
                 Source::Rows(v) => v.clone(),
                 Source::Experts(v) => v.iter().flatten().cloned().collect(),
             };
@@ -3358,45 +3361,180 @@ fn ernie_config(keys: serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(c)
 }
 
-/// ERNIE 5.5's released config has a builder that reads every key of it and says what it found: 37 layers of the compressed attention and 6 of the
-/// latent one, a dense feed-forward on the first layer and experts on the rest, four residual streams, a drafter of three layers. It is then
-/// refused: each part of a layer that no layer kind says is named with its tensors, and no key is left unread.
+/// ERNIE 5.5's released config describes: every key of it read, 37 layers of the compressed attention and 6 of the latent one (each with its gate from
+/// the query latent and its heads' mix; the latent ones with sinks, their window beside the indexer's picks and the indexer's own pairing), a dense
+/// feed-forward on the first layer and experts in a latent on the rest (two routers, a scale an expert), four residual streams whose norm has its
+/// epsilon outside the root, the corrected logits, a drafter of three stages whose targets are read after their layers. The counts are the config's:
+/// a model of other layers says its own, and one with no drafter's keys has none. What it still refuses is the executor's to say: each part the
+/// executor has no operation for, by its name, and no loader.
 #[test]
-fn ernie_5_5s_released_config_is_read_and_refused_at_the_parts_no_kind_says() {
-    use super::describe::{keys_named, ERNIE_LACKS};
+fn ernie_5_5s_released_config_is_read_and_described_part_by_part() {
+    use super::describe::keys_named;
+    use super::kinds::{Act, Body, Collapse, Ffn, GateFrom, IndexForm, Mixer, OutGate, Residual, RopeScaling, RopeStyle, Rounding, RouterScore};
     let c = ernie_config(serde_json::json!({}));
     assert_eq!(c.as_object().unwrap().len(), 97, "every key of the release's config.json");
-    let e = describe(&c).expect_err("refused").msg;
-    let read = "ernie5_5_moe: its config is read (37 layers of compressed attention and 6 of latent attention, 1 dense feed-forward and 42 of 512 experts, \
-                4 residual streams, a drafter of 3 layers), and it is not described yet.";
-    assert!(e.starts_with(read), "{e}");
-    assert_eq!(ERNIE_LACKS.len(), 7);
-    for part in ERNIE_LACKS {
-        assert!(e.contains(part), "{part}: {e}");
+    let d = describe(&c).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((d.desc.blocks.len(), d.desc.hidden, d.desc.vocab, d.convention, d.mtp_layers), (86, 4096, 201216, "ERNIE", 0));
+    let gate = Some(OutGate { act: Act::Sigmoid, from: GateFrom::Latent, norm: None });
+    let (mut comp, mut latent, mut dense, mut sparse) = (0, 0, 0, 0);
+    for (i, b) in d.desc.blocks.iter().enumerate() {
+        let l = i / 2;
+        let Residual::Streams(s) = b.residual else { panic!("block {i}") };
+        assert_eq!((s.streams, s.sinkhorn_iters, s.eps, s.norm_eps, s.rounding, s.lagged, s.eps_outside), (4, 20, 1e-6, 1e-6, Rounding::Once, false, true));
+        assert!(b.norm_out.is_none() && b.norm_in == super::kinds::Norm::rms(1e-6), "block {i}");
+        match &b.body {
+            Body::Mixer(Mixer::Compressed(x)) => {
+                assert!(l % 7 != 0 || l == 0, "layer {l}");
+                assert_eq!((x.heads, x.head_dim, x.q_lora, x.o_groups, x.o_lora, x.window, x.ratio, x.overlap), (64, 512, 1024, 8, 1024, 128, 128, false));
+                assert!(x.indexer.is_none() && x.ape && x.q_head_norm && x.share.is_none() && x.gate == gate && x.head_mix == 16, "layer {l}");
+                assert_eq!((x.rope.theta, x.rope.dim, x.rope.style), (160_000.0, 64, RopeStyle::Interleaved), "layer {l}");
+                assert!(
+                    matches!(x.rope.scaling, RopeScaling::Yarn { factor, original_max: 65536, attention_factor: Some(a), .. } if factor == 16.0 && a == 1.0)
+                );
+                comp += 1;
+            }
+            Body::Mixer(Mixer::Mla(x)) => {
+                assert!(l % 7 == 0 && l > 0, "layer {l}");
+                assert_eq!((x.heads, x.q_lora, x.kv_lora, x.nope, x.rope_dim, x.v_dim), (64, Some(1024), 512, 192, 64, 256), "layer {l}");
+                assert_eq!((x.gate, x.scale, x.head_mix, x.sinks, x.window), (gate, 256f32.powf(-0.5), 16, true, Some(128)), "layer {l}");
+                let r = x.rope.as_ref().unwrap();
+                assert_eq!((r.theta, r.dim, r.style, &r.scaling), (8e6, 64, RopeStyle::Interleaved, &RopeScaling::None), "layer {l}");
+                let ix = x.indexer.as_ref().unwrap();
+                assert_eq!((ix.heads, ix.head_dim, ix.top_k, ix.block, ix.shared, ix.rope), (64, 128, 2048, 1, false, 64), "layer {l}");
+                assert_eq!((ix.form, ix.rope_style), (IndexForm::LAYER_KEYS, Some(RopeStyle::Half)), "layer {l}");
+                latent += 1;
+            }
+            Body::Ffn(Ffn::Mlp(m)) => {
+                assert!(l == 0 && m.gated && !m.bias && m.clamp.is_none() && m.act == Act::Situ { beta: 4.0, linear: 25.0 }, "layer {l}");
+                dense += 1;
+            }
+            Body::Ffn(Ffn::Moe(m)) => {
+                let r = &m.router;
+                assert_eq!((m.experts, r.top_k, r.routers, r.expert_scale, r.bias, r.renorm, r.scale), (512, 10, 2, true, true, true, 1.0), "layer {l}");
+                assert!(r.score == RouterScore::Sigmoid && !r.hash && r.groups.is_none() && !m.shared_gate && m.shared == Some(m.expert), "layer {l}");
+                assert_eq!(m.expert.act, Act::Situ { beta: 4.0, linear: 25.0 }, "layer {l}");
+                let lt = m.latent.as_ref().unwrap();
+                assert!(lt.dim == 2048 && lt.norm_in.is_none() && lt.expert_norm.is_none() && lt.norm_out == Some(super::kinds::Norm::rms(1e-6)), "layer {l}");
+                sparse += 1;
+            }
+            _ => panic!("block {i}"),
+        }
     }
-    for tensor in
-        ["gate_proj", "vha_postmix_U", "softmax_offset", "gate.weight_1", "routed_scaling_factor_param", "multimax_ranges", "mapping_proj.weight", "hc_head_fn"]
-    {
-        assert!(e.contains(tensor), "{tensor}: {e}");
-    }
-    assert!(keys_named(&e).is_empty() && !e.contains("has no description builder yet"), "{e}");
-    // (the counts are the config's: a model of other layers says its own)
-    let small = ernie_config(serde_json::json!({
-        "num_hidden_layers": 3, "compress_ratios": [128, -2, -2], "first_k_dense_replace": 2, "dspark_target_layer_ids": [2], "n_routed_experts": 16,
-    }));
-    let e = describe(&small).expect_err("refused").msg;
-    assert!(
-        e.contains(
-            "(1 layers of compressed attention and 2 of latent attention, 2 dense feed-forward and 1 of 16 experts, 4 residual streams, a drafter of 1 layers)"
-        ),
-        "{e}"
+    assert_eq!((comp, latent, dense, sparse), (37, 6, 1, 42));
+    let h = d.desc.head;
+    assert!(!h.tied && h.correction && h.rounding == Rounding::Twice && h.softcap.is_none() && h.scale == 1.0);
+    assert_eq!(h.collapse, Collapse::Weighted { eps: 1e-6, norm_eps: 1e-6 });
+    assert_eq!(d.desc.embed.streams, 4);
+    // (the drafter: three stages of the window alone with the compressing layers' rotary and the experts, its targets read after their layers)
+    assert_eq!((d.desc.mtp.len(), d.mtp.len()), (1, 1));
+    let head = &d.desc.mtp[0];
+    let ds = head.dspark.as_ref().unwrap();
+    assert_eq!(
+        (ds.block, ds.noise, ds.targets.clone(), ds.markov_rank, ds.confidence, ds.after, head.blocks.len()),
+        (7, 1024, vec![40, 41, 42], 256, true, true, 6)
     );
+    for (i, b) in head.blocks.iter().enumerate() {
+        match &b.body {
+            Body::Mixer(Mixer::Compressed(x)) => {
+                assert!(i % 2 == 0 && x.ratio == 0 && x.window == 128 && x.gate == gate && x.head_mix == 16 && x.rope.theta == 160_000.0, "draft block {i}")
+            }
+            Body::Ffn(Ffn::Moe(m)) => assert!(i % 2 == 1 && m.router.routers == 2 && m.router.expert_scale && m.experts == 512, "draft block {i}"),
+            b => panic!("draft block {i}: {b:?}"),
+        }
+    }
+    assert_eq!((d.embed.as_str(), d.final_norm.as_str(), d.head.as_deref()), ("model.embed_tokens.weight", "model.norm.weight", Some("lm_head.weight")));
+    assert!(d.scales.is_empty() && d.fp8_block.is_none() && d.unread.is_empty());
+    // (the counts are the config's: a model of other layers says its own)
+    let small = describe(&ernie_config(serde_json::json!({
+        "num_hidden_layers": 3, "compress_ratios": [128, -2, -2], "first_k_dense_replace": 2, "dspark_target_layer_ids": [2], "n_routed_experts": 16,
+    })))
+    .unwrap_or_else(|e| panic!("{}", e.msg));
+    let sorts: Vec<&str> = small
+        .desc
+        .blocks
+        .iter()
+        .map(|b| match &b.body {
+            Body::Mixer(Mixer::Compressed(_)) => "compressed",
+            Body::Mixer(Mixer::Mla(_)) => "latent",
+            Body::Ffn(Ffn::Mlp(_)) => "dense",
+            Body::Ffn(Ffn::Moe(m)) if m.experts == 16 => "experts",
+            b => panic!("{b:?}"),
+        })
+        .collect();
+    assert_eq!(sorts, ["compressed", "dense", "latent", "dense", "latent", "experts"]);
+    assert_eq!(small.desc.mtp[0].blocks.len(), 2, "a drafter of one stage");
     // (no drafter: the keys of one are not asked for)
     let mut bare = ernie_config(serde_json::json!({}));
     for key in ["dspark_block_size", "dspark_markov_rank", "dspark_noise_token_id", "dspark_target_layer_ids"] {
         bare.as_object_mut().unwrap().remove(key);
     }
-    assert!(describe(&bare).expect_err("refused").msg.contains("a drafter of 0 layers"));
+    let bare = describe(&bare).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert!(bare.desc.mtp.is_empty() && bare.mtp.is_empty() && !bare.names().iter().any(|n| n.starts_with("model.mtp.")));
+    // (what the builder itself still refuses: a form the reader does not compute, in words)
+    for (keys, want) in [
+        (serde_json::json!({"index_topk": 128}), "index_topk = 128 is not above sliding_window (128)"),
+        (serde_json::json!({"num_attention_heads": 62, "o_groups": 2}), "62 and 64 heads, where the heads' mix has a rank of a quarter of them"),
+    ] {
+        let e = describe(&ernie_config(keys.clone())).expect_err("refused").msg;
+        assert!(e.starts_with("ernie5_5_moe: ") && e.contains(want) && keys_named(&e).is_empty(), "{keys}: {e}");
+    }
+    // (described, not run: the executor names the first part it has no operation for, and has no loader)
+    let e = crate::dynamic::split::loader(&d).err().map(|e| e.msg).unwrap_or_default();
+    assert_eq!(e, crate::dynamic::split::STORED_FORM_NOT_RUN);
+    assert!(e.ends_with("which the executor does not run yet"));
+    let Err(e) = crate::dynamic::split::lowered_described(&d, 43, 4096) else { panic!("lowered") };
+    assert_eq!(e.msg, crate::dynamic::split::STORED_FORM_NOT_RUN);
+}
+
+/// ERNIE-5.5-Flash-Preview's released header: the description reads every one of its 70,826 tensors, the drafter's too, each at the shape the
+/// checkpoint stores it in and in the type it is released in; the matrices stored transposed, the scalars stored apart and the two routers are named
+/// by their source's form.
+#[test]
+fn ernie_5_5_flash_preview_describes_its_whole_checkpoint() {
+    use super::describe::Source;
+    let h = fixture("headers/ERNIE-5.5-Flash-Preview-BF16.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    assert_eq!(cfg, ernie_config(serde_json::json!({})), "the release's config is the one the tests of the builder read");
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let (have, tensors) = (header_names(&h), header_tensors(&h));
+    assert_eq!((have.len(), d.names().len()), (70_826, 70_826));
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    let fp32 = |n: &str| {
+        let ends = ["e_score_correction_bias", "attn_sink", "compressor.ape"];
+        n.contains("hyper_connection.") || n.contains("mhc_contract.") || n.contains("block_sparse_moe.gate.") || ends.iter().any(|e| n.ends_with(e))
+    };
+    for n in d.names() {
+        let (dtype, shape, _) = &tensors[&n];
+        assert_eq!(d.shapes.get(&n), Some(shape), "{n}");
+        assert_eq!(dtype, if fp32(&n) { "F32" } else { "BF16" }, "{n}");
+    }
+    let role = |b: usize, r: &str| d.blocks[b].iter().find(|(x, _)| x == r).unwrap_or_else(|| panic!("block {b}: no {r}")).1.clone();
+    assert_eq!(role(0, "hc_fn"), Source::Transposed("model.layers.0.self_attention_hyper_connection.mapping_proj.weight".into()));
+    assert_eq!(d.shapes["model.layers.0.self_attention_hyper_connection.mapping_proj.weight"], [16384, 24]);
+    let alphas = ["alpha_pre", "alpha_post", "alpha_res"].map(|a| format!("model.layers.3.mlp_hyper_connection.{a}")).to_vec();
+    assert_eq!(role(7, "hc_scale"), Source::Rows(alphas));
+    let routers = ["weight", "weight_1"].map(|w| format!("model.layers.3.block_sparse_moe.gate.{w}")).to_vec();
+    assert_eq!(role(7, "router"), Source::Rows(routers));
+    assert_eq!(role(7, "expert_scale"), Source::Tensor("model.layers.3.block_sparse_moe.gate.routed_scaling_factor_param".into()));
+    assert_eq!(role(14, "sinks"), Source::Tensor("model.layers.7.self_attn.core_attention.softmax_offset".into()));
+    assert_eq!(role(12, "sinks"), Source::Tensor("model.layers.6.self_attn.core_attention.attn_sink".into()));
+    assert_eq!(role(12, "o_a"), Source::Tensor("model.layers.6.self_attn.linear_o_group_proj".into()));
+    assert_eq!(
+        (d.shapes["model.layers.6.self_attn.gate_proj.weight"].clone(), d.shapes["model.layers.7.self_attn.gate_proj.weight"].clone()),
+        (vec![8192, 1024], vec![16384, 1024])
+    );
+    let extra = |r: &str| d.extra.iter().find(|(x, _)| x == r).unwrap().1.clone();
+    assert_eq!(extra("out_hc_fn"), Source::Transposed("model.mhc_contract.hc_head_fn".into()));
+    assert_eq!(extra("logit_ranges"), Source::Tensor("model.lm_head.multimax_ranges".into()));
+    let (stages, own) = &d.mtp[0];
+    assert_eq!(stages.len(), 6);
+    let own_of = |r: &str| own.iter().find(|(x, _)| x == r).unwrap().1.clone();
+    assert_eq!(own_of("markov_embed"), Source::Transposed("model.mtp.markov_head.markov_w1.weight".into()));
+    assert_eq!(d.shapes["model.mtp.markov_head.markov_w1.weight"], [256, 201216]);
+    assert_eq!(own_of("main_proj"), Source::Tensor("model.mtp.feature_projection.weight".into()));
+    assert_eq!(d.shapes["model.mtp.feature_projection.weight"], [4096, 12288]);
+    assert!(stages[4].iter().any(|(r, s)| r == "kv" && *s == Source::Tensor("model.mtp.2.self_attn.linear_kv_proj.weight".into())));
+    assert!(!stages[4].iter().any(|(r, _)| r.starts_with("comp_")), "a stage's attention is the window's: no compressor");
 }
 
 /// The ERNIE builder holds each key to what its reader computes: a setting of another form is refused by its key before the parts are, a key nobody
@@ -3448,4 +3586,825 @@ fn ernie_5_5_holds_every_key_to_the_form_its_reader_computes() {
     // (a key no builder knows is named, with every other one, before the parts are)
     let e = refusal(serde_json::json!({"attn_merger_rank": 16, "vha_rank": 16}));
     assert_eq!(keys_named(&e), ["attn_merger_rank", "vha_rank"], "{e}");
+}
+
+/// A small config of the ERNIE layout with `keys` over it: three layers of hidden 32 on two residual streams, the first and the last of the compressed
+/// attention (4 heads of 8, a window of 4, compressing by 128) and the second a latent attention (4 heads, an indexer keeping 6 tokens before the
+/// window); a dense feed-forward on the first layer and 8 experts in a latent of 12 on the others; a drafter of two stages.
+fn ernie_tiny(keys: serde_json::Value) -> serde_json::Value {
+    let mut c = ernie_config(serde_json::json!({
+        "hidden_size": 32, "num_hidden_layers": 3, "vocab_size": 61, "compress_ratios": [128, -2, 128], "sliding_window": 4,
+        "num_attention_heads": 4, "head_dim": 8, "qk_nope_head_dim": 4, "qk_rope_head_dim": 4, "qk_pos_emb_head_dim": 4, "v_head_dim": 8, "kv_lora_rank": 8,
+        "q_lora_rank": 12, "o_lora_rank": 6, "o_groups": 2,
+        "hybrid_mla_num_attention_heads": 4, "hybrid_mla_num_key_value_heads": 4, "hybrid_mla_q_lora_rank": 10, "hybrid_mla_kv_lora_rank": 12,
+        "hybrid_mla_qk_nope_head_dim": 4, "hybrid_mla_qk_rope_head_dim": 4, "hybrid_mla_v_head_dim": 6,
+        "index_n_heads": 2, "index_head_dim": 8, "index_topk": 6,
+        "hc_mult": 2, "first_k_dense_replace": 1, "intermediate_size": 48, "moe_intermediate_size": 16, "moe_latent_size": 12,
+        "n_routed_experts": 8, "num_experts_per_tok": 2,
+        "dspark_block_size": 3, "dspark_markov_rank": 4, "dspark_noise_token_id": 60, "dspark_target_layer_ids": [1, 2],
+    }));
+    c.as_object_mut().unwrap().extend(keys.as_object().unwrap().clone());
+    c
+}
+
+/// The ERNIE layout on the CPU reference: a random model of the small config, every tensor of the shape its description gives and in the form the
+/// checkpoint stores it (the mixing matrices transposed, the three scales apart, the two routers apart). Over a prompt of 135 tokens, past the first
+/// closed window of 128 and past the latent layer's window and picks: a prompt at once, a token at a time and a prompt then its next tokens are the same
+/// bits, and a later token changes no earlier row; the compressed layers each hold their one entry and the latent layer's last query reads its six picks
+/// and its window of four. Each part is read, to the bit where a value of it is the layer without it: gates of zero are the output products halved; a
+/// mix whose V is zero, sinks far below the scores, a correction whose factors are zero and scales of one are the description without the part; and the
+/// window, the second router and the place of the norm's epsilon each change the answer. The drafter loads and drafts its block, its base logits bf16.
+#[test]
+fn ernie_on_the_reference_runs_both_sorts_of_layer_and_reads_each_part() {
+    use super::describe::Described;
+    use super::kinds::{Body, Ffn, Mixer, Residual};
+    use super::reference::{bf16, mtp::RefDSpark, SeqState};
+    // (a fixed draw a tensor: its name's bytes seed it; a norm's weights near 1)
+    fn draw(n: &str, len: usize) -> Vec<f32> {
+        let mut s = n.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |a, b| (a ^ b as u64).wrapping_mul(0x0100_0000_01B3));
+        let norm = n.contains("norm");
+        (0..len)
+            .map(|_| {
+                s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                let u = ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5;
+                if norm {
+                    1.0 + 0.2 * u
+                } else {
+                    0.6 * u
+                }
+            })
+            .collect()
+    }
+    // (`set`: for the tensors whose names end so, a factor on the draw and a value added: (0, c) is every value c)
+    type Set<'a> = &'a [(&'a str, f32, f32)];
+    fn tensor(d: &Described, set: Set, n: &str) -> Option<(Vec<usize>, Vec<f32>)> {
+        let shape = d.shapes.get(n)?.clone();
+        let (a, b) = set.iter().find(|(end, _, _)| n.ends_with(end)).map_or((1.0, 0.0), |x| (x.1, x.2));
+        Some((shape.clone(), draw(n, shape.iter().product()).into_iter().map(|v| a * v + b).collect()))
+    }
+    let cfg = ernie_tiny(serde_json::json!({}));
+    let described = |edit: &dyn Fn(&mut Described)| {
+        let mut d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        edit(&mut d);
+        d
+    };
+    let load = |edit: &dyn Fn(&mut Described), set: Set| -> RefModel {
+        let d = described(edit);
+        RefModel::load(&d, &|n: &str| tensor(&d, set, n)).unwrap_or_else(|e| panic!("{}", e.msg))
+    };
+    let same = |_: &mut Described| {};
+    let toks: Vec<u32> = (0..135u32).map(|t| (t * 7 + 3) % 59).collect();
+    let run = |edit: &dyn Fn(&mut Described), set: Set| load(edit, set).forward(&toks, 0).unwrap_or_else(|e| panic!("{}", e.msg));
+    let mut m = load(&same, &[]);
+    let rows = m.forward(&toks, 0).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert!(rows.len() == 135 && rows.iter().flatten().all(|x| x.is_finite() && *x == bf16(*x)), "bf16 logits");
+    // (both sorts ran past their first choices: an entry of the first 128 tokens in each compressed layer, six picks and the window in the latent one)
+    for b in [0, 4] {
+        let Some(SeqState::Comp(c)) = m.layers[b].seqs.get(&0) else { panic!("block {b}") };
+        assert_eq!((c.comp.entries.len(), c.win.len()), (1, 135), "block {b}");
+    }
+    let Some(SeqState::Mla(c)) = m.layers[2].seqs.get(&0) else { panic!("block 2") };
+    assert_eq!((c.picks.len(), &c.picks[6..]), (10, &[131usize, 132, 133, 134][..]));
+    assert!(c.picks[..6].iter().all(|&e| e < 131) && c.ikey.len() == 135);
+    // (the stored forms: a mixing matrix is the checkpoint's turned, the scales the three scalars in their order, the routers one above the other)
+    let d = described(&same);
+    let stored = draw("model.layers.0.self_attention_hyper_connection.mapping_proj.weight", 64 * 8);
+    let fn0 = m.layers[0].p.vec("hc_fn").unwrap();
+    assert!((0..8).all(|i| (0..64).all(|j| fn0[i * 64 + j] == stored[j * 8 + i])));
+    let alphas: Vec<f32> = ["alpha_pre", "alpha_post", "alpha_res"].iter().map(|a| draw(&format!("model.layers.1.mlp_hyper_connection.{a}"), 1)[0]).collect();
+    assert_eq!(m.layers[3].p.vec("hc_scale").unwrap(), &alphas[..]);
+    let router = m.layers[3].p.vec("router").unwrap();
+    assert_eq!((router.len(), &router[8 * 32..]), (2 * 8 * 32, &draw("model.layers.1.block_sparse_moe.gate.weight_1", 8 * 32)[..]));
+    // (a later token changes no earlier row, and the last row reads the first token)
+    let mut other = toks.clone();
+    other[134] = 58;
+    assert_eq!(load(&same, &[]).forward(&other, 0).unwrap()[..134], rows[..134]);
+    other = toks.clone();
+    other[0] = 44;
+    assert_ne!(load(&same, &[]).forward(&other, 0).unwrap()[134], rows[134], "the last row reads the first token");
+    // (a token at a time, and a prompt then its next tokens: the same bits)
+    let mut m = load(&same, &[]);
+    let by_step: Vec<Vec<f32>> = toks.iter().enumerate().flat_map(|(t, &tok)| m.forward(&[tok], t as u32).unwrap_or_else(|e| panic!("{}", e.msg))).collect();
+    assert_eq!(by_step, rows, "a token at a time is the prompt");
+    let mut m = load(&same, &[]);
+    let mut parts = m.forward(&toks[..100], 0).unwrap();
+    parts.extend(m.forward(&toks[100..], 100).unwrap());
+    assert_eq!(parts, rows, "a prompt, then its next tokens");
+    // the gates: of zero they are a half, the output products halved
+    let ungated = |d: &mut Described| {
+        for b in d.desc.blocks.iter_mut() {
+            match &mut b.body {
+                Body::Mixer(Mixer::Mla(x)) => x.gate = None,
+                Body::Mixer(Mixer::Compressed(x)) => x.gate = None,
+                _ => {}
+            }
+        }
+    };
+    let halved = run(&same, &[("self_attn.gate_proj.weight", 0.0, 0.0)]);
+    assert_eq!(halved, run(&ungated, &[("self_attn.o_proj.weight", 0.5, 0.0)]), "gates of a half are the output products halved");
+    assert_ne!(halved[134], rows[134], "the gates as drawn are not a half");
+    // the heads' mix
+    let unmixed = |d: &mut Described| {
+        for b in d.desc.blocks.iter_mut() {
+            match &mut b.body {
+                Body::Mixer(Mixer::Mla(x)) => x.head_mix = 0,
+                Body::Mixer(Mixer::Compressed(x)) => x.head_mix = 0,
+                _ => {}
+            }
+        }
+    };
+    let plain = run(&unmixed, &[]);
+    assert_eq!(run(&same, &[("self_attn.vha_postmix_V", 0.0, 0.0)]), plain, "a mix whose V is zero is no mix");
+    assert_ne!(plain[134], rows[134]);
+    // the latent attention's sinks, and its window
+    let latent = |f: &'static dyn Fn(&mut super::kinds::Mla)| {
+        move |d: &mut Described| {
+            for b in d.desc.blocks.iter_mut() {
+                if let Body::Mixer(Mixer::Mla(x)) = &mut b.body {
+                    f(x);
+                }
+            }
+        }
+    };
+    let sinkless = run(&latent(&|x| x.sinks = false), &[]);
+    assert_eq!(run(&same, &[("core_attention.softmax_offset", 0.0, -1e30)]), sinkless, "sinks far below the scores are no sinks");
+    assert_ne!(sinkless[134], rows[134]);
+    assert_ne!(run(&latent(&|x| x.window = None), &[])[134], rows[134], "the window is read beside the picks");
+    // the logits' correction
+    let uncorrected = run(&|d: &mut Described| d.desc.head.correction = false, &[]);
+    assert_eq!(run(&same, &[("lm_head.multimax_ts", 0.0, 0.0)]), uncorrected, "a correction whose factors are zero is none");
+    assert_ne!(uncorrected[134], rows[134]);
+    // the routers: scales of one are no scale; the second router is read
+    let experts = |f: &'static dyn Fn(&mut super::kinds::Router)| {
+        move |d: &mut Described| {
+            for b in d.desc.blocks.iter_mut() {
+                if let Body::Ffn(Ffn::Moe(x)) = &mut b.body {
+                    f(&mut x.router);
+                }
+            }
+        }
+    };
+    let unscaled = run(&experts(&|r| r.expert_scale = false), &[]);
+    assert_eq!(run(&same, &[("gate.routed_scaling_factor_param", 0.0, 1.0)]), unscaled, "scales of one are no scale");
+    assert_ne!(unscaled[134], rows[134]);
+    assert_ne!(run(&same, &[("block_sparse_moe.gate.weight_1", 0.0, 0.0)])[134], rows[134], "the second router is read");
+    // the streams' norm: its epsilon inside the root is another model
+    let inside = |d: &mut Described| {
+        for b in d.desc.blocks.iter_mut() {
+            if let Residual::Streams(s) = &mut b.residual {
+                s.eps_outside = false;
+            }
+        }
+    };
+    // (at an epsilon that is something beside the streams: at the release's 1e-6 the two forms part below the bf16 of the logits)
+    let coarse = ernie_tiny(serde_json::json!({"rms_norm_eps": 0.05}));
+    let at_coarse = |edit: &dyn Fn(&mut Described)| {
+        let mut d = describe(&coarse).unwrap_or_else(|e| panic!("{}", e.msg));
+        edit(&mut d);
+        RefModel::load(&d, &|n: &str| tensor(&d, &[], n)).unwrap().forward(&toks[..12], 0).unwrap_or_else(|e| panic!("{}", e.msg))
+    };
+    assert_ne!(at_coarse(&inside)[11], at_coarse(&same)[11]);
+    // the drafter: its two stages and its own roles load (the Markov embedding turned), and a block of three is drafted from a context of six positions
+    let src = |n: &str| tensor(&d, &[], n);
+    let mut drafter = RefDSpark::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((drafter.blocks.len(), drafter.p.t["markov_embed"].shape.clone()), (4, vec![61, 4]));
+    let w1 = draw("model.mtp.markov_head.markov_w1.weight", 4 * 61);
+    assert!((0..61).all(|v| (0..4).all(|r| drafter.p.vec("markov_embed").unwrap()[v * 4 + r] == w1[r * 61 + v])));
+    let ctx: Vec<Vec<f32>> = (0..6).map(|t| draw(&format!("context {t}"), 2 * 32)).collect();
+    let (embed, head) = (src("model.embed_tokens.weight").unwrap().1, src("lm_head.weight").unwrap().1);
+    let out = drafter.draft(&ctx, 5, &embed, &head).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((out.tokens.len(), out.base.len(), out.confidence.len()), (3, 3, 3));
+    assert!(out.base.iter().flatten().all(|x| x.is_finite() && *x == bf16(*x)), "the drafter's base logits take the model's head's arithmetic");
+    assert!(out.logits.iter().flatten().all(|x| x.is_finite()) && out.confidence.iter().all(|c| (0.0..=1.0).contains(c)));
+}
+
+/// Mistral Large as released (Mistral-Large-4-1T-A52B's config and header): 72 layers, each a latent attention with an indexer, then a gated MLP (the
+/// first layer) or 128 experts and a shared MLP. Every fourth layer has no positions (no shared key part, keys of 128 from the latent); the others
+/// rotate 64 channels by YaRN with learned factors. Every layer scales its queries by position. Layers 39, 43, ... 71 attend to layer 35's latents and
+/// have no key-value latent product; from layer 17 two layers in four take the picks of the layer before. The checkpoint is in Mistral's names, its
+/// products FP8 with `qscale_weight` scales but those the config leaves out; the vision encoder, its adapter and the draft model are left unread.
+#[test]
+fn mistral_large_describes_its_latent_attentions_their_indexers_and_its_experts() {
+    use super::kinds::{Act, Body, Ffn, IndexForm, Mixer, Mla, NormKind, Rope, RopeScaling, RopeStyle, RouterScore};
+    let h = fixture("headers/Mistral-Large-4-1T-A52B.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((d.desc.blocks.len(), d.desc.head.tied, d.desc.final_norm.eps, d.desc.embed.scale, d.fp8_block), (144, false, 1e-5, 1.0, Some(128)));
+    assert_eq!((d.desc.hidden, d.desc.vocab, d.convention, d.desc.head.softcap), (6144, 204800, "Mistral (consolidated)", Some(30.0)));
+    assert!(d.desc.mtp.is_empty() && d.mtp.is_empty() && d.mtp_layers == 0 && d.desc.vision.is_none());
+    let yarn = RopeScaling::Yarn {
+        factor: 2048.0,
+        original_max: 512,
+        beta_fast: 32.0,
+        beta_slow: 1.0,
+        mscale: None,
+        mscale_all_dim: None,
+        attention_factor: Some(1.0),
+        truncate: true,
+    };
+    let rope = Rope { style: RopeStyle::Interleaved, scaling: yarn, ..Rope::plain(1e4, 64) };
+    assert_eq!(d.desc.rope, Some(rope.clone()));
+    let (mut nope, mut lent, mut shared, mut dense, mut sparse) = (0, 0, 0, 0, 0);
+    for (i, b) in d.desc.blocks.iter().enumerate() {
+        let l = i / 2;
+        assert!(b.norm_out.is_none() && b.residual == super::kinds::Residual::Add && b.norm_in.eps == 1e-5, "block {i}");
+        match &b.body {
+            Body::Mixer(Mixer::Mla(x)) => {
+                let turns = l % 4 != 3;
+                assert_eq!((x.heads, x.q_lora, x.kv_lora, x.v_dim, x.scale, x.gate), (64, None, 512, 128, 128f32.powf(-0.5), None), "layer {l}");
+                assert_eq!((x.nope, x.rope_dim, x.rope.as_ref()), if turns { (64, 64, Some(&rope)) } else { (128, 0, None) }, "layer {l}");
+                assert_eq!((x.pos_scale, x.rope_learned, x.kv_norm.eps), (true, turns, 1e-5), "layer {l}");
+                assert_eq!(x.kv_from, (l > 35 && !turns).then_some(70), "layer {l}: layer 35's block");
+                let ix = x.indexer.as_ref().unwrap();
+                assert_eq!((ix.heads, ix.head_dim, ix.top_k, ix.block, ix.form), (32, 128, 2048, 1, IndexForm::LAYER_KEYS), "layer {l}");
+                assert_eq!((ix.shared, ix.rope, ix.pos_scale), (l >= 17 && matches!(l % 4, 1 | 2), if turns { 64 } else { 0 }, true), "layer {l}");
+                assert!(matches!(ix.q_in, Some(n) if n.kind == NormKind::Layer && n.eps == 1e-6), "layer {l}");
+                assert_eq!(x.not_run(), Some(Mla::POS_SCALE_NOT_RUN));
+                (nope, lent, shared) = (nope + !turns as usize, lent + x.kv_from.is_some() as usize, shared + ix.shared as usize);
+            }
+            Body::Ffn(Ffn::Mlp(m)) => {
+                assert!(l == 0 && m.gated && !m.bias && m.act == Act::Silu && m.clamp.is_none(), "layer {l}");
+                dense += 1;
+            }
+            Body::Ffn(Ffn::Moe(m)) => {
+                let r = &m.router;
+                assert_eq!(
+                    (m.experts, r.top_k, r.groups, r.renorm, r.bias, r.scale, r.score),
+                    (128, 4, None, true, false, 1.0, RouterScore::Softmax),
+                    "layer {l}"
+                );
+                assert!(!r.hash && m.latent.is_none() && !m.shared_gate && m.shared.is_some() && m.expert.clamp.is_none(), "layer {l}");
+                sparse += 1;
+            }
+            _ => panic!("block {i}"),
+        }
+    }
+    assert_eq!((nope, lent, shared, dense, sparse), (18, 9, 28, 1, 71));
+    assert_eq!((d.embed.as_str(), d.final_norm.as_str(), d.head.as_deref()), ("tok_embeddings.weight", "norm.weight", Some("output.weight")));
+    // every tensor the description reads, at the checkpoint's shape and in the stored format the description says
+    let have = header_names(&h);
+    let tensors = header_tensors(&h);
+    let scale_names: BTreeSet<&String> = d.scales.values().collect();
+    let (mut fp8, mut plain) = (0, 0);
+    for n in d.names() {
+        let (dtype, shape, _) = &tensors[&n];
+        match (dtype.as_str(), d.scales.get(&n)) {
+            // (an FP8 matrix: its scales a block of 128 x 128, under Mistral's name beside it)
+            ("F8_E4M3", Some(s)) => {
+                assert_eq!((s, d.shapes.get(&n)), (&format!("{}.qscale_weight", n.strip_suffix(".weight").unwrap()), Some(shape)), "{n}");
+                assert_eq!((tensors[s].0.as_str(), &tensors[s].1[..]), ("F32", &[shape[0].div_ceil(128), shape[1].div_ceil(128)][..]), "{s}");
+                fp8 += 1;
+            }
+            (_, None) if scale_names.contains(&n) => {}
+            (_, None) => {
+                assert_eq!(dtype, "BF16", "{n}: with no scales named");
+                assert_eq!(d.shapes.get(&n), Some(shape), "{n}");
+                plain += 1;
+            }
+            (t, s) => panic!("{n}: {t}, scales {s:?}"),
+        }
+    }
+    // (72 layers' query and output products, 44 indexers' query products, the dense MLP's three matrices, 71 shared MLPs' and 71 layers of 128 experts')
+    assert_eq!(fp8, 72 * 2 + 44 + 3 + 71 * 3 + 71 * 128 * 3);
+    assert_eq!(d.names().len(), 2 * fp8 + plain);
+    // (bf16 as released: the key-value latent's two products, the indexer's key product and head weights, the routers, the scales by position)
+    for n in [
+        "layers.0.attention.wkv_a_with_mqa.weight",
+        "layers.0.attention.wkv_b.weight",
+        "layers.0.attention.indexer.wk.weight",
+        "layers.0.attention.indexer.weights_proj.weight",
+        "layers.1.gate.weight",
+        "layers.0.attention.ssmax_scaling.s",
+        "lerope.alpha",
+    ] {
+        assert!(d.names().contains(n) && !d.scales.contains_key(n) && tensors[n].0 == "BF16", "{n}");
+    }
+    // (the shapes the layers' sorts make: a layer with no positions has no shared key part and wider keys; a layer that shares has no latent product)
+    assert_eq!(d.shapes["layers.0.attention.wkv_a_with_mqa.weight"], [576, 6144]);
+    assert_eq!(d.shapes["layers.3.attention.wkv_a_with_mqa.weight"], [512, 6144]);
+    assert_eq!((&d.shapes["layers.0.attention.wkv_b.weight"], &d.shapes["layers.3.attention.wkv_b.weight"]), (&vec![12288, 512], &vec![16384, 512]));
+    assert_eq!((&d.shapes["layers.5.attention.indexer.wq_b.weight"], &d.shapes["lerope.alpha"]), (&vec![4096, 6144], &vec![32]));
+    for l in 0..72 {
+        let own = !(l > 35 && l % 4 == 3);
+        let full = !(l >= 17 && matches!(l % 4, 1 | 2));
+        assert_eq!(d.names().contains(&format!("layers.{l}.attention.wkv_a_with_mqa.weight")), own, "layer {l}");
+        assert_eq!(d.names().contains(&format!("layers.{l}.attention.kv_a_norm.weight")), own, "layer {l}");
+        assert_eq!(d.names().contains(&format!("layers.{l}.attention.indexer.q_input_norm.bias")), full, "layer {l}");
+        assert_eq!(d.blocks[2 * l].iter().any(|(r, _)| r == "rope_alpha"), l % 4 != 3, "layer {l}");
+    }
+    assert_eq!(d.unread, ["vision_encoder.", "pre_mm_projector_norm.", "patch_merger.", "vision_language_adapter.", "mtp_dspark."]);
+    for left in ["vision_encoder.patch_conv.weight", "vision_language_adapter.w_in.weight", "mtp_dspark.backbone.mask_embedding"] {
+        assert!(have.contains(left) && !d.names().contains(left), "{left}");
+    }
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    // (described, not run: the executor names what it lacks)
+    let e = crate::dynamic::split::loader(&d).err().map(|e| e.msg).unwrap_or_default();
+    assert_eq!(e, format!("its layers hold {}", Mla::POS_SCALE_NOT_RUN));
+}
+
+/// A small config of the Mistral Large layout in its wrapper with `keys` over its text config: eight layers, every fourth without positions, the
+/// last attending to layer 3's latents; indexers of two heads of 8 keeping 4 tokens, layers 2, 5 and 6 taking the picks of the layer before; the first
+/// layer's feed-forward dense and the others 8 experts of which 2 a token; YaRN over 8 positions by 4.
+fn mistral_tiny(keys: serde_json::Value) -> serde_json::Value {
+    let mut text = serde_json::json!({
+        "model_type": "mistral_large4_text", "hidden_size": 32, "num_hidden_layers": 8, "vocab_size": 61, "rms_norm_eps": 1e-5,
+        "max_position_embeddings": 4096, "num_attention_heads": 2, "num_key_value_heads": 2, "head_dim": 4, "hidden_act": "silu", "attention_bias": false,
+        "kv_lora_rank": 12, "qk_nope_head_dim": 8, "qk_rope_head_dim": 4, "qk_head_dim": 12, "v_head_dim": 6,
+        "rope_parameters": {"rope_type": "yarn", "rope_theta": 10000.0, "factor": 4, "original_max_position_embeddings": 8, "beta_fast": 32, "beta_slow": 1,
+            "attention_factor": 1.0},
+        "no_rope_layers": [1, 1, 1, 0, 1, 1, 1, 0], "no_rope_layer_interval": 4, "kv_source_layers": [0, 1, 2, 3, 4, 5, 6, 3],
+        "layer_types": ["indexed_attention", "indexed_attention", "indexed_attention", "indexed_attention", "indexed_attention", "indexed_attention",
+            "indexed_attention", "indexed_attention"],
+        "index_n_heads": 2, "index_head_dim": 8, "index_topk": 4, "indexer_types": ["full", "full", "shared", "full", "full", "shared", "shared", "full"],
+        "intermediate_size": 48, "first_k_dense_replace": 1, "mlp_layer_types": ["dense", "sparse", "sparse", "sparse", "sparse", "sparse", "sparse", "sparse"],
+        "n_routed_experts": 8, "n_shared_experts": 1, "num_experts_per_tok": 2, "moe_intermediate_size": 16, "n_group": 1, "topk_group": 1,
+        "routed_scaling_factor": 1.0, "final_logit_softcapping": 30.0, "tie_word_embeddings": false, "attention_dropout": 0.0, "use_cache": true,
+    });
+    text.as_object_mut().unwrap().extend(keys.as_object().unwrap().clone());
+    serde_json::json!({
+        "architectures": ["MistralLarge4ForConditionalGeneration"], "model_type": "mistral_large4", "tie_word_embeddings": false, "image_token_index": 10,
+        "projector_hidden_act": "gelu", "vision_feature_layer": -1, "multimodal_projector_bias": false, "spatial_merge_size": 2,
+        "transformers_weights": "consolidated.safetensors.index.json", "vision_config": {"model_type": "pixtral", "num_hidden_layers": 2}, "text_config": text,
+    })
+}
+
+/// The Mistral Large builder reads a config as transformers' config class does: the layers without positions from the list or from the interval; each
+/// layer's latents its own or an earlier layer's; the indexers' types from the list or the schedule; the dense layers from the list or the count;
+/// the class's defaults where a key is absent; a quantization_config's FP8 products named with Mistral's scales. What the builder does not support,
+/// and what the references read differently, is refused in words.
+#[test]
+fn mistral_large_reads_its_config_as_transformers_does() {
+    use super::kinds::{Body, Ffn, Mixer, Mla, RopeScaling};
+    let ok = |keys: serde_json::Value| describe(&mistral_tiny(keys)).unwrap_or_else(|e| panic!("{}", e.msg));
+    let mla = |d: &super::describe::Described, l: usize| -> Mla {
+        match &d.desc.blocks[2 * l].body {
+            Body::Mixer(Mixer::Mla(x)) => x.clone(),
+            b => panic!("layer {l}: {b:?}"),
+        }
+    };
+    let d = ok(serde_json::json!({}));
+    assert_eq!((0..8).map(|l| mla(&d, l).rope.is_some()).collect::<Vec<_>>(), [true, true, true, false, true, true, true, false]);
+    assert_eq!((0..8).map(|l| mla(&d, l).kv_from).collect::<Vec<_>>(), [None, None, None, None, None, None, None, Some(6)], "layer 3's mixer is block 6");
+    assert_eq!((0..8).map(|l| mla(&d, l).indexer.unwrap().shared).collect::<Vec<_>>(), [false, false, true, false, false, true, true, false]);
+    assert_eq!((mla(&d, 0).nope, mla(&d, 0).rope_dim, mla(&d, 3).nope, mla(&d, 3).rope_dim), (8, 4, 12, 0));
+    assert_eq!(
+        (mla(&d, 0).scale, mla(&d, 3).scale, mla(&d, 0).indexer.unwrap().rope, mla(&d, 3).indexer.unwrap().rope),
+        (12f32.powf(-0.5), 12f32.powf(-0.5), 4, 0)
+    );
+    assert!(
+        matches!(&d.desc.blocks[1].body, Body::Ffn(Ffn::Mlp(_))) && d.desc.blocks.iter().skip(3).step_by(2).all(|b| matches!(b.body, Body::Ffn(Ffn::Moe(_))))
+    );
+    assert_eq!((&d.shapes["layers.0.attention.wkv_a_with_mqa.weight"], &d.shapes["layers.3.attention.wkv_a_with_mqa.weight"]), (&vec![16, 32], &vec![12, 32]));
+    assert_eq!((&d.shapes["layers.0.attention.wkv_b.weight"], &d.shapes["layers.7.attention.wkv_b.weight"]), (&vec![28, 12], &vec![36, 12]));
+    assert_eq!((&d.shapes["layers.0.attention.wq.weight"], &d.shapes["layers.3.attention.wq.weight"]), (&vec![24, 32], &vec![24, 32]));
+    assert!(!d.names().contains("layers.7.attention.wkv_a_with_mqa.weight") && !d.names().contains("layers.7.attention.kv_a_norm.weight"));
+    assert!(d.names().contains("layers.7.attention.indexer.wk.weight") && !d.names().contains("layers.2.attention.indexer.wk.weight"));
+    assert!(d.names().contains("lerope.alpha") && d.scales.is_empty() && d.fp8_block.is_none());
+    assert_eq!(d.shapes["layers.1.experts.7.w3.weight"], [16, 32]);
+    // (the text model alone, with no wrapper: the same description)
+    let alone = describe(&mistral_tiny(serde_json::json!({}))["text_config"]).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((format!("{:?}", alone.desc), alone.names()), (format!("{:?}", d.desc), d.names()));
+    // (the config class's defaults: every (interval)-th layer without positions, 4 where unsaid; every layer its own latents and indexer; the first
+    // layer dense; the rotary YaRN over 512 positions by 2048 with no magnitude factor; eps 1e-5; a cap of 30; the head its own matrix)
+    let bare = ok(serde_json::json!({"no_rope_layers": null, "no_rope_layer_interval": null, "kv_source_layers": null, "indexer_types": null,
+        "mlp_layer_types": null, "first_k_dense_replace": null, "rope_parameters": null, "rms_norm_eps": null, "final_logit_softcapping": null,
+        "layer_types": null, "routed_scaling_factor": null, "n_group": null, "topk_group": null, "n_shared_experts": null, "head_dim": null, "qk_head_dim": null}));
+    assert_eq!((0..8).map(|l| mla(&bare, l).rope.is_some()).collect::<Vec<_>>(), [true, true, true, false, true, true, true, false]);
+    assert!((0..8).all(|l| mla(&bare, l).kv_from.is_none() && !mla(&bare, l).indexer.unwrap().shared));
+    assert!(matches!(&bare.desc.blocks[1].body, Body::Ffn(Ffn::Mlp(_))) && matches!(&bare.desc.blocks[3].body, Body::Ffn(Ffn::Moe(_))));
+    assert!(
+        matches!(bare.desc.rope.as_ref().unwrap().scaling, RopeScaling::Yarn { factor, original_max: 512, attention_factor: Some(a), .. } if factor == 2048.0 && a == 1.0)
+    );
+    assert_eq!((bare.desc.final_norm.eps, bare.desc.head.softcap, bare.desc.head.tied), (1e-5, Some(30.0), false));
+    let third = ok(serde_json::json!({"no_rope_layers": null, "no_rope_layer_interval": 3, "kv_source_layers": null}));
+    assert_eq!((0..8).map(|l| mla(&third, l).rope.is_some()).collect::<Vec<_>>(), [true, true, false, true, true, false, true, true]);
+    // (the indexers' schedule where the list is absent, as transformers makes it: a pattern, or a frequency and an offset)
+    let pat = ok(serde_json::json!({"indexer_types": null, "index_topk_pattern": "FFSFFSSF"}));
+    assert_eq!((format!("{:?}", pat.desc), pat.names()), (format!("{:?}", d.desc), d.names()));
+    let freq = ok(serde_json::json!({"indexer_types": null, "index_topk_freq": 2, "index_skip_topk_offset": 3}));
+    assert_eq!((0..8).map(|l| mla(&freq, l).indexer.unwrap().shared).collect::<Vec<_>>(), [false, false, false, true, false, true, false, true]);
+    // (the dense layers by the count; the older name of the experts' count; a tied head; YaRN's factor on every channel squares into the scores')
+    let two = ok(serde_json::json!({"mlp_layer_types": null, "first_k_dense_replace": 2}));
+    assert!(matches!(&two.desc.blocks[3].body, Body::Ffn(Ffn::Mlp(_))) && two.names().contains("layers.1.feed_forward.w1.weight"));
+    let named = ok(serde_json::json!({"num_experts": 4}));
+    assert!(matches!(&named.desc.blocks[3].body, Body::Ffn(Ffn::Moe(m)) if m.experts == 4) && !named.names().contains("layers.1.experts.4.w1.weight"));
+    let tied = ok(serde_json::json!({"tie_word_embeddings": true}));
+    assert!(tied.desc.head.tied && tied.head.is_none());
+    let ms = ok(serde_json::json!({"rope_parameters": {"rope_type": "yarn", "rope_theta": 10000.0, "factor": 4, "original_max_position_embeddings": 8,
+        "mscale": 1.0, "mscale_all_dim": 1.0}}));
+    let f = 0.1 * 4f64.ln() + 1.0;
+    assert_eq!(mla(&ms, 0).scale, 12f32.powf(-0.5) * (f * f) as f32);
+    // (a quantization_config names the FP8 products' scales, Mistral's `qscale_weight`, and leaves out what it lists by transformers' module names)
+    let mut q = mistral_tiny(serde_json::json!({}));
+    q["quantization_config"] = serde_json::json!({"quant_method": "fp8", "activation_scheme": "dynamic", "weight_block_size": [128, 128],
+        "modules_to_not_convert": ["model.vision_tower", "model.multi_modal_projector", "lm_head", "kv_b_proj", "indexer.wk", "indexer.weights_proj",
+            "kv_a_proj_with_mqa"]});
+    let q = describe(&q).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!(q.fp8_block, Some(128));
+    for held in [
+        "layers.0.attention.wq.weight",
+        "layers.7.attention.wo.weight",
+        "layers.3.attention.indexer.wq_b.weight",
+        "layers.0.feed_forward.w2.weight",
+        "layers.1.shared_experts.w1.weight",
+        "layers.7.experts.7.w3.weight",
+    ] {
+        assert_eq!(q.scales.get(held), Some(&held.replace(".weight", ".qscale_weight")), "{held}");
+    }
+    for left in [
+        "layers.0.attention.wkv_a_with_mqa.weight",
+        "layers.7.attention.wkv_b.weight",
+        "layers.0.attention.indexer.wk.weight",
+        "layers.0.attention.indexer.weights_proj.weight",
+        "layers.1.gate.weight",
+        "layers.0.attention.kv_a_norm.weight",
+        "layers.0.attention.ssmax_scaling.b",
+        "lerope.alpha",
+        "tok_embeddings.weight",
+        "output.weight",
+    ] {
+        assert!(q.names().contains(left) && !q.scales.contains_key(left), "{left}");
+    }
+    assert!(q.names().contains("layers.0.attention.wq.qscale_weight") && q.names().len() == d.names().len() + q.scales.len());
+    let refused = |c: serde_json::Value| describe(&c).err().map(|e| e.msg).unwrap_or_default();
+    for (keys, word) in [
+        (serde_json::json!({"q_lora_rank": 8}), "q_lora_rank = 8 is not supported"),
+        (serde_json::json!({"hidden_act": "gelu"}), "hidden_act"),
+        (serde_json::json!({"attention_bias": true}), "attention_bias"),
+        (serde_json::json!({"num_key_value_heads": 1}), "num_key_value_heads"),
+        (serde_json::json!({"qk_rope_head_dim": 3}), "qk_rope_head_dim = 3"),
+        (serde_json::json!({"layer_types": ["indexed_attention", "full_attention"]}), "layer_types is not 8 layers of indexed_attention"),
+        (serde_json::json!({"no_rope_layers": [1, 1, 1]}), "no_rope_layers = [1,1,1] is not a value a layer"),
+        (serde_json::json!({"no_rope_layers": [1, 1, 1, 0, 1, 1, 2, 0]}), "no_rope_layers[6] = 2"),
+        (serde_json::json!({"no_rope_layers": null, "no_rope_layer_interval": 0}), "no_rope_layer_interval = 0"),
+        (serde_json::json!({"rope_parameters": {"rope_type": "axial", "rope_theta": 10000.0}}), "rope_type axial is not supported"),
+        (serde_json::json!({"rope_parameters": 5}), "rope_parameters = 5"),
+        (serde_json::json!({"kv_source_layers": [0, 1, 2]}), "kv_source_layers = [0,1,2] is not a layer's number a layer"),
+        (serde_json::json!({"kv_source_layers": [0, 1, 2, 3, 4, 5, 7, 7]}), "kv_source_layers[6] = 7 is not an earlier layer"),
+        (serde_json::json!({"kv_source_layers": [0, 1, 2, 3, 4, 5, 6, 4]}), "a layer without positions attending to the latents of one with"),
+        (serde_json::json!({"kv_source_layers": [0, 0, 1, 3, 4, 5, 6, 7]}), "kv_source_layers[2] = 1 is not an earlier layer that makes its own latents"),
+        (serde_json::json!({"kv_source_layers": [0, 0, 2, 3, 4, 4, 0, 7]}), "with layer 4 lending its latents between them"),
+        (serde_json::json!({"indexer_types": ["shared", "full"]}), "the first layer's indexer is shared"),
+        (serde_json::json!({"indexer_types": ["full", "full"]}), "indexer_types has 2 entries for 8 layers"),
+        (serde_json::json!({"indexer_types": ["full", "pooled"]}), "an indexer of type"),
+        (serde_json::json!({"index_head_dim": 2}), "an indexer of 2 heads of 2"),
+        (serde_json::json!({"mlp_layer_types": ["dense", "latent", "sparse", "sparse", "sparse", "sparse", "sparse", "sparse"]}), "mlp_layer_types[1]"),
+        (serde_json::json!({"n_group": 2}), "n_group = 2"),
+        (serde_json::json!({"topk_group": 2}), "topk_group = 2"),
+        (serde_json::json!({"n_shared_experts": 0}), "n_shared_experts = 0"),
+        (serde_json::json!({"num_experts_per_tok": 9}), "num_experts_per_tok = 9 of 8 experts"),
+        (serde_json::json!({"final_logit_softcapping": 0.0}), "final_logit_softcapping = 0"),
+        (serde_json::json!({"scoring_func": "sigmoid", "swiglu_limit": 7.0}), "config keys scoring_func, swiglu_limit are not understood"),
+    ] {
+        let e = refused(mistral_tiny(keys));
+        assert!(e.contains(word), "{word}: {e}");
+    }
+    // (the wrapper's own keys; a quantization of another format)
+    for (key, v, word) in [
+        ("audio_config", serde_json::json!({}), "config key audio_config is not understood"),
+        ("quantization_config", serde_json::json!({"quant_method": "fp8"}), "weight_block_size"),
+        ("quantization_config", serde_json::json!({"quant_method": "awq", "weight_block_size": [128, 128]}), "quantization awq"),
+    ] {
+        let mut c = mistral_tiny(serde_json::json!({}));
+        c[key] = v;
+        let e = refused(c);
+        assert!(e.contains(word), "{word}: {e}");
+    }
+    // (described, not run: the planner's lowering and the loader name what the executor lacks)
+    let Err(e) = crate::dynamic::split::lowered_described(&d, 8, 4096) else { panic!("a scale by position lowered") };
+    assert!(e.msg.contains("queries are scaled by their position, which the executor does not run yet"), "{}", e.msg);
+}
+
+/// The Mistral Large layout on the CPU reference, a random model of the small config (every tensor of the shape its description gives). A prompt at
+/// once, the same prompt a token at a time and a prompt then its next tokens are the same bits (the latent caches, the indexers' keys, the lent picks
+/// and the lent latents kept between the calls), and a later token changes no earlier row. Each of the layout's forms is read: scales by position of
+/// zero with biases of one are, to the bit, the model with no scale by position, and the scales as drawn are another answer; learned factors of zero
+/// are the rotary as it is, to the bit; the lent latents, the lent picks, the positions and the cap each change the answer.
+#[test]
+fn mistral_large_on_the_reference_steps_as_it_prompts_and_reads_each_of_its_forms() {
+    use super::kinds::{Body, Mixer, ModelDesc};
+    // (a fixed draw a tensor: its name's bytes seed it; a norm's weights and a scale by position's bias near 1)
+    fn draw(n: &str, len: usize) -> Vec<f32> {
+        let mut s = n.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |a, b| (a ^ b as u64).wrapping_mul(0x0100_0000_01B3));
+        let near_one = (n.contains("norm") && !n.ends_with(".bias")) || n.ends_with("ssmax_scaling.b");
+        (0..len)
+            .map(|_| {
+                s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                let u = ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5;
+                if near_one {
+                    1.0 + 0.2 * u
+                } else {
+                    0.6 * u
+                }
+            })
+            .collect()
+    }
+    // (`edit`: a change to the description before it is loaded; `set`: a value for every element of the tensors whose names end so, in the draw's place)
+    let load = |cfg: &serde_json::Value, edit: &dyn Fn(&mut ModelDesc), set: &[(&str, f32)]| -> RefModel {
+        let mut d = describe(cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        edit(&mut d.desc);
+        let src = |n: &str| {
+            let shape = d.shapes.get(n)?.clone();
+            let len: usize = shape.iter().product();
+            let v = match set.iter().find(|(end, _)| n.ends_with(end)) {
+                Some(&(_, x)) => vec![x; len],
+                None => draw(n, len),
+            };
+            Some((shape, v))
+        };
+        RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg))
+    };
+    let same = |_: &mut ModelDesc| {};
+    let on_mla = |d: &mut ModelDesc, f: &dyn Fn(&mut super::kinds::Mla)| {
+        for b in d.blocks.iter_mut() {
+            if let Body::Mixer(Mixer::Mla(x)) = &mut b.body {
+                f(x);
+            }
+        }
+    };
+    let run = |cfg: &serde_json::Value, toks: &[u32]| load(cfg, &same, &[]).forward(toks, 0).unwrap_or_else(|e| panic!("{}", e.msg));
+    let a: [u32; 9] = [5, 9, 13, 17, 21, 25, 29, 33, 37];
+    let base = mistral_tiny(serde_json::json!({}));
+    let rows = run(&base, &a);
+    assert_eq!((rows.len(), rows[8].len()), (9, 61));
+    assert!(rows.iter().flatten().all(|x| x.is_finite() && x.abs() < 30.0) && rows[8].iter().any(|&x| x != rows[8][0]), "finite, under the cap, not one value");
+    // (causal)
+    let mut later = a;
+    later[8] = 44;
+    assert_eq!(rows[..8], run(&base, &later)[..8], "a later token changes no earlier row");
+    // (a token at a time, and a prompt then its next tokens: the same bits)
+    let mut m = load(&base, &same, &[]);
+    let mut by_step = Vec::new();
+    for (t, &tok) in a.iter().enumerate() {
+        by_step.extend(m.forward(&[tok], t as u32).unwrap_or_else(|e| panic!("{}", e.msg)));
+    }
+    assert_eq!(by_step, rows, "a token at a time is the prompt");
+    let mut m = load(&base, &same, &[]);
+    let mut parts = m.forward(&a[..5], 0).unwrap();
+    parts.extend(m.forward(&a[5..], 5).unwrap());
+    assert_eq!(parts, rows, "a prompt, then its next tokens");
+    // the scale by position: a factor of one is the model without it, the attention's and the indexer's; as drawn it is another answer, and it is
+    // the position that scales (the first row, whose factor is the bias, is the one with every scale at zero)
+    let unscaled = |d: &mut ModelDesc| {
+        on_mla(d, &|x| {
+            x.pos_scale = false;
+            x.indexer.as_mut().unwrap().pos_scale = false;
+        })
+    };
+    let ones = load(&base, &same, &[("ssmax_scaling.s", 0.0), ("ssmax_scaling.b", 1.0)]).forward(&a, 0).unwrap();
+    assert_eq!(ones, load(&base, &unscaled, &[]).forward(&a, 0).unwrap(), "a factor of one");
+    assert_ne!(rows[8], ones[8], "the scales as drawn");
+    let flat = load(&base, &same, &[("ssmax_scaling.s", 0.0)]).forward(&a, 0).unwrap();
+    assert_eq!(rows[0], flat[0], "position 0: the bias alone");
+    assert_ne!(rows[8], flat[8], "position 8: the scale times ln 9");
+    // the learned frequencies: factors of zero are the rotary as it is
+    let plain_rope = |d: &mut ModelDesc| on_mla(d, &|x| x.rope_learned = false);
+    let zero = load(&base, &same, &[("lerope.alpha", 0.0)]).forward(&a, 0).unwrap();
+    assert_eq!(zero, load(&base, &plain_rope, &[]).forward(&a, 0).unwrap(), "exp(0) = 1");
+    assert_ne!(rows[8], zero[8], "the factors as drawn");
+    // the positions are read (the rotary and the scales): the same tokens further on are another answer
+    assert_ne!(rows[8], load(&base, &same, &[]).forward(&a, 7).unwrap()[8]);
+    // the lent latents and the lent picks are read: every layer its own is another answer, and the indexers bite (keeping every token is another)
+    assert_ne!(rows[8], run(&mistral_tiny(serde_json::json!({"kv_source_layers": null})), &a)[8], "layer 7 on layer 3's latents");
+    assert_ne!(rows[8], run(&mistral_tiny(serde_json::json!({"indexer_types": null})), &a)[8], "layers 2, 5 and 6 on the picks before them");
+    let all = run(&mistral_tiny(serde_json::json!({"index_topk": 64})), &a);
+    assert_eq!(rows[..4], all[..4], "four tokens kept of four");
+    assert_ne!(rows[8], all[8], "four tokens kept of nine");
+    // the cap, cap tanh(logit / cap): in f32 and with a cap among the logits' own sizes, the head's product through the formula
+    let head = |cap: Option<f32>| {
+        move |d: &mut ModelDesc| {
+            d.head.softcap = cap;
+            d.head.rounding = super::kinds::Rounding::F32;
+        }
+    };
+    let uncapped = load(&base, &head(None), &[]).forward(&a, 0).unwrap();
+    let capped = load(&base, &head(Some(0.05)), &[]).forward(&a, 0).unwrap();
+    let want: Vec<f32> = uncapped[8].iter().map(|&x| 0.05 * (x / 0.05).tanh()).collect();
+    assert!(super::reference::testing::rel(&capped[8], &want) < 1e-5 && super::reference::testing::rel(&capped[8], &uncapped[8]) > 1e-2);
+}
+
+/// Hy4 Flash's config as released (the top level with its text model's and its tower's keys), with `text` over the text model's keys and `top` over the top
+/// level's. The lists a layer and the n-gram tables' sizes are made as the release has them: a layer of latent attention with the indexer first and on
+/// every fourth after layer 1, sliding ones between; a dense feed-forward on the first layer; the tables' sizes the 64 primes past 10,312,000 in order,
+/// 16 a layer of the memory.
+fn hy4_config(text: serde_json::Value, top: serde_json::Value) -> serde_json::Value {
+    let sparse = |l: usize| l == 0 || l % 4 == 1;
+    let prime = |n: &u64| (2..).take_while(|i| i * i <= *n).all(|i| n % i != 0);
+    let primes: Vec<u64> = (10_312_000u64..).filter(prime).take(64).collect();
+    let tables: serde_json::Map<String, serde_json::Value> =
+        [2, 12, 22, 32].iter().zip(primes.chunks(16)).map(|(l, p)| (l.to_string(), serde_json::json!([p[..8], p[8..]]))).collect();
+    let mut t = serde_json::Map::new();
+    for part in [
+        serde_json::json!({
+            "architectures": ["HYV4FlashForCausalLM"], "attention_bias": false, "attention_dropout": 0.0, "bitwise_backward_align": true, "bos_token_id": 120000,
+            "compressed_indexer_candidate_topk": 2048, "compressed_indexer_compress_ratio": 4, "compressed_indexer_group_topk": 512,
+            "compressed_indexer_head_dim": 128, "compressed_indexer_key_pooling": "gated", "compressed_indexer_num_attention_heads": 16,
+            "compressed_indexer_reuse_fine_indexer": false, "compressed_indexer_skip_fine_select": true, "compressed_indexer_stage2_query_block_size": 8192,
+            "compressed_indexer_teacher_pooling_type": "max", "compressed_indexer_triton_pooling_min_groups": 1, "compressed_indexer_use_triton_pooling": true,
+            "dsa_skip_attn_post_norm": false, "enable_ihc": true, "enable_lm_head_fp32": true, "engram_embed_random_seed": 1234, "engram_fp8_embedding": false,
+            "engram_isolate_fffd_namespace": false, "engram_layer_ids": [2, 12, 22, 32], "engram_max_ngram_size": 3, "engram_n_embed_per_ngram": 768,
+            "engram_n_head_per_ngram": 8, "engram_pad_id": 120002, "engram_seed": 0, "engram_tokenizer_name_or_path": null, "engram_vocab_map_path": null,
+            "engram_vocab_size": [10312000, 10312000], "eos_token_id": 120025, "fast_op_fp32_linear_gemm": true, "first_k_dense_replace": 1,
+        }),
+        serde_json::json!({
+            "full_nope": false, "gate_groups": 1, "gate_lora_op": "none", "gate_lora_rank": null, "gated_mla": true, "gating_type": "elementwise", "hc_eps": 1e-06,
+            "hc_magnitude": 2.0, "hc_mult": 4, "head_dim": 64, "hidden_act": "silu", "hidden_size": 3072, "ihc_kernel_backend": "naive", "index_head_dim": 128,
+            "index_n_heads": 16, "index_topk": 2048, "initializer_range": 0.006, "intermediate_size": 13824, "kv_lora_rank": 512, "learnable_sink": true,
+            "learnable_sink_init": 0.0, "max_position_embeddings": 1048576, "model_type": "hy_v4_flash", "moe_aux_loss_coeff": 0.0, "moe_intermediate_size": 1536,
+            "moe_router_enable_expert_bias": true, "moe_router_use_sigmoid": true, "n_group": 1, "n_routed_experts": 512, "n_shared_experts": 1,
+            "norm_topk_prob": true, "num_attention_heads": 32, "num_experts_per_tok": 16, "num_hidden_layers": 42, "num_key_value_heads": 32,
+        }),
+        serde_json::json!({
+            "num_nextn_predict_layers": 0, "o_groups": 1, "o_lora_op": "none", "o_lora_rank": null, "output_router_logits": false, "pad_token_id": 120002,
+            "q_lora_rank": 1024, "qk_head_dim": 256, "qk_nope_head_dim": 192, "qk_norm": true, "qk_rope_head_dim": 64, "return_bos_score": true,
+            "return_max_logit": true, "rms_norm_eps": 1e-05, "routed_expert_hidden_size": 1536, "routed_scaling_factor": 3.998, "sandwich_norm": true,
+            "sliding_window": 512, "swa_num_attention_heads": 64, "swa_qk_head_dim": 256, "swa_qk_nope_head_dim": 192, "swa_qk_rope_head_dim": 64,
+            "swa_v_head_dim": 256, "swiglu_limit": 10.0, "tie_word_embeddings": false, "topk_group": 1, "use_cache": true, "use_compressed_indexer": true,
+            "use_dsa": true, "use_grouped_mm": false, "use_mla": true, "v_head_dim": 256, "vocab_size": 120832, "window_size": [511, 0],
+        }),
+        serde_json::json!({
+            "layer_types": (0..42).map(|l| if sparse(l) { "deepseek_sparse_attention" } else { "sliding_attention" }).collect::<Vec<_>>(),
+            "swa_pattern": (0..42).map(|l| !sparse(l) as usize).collect::<Vec<_>>(),
+            "mlp_layer_types": (0..42).map(|l| if l == 0 { "dense" } else { "sparse" }).collect::<Vec<_>>(),
+            "indexer_types": vec!["full"; 42],
+            "engram_layer_head_vocab_sizes": tables,
+            "rope_parameters": {
+                "sliding_attention": {"mrope_interleaved": true, "mrope_section": [12, 10, 10], "rope_theta": 10000, "rope_type": "default"},
+                "deepseek_sparse_attention": {"mrope_interleaved": true, "mrope_section": [12, 10, 10], "rope_theta": 10000000, "rope_type": "default"},
+            },
+        }),
+        text,
+    ] {
+        t.extend(part.as_object().unwrap().clone());
+    }
+    let vision = serde_json::json!({
+        "add_patchemb_bias": true, "anyres_vit_max_image_size": 2048, "attention_backend": "hf_align_sdpa", "attention_dropout": 0.0, "bias_activation_fusion": true,
+        "cat_extra_token": 0, "hidden_act": "gelu", "hidden_dropout": 0.0, "hidden_size": 1152, "img_max_token_num": 4096, "intermediate_size": 4304,
+        "interpolate_mode": "bilinear", "learnable_mlp_pooling_size": 0, "max_image_size": 2048, "max_vit_seq_len": 16384, "min_image_size": 512,
+        "model_type": "hy_v4_flash", "num_attention_heads": 16, "num_channels": 3, "num_hidden_layers": 27, "num_key_value_heads": 16, "out_hidden_size": 3072,
+        "packed_seq_alignment": 128, "patch_size": 16, "perceive_post_norm": false, "perceive_pre_norm": true, "projector_type": "rmsnorm_mlp_adapter",
+        "remove_prenorm": true, "resize_resolution": 2048, "rms_norm_eps": 1e-05, "rope_2d_percent": 1.0, "rope_2d_theta": 10000.0, "spatial_merge_size": 2,
+        "spatial_patch_size": 1, "temporal_patch_size": 1, "text_hidden_size": 3072, "video_max_image_size": 768, "video_min_image_size": 256,
+        "video_spatial_compression": false, "video_temporal_compression": false, "vision_full_attention": false,
+    });
+    let mut c = serde_json::json!({
+        "architectures": ["HYV4FlashForConditionalGeneration"], "dtype": "bfloat16", "image_end_token_id": 120119, "image_newline_token_id": 120121,
+        "image_start_token_id": 120118, "image_token_id": 120120, "model_type": "hy_v4_flash", "processor_class": "HYV4FlashProcessor", "spatial_merge_size": 2,
+        "transformers_version": "5.23.0", "video_end_token_id": 120123, "video_start_token_id": 120122, "video_token_id": 120124, "vision_start_token_id": 120118,
+        "dfly_block_size": 6, "dfly_mtp_fusion": "slot0", "dfly_target_index_topk": 2048, "dfly_context_local_window": null, "dfly_enable_hidden_correction": true,
+        "dfly_num_hidden_layers": 5, "dfly_mask_token_id": 120009, "dfly_target_index_layer": [25, 29, 33, 37, 41], "dfly_target_kv_layers": [25, 29, 33, 37, 41],
+    });
+    c.as_object_mut().unwrap().extend(top.as_object().unwrap().clone());
+    c["text_config"] = serde_json::Value::Object(t);
+    c["vision_config"] = vision;
+    c
+}
+
+/// Hy4 Flash's released config has a builder that reads every key of it, the text model's and the top level's, and says what it found: 12 layers of
+/// latent attention with the compressed indexer and 30 in a window, a dense feed-forward on the first layer and experts on the rest, four residual
+/// streams, the n-gram memory on four layers, a drafter of five. It is then refused: each part that no layer kind says is named with its tensors, and
+/// no key is left unread.
+#[test]
+fn hy4_flashs_released_config_is_read_and_refused_at_the_parts_no_kind_says() {
+    use super::describe::{keys_named, HY4_LACKS};
+    let none = || serde_json::json!({});
+    let c = hy4_config(none(), none());
+    let keys = |v: &serde_json::Value| v.as_object().unwrap().len();
+    assert_eq!((keys(&c), keys(&c["text_config"]), keys(&c["vision_config"])), (25, 110, 41), "every key of the release's config.json");
+    let e = describe(&c).expect_err("refused").msg;
+    let read =
+        "hy_v4_flash: its config is read (12 layers of latent attention with a compressed indexer and 30 in a window of 512 tokens, 1 dense feed-forward \
+                and 41 of 512 experts, 4 residual streams, an n-gram memory on 4 layers, a drafter of 5 layers), and it is not described yet.";
+    assert!(e.starts_with(read), "{e}");
+    assert_eq!(HY4_LACKS.len(), 6);
+    for part in HY4_LACKS {
+        assert!(e.contains(part), "{part}: {e}");
+    }
+    for tensor in [
+        "learnable_sink_param",
+        "q_b_proj",
+        "compressed_indexer.token_key_projection",
+        "key_gate_projection",
+        "intra_group_ape",
+        "head_weight_projection",
+        "hc_pre.hc_fn",
+        "lookup_table",
+        "lookup_per_head_norms",
+        "unified_per_hc_scales",
+        "mtp_fusion.gate",
+        "hidden_correction",
+        "confidence_head",
+    ] {
+        assert!(e.contains(tensor), "{tensor}: {e}");
+    }
+    assert!(keys_named(&e).is_empty() && !e.contains("has no description builder yet"), "{e}");
+    // (the counts are the config's: a model of other layers says its own; a layer's names as the readers fold them; one layer for every draft layer's picks)
+    let small = hy4_config(
+        serde_json::json!({
+            "num_hidden_layers": 3, "layer_types": ["sparse", "sliding_attention", "indexed_attention"], "swa_pattern": [0, 1, 0], "indexer_types": null,
+            "mlp_layer_types": ["dense", "dense", "sparse"], "first_k_dense_replace": 2, "n_routed_experts": 32, "sliding_window": 64, "window_size": [63, 0],
+            "engram_layer_ids": [3], "engram_layer_head_vocab_sizes": {"3": vec![vec![10_312_007; 8]; 2]},
+        }),
+        serde_json::json!({"dfly_num_hidden_layers": 1, "dfly_target_index_layer": 2, "dfly_target_kv_layers": [2]}),
+    );
+    let e = describe(&small).expect_err("refused").msg;
+    let read = "(2 layers of latent attention with a compressed indexer and 1 in a window of 64 tokens, 2 dense feed-forward and 1 of 32 experts, \
+                4 residual streams, an n-gram memory on 1 layers, a drafter of 1 layers)";
+    assert!(e.contains(read), "{e}");
+    // (the text model alone, its keys at the top level, with no memory: no drafter's keys are asked for, nor the tables')
+    let mut flat = c["text_config"].clone();
+    for key in ["engram_layer_ids", "engram_layer_head_vocab_sizes", "engram_vocab_size"] {
+        flat[key] = serde_json::Value::Null;
+    }
+    let e = describe(&flat).expect_err("refused").msg;
+    assert!(e.contains("an n-gram memory on 0 layers, a drafter of 0 layers), and it is not described yet"), "{e}");
+}
+
+/// The Hy4 builder holds each key to what the family's readers compute: a setting of another form is refused by its key before the parts are, a key
+/// nobody knows by its name (the top level's and the text model's together), and a list that is not the layers', a sort that is no layer's, a width
+/// that is not the form's, a table or a drafter's layer that cannot be, in words.
+#[test]
+fn hy4_flash_holds_every_key_to_the_form_its_readers_compute() {
+    use super::describe::keys_named;
+    let refusal = |text: serde_json::Value, top: serde_json::Value| describe(&hy4_config(text, top)).expect_err("refused").msg;
+    for (text, want) in [
+        (serde_json::json!({"hidden_act": "gelu"}), "hidden_act = \"gelu\" is not supported (only \"silu\")"),
+        (serde_json::json!({"gated_mla": false}), "gated_mla = false is not supported"),
+        (serde_json::json!({"gating_type": "headwise"}), "gating_type = \"headwise\" is not supported (only \"elementwise\")"),
+        (serde_json::json!({"learnable_sink": false}), "learnable_sink = false is not supported"),
+        (serde_json::json!({"enable_ihc": false}), "enable_ihc = false is not supported"),
+        (serde_json::json!({"use_compressed_indexer": false}), "use_compressed_indexer = false is not supported"),
+        (serde_json::json!({"compressed_indexer_key_pooling": "mean"}), "compressed_indexer_key_pooling = \"mean\" is not supported (only \"gated\")"),
+        (serde_json::json!({"compressed_indexer_skip_fine_select": false}), "compressed_indexer_skip_fine_select = false is not supported"),
+        (serde_json::json!({"index_head_dim": 64}), "index_head_dim = 64 is not supported (only 128)"),
+        (serde_json::json!({"o_lora_rank": 256}), "o_lora_rank = 256 is not supported (only null)"),
+        (serde_json::json!({"qk_norm": false}), "qk_norm = false is not supported"),
+        (serde_json::json!({"full_nope": true}), "full_nope = true is not supported"),
+        (serde_json::json!({"use_mla": false}), "use_mla = false is not supported"),
+        (serde_json::json!({"n_group": 2}), "n_group = 2 is not supported (only 1)"),
+        (serde_json::json!({"moe_router_use_sigmoid": false}), "moe_router_use_sigmoid = false is not supported"),
+        (serde_json::json!({"swa_qk_rope_head_dim": 32}), "swa_qk_rope_head_dim = 32 is not supported (only 64, qk_rope_head_dim"),
+        (serde_json::json!({"qk_head_dim": 128}), "qk_head_dim = 128 is not supported (only 256, qk_nope_head_dim + qk_rope_head_dim)"),
+        (serde_json::json!({"head_dim": 256}), "head_dim = 256 is not supported (only 64, qk_rope_head_dim"),
+        (serde_json::json!({"num_key_value_heads": 1}), "num_key_value_heads = 1 is not supported (only 32, num_attention_heads"),
+        (serde_json::json!({"layer_types": ["sparse", "sliding_attention"]}), "2 layer_types for 42 layers"),
+        (serde_json::json!({"num_hidden_layers": 2, "layer_types": ["sparse", "full_attention"]}), "layer 1 is of type \"full_attention\" (only deepseek_sparse_attention"),
+        (serde_json::json!({"swa_pattern": vec![0; 42]}), "swa_pattern is not layer_types'"),
+        (serde_json::json!({"indexer_types": (0..42).map(|l| if l == 5 { "shared" } else { "full" }).collect::<Vec<_>>()}), "indexer_types is not \"full\" for each of the 42"),
+        (serde_json::json!({"window_size": [512, 0]}), "window_size = [512,0] is not supported (only [511, 0]"),
+        (
+            serde_json::json!({"rope_parameters": {"rope_theta": 10000, "rope_type": "yarn", "factor": 2.0, "original_max_position_embeddings": 4096}}),
+            "rope_type yarn is not supported (only default)",
+        ),
+        (serde_json::json!({"rope_parameters": {"sliding_attention": {"rope_theta": 10000}}}), "rope_parameters has no rotary for the deepseek_sparse_attention layers"),
+        (serde_json::json!({"rope_parameters": {"rope_theta": 10000, "mrope_section": [16, 8, 4]}}), "mrope_section [16, 8, 4] is not the 32 angles of qk_rope_head_dim"),
+        (serde_json::json!({"rope_parameters": {"mrope_section": [12, 10, 10], "mrope_interleaved": false}}), "mrope_interleaved = false is not supported"),
+        (serde_json::json!({"rope_parameters": {"sparse": {"rope_theta": 10000}, "sliding_attention": {}, "rope_theta": 10}}), "rope_parameters has rope_theta beside"),
+        (serde_json::json!({"compressed_indexer_compress_ratio": 3}), "compressed_indexer_compress_ratio = 3 is not supported (only 2, 4, 8 or 16"),
+        (
+            serde_json::json!({"index_topk": 1024}),
+            "index_topk = 1024 and compressed_indexer_candidate_topk = 2048, where both are compressed_indexer_group_topk x compressed_indexer_compress_ratio (2048)",
+        ),
+        (serde_json::json!({"hc_mult": 0}), "0 residual streams"),
+        (serde_json::json!({"mlp_layer_types": ["dense"]}), "1 mlp_layer_types for 42 layers"),
+        (serde_json::json!({"first_k_dense_replace": 3}), "first_k_dense_replace = 3, where mlp_layer_types has 1 dense layers"),
+        (serde_json::json!({"num_experts_per_tok": 600}), "600 of 512 experts a token"),
+        (serde_json::json!({"routed_scaling_factor": null}), "no routed_scaling_factor"),
+        (serde_json::json!({"num_nextn_predict_layers": 1}), "num_nextn_predict_layers = 1 is not supported (only 0"),
+        (serde_json::json!({"num_nextn_predict_layers": null}), "no num_nextn_predict_layers"),
+        (serde_json::json!({"engram_layer_ids": [0, 12]}), "engram_layer_ids names layer 0: the layers numbered from 1, 1 to 42"),
+        (serde_json::json!({"engram_layer_ids": [2, 43]}), "engram_layer_ids names layer 43"),
+        (serde_json::json!({"engram_layer_ids": [2, 2]}), "names a layer twice"),
+        (serde_json::json!({"engram_layer_ids": [3]}), "engram_layer_head_vocab_sizes has no tables for layer 3 (2 orders of 8 sizes)"),
+        (serde_json::json!({"engram_vocab_size": [10312000, 10400000]}), "layer 2's table of 10312177 rows is not past engram_vocab_size (10400000)"),
+        (serde_json::json!({"engram_n_head_per_ngram": 7}), "an n-gram memory of orders up to 3, 7 heads an order over 768 values"),
+        (serde_json::json!({"engram_pad_id": 120832}), "engram_pad_id 120832 of 120832"),
+    ] {
+        let e = refusal(text.clone(), serde_json::json!({}));
+        assert!(e.starts_with("hy_v4_flash") && e.contains(want), "{text}: {e}");
+        assert!(!e.contains("its config is read"), "{text}: refused at the key, before the parts: {e}");
+    }
+    // (the drafter's keys, the top level's)
+    for (top, want) in [
+        (serde_json::json!({"dfly_mtp_fusion": "concat"}), "dfly_mtp_fusion = \"concat\" is not supported (only \"slot0\")"),
+        (serde_json::json!({"dfly_enable_hidden_correction": false}), "dfly_enable_hidden_correction = false is not supported"),
+        (serde_json::json!({"dfly_enable_ihc": true}), "dfly_enable_ihc = true is not supported"),
+        (serde_json::json!({"dfly_block_size": null}), "a drafter without its dfly_block_size"),
+        (serde_json::json!({"dfly_mask_token_id": 120832}), "or its dfly_mask_token_id (a token of the vocabulary)"),
+        (serde_json::json!({"dfly_target_index_topk": 1024}), "dfly_target_index_topk = 1024 is not supported (only index_topk, 2048"),
+        (serde_json::json!({"dfly_target_index_layer": [25]}), "dfly_target_index_layer is not a layer of the model for each of the 5 draft layers"),
+        (
+            serde_json::json!({"dfly_target_kv_layers": [25, 29, 33, 37, 40]}),
+            "dfly_target_kv_layers names layer 40: a layer of latent attention with the indexer, 1 to 41",
+        ),
+        (serde_json::json!({"dfly_target_kv_layers": [25, 25, 33, 37, 41]}), "dfly_target_kv_layers names a layer twice"),
+        (serde_json::json!({"dfly_attn_post_proj_norm": "rms"}), "dfly_attn_post_proj_norm is not true or false"),
+    ] {
+        let e = refusal(serde_json::json!({}), top.clone());
+        assert!(e.starts_with("hy_v4_flash: ") && e.contains(want), "{top}: {e}");
+        assert!(!e.contains("its config is read"), "{top}: refused at the key, before the parts: {e}");
+    }
+    // (a key no builder knows is named, the top level's and the text model's, with every other one, before the parts are)
+    let e = refusal(serde_json::json!({"attn_merger_rank": 16}), serde_json::json!({"dfly_new_setting": 1, "quantization_config": {}}));
+    assert_eq!(keys_named(&e), ["dfly_new_setting", "quantization_config", "attn_merger_rank"], "{e}");
 }

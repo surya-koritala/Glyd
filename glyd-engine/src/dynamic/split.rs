@@ -1005,6 +1005,75 @@ pub struct Loader {
 /// gate a head, experts whose SwiGLU limit holds the activated gate): the CPU reference computes them, no loader lowers the layout.
 pub const DELTA_PLAIN_NOT_RUN: &str = "its layers hold the Kimi delta attention on plain residuals, which the executor does not run yet";
 
+/// The refusal of a description one of whose roles is a matrix the checkpoint stores transposed (`Source::Transposed`), or a vector it stores as scalars
+/// apart (`Source::Rows` of a residual's `hc_scale`): the CPU reference loads them, the executor's loaders read a role's tensor as it is stored.
+pub const STORED_FORM_NOT_RUN: &str = "its checkpoint stores a matrix transposed or a vector as scalars apart, which the executor does not run yet";
+
+/// The first part of the description `d` that the CPU reference computes and the executor has no operation for, as its refusal; None where every part is one
+/// a lowering may take. Asked before the layer kinds choose a lowering (`lowering`), so that such a model is refused by the part's name.
+pub fn not_run(d: &crate::runtime::describe::Described) -> Option<&'static str> {
+    use crate::runtime::describe::Source;
+    let heads = d.mtp.iter().flat_map(|(blocks, own)| blocks.iter().chain(std::iter::once(own)));
+    let mut roles = d.blocks.iter().chain(std::iter::once(&d.extra)).chain(heads).flatten();
+    if roles.any(|(r, s)| matches!(s, Source::Transposed(_)) || (r == "hc_scale" && matches!(s, Source::Rows(_)))) {
+        return Some(STORED_FORM_NOT_RUN);
+    }
+    use crate::runtime::kinds::{Body, Ffn, Residual, Router, StreamsP};
+    let blocks = || d.desc.blocks.iter().chain(d.desc.mtp.iter().flat_map(|h| h.blocks.iter()));
+    if blocks().any(|b| matches!(b.residual, Residual::Streams(StreamsP { eps_outside: true, .. }))) {
+        return Some(StreamsP::EPS_OUTSIDE_NOT_RUN);
+    }
+    let router = |f: &dyn Fn(&Router) -> bool| blocks().any(|b| matches!(&b.body, Body::Ffn(Ffn::Moe(m)) if f(&m.router)));
+    if router(&|r| r.routers != 1) {
+        return Some(Router::ROUTERS_NOT_RUN);
+    }
+    if router(&|r| r.expert_scale) {
+        return Some(Router::EXPERT_SCALE_NOT_RUN);
+    }
+    if d.desc.head.correction {
+        return Some(crate::runtime::kinds::Head::CORRECTION_NOT_RUN);
+    }
+    use crate::runtime::kinds::{GateFrom, Mixer, OutGate};
+    let mixer = |f: &dyn Fn(&Mixer) -> bool| blocks().any(|b| matches!(&b.body, Body::Mixer(m) if f(m)));
+    let latent = |g: &Option<OutGate>| g.is_some_and(|g| g.from == GateFrom::Latent);
+    if mixer(&|m| match m {
+        Mixer::Attention(a) => latent(&a.gate),
+        Mixer::Mla(x) => latent(&x.gate),
+        Mixer::Compressed(c) => c.gate.is_some(),
+        _ => false,
+    }) {
+        return Some(GateFrom::LATENT_NOT_RUN);
+    }
+    if mixer(&|m| matches!(m, Mixer::Mla(x) if x.head_mix != 0) || matches!(m, Mixer::Compressed(c) if c.head_mix != 0)) {
+        return Some(crate::runtime::kinds::HEAD_MIX_NOT_RUN);
+    }
+    use crate::runtime::kinds::{Indexer, Mla};
+    if mixer(&|m| matches!(m, Mixer::Mla(x) if x.sinks)) {
+        return Some(Mla::SINKS_NOT_RUN);
+    }
+    if mixer(&|m| matches!(m, Mixer::Mla(x) if x.window.is_some())) {
+        return Some(Mla::WINDOW_NOT_RUN);
+    }
+    let own = |ix: &Option<Indexer>| ix.as_ref().is_some_and(|ix| ix.rope_style.is_some());
+    if mixer(&|m| match m {
+        Mixer::Attention(a) => own(&a.indexer),
+        Mixer::Mla(x) => own(&x.indexer),
+        Mixer::Compressed(c) => own(&c.indexer),
+        _ => false,
+    }) {
+        return Some(Indexer::ROPE_STYLE_NOT_RUN);
+    }
+    if d.desc.mtp.iter().any(|h| h.dspark.as_ref().is_some_and(|x| x.after)) {
+        return Some(crate::runtime::kinds::DSpark::AFTER_NOT_RUN);
+    }
+    None
+}
+
+/// `not_run` as a lowering asks it: the refusal of the first part of `d` the executor has no operation for, by its name.
+pub fn runs(d: &crate::runtime::describe::Described) -> Result<()> {
+    not_run(d).map_or(Ok(()), err)
+}
+
 /// The layer kinds a loader of the dynamic route lowers, as a description tells them apart (`lowering`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Lowering {
@@ -1037,8 +1106,18 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
     let linear = |k: LinearKind| mixer(&|m| matches!(m, Mixer::Linear(l) if l.kind == k));
     let plain = blocks.iter().all(|b| matches!(b.residual, Residual::Add));
     // (a kind the reference has and no lowering yet: refused by its name before the kinds beside it choose a lowering)
+    if let Some(part) = not_run(d) {
+        return err(part);
+    }
     if linear(LinearKind::KimiDelta) && plain {
         return err(DELTA_PLAIN_NOT_RUN);
+    }
+    // (a latent attention of a form the reference has and the kernels do not, Mistral Large's: named, the first of them a layer holds)
+    if let Some(why) = blocks.iter().find_map(|b| match &b.body {
+        Body::Mixer(Mixer::Mla(m)) => m.not_run(),
+        _ => None,
+    }) {
+        return err(format!("its layers hold {why}"));
     }
     Ok(if mixer(&|m| matches!(m, Mixer::Compressed(_))) {
         Lowering::Compressed
@@ -1218,6 +1297,133 @@ mod tests {
                 && !q("model.layers.0.mlp.experts.gate_up_proj")
         );
         assert!(!q("model.layers.0.mlp.shared_expert.up_proj.weight") && !q("model.layers.0.mlp.gate.weight"));
+    }
+
+    /// DeepSeek-V4-Flash's released description, which the executor lowers: what a part of another family's is put into, one at a time.
+    fn v4_described() -> crate::runtime::describe::Described {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers/DeepSeek-V4-Flash-0731.json");
+        let h: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        crate::runtime::describe::describe(&serde_json::from_str(h["config"].as_str().unwrap()).unwrap()).unwrap()
+    }
+
+    /// The parts the CPU reference computes and the executor has no operation for (ERNIE's) are each refused by name where a loader is chosen and where a
+    /// description is lowered for a plan, never lowered as the part they extend and never a panic; the description without them has its loader.
+    #[test]
+    fn the_parts_the_executor_does_not_run_are_refused_by_name() {
+        use crate::runtime::describe::{Described, Source};
+        let refused = |d: &Described, part: &str| {
+            assert!(part.ends_with("which the executor does not run yet"), "{part}");
+            assert_eq!(super::not_run(d), Some(part));
+            let Err(e) = super::loader(d).map(|_| ()) else { panic!("a loader for: {part}") };
+            assert_eq!(e.msg, part);
+            let Err(e) = super::lowered_described(d, 43, 4096) else { panic!("lowered: {part}") };
+            assert_eq!(e.msg, part);
+        };
+        let base = v4_described();
+        assert_eq!(super::not_run(&base), None);
+        assert!(super::loader(&base).is_ok());
+        // (a matrix stored transposed; a residual's three scalars stored apart)
+        let role = |d: &mut Described, b: usize, r: &str, s: Source| d.blocks[b].iter_mut().find(|(n, _)| n == r).unwrap_or_else(|| panic!("no {r}")).1 = s;
+        let mut d = base.clone();
+        role(&mut d, 0, "hc_fn", Source::Transposed("model.layers.0.self_attention_hyper_connection.mapping_proj.weight".into()));
+        refused(&d, super::STORED_FORM_NOT_RUN);
+        let mut d = base.clone();
+        role(&mut d, 1, "hc_scale", Source::Rows(["alpha_pre", "alpha_post", "alpha_res"].map(String::from).to_vec()));
+        refused(&d, super::STORED_FORM_NOT_RUN);
+        let mut d = base.clone();
+        d.extra.push(("out_hc_fn".into(), Source::Transposed("model.mhc_contract.hc_head_fn".into())));
+        refused(&d, super::STORED_FORM_NOT_RUN);
+        // (the streams' norm with its epsilon outside the root: one block's is enough)
+        use crate::runtime::kinds::{Residual, StreamsP};
+        let mut d = base.clone();
+        let Residual::Streams(s) = &mut d.desc.blocks[5].residual else { panic!("no streams") };
+        s.eps_outside = true;
+        refused(&d, StreamsP::EPS_OUTSIDE_NOT_RUN);
+        let Err(e) = crate::dynamic::lower::deepseek_v4(
+            &d,
+            vec![1],
+            4096,
+            &crate::dynamic::Stage::whole(43),
+            &crate::dynamic::deepseek_v4::V4Opts { exact8: true, f8_min: 16 << 20, ostack: true, sim: true, ctx: 4096 },
+        ) else {
+            panic!("lowered")
+        };
+        assert_eq!(e.msg, StreamsP::EPS_OUTSIDE_NOT_RUN);
+        // (two routers whose scores add; a learned scale an expert: on a layer's experts, and where the experts' kind is made the executor's)
+        use crate::runtime::kinds::{Body, Ffn, Router};
+        let moe = |d: &mut Described, b: usize, f: &dyn Fn(&mut Router)| {
+            let Body::Ffn(Ffn::Moe(m)) = &mut d.desc.blocks[b].body else { panic!("block {b} is no experts'") };
+            f(&mut m.router);
+            m.clone()
+        };
+        let mut d = base.clone();
+        let m = moe(&mut d, 9, &|r| r.routers = 2);
+        refused(&d, Router::ROUTERS_NOT_RUN);
+        assert!(crate::dynamic::experts::cfg(&m, 4096, 2048).unwrap_err().msg.contains(Router::ROUTERS_NOT_RUN));
+        let mut d = base.clone();
+        let m = moe(&mut d, 9, &|r| r.expert_scale = true);
+        refused(&d, Router::EXPERT_SCALE_NOT_RUN);
+        assert!(crate::dynamic::experts::cfg(&m, 4096, 2048).unwrap_err().msg.contains(Router::EXPERT_SCALE_NOT_RUN));
+        // (the logits' four-part correction)
+        let mut d = base.clone();
+        d.desc.head.correction = true;
+        refused(&d, crate::runtime::kinds::Head::CORRECTION_NOT_RUN);
+        // (an output gate from the query latent: on a compressed attention, and on a latent one where its kind is made the executor's)
+        use crate::runtime::kinds::{Act, GateFrom, Mixer, OutGate};
+        let gate = Some(OutGate { act: Act::Sigmoid, from: GateFrom::Latent, norm: None });
+        let mut d = base.clone();
+        let Body::Mixer(Mixer::Compressed(c)) = &mut d.desc.blocks[4].body else { panic!("block 4 is no attention") };
+        c.gate = gate;
+        refused(&d, GateFrom::LATENT_NOT_RUN);
+        // (the low-rank mix of the heads' outputs)
+        let mut d = base.clone();
+        let Body::Mixer(Mixer::Compressed(c)) = &mut d.desc.blocks[4].body else { panic!("block 4 is no attention") };
+        c.head_mix = 16;
+        refused(&d, crate::runtime::kinds::HEAD_MIX_NOT_RUN);
+        // (a latent attention's sinks, its window beside the picks, its indexer's own pairing, its heads' mix and its gate from the latent: on GLM-5.3's
+        // released description, whose latent attention the executor lowers, and where the latent attention's kind is made the executor's)
+        let glm = {
+            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers/GLM-5.3.json");
+            let h: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+            crate::runtime::describe::describe(&serde_json::from_str(h["config"].as_str().unwrap()).unwrap()).unwrap()
+        };
+        assert_eq!(super::not_run(&glm), None);
+        use crate::runtime::kinds::{Indexer, Mla, RopeStyle};
+        let at = glm.desc.blocks.iter().position(|b| matches!(&b.body, Body::Mixer(Mixer::Mla(x)) if x.indexer.as_ref().is_some_and(|i| !i.shared))).unwrap();
+        let with = |f: &dyn Fn(&mut Mla)| {
+            let mut d = glm.clone();
+            let Body::Mixer(Mixer::Mla(x)) = &mut d.desc.blocks[at].body else { panic!("block {at}") };
+            f(x);
+            let kind = x.clone();
+            (d, kind)
+        };
+        let of =
+            |x: &Mla| crate::dynamic::mla::MlaOp::of(x, crate::dynamic::mla::MlaIn::Fused { w: 0 }, 1, 2, 3, 4, false, Some(5)).map(|_| ()).unwrap_err().msg;
+        for (edit, part) in [
+            (&(|x: &mut Mla| x.sinks = true) as &dyn Fn(&mut Mla), Mla::SINKS_NOT_RUN),
+            (&|x: &mut Mla| x.window = Some(128), Mla::WINDOW_NOT_RUN),
+            (&|x: &mut Mla| x.indexer.as_mut().unwrap().rope_style = Some(RopeStyle::Half), Indexer::ROPE_STYLE_NOT_RUN),
+            (&|x: &mut Mla| x.head_mix = 16, crate::runtime::kinds::HEAD_MIX_NOT_RUN),
+            (&|x: &mut Mla| x.gate = gate, GateFrom::LATENT_NOT_RUN),
+        ] {
+            let (d, kind) = with(edit);
+            assert_eq!(super::not_run(&d), Some(part));
+            assert_eq!(super::loader(&d).map(|_| ()).unwrap_err().msg, part);
+            assert!(of(&kind).contains(part), "{part}: {}", of(&kind));
+        }
+        // (a drafter whose targets are read after their layers)
+        let mut d = base.clone();
+        d.desc.mtp[0].dspark.as_mut().expect("a DSpark drafter").after = true;
+        refused(&d, crate::runtime::kinds::DSpark::AFTER_NOT_RUN);
+        // (and by each lowering itself, whatever chose it: the dense one's, of a plain decoder with the correction)
+        let plain = serde_json::json!({"architectures": ["X"], "model_type": "llama", "hidden_size": 256, "intermediate_size": 512, "num_hidden_layers": 2,
+            "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 64, "vocab_size": 1024, "rms_norm_eps": 1e-5, "rope_theta": 10000.0,
+            "max_position_embeddings": 4096, "hidden_act": "silu", "tie_word_embeddings": false});
+        let mut d = crate::runtime::describe::describe(&plain).unwrap();
+        assert!(crate::dynamic::lower::dense(&d, vec![2], 4096).is_ok());
+        d.desc.head.correction = true;
+        let Err(e) = crate::dynamic::lower::dense(&d, vec![2], 4096) else { panic!("lowered") };
+        assert_eq!(e.msg, crate::runtime::kinds::Head::CORRECTION_NOT_RUN);
     }
 
     /// A plan of experts in the computer's memory across GPUs opens the latent block's cache across them (src/dynamic/tp_cache.rs) by the description's
