@@ -1834,7 +1834,7 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
     use super::mla::{MlaIn, MlaOp};
     use crate::kern::GM_D;
     use crate::moe::Act;
-    use crate::runtime::kinds::{Collapse, Decay, LinearKind, NormKind, NormWeight, Residual, Rounding};
+    use crate::runtime::kinds::{Clamp, Collapse, Decay, LinearKind, NormKind, NormWeight, Residual, Rounding};
     let m = &d.desc;
     let h = m.hidden;
     let what = LATENT;
@@ -1943,21 +1943,34 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
             }
             b => return err(format!("{what}: layer {l}'s first block is {b:?}, not a latent attention or the Kimi delta attention")),
         };
-        let moe = match &fb.body {
+        // (the feed-forward: a dense MLP's activation with its SwiGLU limit, on the gate or on the activated gate; None: a block of experts)
+        let mlp_act = match &fb.body {
             Body::Ffn(Ffn::Mlp(mlp)) => {
-                if mlp.clamp.is_some() || !mlp.gated || mlp.bias || mlp.act != crate::runtime::kinds::Act::Silu {
-                    return err(format!("{what}: layer {l}'s MLP of {mlp:?}, where the executor's is SwiGLU without a limit"));
+                // (an activation the reference computes and no kernel does, by its name; then what the executor's SwiGLU is not)
+                if let Some(why) = mlp.not_run() {
+                    return err(format!("{what}: layer {l}'s MLP: {why}"));
+                }
+                if !mlp.gated || mlp.bias || mlp.act != crate::runtime::kinds::Act::Silu {
+                    return err(format!("{what}: layer {l}'s MLP of {mlp:?}, where the executor's is SwiGLU"));
                 }
                 let gate = match role(f, "gate") {
                     Some(Source::Tensor(n)) => n,
                     g => return err(format!("{what}: layer {l}'s MLP gate is {g:?}")),
                 };
-                inter = d.shapes.get(gate).map(|s| s[0]).ok_or_else(|| Error(format!("{what}: no shape for {gate}")))?;
-                false
+                let rows = d.shapes.get(gate).map(|s| s[0]).ok_or_else(|| Error(format!("{what}: no shape for {gate}")))?;
+                if inter != 0 && inter != rows {
+                    return err(format!("{what}: layer {l}'s MLP of {rows}, where an earlier layer's is {inter}: one width"));
+                }
+                inter = rows;
+                Some(match mlp.clamp {
+                    None => Act::SwiGlu { limit: None },
+                    Some(Clamp::Gate(x)) => Act::SwiGlu { limit: Some(x) },
+                    Some(Clamp::Activated(x)) => Act::SwiGluAfter { limit: x },
+                })
             }
             Body::Ffn(Ffn::Moe(e)) => {
-                super::experts::cfg(e, h, 0).map_err(|x| x.context(format!("{what}: layer {l}")))?;
-                true
+                super::experts::cfg_shared(e, h, 0).map_err(|x| x.context(format!("{what}: layer {l}")))?;
+                None
             }
             b => return err(format!("{what}: layer {l}'s feed-forward is {b:?}")),
         };
@@ -2046,17 +2059,17 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
         }
         ops.extend(mixer);
         ops.extend([Op::Add { x: Slot::O }, rounded(s0 + 1)]);
-        if moe {
-            ops.push(Op::Moe(MoeOp { y: Slot::D, ..MoeOp::of(n_moe) }));
-            n_moe += 1;
-        } else {
+        if let Some(act) = mlp_act {
             mats.extend([it(vec![one(f, "gate")?, one(f, "up")?], 2 * inter, h), it(vec![one(f, "down")?], h, inter)]);
             ops.extend([
                 Op::Linear { w: n_mats, x: Slot::H, y: Slot::Gu, name: "MLP: gate and up product" },
-                Op::GatedAct { inter, act: Act::SwiGlu { limit: None } },
+                Op::GatedAct { inter, act },
                 Op::Linear { w: n_mats + 1, x: Slot::M, y: Slot::D, name: "MLP: down product" },
             ]);
             n_mats += 2;
+        } else {
+            ops.push(Op::Moe(MoeOp { y: Slot::D, ..MoeOp::of(n_moe) }));
+            n_moe += 1;
         }
         ops_all.push(ops);
     }
@@ -3076,6 +3089,53 @@ mod tests {
         refused(serde_json::json!({"first_k_dense_replace": 6, "kda_safe_gate": false}), "this engine runs the bounded gate");
         // (a gate a channel on the latent attention is its own product, which no fused input product of this lowering holds)
         refused(serde_json::json!({"first_k_dense_replace": 6, "gated_attention_proj_granularity_type": "element_wise"}), "a latent attention's gate of");
+    }
+
+    /// Ling's small model (the logits checks' random one) lowers whole by the planner's choice of a lowering: the description reads every tensor of its
+    /// manifest at the manifest's shape and the lowering names every one that is not a block of experts' own; four delta layers' states a sequence and two
+    /// latent layers' rings; the first layer's feed-forward the dense MLP, the others' blocks of experts whose choice is made inside the best 2 of 4 groups,
+    /// with the limits on the activated gate the config's lists give a layer: the experts' on the last three layers, the shared MLP's, another, on the last
+    /// two. The family has no row in the table of what the engine runs: its random model is a case of the checks.
+    #[test]
+    fn the_random_ling_lowers_with_every_tensor_named() {
+        use crate::moe::Act;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/ling_tiny_manifest.json")).unwrap()).unwrap();
+        let text = manifest["config"].as_str().unwrap();
+        let kinds = ling_tiny(serde_json::json!({}));
+        let have: std::collections::BTreeSet<String> = manifest["tensors"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
+        kinds.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+        for t in manifest["tensors"].as_array().unwrap() {
+            let shape: Vec<usize> = t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+            assert_eq!(kinds.shapes.get(t[0].as_str().unwrap()), Some(&shape), "{}", t[0]);
+        }
+        let d = super::super::split::lowered_described(&kinds, 6, 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert_eq!(super::super::unnamed(&d), None);
+        let named: std::collections::BTreeSet<String> =
+            d.mats.iter().flat_map(|it| it.members.iter()).cloned().chain(d.small.iter().flat_map(|s| s.split('|').map(String::from))).collect();
+        // (a block of experts reads its own tensors: the router, its choice bias, the experts' and the shared MLP's matrices)
+        let own: std::collections::BTreeSet<String> = have.iter().filter(|n| n.contains(".mlp.gate.") || n.contains("experts.")).cloned().collect();
+        assert!(named.is_disjoint(&own) && named.union(&own).cloned().collect::<std::collections::BTreeSet<_>>() == have);
+        assert_eq!((d.states.len(), d.rings.len(), d.lm, d.final_norm.is_none()), (8, 2, d.embed + 1, true));
+        let ffn: Vec<Option<Act>> =
+            d.layers.iter().map(|ops| ops.iter().find_map(|o| if let Op::GatedAct { act, .. } = o { Some(*act) } else { None })).collect();
+        assert_eq!(ffn, [Some(Act::SwiGlu { limit: None }), None, None, None, None, None]);
+        assert_eq!(d.layers.iter().flatten().filter(|o| matches!(o, Op::Moe(_))).count(), 5);
+        let after = |l: f32| Act::SwiGluAfter { limit: l };
+        let plain = Act::SwiGlu { limit: None };
+        let blocks: Vec<_> = super::super::experts::of_layers(&kinds, (0, 6), 2)
+            .map(|(ix, m, _)| {
+                let (c, shared) = super::super::experts::cfg_shared(m, 256, 128).unwrap_or_else(|e| panic!("{}", e.msg));
+                c.check().unwrap_or_else(|e| panic!("{}", e.msg));
+                assert_eq!((c.experts, c.router.top_k, c.router.groups, c.router.scale, c.router.renorm), (16, 4, Some((4, 2)), 2.5, true));
+                (ix.layer, c.act, shared)
+            })
+            .collect();
+        assert_eq!(
+            blocks,
+            [(1, plain, None), (2, plain, None), (3, after(1.0), Some(plain)), (4, after(1.0), Some(after(0.75))), (5, after(0.5), Some(after(1.5)))]
+        );
+        assert_eq!(crate::runtime::config::ModelConfig::parse(text).unwrap().family(), None);
     }
 
     /// LFM's small model (the logits checks' random one): the description reads every tensor of its manifest at the manifest's shape, and the dense lowering

@@ -3027,10 +3027,16 @@ fn ling_3_2_air_describes_its_two_mixers_its_experts_and_its_draft_head() {
     assert!(have.iter().any(|n| n.starts_with("model.visual.")) && have.contains("linear_proj.0.weight"));
     assert!(!d.names().iter().any(|n| n.starts_with("model.visual.") || n.starts_with("linear_proj.")));
     d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
-    // (its layers have a loader of the dynamic route, the latent attention's with plain residuals; what the executor lacks of them, its lowering names)
+    // (its layers have a loader of the dynamic route, the latent attention's with plain residuals, and lower whole: each of the 35 delta layers' two
+    // states a sequence (4,096 channels of q, k and v each, their last three inputs in bf16; 32 heads of 128 x 128 in fp32), a ring of latents for each of
+    // the 7 latent layers, 40 blocks of experts; every matrix and small tensor the operations index is one of the description's)
     assert!(crate::dynamic::split::loader(&d).is_ok());
-    let e = crate::dynamic::split::lowered_described(&d, 42, 4096).err().map(|e| e.msg).unwrap_or_default();
-    assert!(e.contains("grouped choices"), "{e}");
+    let low = crate::dynamic::split::lowered_described(&d, 42, 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!(low.states, [3 * 3 * 4096 * 2, 32 * 128 * 128 * 4].repeat(35));
+    assert_eq!((low.rings.len(), low.rings[0].d, low.ropes.len()), (7, 512 + 64, 1));
+    assert_eq!(low.layers.iter().flatten().filter(|o| matches!(o, crate::dynamic::Op::Moe(_))).count(), 40);
+    let names = d.names();
+    assert!(low.mats.iter().flat_map(|it| &it.members).chain(low.small.iter()).flat_map(|s| s.split('|')).all(|n| names.contains(n)));
 }
 
 /// A small config of the Ling layout in its wrapper with `keys` over its text config: five layers in groups of two (layers 1 and 3 latent attentions,

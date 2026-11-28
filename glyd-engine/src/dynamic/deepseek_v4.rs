@@ -673,7 +673,7 @@ fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) 
         None
     };
     let shared = match &shared8 {
-        Some(_) => Shared { inter: i, up: PackBuf::shape_only(2 * i, d)?, down: PackBuf::shape_only(d, i)?, gate: None },
+        Some(_) => Shared { inter: i, up: PackBuf::shape_only(2 * i, d)?, down: PackBuf::shape_only(d, i)?, gate: None, act: None },
         None => {
             let su = [dense(&sg, 0, i)?, dense(&su, 0, i)?].concat();
             let packed = |w: &[u16], rows: usize, cols: usize, name: &str| -> Result<PackBuf> {
@@ -687,6 +687,7 @@ fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) 
                 up: packed(&su, 2 * i, d, &format!("layers.{l}.ffn.shared_experts.w13"))?,
                 down: packed(&dense(&sd, 0, d)?, d, i, sd.trim_end_matches(".weight"))?,
                 gate: None,
+                act: None,
             }
         }
     };
@@ -695,7 +696,7 @@ fn experts(x: &ExpertsAt, ml: &MoeLoad, d: usize, pack: PackFn, dense: DenseFn) 
         router_hidden: d,
         hidden: d,
         inter: i,
-        router: Router { scoring: Scoring::SqrtSoftplus, top_k: k, renorm: m.router.renorm, scale: m.router.scale, bf16_logits: false },
+        router: Router { scoring: Scoring::SqrtSoftplus, top_k: k, renorm: m.router.renorm, scale: m.router.scale, bf16_logits: false, groups: None },
         act,
     };
     let w = MoeWeights {

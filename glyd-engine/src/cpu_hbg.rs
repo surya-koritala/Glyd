@@ -175,6 +175,8 @@ pub fn activate(a: &Act, gu: &[u16], out: &mut [u16]) {
                 *o = bf16(match *a {
                     // (situ as the GPU's moe_act computes it, to the bit: src/cpu_fp4.rs)
                     Act::Situ { beta, linear } => crate::cpu_fp4::situ_f32(g, u, beta, linear),
+                    // (the limit on the activated gate: moe_act's MOE_SILU_A)
+                    Act::SwiGluAfter { limit } => (g / (1.0 + (-g).exp())).min(limit) * u.max(-limit).min(limit),
                     _ => {
                         let (g, u) = (g.min(lim), u.max(-lim).min(lim));
                         let act =
@@ -592,6 +594,12 @@ mod tests {
         activate(&Act::SwiGlu { limit: Some(10.0) }, &gu, &mut out);
         assert_eq!(f(out[2]), f(b(silu(10.0) * -10.0)));
         assert_eq!(f(out[0]), f(b(silu(1.0) * 3.0)));
+        // the limit on the activated gate: silu(20) is held to 10 where the gate's own limit gives silu(10); a gate under it is as it was
+        activate(&Act::SwiGluAfter { limit: 10.0 }, &gu, &mut out);
+        assert_eq!(f(out[2]), f(b(10.0 * -10.0)));
+        assert_eq!(f(out[0]), f(b(silu(1.0) * 3.0)));
+        activate(&Act::SwiGluAfter { limit: 0.5 }, &gu, &mut out);
+        assert_eq!((f(out[0]), f(out[1])), (f(b(0.5 * 0.5)), f(b(silu(-2.0) * 0.5))));
         activate(&Act::GeGlu, &gu, &mut out);
         let gelu = |g: f32| 0.5 * g * (1.0 + (0.797_884_6 * (g + 0.044_715 * g * g * g)).tanh());
         assert_eq!(f(out[1]), f(b(gelu(-2.0) * 0.5)));

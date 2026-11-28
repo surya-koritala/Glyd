@@ -32,11 +32,16 @@ const FLAG_SIGMOID: i32 = 1;
 const FLAG_RENORM: i32 = 2;
 const FLAG_BF16: i32 = 4;
 const FLAG_SQRTSP: i32 = 8;
+const GROUPS_SHIFT: i32 = 8;
+const KEEP_SHIFT: i32 = 16;
+/// Groups a router's choice takes at most (`Router::groups`): a lane of the selection's warp a group.
+pub const MAX_GROUPS: usize = 32;
 const ACT_SILU: i32 = 0;
 const ACT_GELU: i32 = 1;
 const ACT_RELU2: i32 = 2;
 const ACT_SITU: i32 = 3;
 const ACT_SILU_R: i32 = 4;
+const ACT_SILU_A: i32 = 5;
 
 /// How a router scores the experts of a token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,7 +55,9 @@ pub enum Scoring {
 }
 
 /// What turns a token's router logits into its k experts and their weights (`moe_select`): the k largest scores (the bias added to a sigmoid's, to pick and not to weigh), the chosen scores divided by their
-/// sum, times the per-expert scale of the chosen experts where there is one, times `scale`. Equal scores: the smaller expert first.
+/// sum, times the per-expert scale of the chosen experts where there is one, times `scale`. Equal scores: the smaller expert first. With `groups` the choice
+/// is made inside the best groups (the experts in groups one after another, a group's score the sum of its two largest choice scores, equal sums the
+/// smaller group first); the weights are the chosen experts' own scores all the same.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Router {
     pub scoring: Scoring,
@@ -61,17 +68,19 @@ pub struct Router {
     pub scale: f32,
     /// the logits rounded to bf16 before the scores (the gate is a bf16 Linear: Qwen3.5 and 3.6, Gemma 4); else fp32 (GLM-5.x, Nemotron 3 compute the router in fp32)
     pub bf16_logits: bool,
+    /// (groups, groups kept): DeepSeek-V3's n_group and topk_group, as Ling runs them (8 and 4 over 512 experts); None: the choice among every expert
+    pub groups: Option<(usize, usize)>,
 }
 
 impl Router {
     /// Qwen3.5 and 3.6 MoE (8 of 256), Gemma 4 (8 of 128; with its per-expert scale in `MoeWeights::escale`): softmax, the k largest, renormalized.
     pub const fn softmax(top_k: usize) -> Router {
-        Router { scoring: Scoring::Softmax, top_k, renorm: true, scale: 1.0, bf16_logits: true }
+        Router { scoring: Scoring::Softmax, top_k, renorm: true, scale: 1.0, bf16_logits: true, groups: None }
     }
 
     /// DeepSeek's noaux_tc as GLM-5.3-Flash (8 of 288, `scale` 2.5) and Nemotron 3 Super (22 of 512, `scale` 5.0) run it: sigmoid scores in fp32, the selection bias in `MoeWeights::bias`, renormalized, times `scale`.
     pub const fn sigmoid(top_k: usize, scale: f32) -> Router {
-        Router { scoring: Scoring::Sigmoid, top_k, renorm: true, scale, bf16_logits: false }
+        Router { scoring: Scoring::Sigmoid, top_k, renorm: true, scale, bf16_logits: false, groups: None }
     }
 
     /// moe_select's flags.
@@ -82,6 +91,7 @@ impl Router {
             Scoring::Softmax => 0,
         }) | (if self.renorm { FLAG_RENORM } else { 0 })
             | (if self.bf16_logits { FLAG_BF16 } else { 0 })
+            | self.groups.map_or(0, |(g, keep)| ((g as i32) << GROUPS_SHIFT) | ((keep as i32) << KEEP_SHIFT))
     }
 }
 
@@ -96,6 +106,9 @@ pub enum Act {
     Relu2,
     /// situ: beta tanh(gate / beta) sigmoid(gate) x linear tanh(up / linear) (Kimi-K3: 4 and 25)
     Situ { beta: f32, linear: f32 },
+    /// min(silu(gate), limit) up, the up within `limit` of zero: the limit holds the activated gate, where `SwiGlu`'s holds the gate before its activation (Ling's
+    /// limits a layer: 4 to 7 on its last layers)
+    SwiGluAfter { limit: f32 },
 }
 
 impl Act {
@@ -111,6 +124,7 @@ impl Act {
             Act::GeGlu => (ACT_GELU, f32::INFINITY, 0.0),
             Act::Relu2 => (ACT_RELU2, f32::INFINITY, 0.0),
             Act::Situ { beta, linear } => (ACT_SITU, beta, linear),
+            Act::SwiGluAfter { limit } => (ACT_SILU_A, limit, 0.0),
         }
     }
 }
@@ -166,9 +180,18 @@ impl MoeCfg {
                 self.up_rows()
             ));
         }
-        if let Act::SwiGlu { limit: Some(l) } = self.act {
+        if let Act::SwiGlu { limit: Some(l) } | Act::SwiGluAfter { limit: l } = self.act {
             if l.is_nan() || l <= 0.0 {
                 return err(format!("a SwiGLU clamp of {l}"));
+            }
+        }
+        // (the choice within the best groups: a group a lane of the selection's warp, each of two experts or more, the kept ones holding the choices)
+        if let Some((g, keep)) = self.router.groups {
+            if g == 0 || g > MAX_GROUPS || !e.is_multiple_of(g) || e / g < 2 || keep == 0 || keep > g || k > keep * (e / g) {
+                return err(format!(
+                    "{k} experts a token of {e} in {g} groups of which {keep} are kept: the router takes up to {MAX_GROUPS} groups of two experts or more, \
+                     the kept ones holding a token's experts"
+                ));
             }
         }
         if let Act::Situ { beta, linear } = self.act {
@@ -464,6 +487,16 @@ pub struct Shared {
     pub up: PackBuf,
     pub down: PackBuf,
     pub gate: Option<Buf>,
+    /// Its own activation where it is not the routed experts' (Ling's shared MLP, whose SwiGLU limit a layer is another list's than its experts'): gated
+    /// as theirs is. None: the layer's.
+    pub act: Option<Act>,
+}
+
+impl Shared {
+    /// The activation between its two products: its own, else the layer's (`layer`).
+    pub fn act_of(&self, layer: Act) -> Act {
+        self.act.unwrap_or(layer)
+    }
 }
 
 /// The router's and the experts' weights.
@@ -669,6 +702,21 @@ impl MoeKern {
                     }
                 }
                 row.iter_mut().zip(&b).for_each(|(l, b)| *l += b);
+                // (the choice within the best groups: an expert of a group that is not kept is out of it)
+                if let Some((g, keep)) = r.groups {
+                    let per = e / g.max(1);
+                    let mut sums: Vec<(usize, f32)> = (0..g)
+                        .map(|j| {
+                            let mut v = row[j * per..(j + 1) * per].to_vec();
+                            v.sort_by(|a, b| b.total_cmp(a));
+                            (j, v.iter().take(2).sum())
+                        })
+                        .collect();
+                    sums.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+                    for &(j, _) in sums.iter().skip(keep) {
+                        row[j * per..(j + 1) * per].fill(f32::NEG_INFINITY);
+                    }
+                }
             }
             seen.push(Seen { k, ids: got, keys });
         }
@@ -879,6 +927,11 @@ impl MoeLayer {
             }
             if sx.gate.as_ref().is_some_and(|g| g.bytes < in_ * 2) {
                 return err("the shared expert's gate is smaller than its input");
+            }
+            if let Some(a) = sx.act {
+                if a.gated() != cfg.act.gated() || matches!(a, Act::SwiGlu { limit: Some(l) } | Act::SwiGluAfter { limit: l } if l.is_nan() || l <= 0.0) {
+                    return err(format!("a shared expert of {a:?} beside experts of {:?}: one gated as they are, its limit above 0", cfg.act));
+                }
             }
         }
         Ok(MoeLayer { cfg, w, shared, f8: None, shared8: None, hb: None, hb_cache: None, cache: None })
@@ -1939,6 +1992,9 @@ impl MoeLayer {
         }
         let (c, e, k) = (&self.cfg, self.cfg.experts, self.cfg.router.top_k);
         let Act::SwiGlu { limit } = c.act else { return err("weighed experts are SwiGLU") };
+        if self.shared.as_ref().is_some_and(|sx| sx.act.is_some()) {
+            return err("weighed experts beside a shared expert of another activation: its weighed activation is the experts'");
+        }
         let Down::Block(down) = &self.w.down else { return err("weighed experts' second matrix in a row layout") };
         let lim = limit.unwrap_or(f32::INFINITY);
         crate::tmark!(s, "moe: start");
@@ -2025,7 +2081,7 @@ impl MoeLayer {
         if !self.cfg.act.gated() || sx.gate.is_some() || self.shared8.is_some() {
             return err("a shared expert's first product given apart: one of a gated activation, no gate of its own, packed");
         }
-        sc.k.act(s, gu, sc.sh.ptr, t, sx.inter, &self.cfg.act)?;
+        sc.k.act(s, gu, sc.sh.ptr, t, sx.inter, &sx.act_of(self.cfg.act))?;
         linear_tp(lib, &sx.down, sc.sh.ptr, t, sc.so.ptr, &sc.ws, &sc.done, s)
     }
 
@@ -2040,13 +2096,13 @@ impl MoeLayer {
         if t == 0 {
             return Ok(());
         }
-        let c = &self.cfg;
+        let (c, act) = (&self.cfg, sx.act_of(self.cfg.act));
         self.shared_lin(lib, sc, s, true, x, t, sc.sg.ptr)?;
         let h = if c.act.gated() {
-            sc.k.act(s, sc.sg.ptr, sc.sh.ptr, t, sx.inter, &c.act)?;
+            sc.k.act(s, sc.sg.ptr, sc.sh.ptr, t, sx.inter, &act)?;
             sc.sh.ptr
         } else {
-            sc.k.act(s, sc.sg.ptr, sc.sg.ptr, t, sx.inter, &c.act)?;
+            sc.k.act(s, sc.sg.ptr, sc.sg.ptr, t, sx.inter, &act)?;
             sc.sg.ptr
         };
         self.shared_lin(lib, sc, s, false, h, t, sc.so.ptr)?;
@@ -2196,13 +2252,13 @@ pub unsafe fn shared_mlp_with(c: &MoeCfg, shared: Option<&Shared>, lib: &Lib, sc
     if t == 0 {
         return Ok(());
     }
-    let inp = sx.up.pack.cols as usize;
+    let (inp, act) = (sx.up.pack.cols as usize, sx.act_of(c.act));
     linear_tp(lib, &sx.up, x, t, sc.sg.ptr, &sc.ws, &sc.done, s)?;
     let h = if c.act.gated() {
-        sc.k.act(s, sc.sg.ptr, sc.sh.ptr, t, sx.inter, &c.act)?;
+        sc.k.act(s, sc.sg.ptr, sc.sh.ptr, t, sx.inter, &act)?;
         sc.sh.ptr
     } else {
-        sc.k.act(s, sc.sg.ptr, sc.sg.ptr, t, sx.inter, &c.act)?;
+        sc.k.act(s, sc.sg.ptr, sc.sg.ptr, t, sx.inter, &act)?;
         sc.sg.ptr
     };
     linear_tp(lib, &sx.down, h, t, sc.so.ptr, &sc.ws, &sc.done, s)?;
@@ -2784,6 +2840,11 @@ mod tests {
             ("MOE_GELU", ACT_GELU),
             ("MOE_RELU2", ACT_RELU2),
             ("MOE_SITU", ACT_SITU),
+            ("MOE_SILU_R", ACT_SILU_R),
+            ("MOE_SILU_A", ACT_SILU_A),
+            ("MOE_SQRTSP", FLAG_SQRTSP),
+            ("MOE_GROUPS_SHIFT", GROUPS_SHIFT),
+            ("MOE_KEEP_SHIFT", KEEP_SHIFT),
         ] {
             assert_eq!(define(n), Some(v), "{n}");
         }
@@ -2909,6 +2970,8 @@ mod tests {
         assert_eq!(Act::Situ { beta: 4.0, linear: 25.0 }.kernel(), (ACT_SITU, 4.0, 25.0));
         assert_eq!(Act::GeGlu.kernel().0, ACT_GELU);
         assert_eq!(Act::Relu2.kernel().0, ACT_RELU2);
+        assert_eq!(Act::SwiGluAfter { limit: 4.0 }.kernel(), (ACT_SILU_A, 4.0, 0.0));
+        assert!(Act::SwiGluAfter { limit: 4.0 }.gated());
         assert!(Act::GeGlu.gated() && !Act::Relu2.gated());
     }
 }

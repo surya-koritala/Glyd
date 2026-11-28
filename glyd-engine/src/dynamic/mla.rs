@@ -202,7 +202,7 @@ pub struct MlaOp {
     pub q_round: kinds::Rounding,
     pub gate: bool,
     /// The output gate of one value a head (`kinds::GateFrom::Head`, Ling's): the small tensor [heads, hidden] whose product of the layer's input, in fp32 as
-    /// the kind's reference holds it, gates every channel of its head's output by its sigmoid (kernels/mla.cu `mla_gate_head`). After the latent's three
+    /// the kind's reference holds it, gates every channel of its head's output by its sigmoid (kernels/mla.cu `mla_gate_head`). After the latent's own
     /// small tensors and an indexer's; a release may hold it in FP8 with block scales (`f8_small`).
     pub head_gate: Option<usize>,
     pub scale: f32,
