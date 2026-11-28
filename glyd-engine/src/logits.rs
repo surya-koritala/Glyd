@@ -2117,6 +2117,16 @@ pub fn mellum_random(out: &Path) -> Result<()> {
     manifest_random(include_str!("../tests/fixtures/mellum_tiny_manifest.json"), out, 0x2026_1127_0000_0043, true, "Mellum model")
 }
 
+/// LFM's small model (six layers, each a mixer then the gated MLP between two norms: four of the gated short convolution of 7 taps, one of attention over
+/// the whole context with half the head's pairs turned, one of attention windowed to 9 positions with the plain rotary; the attentions' queries and keys
+/// normed with a weight and each head's output gated by one value; 4 query and 2 key-value heads of 128, 512 wide, the head the embedding, a vocabulary of
+/// 4096): the family's case, no release's. Its embedding, which is its head, is drawn at half a head's width (the manifest's `head`): at a whole one the
+/// case's noise floor was past a tenth of its bound (KL mean 1.44e-5 against 1.0e-5, `every_case_held_to_a_reference_is_well_conditioned`), a gated
+/// convolution's products carrying a rounding further than a dense layer's.
+pub fn lfm3_random(out: &Path) -> Result<()> {
+    manifest_random(include_str!("../tests/fixtures/lfm3_tiny_manifest.json"), out, 0x2026_1127_0000_0051, true, "LFM model")
+}
+
 /// A small Qwen3.5-family text model (Qwen3_5ForCausalLM: three Gated DeltaNet layers and a gated full-attention one, 1024 wide, a vocabulary of 4096): the layout of Qwen3.8-27B and the releases of its family at 0.8B's widths.
 /// Drawn by `manifest_random`'s rules, then the final norm's (1 + w) times `QWEN35_HEAD` (`head_scaled`): its head's logits that much smaller, which every row's
 /// KL from a last-place difference goes as a power of. As first drawn, the GPU against itself (each prompt served alone against all 64 at once, its sums in another
@@ -2513,7 +2523,7 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
         v
     };
     let on_grid = m["experts"] != OFF_GRID;
-    // (the Gated DeltaNet's dt_bias about N(`dt_bias`, 1), and the LM head's scale times `head`: the manifest's, else 0 and 1)
+    // (the Gated DeltaNet's dt_bias about N(`dt_bias`, 1), and the LM head's scale times `head`, an embedding's that is the head too: the manifest's, else 0 and 1)
     let (dt_bias, head) = (m["dt_bias"].as_f64().unwrap_or(0.0), m["head"].as_f64().unwrap_or(1.0));
     let tied = !m["tensors"].as_array().is_some_and(|t| t.iter().any(|e| e[0] == "lm_head.weight"));
     let mut tensors: Vec<(String, &str, Vec<u64>, Vec<u8>)> = Vec::new();
@@ -2537,7 +2547,8 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
             (0..n).map(|_| (u01() * 15.0 + 1.0).ln() as f32).collect()
         } else if name.ends_with("dt_bias") {
             (0..n).map(|_| (gauss(&mut u01) + dt_bias) as f32).collect()
-        } else if name.contains("conv1d") {
+        } else if name.contains("conv1d") || name.ends_with(".conv.conv.weight") {
+            // (a convolution's taps a channel: a linear attention's, Mamba-2's, the gated short convolution's)
             (0..n).map(|_| (gauss(&mut u01) * 0.4) as f32).collect()
         } else if on_grid && (name.contains("experts.gate_up_proj") || name.contains("experts.down_proj")) {
             (0..shape[0]).flat_map(|_| grid(shape[1] as usize, shape[2] as usize, &mut u01, &mut gauss)).collect()
@@ -2548,7 +2559,7 @@ fn manifest_random(manifest: &str, out: &Path, seed: u64, dense_norms: bool, wha
             (0..n).map(|_| gauss(&mut u01) as f32).collect()
         } else if name.contains("ngram_embedding") || name.contains("embed_tokens") {
             // (an embedding that is the head too, as Qwen3.5's tied one is, is as wide as a head's rows: else its logits are tens apart and the softmax a point)
-            let std = if tied && name.contains("embed_tokens") { 1.0 / (cols as f64).sqrt() } else { 1.0 };
+            let std = if tied && name.contains("embed_tokens") { head / (cols as f64).sqrt() } else { 1.0 };
             (0..n).map(|_| (gauss(&mut u01) * std) as f32).collect()
         } else if shape.len() == 2 || name.contains("experts.") {
             let s = if name == "lm_head.weight" { head } else { 1.0 } / (cols as f64).sqrt();
@@ -2724,6 +2735,16 @@ pub fn cases() -> Vec<Case> {
             id: "mellum",
             family: "Mellum 2 (Llama-style attention with a rotary a layer type, scaled on some, and a mixture of experts a layer, on the executor)",
             weights: Weights::Random(mellum_random),
+            engine: dense_engine,
+            cpu: Some(described_cpu),
+            vocab: 4096,
+            on_choices: None,
+            also: None,
+        },
+        Case {
+            id: "lfm3",
+            family: "LFM (the gated short convolution and attention gated a head, each between two norms, on the executor)",
+            weights: Weights::Random(lfm3_random),
             engine: dense_engine,
             cpu: Some(described_cpu),
             vocab: 4096,
@@ -5810,7 +5831,7 @@ pub(crate) fn load_dyn(case: &str, dir: &Path, o: &DynOpts, level: &str) -> Resu
             Dyn::new(dir, &crate::runtime::config::ModelConfig::load(dir)?, crate::dynamic::gemma4::lowered(dir, &c)?, None, o)?
         }
         "qwen35" | "qwen35-wide" | "qwen35moe" => crate::dynamic::qwen35::load(dir, o)?,
-        "dense" | "domynedge" | "granite-swa" | "mellum" => crate::dynamic::dense::load(dir, o)?,
+        "dense" | "domynedge" | "granite-swa" | "mellum" | "lfm3" => crate::dynamic::dense::load(dir, o)?,
         "muse" => crate::dynamic::muse::load(dir, o)?,
         "kimi" | "kimi-dsa" => crate::dynamic::kimi::load(dir, o)?,
         "glm-dsa" | "glm-dsa-f8" => crate::dynamic::glm::load_plain(dir, o)?,
@@ -5896,6 +5917,7 @@ fn random_model_of(case: &str, dir: &Path) -> Result<()> {
         "domynedge" => domynedge_random(dir),
         "granite-swa" => granite_swa_random(dir),
         "mellum" => mellum_random(dir),
+        "lfm3" => lfm3_random(dir),
         "muse" => crate::muse_ref::random(dir),
         "kimi" => crate::kimi_ref::random(dir, 1, true, 8),
         "kimi-dsa" => crate::kimi_ref::random_dsa(dir),

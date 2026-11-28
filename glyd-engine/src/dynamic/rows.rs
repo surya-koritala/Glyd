@@ -113,9 +113,18 @@ pub(super) fn meta_bytes(pcap: usize, rows: usize, pos: &[i32], slots: &[i32], s
 }
 
 /// Whether an operation on a sequence's recurrent state has a kernel that takes a step's rows that decode, a token of a sequence each, each through its own state
-/// (`Dyn::state_lead`): the gated delta rule's, Kimi delta attention's and Mamba-2's convolution and recurrence.
+/// (`Dyn::state_lead`): the gated delta rule's, Kimi delta attention's and Mamba-2's convolution and recurrence, and the gated short convolution.
 pub(super) fn rows_state(op: &Op) -> bool {
-    matches!(op, Op::GdnConv { .. } | Op::GdnDelta { .. } | Op::KdaConv { .. } | Op::KdaDelta { .. } | Op::MambaConv { .. } | Op::MambaScan { .. })
+    matches!(
+        op,
+        Op::GdnConv { .. }
+            | Op::GdnDelta { .. }
+            | Op::KdaConv { .. }
+            | Op::KdaDelta { .. }
+            | Op::MambaConv { .. }
+            | Op::MambaScan { .. }
+            | Op::ShortConv { .. }
+    )
 }
 
 /// Whether an operation on a sequence's caches or states takes a pass's first rows that decode, a token of a sequence each, all at once, each through its own block tables
@@ -735,6 +744,7 @@ fn by_sequence(op: &Op) -> bool {
             | Op::KdaDelta { .. }
             | Op::MambaConv { .. }
             | Op::MambaScan { .. }
+            | Op::ShortConv { .. }
             | Op::CompKv { .. }
             | Op::Compress { .. }
             | Op::IdxKeys { .. }
@@ -864,6 +874,10 @@ impl Dyn {
                 let (dtb, al, dd) = (p.small[dt_bias].ptr, p.small[a_log].ptr, p.small[d].ptr);
                 self.kmamba.ssm_rows(s, xc, cd as i32, dtr, row as i32, dtb, al, dd, sts(state), ss, core, ru, nh as i32, ng as i32, 0.0)?;
                 self.mark("Mamba-2: scan")
+            }
+            Op::ShortConv { w, state, d, taps, row } => {
+                self.kconv.conv_rows(s, p.slot(Slot::Proj), row as i32, p.small[w].ptr, sts(state), ss, p.slot(Slot::Xc), ru, d as i32, taps as i32)?;
+                self.mark("short convolution")
             }
             Op::KdaConv { w, state, c, row, w32 } => {
                 self.kglm.conv_rows(s, p.slot(Slot::Mix), row as i32, p.small[w].ptr, w32, (sts(state), rt.nst), p.slot(Slot::Xc), ru, c as i32)?;
@@ -2936,6 +2950,9 @@ mod tests {
         ];
         assert!(graphable_all(mamba.iter()));
         assert!(gdn.iter().chain(&mamba).filter(|op| rows_state(op)).count() == 4);
+        // (the gated short convolution: its input product, the convolution over each row's own state, its output product)
+        let conv = [lin.clone(), Op::ShortConv { w: 0, state: 0, d: 8, taps: 7, row: 24 }, lin.clone()];
+        assert!(graphable_all(conv.iter()) && rows_state(&conv[1]) && takes_lead(&conv[1]) && !row_wise(&conv[1]));
         let kda = [
             Op::KdaConv { w: 0, state: 0, c: 8, row: 8, w32: true },
             Op::KdaDelta { a_log: 0, dt_bias: 0, state: 1, heads: 1, bound: -5.0, ba: View::slot(Slot::Ba) },

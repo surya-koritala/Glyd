@@ -125,11 +125,13 @@ pub struct RopeAt {
 }
 
 /// An output gate o = norm(o) sigmoid(g): head h's gate values at column `off` + h `step` of the projection's rows; the head's weightless norm first where `norm`.
+/// `head`: one value a head there (`kinds::GateFrom::Head`), every dim of the head's output times its sigmoid; else a value a dim.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GateAt {
     pub off: usize,
     pub step: usize,
     pub norm: bool,
+    pub head: bool,
 }
 
 /// `Op::Attn`: the preparation of the projection's rows (slot `src`, rows `stride` wide: query head h at h `q_step`, the key heads from `k_off`, the value heads
@@ -185,9 +187,6 @@ impl AttnOp {
         if a.sinks || a.bias || a.indexer.is_some() {
             return err("attention with sinks, a bias or an indexer: not an operation of this executor");
         }
-        if a.gate.is_some_and(|g| g.from == kinds::GateFrom::Head) {
-            return err("attention with an output gate of one value a head, which the executor does not run yet");
-        }
         let in_query = a.gate.is_some_and(|g| g.from == kinds::GateFrom::InQuery);
         let q_step = if in_query { 2 * d } else { d };
         let k_off = nq * q_step;
@@ -196,10 +195,17 @@ impl AttnOp {
         let gate = match a.gate {
             None => None,
             Some(g) if g.act != kinds::Act::Sigmoid => return err(format!("an output gate of {:?}: the kernels take sigmoid", g.act)),
-            Some(g) if g.from == kinds::GateFrom::InQuery => Some(GateAt { off: d, step: 2 * d, norm: g.norm.is_some() }),
-            Some(g) => Some(GateAt { off: after, step: d, norm: g.norm.is_some() }),
+            Some(g) if g.from == kinds::GateFrom::InQuery => Some(GateAt { off: d, step: 2 * d, norm: g.norm.is_some(), head: false }),
+            // (a value a head, LFM's: its product's `nq` rows after the values', a head's one value each)
+            Some(g) if g.from == kinds::GateFrom::Head => Some(GateAt { off: after, step: 1, norm: g.norm.is_some(), head: true }),
+            Some(g) => Some(GateAt { off: after, step: d, norm: g.norm.is_some(), head: false }),
         };
-        let stride = after + if matches!(a.gate, Some(g) if g.from == kinds::GateFrom::Own) { nq * d } else { 0 };
+        let stride = after
+            + match a.gate.map(|g| g.from) {
+                Some(kinds::GateFrom::Own) => nq * d,
+                Some(kinds::GateFrom::Head) => nq,
+                _ => 0,
+            };
         let rms = |n: &Option<kinds::Norm>| -> Result<()> {
             match n {
                 Some(n) if n.kind != kinds::NormKind::Rms => err(format!("a q, k or v norm of {:?}: the kernels take RMS norms", n.kind)),
@@ -294,7 +300,7 @@ impl AttnOp {
             QkNorm::Plus1 { .. } => 2,
             QkNorm::Plain => 3,
         };
-        let g = self.gate.unwrap_or(GateAt { off: 0, step: 0, norm: false });
+        let g = self.gate.unwrap_or(GateAt { off: 0, step: 0, norm: false, head: false });
         AttnArgs {
             d: self.d as i32,
             stride: self.stride as i32,
@@ -313,6 +319,7 @@ impl AttnOp {
             gs: self.stride as i32,
             g_step: g.step as i32,
             gnorm: g.norm as i32,
+            g_head: g.head as i32,
             round: self.round as i32,
             sbf16: self.sbf16 as i32,
             S: SPLITS as i32,
@@ -396,6 +403,8 @@ pub(crate) struct AttnArgs {
     pub gs: i32,
     pub g_step: i32,
     pub gnorm: i32,
+    /// The gate is one value a head (`GateAt::head`).
+    pub g_head: i32,
     pub round: i32,
     pub sbf16: i32,
     pub S: i32,
@@ -1218,12 +1227,12 @@ mod tests {
     fn the_projections_layout_follows_the_kind() {
         let q = AttnOp::of(&kind(256, Some(GateFrom::InQuery)), Slot::Mix, 0, Some(0), Some((2, 3))).unwrap();
         assert_eq!((q.q_step, q.k_off, q.v_off, q.stride), (512, 8 * 512, Some(8 * 512 + 2 * 256), 8 * 512 + 4 * 256));
-        assert_eq!(q.gate, Some(GateAt { off: 256, step: 512, norm: false }));
+        assert_eq!(q.gate, Some(GateAt { off: 256, step: 512, norm: false, head: false }));
         assert_eq!(q.norm, QkNorm::Plus1 { q: 2, k: 3 });
         assert_eq!(q.rope, Some(RopeAt { table: 0, span: 64, pairs: 32 }));
         let m = AttnOp::of(&Attn { rounding: AttnRounding::Sdpa, ..kind(64, Some(GateFrom::Own)) }, Slot::Mix, 0, Some(0), Some((2, 3))).unwrap();
         assert_eq!((m.q_step, m.k_off, m.v_off, m.stride), (64, 8 * 64, Some(10 * 64), 20 * 64));
-        assert_eq!(m.gate, Some(GateAt { off: 12 * 64, step: 64, norm: false }));
+        assert_eq!(m.gate, Some(GateAt { off: 12 * 64, step: 64, norm: false, head: false }));
         // (Sdpa: the scale on the queries, before the rope; the scores unscaled)
         assert_eq!((m.q_scale, m.scale, m.round, m.sbf16), (0.125, 1.0, true, false));
         assert_eq!((q.q_scale, q.scale, q.round, q.sbf16), (1.0, 1.0 / 16.0, false, false));
@@ -1238,19 +1247,32 @@ mod tests {
         (wide.heads, wide.kv_heads) = (64, 2);
         assert!(AttnOp::of(&wide, Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
         // (a factor on the values is refused by its name)
-        // (a gate of one value a head, LFM's: refused by its name)
-        let Err(head) = AttnOp::of(&kind(128, Some(GateFrom::Head)), Slot::Mix, 0, Some(0), Some((2, 3))) else { panic!("a gate a head lowered") };
-        assert!(head.msg.contains("an output gate of one value a head, which the executor does not run yet"), "{}", head.msg);
+        // (a gate of one value a head, LFM's: its product's rows, one a query head, after the values'; the kernels read a head's one value for every dim)
+        let head = AttnOp::of(&kind(128, Some(GateFrom::Head)), Slot::Mix, 0, Some(0), Some((2, 3))).unwrap();
+        assert_eq!((head.stride, head.gate), ((8 + 2 * 2) * 128 + 8, Some(GateAt { off: 12 * 128, step: 1, norm: false, head: true })));
+        let x = head.args(3, 1e-5);
+        assert_eq!((x.gs, x.g_step, x.g_head, x.gnorm), (head.stride as i32, 1, 1, 0));
+        assert_eq!(m.args(3, 1e-5).g_head, 0);
         let Err(scaled) = AttnOp::of(&Attn { v_scale: 0.707, ..kind(128, None) }, Slot::Mix, 0, Some(0), Some((2, 3))) else {
             panic!("values scaled, and taken")
         };
         assert!(scaled.msg.contains("v_scale 0.707"), "{}", scaled.msg);
     }
 
-    /// kernels/attn.cu's AttnArgs: 16 pointers, a long long and an unsigned long long, 21 ints, 5 floats, no padding.
+    /// kernels/attn.cu's AttnArgs: 16 pointers, a long long and an unsigned long long, 22 ints, 5 floats (and the four bytes that round its size up to its
+    /// alignment, in C as here).
     #[test]
     fn the_arguments_are_the_kernels_struct() {
-        assert_eq!(std::mem::size_of::<AttnArgs>(), 18 * 8 + 26 * 4);
+        assert_eq!(std::mem::size_of::<AttnArgs>(), 18 * 8 + 28 * 4);
+        assert_eq!(
+            (
+                std::mem::offset_of!(AttnArgs, gnorm),
+                std::mem::offset_of!(AttnArgs, g_head),
+                std::mem::offset_of!(AttnArgs, round),
+                std::mem::offset_of!(AttnArgs, softcap)
+            ),
+            (18 * 8 + 17 * 4, 18 * 8 + 18 * 4, 18 * 8 + 19 * 4, 18 * 8 + 26 * 4)
+        );
         assert_eq!(
             (
                 std::mem::offset_of!(AttnArgs, rpos),

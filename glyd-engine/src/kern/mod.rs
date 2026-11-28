@@ -5,11 +5,13 @@ pub mod glm;
 pub mod mamba2;
 pub mod qwen35;
 pub mod qwen4x;
+pub mod short_conv;
 
 pub(crate) use gemma4::KernG4;
 pub use glm::{mla_positions, mla_smem, Hc, KernGlm, GM_CHUNK_SMEM, GM_D, GM_HC, GM_L, GM_NP};
 pub use mamba2::{KernMamba2, SsdWs, MAMBA2_CHUNK, MAMBA2_HEAD, MAMBA2_STATE};
 pub use qwen35::Kern35;
+pub use short_conv::{KernShortConv, SHORT_CONV_TAPS};
 
 use crate::dev::{copy_h2d_async, ArgsOf, Buf, ByArgs, Dev, Pinned, Typed};
 use crate::ffi::{Result, Stream};
