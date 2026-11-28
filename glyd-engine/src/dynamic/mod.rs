@@ -62,7 +62,7 @@ use crate::gpu_ops::{Gemm, GpuOps};
 use crate::kern::embed_plan;
 use crate::kern::{norm_threads, Kern};
 use crate::kern::{pf_kib, KernG4, NextPf};
-use crate::kern::{KernMamba2, SsdWs};
+use crate::kern::{KernMamba2, KernShortConv, SsdWs};
 use crate::kern35::{Kern35, Mat};
 use crate::launch;
 use crate::runtime::config::ModelConfig;
@@ -262,6 +262,16 @@ pub enum Op {
         row: usize,
         di: usize,
         ng: usize,
+    },
+    /// The gated short convolution (`kinds::ShortConv`, LFM's conv layers; kernels/short_conv.cu): of Proj's rows, `row` wide (the input product's: B, C and x, `d`
+    /// columns each), u = B x through each channel's causal convolution of `taps` taps (small tensor `w`, bf16 [d, taps], the oldest tap first) over the
+    /// sequence's state `state` (fp32 [d, taps - 1]: the channel's last values of u, which it then takes), times C, into Xc; the output product reads Xc.
+    ShortConv {
+        w: usize,
+        state: usize,
+        d: usize,
+        taps: usize,
+        row: usize,
     },
     /// The mixture-of-experts kind (`Ffn::Moe`), the part's block's: see `MoeOp`.
     Moe(MoeOp),
@@ -862,7 +872,11 @@ impl Op {
 
     fn states(&self) -> Vec<usize> {
         match *self {
-            Op::GdnConv { state, .. } | Op::GdnDelta { state, .. } | Op::MambaConv { state, .. } | Op::MambaScan { state, .. } => vec![state],
+            Op::GdnConv { state, .. }
+            | Op::GdnDelta { state, .. }
+            | Op::MambaConv { state, .. }
+            | Op::MambaScan { state, .. }
+            | Op::ShortConv { state, .. } => vec![state],
             Op::Compress { state, .. } => vec![state, state + 1],
             Op::KdaConv { state, .. } | Op::KdaDelta { state, .. } => vec![state],
             Op::NgramRows(x) => vec![x.hist],
@@ -1118,6 +1132,7 @@ fn read_at_least(d: &ModelDesc) -> Vec<(usize, usize)> {
                 Op::KdaDelta { a_log, dt_bias, heads, .. } => v.extend([(a_log, heads), (dt_bias, heads * kd)]),
                 Op::KdaConv { w, state, c, .. } => v.push((w, c + d.states.get(state).map_or(0, |b| b / 2))),
                 Op::KdaOut { w, .. } => v.push((w, kd)),
+                Op::ShortConv { w, d, taps, .. } => v.push((w, d * taps)),
                 _ => {}
             }
         }
@@ -1527,6 +1542,7 @@ pub struct Dyn {
     kg: KernG4,
     k35: Kern35,
     kmamba: KernMamba2,
+    kconv: KernShortConv,
     /// The attention layer kind's kernels (`Op::Attn`) and the library's decode where its shapes take it; the latent attention kind's and the
     /// indexer's (`Op::Mla`, `Op::IdxPick`).
     ka: attn::KernAttn,
@@ -2334,6 +2350,7 @@ impl Dyn {
         let kg = KernG4::load(&dev)?;
         let k35 = Kern35::load(&dev)?;
         let kmamba = KernMamba2::load(&dev)?;
+        let kconv = KernShortConv::load(&dev)?;
         let ka = attn::KernAttn::load(&dev)?;
         let skinny = crate::skinny::SkinnyKern::load(&dev)?;
         let ch = o.chunk.max(1);
@@ -2519,6 +2536,7 @@ impl Dyn {
             kg,
             k35,
             kmamba,
+            kconv,
             ka,
             ldec,
             km,
@@ -3171,6 +3189,12 @@ impl Dyn {
             Op::MambaNorm { w, row, di, ng } => {
                 self.kmamba.gated_norm(s, p.slot(Slot::Core), p.slot(Slot::Mix), row as i32, p.small[w].ptr, nu, di as i32, ng as i32, eps)?;
                 self.mark("Mamba-2: gated norm")
+            }
+            Op::ShortConv { w, state, d, taps, row } => {
+                // (in a pass over several sequences: this sequence's rows and its state)
+                let (x, y) = (p.slot(Slot::Proj) + self.rows_before(row), p.slot(Slot::Xc) + self.rows_before(d));
+                self.kconv.conv(s, x, row as i32, p.small[w].ptr, self.state(state), y, n as i32, d as i32, taps as i32)?;
+                self.mark("short convolution")
             }
             Op::Moe(ref m) => self.moe(p, m, n),
             Op::Streams => self.kres.streams(s, p.slot(Slot::X), p.slot(Slot::S), nu, hid, p.d.streams()),

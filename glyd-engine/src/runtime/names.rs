@@ -102,6 +102,19 @@ pub const ERNIE: Convention = Convention {
     ..HF
 };
 
+/// Mistral's own names, as its consolidated checkpoints hold them (Mistral Large's release, whose config's `transformers_weights` points transformers at
+/// that checkpoint): no prefix, the embedding `tok_embeddings`, the head `output`; the vision encoder, its norm, patch merger and adapter into the text
+/// model's width, and the draft model (`mtp_dspark.`), which the text model does not run.
+pub const MISTRAL: Convention = Convention {
+    name: "Mistral (consolidated)",
+    layers: "layers.",
+    embed: "tok_embeddings.weight",
+    final_norm: "norm.weight",
+    head: "output.weight",
+    extra: &[],
+    unread: &["vision_encoder.", "pre_mm_projector_norm.", "patch_merger.", "vision_language_adapter.", "mtp_dspark."],
+};
+
 /// Kimi-K3's (the `kimi_linear` text model under `language_model.`), with the depth mix's output roles.
 pub const KIMI: Convention = Convention {
     name: "Kimi linear",
@@ -538,6 +551,48 @@ pub mod part {
     /// A draft head's own roles in a layer after the model's (`kinds::MtpInput::Joined`).
     pub const LING_MTP: Roles =
         &[("eh_proj", "eh_proj.weight"), ("norm_embed", "enorm.weight"), ("norm_hidden", "hnorm.weight"), ("final_norm", "final_layernorm.weight")];
+
+    // ---- Mistral Large (Mistral's names): the latent attention with its queries' scale by position, the indexer on the layer's input, the experts
+    /// The latent attention: the queries one product (`wq`), the key-value latent (absent on a layer that shares another's), the queries' scale by
+    /// position (`ssmax_scaling.s`, `.b`, a value a head each), the output product.
+    pub const MISTRAL_MLA: Roles = &[
+        ("norm_in", "attention_norm.weight"),
+        ("q", "attention.wq.weight"),
+        ("kv_a", "attention.wkv_a_with_mqa.weight"),
+        ("kv_a_norm", "attention.kv_a_norm.weight"),
+        ("kv_b", "attention.wkv_b.weight"),
+        ("o", "attention.wo.weight"),
+        ("q_scale_s", "attention.ssmax_scaling.s"),
+        ("q_scale_b", "attention.ssmax_scaling.b"),
+    ];
+    /// The indexer of a layer that has its own: the LayerNorm of the layer's input its queries read, their product and their scale by position, the keys'
+    /// product and LayerNorm, the heads' weights.
+    pub const MISTRAL_INDEXER: Roles = &[
+        ("indexer_q_norm", "attention.indexer.q_input_norm.weight"),
+        ("indexer_q_norm_bias", "attention.indexer.q_input_norm.bias"),
+        ("indexer_wq_b", "attention.indexer.wq_b.weight"),
+        ("indexer_scale_s", "attention.indexer.ssmax_scaling.s"),
+        ("indexer_scale_b", "attention.indexer.ssmax_scaling.b"),
+        ("indexer_wk", "attention.indexer.wk.weight"),
+        ("indexer_k_norm", "attention.indexer.k_norm.weight"),
+        ("indexer_k_norm_bias", "attention.indexer.k_norm.bias"),
+        ("indexer_weights", "attention.indexer.weights_proj.weight"),
+    ];
+    /// The learned factors of the rotary's frequencies: one tensor of the model, read by every layer that rotates.
+    pub const MISTRAL_ROPE_ALPHA: &str = "lerope.alpha";
+    /// The gated MLP: `w1` the gate, `w3` the up projection, `w2` the down.
+    pub const MISTRAL_MLP: Roles =
+        &[("norm_in", "ffn_norm.weight"), ("gate", "feed_forward.w1.weight"), ("up", "feed_forward.w3.weight"), ("down", "feed_forward.w2.weight")];
+    /// Softmax-routed experts with one shared MLP, a tensor an expert's matrix (the shared one before the routed ones, as `MOE`).
+    pub const MISTRAL_MOE: Roles = &[
+        ("norm_in", "ffn_norm.weight"),
+        ("router", "gate.weight"),
+        ("shared_gate", "shared_experts.w1.weight"),
+        ("shared_up", "shared_experts.w3.weight"),
+        ("shared_down", "shared_experts.w2.weight"),
+        ("experts_gate_up", "experts.{E}.w1.weight|experts.{E}.w3.weight"),
+        ("experts_down", "experts.{E}.w2.weight"),
+    ];
 
     // ---- Muse Spark: gated residuals, the gated attention output, the latent experts stacked
     pub const MUSE_ATTN: Roles = &[

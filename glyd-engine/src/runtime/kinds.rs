@@ -271,6 +271,13 @@ pub struct Indexer {
     /// How the indexer's own rotary pairs its `rope` channels where that is not the attention's pairing (the same frequencies and positions): ERNIE's
     /// latent attention turns interleaved pairs and its indexer halves, (i, i + rope / 2). None: as the attention's rotary.
     pub rope_style: Option<RopeStyle>,
+    /// The gated form's queries from the block's input and not from the attention's query latent: the input through this norm (roles `indexer_q_norm`
+    /// [hidden], and a LayerNorm's bias `indexer_q_norm_bias`), then `indexer_wq_b` [heads head_dim, hidden] (Mistral Large's, whose attention has no query
+    /// latent). None: the query latent's (GLM's, Kimi's).
+    pub q_in: Option<Norm>,
+    /// The gated form's queries scaled by their position before their rotary: head h's values times `indexer_scale_s`[h] ln(pos + 1) + `indexer_scale_b`[h]
+    /// (roles [heads]; pos the query's position, the first token's 0), as `Mla::pos_scale` scales the attention's (Mistral Large's).
+    pub pos_scale: bool,
 }
 
 impl Indexer {
@@ -280,8 +287,8 @@ impl Indexer {
 }
 
 /// The derived form, with `form` said only where it is not the gated form with LayerNorm-ed keys (`IndexForm::LAYER_KEYS`), `rope` only where it
-/// rotates and `rope_style` only where it is its own: those indexers' descriptions read as they did before the fields
-/// (the digests of tests/fixtures/descriptions.json are of this text).
+/// rotates, `rope_style` only where it is its own, `q_in` only where the queries are the block's input's and `pos_scale` only where they are scaled:
+/// those indexers' descriptions read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Indexer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Indexer");
@@ -294,6 +301,12 @@ impl std::fmt::Debug for Indexer {
         }
         if let Some(st) = &self.rope_style {
             s.field("rope_style", st);
+        }
+        if let Some(n) = &self.q_in {
+            s.field("q_in", n);
+        }
+        if self.pos_scale {
+            s.field("pos_scale", &self.pos_scale);
         }
         s.finish()
     }
@@ -404,6 +417,9 @@ impl std::fmt::Debug for Attn {
 /// The cache holds per token the normed latent and the
 /// shared key part (kv_lora + rope_dim values); `absorbed` names how a backend computes it (the same function). With a `head_mix`, `mix_u` and `mix_v`
 /// [heads, head_mix]; with `sinks`, `sinks` [heads].
+///
+/// Mistral Large's forms of it: `pos_scale` (`q_scale_s`, `q_scale_b` [heads]), `kv_from` (no `kv_a`, no `kv_a_norm`, no cache of latents of its own) and
+/// `rope_learned` (`rope_alpha` [rope_dim / 2]).
 #[derive(Clone, PartialEq)]
 pub struct Mla {
     pub heads: usize,
@@ -430,6 +446,18 @@ pub struct Mla {
     /// `top_k` among the tokens before them (ERNIE's latent layers: the model's `sliding_window`, so a query reads up to `top_k` + `window` tokens in
     /// one softmax). None: the indexer picks among every token the query sees.
     pub window: Option<usize>,
+    /// The queries scaled by their position ("scalable softmax"): each query head h, after its rotary, times `q_scale_s`[h] ln(pos + 1) + `q_scale_b`[h],
+    /// pos the query's own position (the first token's 0, whose factor is the bias alone); the keys are not scaled, so every score of the query, and the
+    /// sharpness of its softmax, moves with the logarithm of where the query stands, a factor a head. No state: a prompt's rows and a step's are the same.
+    pub pos_scale: bool,
+    /// Latent sharing (Mistral Large's `kv_source_layers`): the queries attend to the latents block `kv_from`'s latent attention (an earlier block of the
+    /// same latent width, shared key part and rotary) holds for the sequence, each token's normed latent and its shared key part as that block made and
+    /// turned them; this attention expands them by its OWN `kv_b`, has no `kv_a` and no `kv_a_norm`, and caches no latents. An indexer of its own
+    /// keeps its own keys.
+    pub kv_from: Option<usize>,
+    /// Learned rotary frequencies (Mistral Large's LeRoPE): angle i's inverse frequency, as the rotary's scaling makes it, times exp(`rope_alpha`[i])
+    /// (role [rope_dim / 2], one tensor of the model that every rotating layer reads; the indexer's rotary is the attention's and turns by them too).
+    pub rope_learned: bool,
 }
 
 impl Mla {
@@ -441,8 +469,8 @@ impl Mla {
         "a latent attention that reads a window of its last tokens beside its indexer's picks, which the executor does not run yet";
 }
 
-/// The derived form, with `head_mix`, `sinks` and `window` said only where there is one: the other latent attentions' descriptions read as they did
-/// before the fields (the digests of tests/fixtures/descriptions.json are of this text).
+/// The derived form, with `head_mix`, `sinks`, `window`, `pos_scale`, `kv_from` and `rope_learned` said only where they are set: the other latent
+/// attentions' descriptions read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Mla {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Mla");
@@ -459,8 +487,40 @@ impl std::fmt::Debug for Mla {
         if let Some(w) = &self.window {
             s.field("window", w);
         }
+        if self.pos_scale {
+            s.field("pos_scale", &self.pos_scale);
+        }
+        if let Some(j) = self.kv_from {
+            s.field("kv_from", &j);
+        }
+        if self.rope_learned {
+            s.field("rope_learned", &self.rope_learned);
+        }
         s.finish()
     }
+}
+
+impl Mla {
+    /// What of a latent attention the executor has no operation for yet (the CPU reference computes each), in words; None where it has none of them.
+    pub fn not_run(&self) -> Option<&'static str> {
+        if self.pos_scale {
+            Some(Mla::POS_SCALE_NOT_RUN)
+        } else if self.kv_from.is_some() {
+            Some(Mla::KV_FROM_NOT_RUN)
+        } else if self.rope_learned {
+            Some(Mla::ROPE_LEARNED_NOT_RUN)
+        } else if self.indexer.as_ref().is_some_and(|x| x.q_in.is_some() || x.pos_scale) {
+            Some(Mla::INDEX_INPUT_NOT_RUN)
+        } else {
+            None
+        }
+    }
+
+    pub const POS_SCALE_NOT_RUN: &'static str = "a latent attention whose queries are scaled by their position, which the executor does not run yet";
+    pub const KV_FROM_NOT_RUN: &'static str = "a latent attention that attends to another layer's latents, which the executor does not run yet";
+    pub const ROPE_LEARNED_NOT_RUN: &'static str = "a latent attention whose rotary's frequencies are learned, which the executor does not run yet";
+    pub const INDEX_INPUT_NOT_RUN: &'static str =
+        "a latent attention's indexer whose queries are the block's input's, scaled by their position, which the executor does not run yet";
 }
 
 /// DeepSeek-V4's attention: one KV head of `head_dim` whose keys are its values (K = V), `heads` query heads, rope on the trailing

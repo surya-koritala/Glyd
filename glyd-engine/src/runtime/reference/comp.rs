@@ -344,6 +344,8 @@ mod tests {
                 form: IndexForm::Gated { key: Norm::rms(1e-6) },
                 rope: 0,
                 rope_style: None,
+                q_in: None,
+                pos_scale: false,
             }),
             norm_eps: 1e-6,
             ape: false,

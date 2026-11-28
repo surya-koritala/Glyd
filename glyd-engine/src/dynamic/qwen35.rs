@@ -158,7 +158,7 @@ pub(crate) fn attention(d: usize, nq: usize, nk: usize, rotary: usize, qk: (usiz
         q_scale: 1.0,
         scale: (d as f32).powf(-0.5),
         softcap: 0.0,
-        gate: Some(GateAt { off: d, step: 2 * d, norm: false }),
+        gate: Some(GateAt { off: d, step: 2 * d, norm: false, head: false }),
         round: false,
         sbf16: false,
         picked: false,

@@ -1001,9 +1001,6 @@ pub struct Loader {
     pub stage: StageLoad,
 }
 
-/// The refusal of a description that holds a gated short convolution (`kinds::ShortConv`): the CPU reference computes it, the executor has no operation for it.
-pub const SHORT_CONV_NOT_RUN: &str = "its layers hold a short convolution, which the executor does not run yet";
-
 /// The refusal of a description that holds the Kimi delta attention on plain residuals (Ling's layers: the delta attention beside a latent attention with a
 /// gate a head, experts whose SwiGLU limit holds the activated gate): the CPU reference computes them, no loader lowers the layout.
 pub const DELTA_PLAIN_NOT_RUN: &str = "its layers hold the Kimi delta attention on plain residuals, which the executor does not run yet";
@@ -1109,14 +1106,18 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
     let linear = |k: LinearKind| mixer(&|m| matches!(m, Mixer::Linear(l) if l.kind == k));
     let plain = blocks.iter().all(|b| matches!(b.residual, Residual::Add));
     // (a kind the reference has and no lowering yet: refused by its name before the kinds beside it choose a lowering)
-    if mixer(&|m| matches!(m, Mixer::ShortConv(_))) {
-        return err(SHORT_CONV_NOT_RUN);
-    }
     if let Some(part) = not_run(d) {
         return err(part);
     }
     if linear(LinearKind::KimiDelta) && plain {
         return err(DELTA_PLAIN_NOT_RUN);
+    }
+    // (a latent attention of a form the reference has and the kernels do not, Mistral Large's: named, the first of them a layer holds)
+    if let Some(why) = blocks.iter().find_map(|b| match &b.body {
+        Body::Mixer(Mixer::Mla(m)) => m.not_run(),
+        _ => None,
+    }) {
+        return err(format!("its layers hold {why}"));
     }
     Ok(if mixer(&|m| matches!(m, Mixer::Compressed(_))) {
         Lowering::Compressed
@@ -1180,9 +1181,11 @@ pub fn lowered_described(d: &crate::runtime::describe::Described, nl: usize, max
     if d.desc.blocks.iter().any(|b| matches!(b.residual, crate::runtime::kinds::Residual::AddThenScale)) {
         return lower::gemma4(d, &|n: &str| d.shapes.get(n).cloned(), Vec::new(), max_pos);
     }
-    // (layers of plain attention with a plain or a scaled add: the dense lowering, the one-GPU route's too: `support::Family::Layers`)
+    // (layers of plain attention, or of the gated short convolution in its place, with a plain or a scaled add: the dense lowering, the one-GPU route's too:
+    // `support::Family::Layers`)
     use crate::runtime::kinds::{Body, Mixer, Residual};
-    let plain_attention = |b: &crate::runtime::kinds::Block| !matches!(b.body, Body::Mixer(_)) || matches!(b.body, Body::Mixer(Mixer::Attention(_)));
+    let plain_attention =
+        |b: &crate::runtime::kinds::Block| !matches!(b.body, Body::Mixer(_)) || matches!(b.body, Body::Mixer(Mixer::Attention(_) | Mixer::ShortConv(_)));
     if d.desc.blocks.iter().all(|b| plain_attention(b) && matches!(b.residual, Residual::Add | Residual::AddScaled(_))) {
         return lower::dense(d, Vec::new(), max_pos);
     }

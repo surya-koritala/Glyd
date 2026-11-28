@@ -245,7 +245,7 @@
     "kinds": "3dfecceb7c19b868",
     "weights": "b987f9af3f494f80",
     "plan": "0fa9ead20583f698",
-    "family": "refused: m is a Lfm3ForCausalLM model, which this engine has no description of yet"
+    "family": "Layers"
   },
   "headers/Ling-3.2-air.json": {
     "blocks": 84,
@@ -270,6 +270,14 @@
     "weights": "a4359dec65860b12",
     "plan": "ab1b183f4358d678",
     "family": "refused: m is a MiMoV2ForCausalLM model, which this engine has no description of yet"
+  },
+  "headers/Mistral-Large-4-1T-A52B.json": {
+    "blocks": 144,
+    "tensors": 56249,
+    "kinds": "a66194f41870a4c3",
+    "weights": "7c1f64d6ebce060d",
+    "plan": "b5b110dd47de47f5",
+    "family": "refused: m is a MistralLarge4ForConditionalGeneration model, which this engine has no description of yet"
   },
   "headers/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.json": {
     "blocks": 52,

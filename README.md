@@ -107,10 +107,11 @@ Glyd supports model families, not individual models: any size or fine-tune of th
 | Granite | penguin, kestrel, linnet, wren |
 | Mellum | penguin, kestrel, linnet, wren |
 | Aion | penguin, kestrel, linnet, wren |
+| LFM | penguin, kestrel, linnet, wren |
 
 The engine tells a family by a model's `config.json`, not by its name.
 
-**Planned families** ([roadmap](ROADMAP.md)): AliceAI, Beam, Cosmos, dots, ERNIE, Flint, Hunyuan, Inkling, LFM, Ling, MiMo, MiniMax, Mistral Large,
+**Planned families** ([roadmap](ROADMAP.md)): AliceAI, Beam, Cosmos, dots, ERNIE, Flint, Hunyuan, Inkling, Ling, MiMo, MiniMax, Mistral Large,
 Unlimited OCR. Glyd follows the families released in the last six months. A family joins the table when the
 engine runs it.
 
