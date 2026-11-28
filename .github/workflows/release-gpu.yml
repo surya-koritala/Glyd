@@ -67,7 +67,7 @@ jobs:
       pythons: ${{ steps.plan.outputs.pythons }}
       wheels: ${{ steps.plan.outputs.wheels }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # every branch and tag: which branches hold the tag's commit
           persist-credentials: false
@@ -172,7 +172,7 @@ jobs:
       GLYD_GPU_COMPRESS: ${{ matrix.compress }}
       GLYD_GPU_NVCC_THREADS: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && !startsWith(github.ref, 'refs/tags/') && '2' || '2' }} # (GitHub's runner has 2 cores and 7 GB: one nvcc thread an architecture would be 6; on glyd-pc 4 threads ran ptxas out of its 10 GB, run 44943346511: 2 there too)
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
@@ -255,7 +255,7 @@ jobs:
       CARGO_PROFILE_RELEASE_STRIP: symbols
       RUST_VERSION: "1.98.1"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
@@ -333,7 +333,7 @@ jobs:
           - {name: linux-x86_64}
           - {name: linux-aarch64}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -388,7 +388,7 @@ jobs:
       GLYD_ENGINE_NVCC_THREADS: "2"
       RUST_VERSION: "1.98.1"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
@@ -442,7 +442,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
@@ -518,7 +518,7 @@ jobs:
       # (on glyd-pc a cap on the container's memory, swap included, and its cores, as kernels.yml has: ptxas cannot take the machine)
       options: ${{ matrix.name == 'linux-x86_64' && vars.CI_RUNNER && !startsWith(github.ref, 'refs/tags/') && '--memory=12g --memory-swap=12g --cpus=8' || '' }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
@@ -668,7 +668,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
