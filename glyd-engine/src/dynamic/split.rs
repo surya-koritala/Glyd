@@ -1001,10 +1001,6 @@ pub struct Loader {
     pub stage: StageLoad,
 }
 
-/// The refusal of a description that holds the Kimi delta attention on plain residuals (Ling's layers: the delta attention beside a latent attention with a
-/// gate a head, experts whose SwiGLU limit holds the activated gate): the CPU reference computes them, no loader lowers the layout.
-pub const DELTA_PLAIN_NOT_RUN: &str = "its layers hold the Kimi delta attention on plain residuals, which the executor does not run yet";
-
 /// The refusal of a description one of whose roles is a matrix the checkpoint stores transposed (`Source::Transposed`), or a vector it stores as scalars
 /// apart (`Source::Rows` of a residual's `hc_scale`): the CPU reference loads them, the executor's loaders read a role's tensor as it is stored.
 pub const STORED_FORM_NOT_RUN: &str = "its checkpoint stores a matrix transposed or a vector as scalars apart, which the executor does not run yet";
@@ -1106,13 +1102,14 @@ enum Lowering {
     GatedStreams,
     /// The gated delta rule with plain residuals, the feed-forwards dense or experts (`lower::qwen35`; the Qwen3.5 layout's).
     GatedDelta,
-    /// The latent attention with plain residuals, the feed-forwards dense or experts (`lower::latent_moe`; GLM-5.3's).
+    /// The latent attention with plain residuals, the feed-forwards dense or experts (`lower::latent_moe`; GLM-5.3's), and the Kimi delta attention in its
+    /// place on layers of the same residual (Ling's groups of layers).
     LatentPlain,
 }
 
 /// The lowering of the description `d`, by the layer kinds it holds, in this order: a compressed attention; Mamba-2 with plain residuals; the Kimi delta attention
 /// with residual streams, or with the blocks' depth mix; gated residuals; the gated residuals' streams; the gated delta rule with plain residuals; the latent
-/// attention with plain residuals. A description of other kinds is refused in words: no loader of the dynamic route lowers them.
+/// attention, or the Kimi delta attention, with plain residuals. A description of other kinds is refused in words: no loader of the dynamic route lowers them.
 fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
     use crate::runtime::kinds::{Body, LinearKind, Mixer, Residual};
     let blocks = &d.desc.blocks;
@@ -1120,12 +1117,9 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
     let residual = |f: &dyn Fn(&Residual) -> bool| blocks.iter().any(|b| f(&b.residual));
     let linear = |k: LinearKind| mixer(&|m| matches!(m, Mixer::Linear(l) if l.kind == k));
     let plain = blocks.iter().all(|b| matches!(b.residual, Residual::Add));
-    // (a kind the reference has and no lowering yet: refused by its name before the kinds beside it choose a lowering)
+    // (a part the reference has and the executor no operation for: refused by its name before the kinds choose a lowering)
     if let Some(part) = not_run(d) {
         return err(part);
-    }
-    if linear(LinearKind::KimiDelta) && plain {
-        return err(DELTA_PLAIN_NOT_RUN);
     }
     // (a latent attention of a form the reference has and the kernels do not, Mistral Large's: named, the first of them a layer holds)
     if let Some(why) = blocks.iter().find_map(|b| match &b.body {
@@ -1148,13 +1142,13 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
         Lowering::GatedStreams
     } else if linear(LinearKind::GatedDeltaNet) && plain {
         Lowering::GatedDelta
-    } else if mixer(&|m| matches!(m, Mixer::Mla(_))) && plain {
+    } else if (mixer(&|m| matches!(m, Mixer::Mla(_))) || linear(LinearKind::KimiDelta)) && plain {
         Lowering::LatentPlain
     } else {
         return err(
             "no loader of the dynamic route lowers its layer kinds (a compressed attention; Mamba-2 with plain residuals; the Kimi delta attention with residual \
              streams or the blocks' depth mix; gated residuals; the gated residuals' streams; the gated delta rule with plain residuals; the latent attention \
-             with plain residuals)",
+             or the Kimi delta attention with plain residuals)",
         );
     })
 }

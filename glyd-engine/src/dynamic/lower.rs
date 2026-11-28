@@ -1876,18 +1876,29 @@ pub(crate) fn split_apart_picks(l: usize) -> String {
 /// takes the picks of the latent attention before it (`MlaOp::lent`), which must be of the same shape and in the stage. Every matrix and small tensor is
 /// named from the description's roles in the order the operations index them: a layer's two norms, its latent attention's q latent norm, key-value latent
 /// norm and kv_b, then its own indexer's (`MlaIndexer::at`'s order); the last stage's final norm. Matrices: a layer's q_a, q_b, kv_a, o, then a dense MLP's
-/// gate and up as one and its down (a layer of experts holds its own); the embedding, then the head where it is not the embedding.
+/// gate and up as one and its down (a layer of experts holds its own); the embedding, then the head where it is not the embedding. A latent attention
+/// whose queries are one product of the layer's input (no `q_lora`) has that product, kv_a and o, and no norm of a query latent; one gated by one value a
+/// head (`GateFrom::Head`) has the gate's matrix as its last small tensor.
+///
+/// A layer's mixer may be the Kimi delta attention in the latent attention's place (Ling's groups of layers: delta layers, the last of a group a latent
+/// attention), on the same residual: the delta attention's operations as GLM-5.3-Flash's layers run them (`Op::KdaConv`, `Op::KdaDelta`, `Op::KdaOut`,
+/// kernels/glm.cu), its gates' products full rank. Such a layer's small tensors after its two norms: the three convolutions as one (`SmallForm::Joined`),
+/// A_log, dt_bias and the gated norm; its matrices q, k and v as one, o, the decay's product, the output gate's and beta's (a row a head, held as saved);
+/// its states a sequence the convolutions' last three inputs (bf16) and the rule's state (fp32 [heads, 128, 128]), in the description's `states`, which
+/// the plan counts. What the kernels do not take is refused by name: heads of another size than 128, a convolution of other than 4 taps, a decay that is
+/// not the bounded one, gates in a low rank.
 pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
     super::split::runs(d)?;
     use super::mla::{MlaIn, MlaOp};
+    use crate::kern::GM_D;
     use crate::moe::Act;
-    use crate::runtime::kinds::{Collapse, NormKind, NormWeight, Residual, Rounding};
+    use crate::runtime::kinds::{Clamp, Collapse, Decay, LinearKind, NormKind, NormWeight, Residual, Rounding};
     let m = &d.desc;
     let h = m.hidden;
     let what = LATENT;
     if m.blocks.len() % 2 != 0 || m.embed.streams != 1 || m.embed.scale != 1.0 || m.embed.norm.is_some() {
         return err(format!(
-            "{what}: {} blocks over {} streams, where each layer is a latent attention block and a feed-forward block on one",
+            "{what}: {} blocks over {} streams, where each layer is a mixer block (a latent attention or the Kimi delta attention) and a feed-forward block on one",
             m.blocks.len(),
             m.embed.streams
         ));
@@ -1913,6 +1924,8 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
     let mut ropes = Vec::new();
     let (mut mats, mut small, mut rings, mut ops_all) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut n_mats, mut n_small, mut n_moe, mut inter) = (0, 0, 0, 0);
+    // (the delta attention's layers: the convolutions joined, each sequence's states, the heads' channels the slots are as wide as)
+    let (mut forms, mut states, mut qd, mut nh) = (Vec::new(), Vec::new(), 0, 0);
     let mut first = None;
     // (the pick the latent attention before a layer leaves, for a `shared` one: its shape, and whether it ran in this stage)
     let mut lender: Option<(super::IdxPick, bool)> = None;
@@ -1921,54 +1934,101 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
         if ab.residual != Residual::Add || fb.residual != Residual::Add || ab.norm_out.is_some() || fb.norm_out.is_some() {
             return err(format!("{what}: layer {l}'s residuals are {:?} and {:?}, where the executor's are the plain add", ab.residual, fb.residual));
         }
-        let x = match &ab.body {
-            Body::Mixer(Mixer::Mla(x)) => x,
-            b => return err(format!("{what}: layer {l}'s first block is {b:?}, not a latent attention")),
-        };
-        let table = match (&x.rope, ropes.first()) {
-            (None, _) => None,
-            (Some(r), None) => {
-                ropes.push(Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false, scaled: None });
-                Some(0)
-            }
-            (Some(r), Some(t)) if (r.theta, r.dim, r.freqs) == (t.theta, t.dim, t.pairs) => Some(0),
-            (Some(r), Some(t)) => return err(format!("{what}: layer {l}'s rotary {r:?}, where an earlier layer's is {t:?}: one table")),
-        };
         let mine = (st.layers.0..st.layers.1).contains(&l);
         let (a, f) = (&d.blocks[2 * l], &d.blocks[2 * l + 1]);
         let m0 = n_mats;
-        // (pools of tokens give the open pool's tokens after the best pools', the release's; a key a token has none)
-        let tail = x.indexer.as_ref().is_some_and(|i| i.block > 1);
-        let mut op = MlaOp::of(x, MlaIn::Apart { q_a: m0, kv_a: m0 + 2 }, m0 + 1, m0 + 3, n_small + 2, rings.len(), tail, table)?;
-        // (a shared indexer's picks are the ones the latent attention before it made, of the same pick (its keys the lender's ring), in this stage)
-        if let (Some(p), Some((q, _))) = (op.lent.as_mut(), &lender) {
-            p.keys = q.keys;
-        }
-        match (&op.lent, &lender) {
-            (Some(p), Some((q, here))) if p == q && (*here || !mine) => {}
-            (Some(p), Some((q, _))) if p != q => return err(format!("{what}: layer {l} takes picks of {p:?} from a layer whose are {q:?}")),
-            (Some(_), Some(_)) => return err(split_apart_picks(l)),
-            (Some(_), None) => return err(format!("{what}: layer {l}'s indexer is shared, with no latent attention with an indexer before it")),
-            (None, _) => {}
-        }
-        if let Some(p) = op.indexer.as_ref().map(|x| x.pick.clone()).or(op.lent.clone()) {
-            lender = Some((p, mine || lender.as_ref().is_some_and(|x| x.1 && op.lent.is_some())));
-        }
-        let moe = match &fb.body {
+        // (the layer's mixer: the latent attention's operation, or the delta attention's heads and its decay's bound)
+        let (latent, delta) = match &ab.body {
+            Body::Mixer(Mixer::Mla(x)) => {
+                let table = match (&x.rope, ropes.first()) {
+                    (None, _) => None,
+                    (Some(r), None) => {
+                        ropes.push(Rope { theta: r.theta, dim: r.dim, pairs: r.freqs, trig64: false, scaled: None });
+                        Some(0)
+                    }
+                    (Some(r), Some(t)) if (r.theta, r.dim, r.freqs) == (t.theta, t.dim, t.pairs) => Some(0),
+                    (Some(r), Some(t)) => return err(format!("{what}: layer {l}'s rotary {r:?}, where an earlier layer's is {t:?}: one table")),
+                };
+                // (pools of tokens give the open pool's tokens after the best pools', the release's; a key a token has none)
+                let tail = x.indexer.as_ref().is_some_and(|i| i.block > 1);
+                // (the queries through a latent of their own, q_a and kv_a apart; or one product of the layer's input, then kv_a)
+                let (input, q_b, o) = match x.q_lora {
+                    Some(_) => (MlaIn::Apart { q_a: m0, kv_a: m0 + 2 }, m0 + 1, m0 + 3),
+                    None => (MlaIn::Direct { kv_a: m0 + 1 }, m0, m0 + 2),
+                };
+                let mut op = MlaOp::of(x, input, q_b, o, n_small + 2, rings.len(), tail, table)?;
+                // (a shared indexer's picks are the ones the latent attention before it made, of the same pick (its keys the lender's ring), in this stage)
+                if let (Some(p), Some((q, _))) = (op.lent.as_mut(), &lender) {
+                    p.keys = q.keys;
+                }
+                match (&op.lent, &lender) {
+                    (Some(p), Some((q, here))) if p == q && (*here || !mine) => {}
+                    (Some(p), Some((q, _))) if p != q => return err(format!("{what}: layer {l} takes picks of {p:?} from a layer whose are {q:?}")),
+                    (Some(_), Some(_)) => return err(split_apart_picks(l)),
+                    (Some(_), None) => return err(format!("{what}: layer {l}'s indexer is shared, with no latent attention with an indexer before it")),
+                    (None, _) => {}
+                }
+                if let Some(p) = op.indexer.as_ref().map(|x| x.pick.clone()).or(op.lent.clone()) {
+                    lender = Some((p, mine || lender.as_ref().is_some_and(|x| x.1 && op.lent.is_some())));
+                }
+                (Some((x, op)), None)
+            }
+            Body::Mixer(Mixer::Linear(x)) => {
+                // (the forms kernels/glm.cu's delta rule takes: a decay a key channel, bounded; heads of 128 for q, k and v alike; convolutions of 4 taps,
+                // whose state is a channel's last three inputs; the gated norm at the model's epsilon under a sigmoid)
+                if x.kind != LinearKind::KimiDelta || x.k_dim != GM_D || x.v_dim != GM_D || x.k_heads != x.v_heads || x.k_heads == 0 {
+                    return err(format!(
+                        "{what}: layer {l}'s linear attention of {:?} with {} key heads of {} and {} value heads of {}: this engine runs the Kimi delta attention on \
+                         plain residuals with heads of {GM_D}, as many for the values as for the keys",
+                        x.kind, x.k_heads, x.k_dim, x.v_heads, x.v_dim
+                    ));
+                }
+                let Decay::Bounded(bound) = x.decay else {
+                    return err(format!("{what}: layer {l}'s Kimi delta attention with a forget gate of {:?}: this engine runs the bounded gate", x.decay));
+                };
+                if x.conv != 4 || x.gate_act != crate::runtime::kinds::Act::Sigmoid || x.norm_eps != eps {
+                    return err(format!(
+                        "{what}: layer {l}'s Kimi delta attention with convolutions of {} taps and an output norm at {} under {:?}: this engine runs 4 taps and \
+                         the norm at the model's epsilon ({eps}) under a sigmoid",
+                        x.conv, x.norm_eps, x.gate_act
+                    ));
+                }
+                if (qd, nh) != (0, 0) && nh != x.k_heads {
+                    return err(format!("{what}: layer {l}'s Kimi delta attention of {} heads, where an earlier layer's has {nh}", x.k_heads));
+                }
+                (qd, nh) = (x.k_heads * GM_D, x.k_heads);
+                (None, Some(bound))
+            }
+            b => return err(format!("{what}: layer {l}'s first block is {b:?}, not a latent attention or the Kimi delta attention")),
+        };
+        // (the feed-forward: a dense MLP's activation with its SwiGLU limit, on the gate or on the activated gate; None: a block of experts)
+        let mlp_act = match &fb.body {
             Body::Ffn(Ffn::Mlp(mlp)) => {
-                if mlp.clamp.is_some() || !mlp.gated || mlp.bias || mlp.act != crate::runtime::kinds::Act::Silu {
-                    return err(format!("{what}: layer {l}'s MLP of {mlp:?}, where the executor's is SwiGLU without a limit"));
+                // (an activation the reference computes and no kernel does, by its name; then what the executor's SwiGLU is not)
+                if let Some(why) = mlp.not_run() {
+                    return err(format!("{what}: layer {l}'s MLP: {why}"));
+                }
+                if !mlp.gated || mlp.bias || mlp.act != crate::runtime::kinds::Act::Silu {
+                    return err(format!("{what}: layer {l}'s MLP of {mlp:?}, where the executor's is SwiGLU"));
                 }
                 let gate = match role(f, "gate") {
                     Some(Source::Tensor(n)) => n,
                     g => return err(format!("{what}: layer {l}'s MLP gate is {g:?}")),
                 };
-                inter = d.shapes.get(gate).map(|s| s[0]).ok_or_else(|| Error(format!("{what}: no shape for {gate}")))?;
-                false
+                let rows = d.shapes.get(gate).map(|s| s[0]).ok_or_else(|| Error(format!("{what}: no shape for {gate}")))?;
+                if inter != 0 && inter != rows {
+                    return err(format!("{what}: layer {l}'s MLP of {rows}, where an earlier layer's is {inter}: one width"));
+                }
+                inter = rows;
+                Some(match mlp.clamp {
+                    None => Act::SwiGlu { limit: None },
+                    Some(Clamp::Gate(x)) => Act::SwiGlu { limit: Some(x) },
+                    Some(Clamp::Activated(x)) => Act::SwiGluAfter { limit: x },
+                })
             }
             Body::Ffn(Ffn::Moe(e)) => {
-                super::experts::cfg(e, h, 0).map_err(|x| x.context(format!("{what}: layer {l}")))?;
-                true
+                super::experts::cfg_shared(e, h, 0).map_err(|x| x.context(format!("{what}: layer {l}")))?;
+                None
             }
             b => return err(format!("{what}: layer {l}'s feed-forward is {b:?}")),
         };
@@ -1978,30 +2038,76 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
         }
         small.extend([one(a, "norm_in")?, one(f, "norm_in")?]);
         let s0 = n_small;
-        let q_rank = x.q_lora.ok_or_else(|| Error(format!("{what}: layer {l}'s latent attention has no query latent")))?;
-        mats.extend([
-            it(vec![one(a, "q_a")?], q_rank, h),
-            it(vec![one(a, "q_b")?], x.heads * (x.nope + x.rope_dim), q_rank),
-            it(vec![one(a, "kv_a")?], x.kv_lora + x.rope_dim, h),
-            it(vec![one(a, "o")?], h, x.heads * x.v_dim),
-        ]);
-        for r in ["q_a_norm", "kv_a_norm", "kv_b"] {
-            small.push(one(a, r)?);
-        }
-        // (its own indexer's, in the order the operation reads them: `MlaIndexer::at`)
-        if let Some(ix) = op.indexer.as_ref() {
-            let layer = matches!(ix.key, super::mla::KeyNorm::Layer(_));
-            let names = ["indexer_wq_b", "indexer_wk", "indexer_k_norm"]
-                .into_iter()
-                .chain(layer.then_some("indexer_k_norm_bias"))
-                .chain(["indexer_weights"])
-                .chain(if ix.pooled() { ["indexer_pool_ape", "indexer_pool_gate"].as_slice() } else { &[] }.iter().copied());
-            for r in names {
+        n_small += 2;
+        // (the mixer's operations, H into O, its tensors named in the order they index them)
+        let mut mixer = Vec::new();
+        if let Some((x, op)) = latent {
+            let qw = x.heads * (x.nope + x.rope_dim);
+            match x.q_lora {
+                Some(q_rank) => {
+                    mats.extend([it(vec![one(a, "q_a")?], q_rank, h), it(vec![one(a, "q_b")?], qw, q_rank)]);
+                    small.push(one(a, "q_a_norm")?);
+                }
+                None => mats.push(it(vec![one(a, "q")?], qw, h)),
+            }
+            mats.extend([it(vec![one(a, "kv_a")?], x.kv_lora + x.rope_dim, h), it(vec![one(a, "o")?], h, x.heads * x.v_dim)]);
+            for r in ["kv_a_norm", "kv_b"] {
                 small.push(one(a, r)?);
             }
+            // (its own indexer's, in the order the operation reads them: `MlaIndexer::at`)
+            if let Some(ix) = op.indexer.as_ref() {
+                let layer = matches!(ix.key, super::mla::KeyNorm::Layer(_));
+                let names = ["indexer_wq_b", "indexer_wk", "indexer_k_norm"]
+                    .into_iter()
+                    .chain(layer.then_some("indexer_k_norm_bias"))
+                    .chain(["indexer_weights"])
+                    .chain(if ix.pooled() { ["indexer_pool_ape", "indexer_pool_gate"].as_slice() } else { &[] }.iter().copied());
+                for r in names {
+                    small.push(one(a, r)?);
+                }
+            }
+            // (a gate of one value a head: its matrix a small tensor, after the indexer's)
+            if op.head_gate.is_some() {
+                small.push(one(a, "g")?);
+            }
+            n_small += op.small_count();
+            n_mats += op.mat_count();
+            rings.extend(op.rings());
+            mixer.push(Op::Mla(op));
+        } else if let Some(bound) = delta {
+            // (q, k and v one product; o; the decay's product a key channel; the output gate's a channel; beta's a head)
+            mats.extend([
+                it(vec![one(a, "q")?, one(a, "k")?, one(a, "v")?], 3 * qd, h),
+                it(vec![one(a, "o")?], h, qd),
+                it(vec![one(a, "decay")?], qd, h),
+                it(vec![one(a, "gate")?], qd, h),
+                it(vec![one(a, "beta")?], nh, h),
+            ]);
+            let conv = match role(a, "conv") {
+                Some(Source::Rows(v)) if v.len() == 3 => v.join("|"),
+                x => return err(format!("{what}: layer {l}'s convolutions are {x:?}, where the three (q's, k's and v's) are")),
+            };
+            forms.push((small.len(), super::SmallForm::Joined));
+            small.push(conv);
+            for r in ["a_log", "dt_bias", "norm"] {
+                small.push(one(a, r)?);
+            }
+            let (sk, cv, ssm) = (n_small, states.len(), states.len() + 1);
+            n_small += 4;
+            n_mats += 5;
+            // (a sequence's states: each of the 3 qd channels' last three inputs, bf16; the rule's [heads, 128, 128], fp32)
+            states.extend([3 * 3 * qd * 2, nh * GM_D * GM_D * 4]);
+            mixer.extend([
+                Op::Linear { w: m0, x: Slot::H, y: Slot::Mix, name: "linear attention: qkv product" },
+                Op::KdaConv { w: sk, state: cv, c: 3 * qd, row: 3 * qd, w32: false },
+                Op::Linear { w: m0 + 2, x: Slot::H, y: Slot::Qo, name: "linear attention: gates" },
+                Op::Linear { w: m0 + 4, x: Slot::H, y: Slot::Ba, name: "linear attention: gates" },
+                Op::Linear { w: m0 + 3, x: Slot::H, y: Slot::Iq, name: "linear attention: gates" },
+                Op::KdaDelta { a_log: sk + 1, dt_bias: sk + 2, state: ssm, heads: nh, bound, ba: super::View::slot(Slot::Ba) },
+                Op::KdaOut { w: sk + 3, heads: nh, w32: false, iq: super::View::slot(Slot::Iq) },
+                Op::Linear { w: m0 + 1, x: Slot::Att, y: Slot::O, name: "linear attention: o product" },
+            ]);
         }
-        n_small += 2 + op.small_count();
-        n_mats += 4;
         let rounded = |w: usize| Op::RmsNorm { x: Slot::X, w, y: Slot::H, weight: NormW::Rounded, eps };
         let mut ops = Vec::new();
         if l == st.layers.0 && st.first {
@@ -2009,19 +2115,19 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
         } else {
             ops.extend([Op::Add { x: Slot::D }, rounded(s0)]);
         }
-        rings.extend(op.rings());
-        ops.extend([Op::Mla(op), Op::Add { x: Slot::O }, rounded(s0 + 1)]);
-        if moe {
-            ops.push(Op::Moe(MoeOp { y: Slot::D, ..MoeOp::of(n_moe) }));
-            n_moe += 1;
-        } else {
+        ops.extend(mixer);
+        ops.extend([Op::Add { x: Slot::O }, rounded(s0 + 1)]);
+        if let Some(act) = mlp_act {
             mats.extend([it(vec![one(f, "gate")?, one(f, "up")?], 2 * inter, h), it(vec![one(f, "down")?], h, inter)]);
             ops.extend([
                 Op::Linear { w: n_mats, x: Slot::H, y: Slot::Gu, name: "MLP: gate and up product" },
-                Op::GatedAct { inter, act: Act::SwiGlu { limit: None } },
+                Op::GatedAct { inter, act },
                 Op::Linear { w: n_mats + 1, x: Slot::M, y: Slot::D, name: "MLP: down product" },
             ]);
             n_mats += 2;
+        } else {
+            ops.push(Op::Moe(MoeOp { y: Slot::D, ..MoeOp::of(n_moe) }));
+            n_moe += 1;
         }
         ops_all.push(ops);
     }
@@ -2045,8 +2151,15 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
     for (s, w) in [(Slot::X, h), (Slot::H, h), (Slot::O, h), (Slot::D, h), (Slot::Gu, 2 * inter), (Slot::M, inter), (Slot::Hlast, h)] {
         widths[s as usize] = w;
     }
+    // (the delta attention's slots, where a layer of the stage or another has it: q, k and v and their convolution's output, the decay's and the output gate's
+    // products, beta's a head, the rule's output and its gated norm)
+    if qd > 0 {
+        for (s, w) in [(Slot::Mix, 3 * qd), (Slot::Xc, 3 * qd), (Slot::Qo, qd), (Slot::Iq, qd), (Slot::Ba, nh.max(8)), (Slot::Core, qd), (Slot::Att, qd)] {
+            widths[s as usize] = w;
+        }
+    }
     Ok(ModelDesc {
-        family: "GLM-5.3",
+        family: if qd > 0 { "a delta and latent attention model" } else { "GLM-5.3" },
         hidden: h,
         vocab: m.vocab,
         eps,
@@ -2054,12 +2167,12 @@ pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stag
         widths,
         mats,
         small,
-        forms: Vec::new(),
+        forms,
         ropes,
         rings,
         first: first.unwrap_or(Op::Nop),
         layers: ops_all,
-        states: Vec::new(),
+        states,
         final_norm: None,
         decoded: false,
         skinny: false,
@@ -2944,6 +3057,147 @@ mod tests {
         let e = dense(&config(&["conv"], serde_json::json!({"conv_L_cache": 17})), vec![2], 4096).unwrap_err().msg;
         assert!(e.contains("17 taps, where the kernel takes 1 to 16"), "{e}");
         assert!(dense(&config(&["conv"], serde_json::json!({"conv_L_cache": 16})), vec![2], 4096).is_ok());
+    }
+
+    /// Ling's small model's config (tests/fixtures/ling_tiny_manifest.json) with `keys` over it, described.
+    fn ling_tiny(keys: serde_json::Value) -> Described {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/ling_tiny_manifest.json")).unwrap()).unwrap();
+        let mut cfg: serde_json::Value = serde_json::from_str(manifest["config"].as_str().unwrap()).unwrap();
+        cfg.as_object_mut().unwrap().extend(keys.as_object().unwrap().clone());
+        crate::runtime::describe::describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg))
+    }
+
+    /// The Kimi delta attention on plain residuals (Ling's layout with every feed-forward a dense MLP): groups of three layers, two of the delta attention
+    /// and a latent attention closing each. A delta layer is GLM-5.3-Flash's operations with its gates' products full rank: q, k and v one product, the
+    /// three convolutions one small tensor, the decay's, beta's and the output gate's products of the layer's input, the rule, the gated norm, o; its two
+    /// states a sequence are the description's (the convolutions' last three inputs in bf16, the rule's [heads, 128, 128] in fp32), so the plan counts
+    /// them. A latent layer's queries are one product of the layer's input and its gate one value a head, a small tensor after kv_b. Every tensor of the
+    /// description is named, and a stage of a split holds its own layers' states alone. Heads of another size, convolutions of other taps and the softplus
+    /// decay are refused by name.
+    #[test]
+    fn the_delta_attention_lowers_on_plain_residuals() {
+        use super::super::mla::{MlaIn, MlaOp};
+        use super::super::Stage;
+        let kinds = ling_tiny(serde_json::json!({"first_k_dense_replace": 6}));
+        let d = latent_moe(&kinds, vec![2], 4096, &Stage::whole(6)).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert_eq!(super::super::unnamed(&d), None);
+        let named: std::collections::BTreeSet<String> =
+            d.mats.iter().flat_map(|it| it.members.iter()).cloned().chain(d.small.iter().flat_map(|s| s.split('|').map(String::from))).collect();
+        assert_eq!(named, kinds.names());
+        let delta: Vec<bool> = d.layers.iter().map(|ops| ops.iter().any(|o| matches!(o, Op::KdaDelta { .. }))).collect();
+        assert_eq!(delta, [true, true, false, true, true, false]);
+        // (two heads of 128: 768 channels of q, k and v, each its last three inputs in bf16; the rule's two heads of 128 x 128 in fp32)
+        assert_eq!(d.states, [3 * 3 * 256 * 2, 2 * 128 * 128 * 4].repeat(4));
+        assert_eq!(
+            (d.width(Slot::Mix), d.width(Slot::Xc), d.width(Slot::Qo), d.width(Slot::Iq), d.width(Slot::Ba), d.width(Slot::Att)),
+            (768, 768, 256, 256, 8, 256)
+        );
+        let Op::KdaDelta { a_log, dt_bias, state, heads, bound, .. } = d.layers[1].iter().find(|o| matches!(o, Op::KdaDelta { .. })).unwrap().clone() else {
+            panic!()
+        };
+        assert_eq!(
+            (d.small[a_log].as_str(), d.small[dt_bias].as_str(), state, heads, bound),
+            ("model.layers.1.attention.A_log", "model.layers.1.attention.dt_bias", 3, 2, -5.0)
+        );
+        let conv = d.layers[1].iter().find_map(|o| if let Op::KdaConv { w, state, c, row, w32 } = *o { Some((w, state, c, row, w32)) } else { None }).unwrap();
+        assert_eq!((d.small[conv.0].split('|').count(), conv.1, conv.2, conv.3, conv.4), (3, 2, 768, 768, false));
+        assert!(d.forms.iter().any(|f| f.0 == conv.0));
+        let lins: Vec<(Vec<String>, Slot)> =
+            d.layers[1].iter().filter_map(|o| if let Op::Linear { w, y, .. } = *o { Some((d.mats[w].members.clone(), y)) } else { None }).collect();
+        let at = |n: &str| lins.iter().find(|(m, _)| m.iter().any(|x| x.ends_with(n))).map(|x| (x.0.len(), x.1));
+        assert_eq!(
+            (
+                at("attention.q_proj.weight"),
+                at("attention.f_proj.weight"),
+                at("attention.g_proj.weight"),
+                at("attention.b_proj.weight"),
+                at("attention.o_proj.weight")
+            ),
+            (Some((3, Slot::Mix)), Some((1, Slot::Qo)), Some((1, Slot::Iq)), Some((1, Slot::Ba)), Some((1, Slot::O)))
+        );
+        // (the latent layers: the queries one product, the key-value latent's own, no query latent to norm; the gate a head a small tensor)
+        let mla: Vec<&MlaOp> = d.layers.iter().flatten().filter_map(|o| if let Op::Mla(a) = o { Some(a) } else { None }).collect();
+        assert_eq!(mla.len(), 2);
+        for (a, l) in mla.iter().zip([2, 5]) {
+            let p = format!("model.layers.{l}.attention");
+            let MlaIn::Direct { kv_a } = a.input else { panic!("{:?}", a.input) };
+            assert_eq!((a.q_rank, a.gate, a.small_count(), a.mat_count(), a.rot.map(|r| r.index)), (0, false, 3, 3, Some(0)));
+            assert_eq!(
+                (d.mats[a.q_b].members[0].as_str(), d.mats[kv_a].members[0].as_str(), d.mats[a.o].members[0].as_str()),
+                (format!("{p}.q_proj.weight").as_str(), format!("{p}.kv_a_proj_with_mqa.weight").as_str(), format!("{p}.dense.weight").as_str())
+            );
+            assert_eq!(
+                (d.small[a.kv_norm].as_str(), d.small[a.kv_b].as_str(), d.small[a.head_gate.unwrap()].as_str()),
+                (format!("{p}.kv_a_layernorm.weight").as_str(), format!("{p}.kv_b_proj.weight").as_str(), format!("{p}.g_proj.weight").as_str())
+            );
+            assert!(a.f8_small().contains(&a.head_gate.unwrap()));
+        }
+        assert_eq!((d.rings.len(), d.ropes.len(), d.lm, d.embed + 1), (2, 1, d.mats.len() - 1, d.mats.len() - 1));
+        // (a split's second stage: its three layers' states, numbered from its own first)
+        let tail = latent_moe(&kinds, vec![2], 4096, &Stage { layers: (3, 6), first: false, last: true }).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert_eq!((tail.states.len(), tail.rings.len(), tail.layers[..3].iter().all(Vec::is_empty)), (4, 1, true));
+        // (what the kernels do not take, by name)
+        let refused = |keys: serde_json::Value, what: &str| {
+            let e = latent_moe(&ling_tiny(keys), vec![2], 4096, &Stage::whole(6)).unwrap_err().msg;
+            assert!(e.contains(what), "{e}");
+        };
+        refused(serde_json::json!({"first_k_dense_replace": 6, "head_dim": 64}), "heads of 128");
+        refused(serde_json::json!({"first_k_dense_replace": 6, "short_conv_kernel_size": 3}), "convolutions of 3 taps");
+        refused(serde_json::json!({"first_k_dense_replace": 6, "kda_safe_gate": false}), "this engine runs the bounded gate");
+        // (a gate a channel on the latent attention is its own product, which no fused input product of this lowering holds)
+        refused(serde_json::json!({"first_k_dense_replace": 6, "gated_attention_proj_granularity_type": "element_wise"}), "a latent attention's gate of");
+    }
+
+    /// Ling's small model (the logits checks' random one) lowers whole by the planner's choice of a lowering: the description reads every tensor of its
+    /// manifest at the manifest's shape and the lowering names every one that is not a block of experts' own; four delta layers' states a sequence and two
+    /// latent layers' rings; the first layer's feed-forward the dense MLP, the others' blocks of experts whose choice is made inside the best 2 of 4 groups,
+    /// with the limits on the activated gate the config's lists give a layer: the experts' on the last three layers, the shared MLP's, another, on the last
+    /// two. The family has no row in the table of what the engine runs: its random model is a case of the checks.
+    #[test]
+    fn the_random_ling_lowers_with_every_tensor_named() {
+        use crate::moe::Act;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/ling_tiny_manifest.json")).unwrap()).unwrap();
+        let text = manifest["config"].as_str().unwrap();
+        let kinds = ling_tiny(serde_json::json!({}));
+        let have: std::collections::BTreeSet<String> = manifest["tensors"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
+        kinds.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+        for t in manifest["tensors"].as_array().unwrap() {
+            let shape: Vec<usize> = t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+            assert_eq!(kinds.shapes.get(t[0].as_str().unwrap()), Some(&shape), "{}", t[0]);
+        }
+        let d = super::super::split::lowered_described(&kinds, 6, 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        assert_eq!(super::super::unnamed(&d), None);
+        let named: std::collections::BTreeSet<String> =
+            d.mats.iter().flat_map(|it| it.members.iter()).cloned().chain(d.small.iter().flat_map(|s| s.split('|').map(String::from))).collect();
+        // (a block of experts reads its own tensors: the router, its choice bias, the experts' and the shared MLP's matrices)
+        let own: std::collections::BTreeSet<String> = have.iter().filter(|n| n.contains(".mlp.gate.") || n.contains("experts.")).cloned().collect();
+        assert!(named.is_disjoint(&own) && named.union(&own).cloned().collect::<std::collections::BTreeSet<_>>() == have);
+        assert_eq!((d.states.len(), d.rings.len(), d.lm, d.final_norm.is_none()), (8, 2, d.embed + 1, true));
+        let ffn: Vec<Option<Act>> =
+            d.layers.iter().map(|ops| ops.iter().find_map(|o| if let Op::GatedAct { act, .. } = o { Some(*act) } else { None })).collect();
+        assert_eq!(ffn, [Some(Act::SwiGlu { limit: None }), None, None, None, None, None]);
+        assert_eq!(d.layers.iter().flatten().filter(|o| matches!(o, Op::Moe(_))).count(), 5);
+        let after = |l: f32| Act::SwiGluAfter { limit: l };
+        let plain = Act::SwiGlu { limit: None };
+        let blocks: Vec<_> = super::super::experts::of_layers(&kinds, (0, 6), 2)
+            .map(|(ix, m, _)| {
+                let (c, shared) = super::super::experts::cfg_shared(m, 256, 128).unwrap_or_else(|e| panic!("{}", e.msg));
+                c.check().unwrap_or_else(|e| panic!("{}", e.msg));
+                assert_eq!((c.experts, c.router.top_k, c.router.groups, c.router.scale, c.router.renorm), (16, 4, Some((4, 2)), 2.5, true));
+                (ix.layer, c.act, shared)
+            })
+            .collect();
+        assert_eq!(
+            blocks,
+            [(1, plain, None), (2, plain, None), (3, after(1.0), Some(plain)), (4, after(1.0), Some(after(0.75))), (5, after(0.5), Some(after(1.5)))]
+        );
+        assert_eq!(crate::runtime::config::ModelConfig::parse(text).unwrap().family(), None);
+        // (the blocks are not alike: one of each activation is what the engine's one scratch is made for, `Dyn::new`. Made for the first alone it held
+        // no rows for the limited layers' activation: their kernels wrote past it on a GPU)
+        let acts: Vec<Act> = blocks.iter().map(|b| b.1).collect();
+        assert_eq!(crate::moe::first_of_each(&acts), [0, 2, 4]);
     }
 
     /// LFM's small model (the logits checks' random one): the description reads every tensor of its manifest at the manifest's shape, and the dense lowering

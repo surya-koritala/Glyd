@@ -851,6 +851,7 @@ impl Op {
             Op::Mla(ref a) => match a.input {
                 MlaIn::Fused { w } => vec![w, a.q_b, a.o],
                 MlaIn::Apart { q_a, kv_a } => vec![q_a, kv_a, a.q_b, a.o],
+                MlaIn::Direct { kv_a } => vec![kv_a, a.q_b, a.o],
             },
             _ => Vec::new(),
         }
@@ -2384,12 +2385,16 @@ impl Dyn {
         let part = Buf::zeroed(rows_out * heads.max(1) * attn::SPLITS * (dmax + 2) * 4)?;
         let attns = || ops().filter_map(|op| if let Op::Attn(a) = op { Some(a) } else { None });
         let ldec = attn::LibDecode::new(&lib, attns(), ch, rows_out.max(VERIFY_ROWS), ctx)?;
-        // (the mixture-of-experts layers are alike: one scratch for all, made for the first's shapes and a chunk's rows)
+        // (one scratch for all the mixture-of-experts layers, made for a chunk's rows of a layer of each shape among them: in most families they are alike
+        // and the first is all of them; Ling's differ by layer, a SwiGLU limit on some, and a layer with one has an activation of its own kernel, whose rows
+        // a scratch made for a layer without one does not hold)
         // (a block that runs its own launches makes it the first time it runs: `NhHost::moe_scratch`)
         let moe_sc = std::cell::OnceCell::new();
-        if let Some((layer, _)) = big.moe.first().and_then(|b| b.resident()) {
+        if big.moe.first().is_some_and(|b| b.resident().is_some()) {
+            let all: Vec<&crate::moe::MoeLayer> = big.moe.iter().filter_map(|b| b.resident()).map(|x| x.0).collect();
+            let keys: Vec<_> = all.iter().map(|l| l.scratch_key()).collect();
             // (and a draft head's blocks, of its own experts' shapes)
-            let mut layers = vec![layer];
+            let mut layers: Vec<&crate::moe::MoeLayer> = crate::moe::first_of_each(&keys).into_iter().map(|i| all[i]).collect();
             layers.extend(draft.iter().flat_map(|x| x.p.moe.iter()).filter_map(|b| b.resident()).map(|x| x.0));
             let _ = moe_sc.set(crate::moe::MoeScratch::new(&dev, &lib, &layers, ch)?);
         }

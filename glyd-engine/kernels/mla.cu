@@ -673,6 +673,18 @@ extern "C" __global__ void mla_gate(bf16* o, const bf16* g, int gs, int W, int n
     o[e] = f2b(b2f(o[e]) * s);
 }
 
+// o [n, H V] = o times sigmoid(g) (g [n, H] fp32, small_linear_f32's product of the layer's input: one value a head, which every channel of that head's
+// output takes), the sigmoid in fp32 as the kind's reference holds it, the product rounded once: the output gate of one value a head (Ling's "head_wise"
+// g_proj). A thread a value, as mla_gate.
+extern "C" __global__ void mla_gate_head(bf16* o, const float* g, int H, int V, int n) {
+    const size_t e = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    const size_t W = (size_t)H * V;
+    if (e >= (size_t)n * W) return;
+    const size_t r = e / W, h = (e % W) / V;
+    const float s = 1.f / (1.f + expf(-g[r * H + h]));
+    o[e] = f2b(b2f(o[e]) * s);
+}
+
 // list [maxp] = the blocks of a sequence's first pos[0] / 16 + 1 pages through its table tab, -1 past them: the pages a 12-bit latent ring unpacks for rows whose last position is
 // pos[0] (glyd_gpu_kv_unpack skips a negative page), from a position read on the device (a decode step's graph holds it). A thread an entry.
 extern "C" __global__ void ml_pages(const int* tab, const int* pos, int maxp, int* list) {

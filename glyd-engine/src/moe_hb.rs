@@ -882,7 +882,7 @@ impl HbMoe {
         }
         let cfg = crate::dynamic::experts::cfg(m, hidden, names.rows)?;
         cfg.check()?;
-        let shared = Shared { inter: shared_inter, up: upload_packed(s_up)?, down: upload_packed(s_down)?, gate: None };
+        let shared = Shared { inter: shared_inter, up: upload_packed(s_up)?, down: upload_packed(s_down)?, gate: None, act: None };
         let cached = groups.iter().flatten().any(|g| g.store_layer.is_some());
         Ok(HbMoe {
             cfg,

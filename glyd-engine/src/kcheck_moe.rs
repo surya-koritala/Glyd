@@ -376,7 +376,7 @@ fn upload(c: &Case, b: Built, lossless: bool) -> Result<(MoeLayer, Host)> {
     };
     let shared = match (c.shared, &b.shared) {
         (Some((si, _)), Some((u, d))) => {
-            Some(Shared { inter: si, up: upload_tiered(u)?, down: upload_tiered(d)?, gate: h.s_gate.as_ref().map(|g| up_bf(g)).transpose()? })
+            Some(Shared { inter: si, up: upload_tiered(u)?, down: upload_tiered(d)?, gate: h.s_gate.as_ref().map(|g| up_bf(g)).transpose()?, act: None })
         }
         _ => None,
     };
@@ -689,6 +689,7 @@ fn dump_case(root: &Path, c: &Case, f: &Fmt, h: &Host, t: usize, xr: &[f32], xe:
         Act::GeGlu => ("geglu", None),
         Act::Relu2 => ("relu2", None),
         Act::Situ { .. } => ("situ", None),
+        Act::SwiGluAfter { limit } => ("swiglu_after", Some(limit)),
     };
     let shared = c.shared.map_or("null".to_string(), |(i, gate)| format!("{{\"inter\":{i},\"gate\":{gate}}}"));
     let cfg = format!(
@@ -909,6 +910,7 @@ fn speed_one(dev: &Dev, lib: &Lib, p: &Preset, f: &Fmt, r: &mut Rng) -> Result<(
                 up: arbitrary_pack(f.tag, rows, hr)?,
                 down: arbitrary_pack(f.tag, out_w, si)?,
                 gate: gate.then(|| Buf::zeroed(hr * 2)).transpose()?,
+                act: None,
             })
         }
         None => None,
@@ -1016,7 +1018,7 @@ fn speed_sparse(dev: &Dev, lib: &Lib, p: &Preset, f: &Fmt, r: &mut Rng) -> Resul
             down,
         };
         let (si, _) = p.shared.expect("the preset has a shared expert");
-        MoeLayer::new(*c, w, Some(Shared { inter: si, up: arbitrary_pack(f.tag, si, hr)?, down: arbitrary_pack(f.tag, hr, si)?, gate: None }))
+        MoeLayer::new(*c, w, Some(Shared { inter: si, up: arbitrary_pack(f.tag, si, hr)?, down: arbitrary_pack(f.tag, hr, si)?, gate: None, act: None }))
     };
     let (dense, sparse) = (make(Down::Block(arbitrary_stack(dev, f.tag, e, h, i)?))?, make(Down::Rows(arbitrary_rows(dev, f.bits, e, i, h)?))?);
     let sc = MoeScratch::new(dev, lib, &[&dense, &sparse], *counts.last().expect("counts"))?;
