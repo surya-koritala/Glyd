@@ -1,0 +1,19 @@
+--- ARGS
+|0.35.0
+|--date
+|2026-11-20
+--- IN CHANGELOG.md
+|# Changelog
+|
+|## v0.35.0 — 2026-11-20
+|
+|- The last release.
+--- IN scripts/install.ps1
+|$GlydVersion = if ($env:GLYD_VERSION) { $env:GLYD_VERSION } else { '0.35.0' }<CR>
+|Write-Host $GlydVersion<CR>
+--- STDOUT
+|0 files set to 0.35.0 (Cargo), 0.35.0 (Python): 
+|the docs and the CHANGELOG heading name it; once the release is up: python3 scripts/bump_formula.py 0.35.0
+--- STDERR
+--- EXIT
+|0

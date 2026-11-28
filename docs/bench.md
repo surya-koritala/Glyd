@@ -134,7 +134,7 @@ and data were not kept, so no record in the tree backs those figures.
 
 ## The speed bar
 
-`glyd-engine bench --bar ENGINE.json OTHER.json` (and `scripts/gpu_bar.py`, which hands it its arguments): at every load the first server's decode tokens/s, in all and for a user, and its time to first token at
+`glyd-engine bench --bar ENGINE.json OTHER.json`: at every load the first server's decode tokens/s, in all and for a user, and its time to first token at
 least the second's within 3%, its peak memory lower; a pass prints the line for `GPUS`, per (GPU, family) (`--family`), for a model released within 6 months (`--released`; exit 2 for an older one, `--stale-ok`). The same program measured both: docs/adding-a-gpu.md.
 
 ## Not yet

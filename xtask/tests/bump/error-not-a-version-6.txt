@@ -1,0 +1,8 @@
+--- ARGS
+|--check
+|it's
+--- STDOUT
+--- STDERR
+|"it's" is not a version here: X.Y.Z, or X.Y.Z with rcN, aN or bN
+--- EXIT
+|1

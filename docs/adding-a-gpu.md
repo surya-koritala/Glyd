@@ -21,7 +21,6 @@ older model, `--stale-ok` for a family that has no newer one (it says so).
 
    ```bash
    glyd-engine bench --bar engine.json vllm.json --gpu-name "NVIDIA GeForce RTX 4080 SUPER" --cc 8.9 --family Qwen3 --released 2026-06-01
-   # or: python3 scripts/gpu_bar.py engine.json vllm.json "NVIDIA GeForce RTX 4080 SUPER" 8.9 --family Qwen3 --released 2026-06-01
    ```
 
    It prints the table of the loads; at every one the engine's decode tokens/s (a user, and in all) and its time to first token must be at least vLLM's (3%, the

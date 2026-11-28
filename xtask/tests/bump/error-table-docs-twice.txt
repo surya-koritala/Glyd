@@ -1,0 +1,14 @@
+--- ARGS
+|0.36.0
+|--date
+|2031-02-03
+--- IN docs/index.html
+|<p>One library. Rust, C ABI, CLI; v0.35.0, November 2026.</p>
+|<p>Rust, C ABI, CLI; v0.35.0, november 2026.</p>
+|<p>One library. Rust, C ABI, CLI; v0.35.0, November 2026.</p>
+|<p>Rust, C ABI, CLI; v0.35.0, november 2026.</p>
+--- STDOUT
+--- STDERR
+|docs/index.html: 2 matches of 'Rust, C ABI, CLI; v(?P<v>[\\d.]+), [A-Z][a-z]+ \\d{4}\\.', expected 1 (this script's table is out of date)
+--- EXIT
+|1

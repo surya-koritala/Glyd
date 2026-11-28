@@ -1,0 +1,10 @@
+# The repository's own tasks, in Rust: `cargo xtask NAME ...` (.cargo/config.toml's alias). The standard library only, and no workspace inheritance: scripts/release_ready.sh
+# builds a commit's own copy of this crate outside the workspace.
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.89"
+publish = false
+repository = "https://github.com/surya-koritala/Glyd"
+license = "Apache-2.0"

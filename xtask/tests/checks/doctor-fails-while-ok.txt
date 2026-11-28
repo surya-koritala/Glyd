@@ -1,0 +1,64 @@
+--- IN bundle.json
+|{
+| "schema": "glyd-doctor/1",
+| "ok": true,
+| "version": "0.35.0",
+| "checks": [
+|  {
+|   "id": "driver",
+|   "status": "ok",
+|   "found": "NVIDIA driver 580.65",
+|   "fix": null
+|  },
+|  {
+|   "id": "backend-cuda",
+|   "status": "ok",
+|   "found": "CUDA 13.0 accepted",
+|   "fix": null
+|  },
+|  {
+|   "id": "disk",
+|   "status": "warn",
+|   "found": "12 GB free",
+|   "fix": null
+|  },
+|  {
+|   "id": "port",
+|   "status": "fail",
+|   "found": "in use",
+|   "fix": null
+|  },
+|  {
+|   "id": "p2",
+|   "status": "fail",
+|   "found": "x",
+|   "fix": ""
+|  }
+| ],
+| "gpus": [
+|  {
+|   "name": "NVIDIA GeForce RTX 4080 SUPER",
+|   "memory_bytes": 17179869184
+|  },
+|  {
+|   "name": "second"
+|  }
+| ],
+| "sample_plan": {
+|  "schema": "glyd-plan/1",
+|  "level": "kestrel",
+|  "context": 8192
+| },
+| "paths": {
+|  "cache": "~/.cache/glyd"
+| }
+\}
+--- ENV
+|HOME=/home/runner
+--- STDOUT
+|5 checks, GPU NVIDIA GeForce RTX 4080 SUPER, sample plan kestrel
+|the bundle is not what it should be:
+|  port fails with no fix
+--- STDERR
+--- EXIT
+|1

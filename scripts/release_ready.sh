@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Is a commit ready to be tagged as a release of glyd? Run before tagging:
 #
-#     scripts/release_ready.sh 0.30.0 [COMMIT]      # COMMIT: default HEAD (needs git, python3, curl and gh signed in)
+#     scripts/release_ready.sh 0.30.0 [COMMIT]      # COMMIT: default HEAD (needs git, cargo, curl and gh signed in)
 #
 # It says, of COMMIT: CI's (ci.yml) result on that exact commit, in a push or a run by hand (release.yml refuses a tag whose commit
-# CI has not passed), whether its version files say the version (scripts/bump_version.py --check, on COMMIT's own files), whether
+# CI has not passed), whether its version files say the version (cargo xtask bump-version --check, COMMIT's own xtask on COMMIT's own files), whether
 # the tag exists already elsewhere, and says whether glyd-gpu VERSION is on PyPI already (release-gpu.yml publishes it on the same tag;
 # the extras pin glyd-gpu==VERSION, and install-check.yml retries until both are there).
 # Exit 0: ready to tag.
@@ -26,17 +26,19 @@ ci() {
   echo "${n:-no run}"
 }
 
-# this commit's own version files, read as bump_version.py lists them
-git archive "$sha" scripts/bump_version.py | tar -x -C "$tmp"
-files=$(cd "$tmp/scripts" && python3 -c 'import bump_version as b; print("\n".join(sorted({p for p, *_ in b.CODE} | {p for p, *_ in b.DOCS} | {b.CHANGELOG})))')
+# this commit's own version files, read as its own bump-version lists them (xtask/ built alone, outside the workspace: the standard library only)
+mkdir "$tmp/task" "$tmp/tree"
+git archive "$sha" xtask | tar -x -C "$tmp/task"
+bump() { cargo run --quiet --manifest-path "$tmp/task/xtask/Cargo.toml" -- bump-version "$@"; }
+files=$(bump --files)
 # shellcheck disable=SC2086 # (one path a line, none with a space)
-git archive "$sha" $files | tar -x -C "$tmp"
-py=$(cd "$tmp/scripts" && python3 -c 'import sys, bump_version as b; print(b.spell(b.parse(sys.argv[1]), "py"))' "$1")
+git archive "$sha" $files | tar -x -C "$tmp/tree"
+py=$(bump --py "$1")
 
 echo "$here at ${sha:0:12} ($(git log -1 --format=%s "$sha")), release v$py:"
 c=$(ci "$sha"); echo "  CI: $c"
 [ "$c" = success ] || no "CI has not succeeded on this commit: run it on a branch or tag at this commit (gh workflow run ci.yml --ref REF) and check again"
-if out=$(python3 "$tmp/scripts/bump_version.py" --check "v$py" 2>&1); then echo "  $out"; else echo "$out" | sed 's/^/  /'; no "the version files do not say v$py"; fi
+if out=$(bump --check "v$py" --root "$tmp/tree" 2>&1); then echo "  $out"; else echo "$out" | sed 's/^/  /'; no "the version files do not say v$py"; fi
 t=$(gh api "repos/$here/commits/v$py" --jq .sha 2>/dev/null || true)
 if [[ "$t" =~ ^[0-9a-f]{40}$ ]]; then
   [ "$t" = "$sha" ] && echo "  (tag v$py exists already, at this commit)" || no "tag v$py exists already in $here at ${t:0:12}, not at this commit"

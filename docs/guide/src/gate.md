@@ -39,7 +39,7 @@ These come in as result files (`--ext DIR`, one `NAME.result` each). A required 
 | Step | What it is | Read more |
 | :--- | :--- | :--- |
 | `driver-r535`, `driver-r550`, `driver-r570` | The engine bundle on a machine with only that NVIDIA driver (the CUDA 12 build): version, `doctor`, a first answer, `serve`, and the message for a driver that is too old. `p6-driver-check.sh` makes them. | [Troubleshooting](troubleshooting.md) |
-| `p2a-no-oom` | For each model of the list on the reference GPU, `run` does not run out of memory at the planned context, and the plan matches what loaded (`scripts/ci_plan_check.py`). | [First run](first-run.md) |
+| `p2a-no-oom` | For each model of the list on the reference GPU, `run` does not run out of memory at the planned context, and the plan matches what loaded (`cargo xtask ci-plan-check`). | [First run](first-run.md) |
 | `r5a-schema-real-weights` | JSON-schema output is valid on real weights. | [Serving](serve.md) |
 | `r8-reference-gpu-results` | The reference results of `glyd bench` on the reference GPU. | [benchmarks/](https://github.com/surya-koritala/Glyd/tree/main/benchmarks) |
 | `p17-open-webui`, `p17-continue`, `p17-openai-sdk` | Open WebUI, Continue and an OpenAI SDK client connect with default settings. | [Connecting tools](tools.md) |

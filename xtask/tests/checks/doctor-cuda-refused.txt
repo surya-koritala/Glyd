@@ -1,0 +1,47 @@
+--- IN bundle.json
+|{
+| "schema": "glyd-doctor/1",
+| "ok": false,
+| "version": "0.35.0",
+| "checks": [
+|  {
+|   "id": "driver",
+|   "status": "ok",
+|   "found": "NVIDIA driver 580.65",
+|   "fix": null
+|  },
+|  {
+|   "id": "backend-cuda",
+|   "status": "fail",
+|   "found": "CUDA 11.8: too old",
+|   "fix": "a newer driver"
+|  }
+| ],
+| "gpus": [
+|  {
+|   "name": "NVIDIA GeForce RTX 4080 SUPER",
+|   "memory_bytes": 17179869184
+|  },
+|  {
+|   "name": "second"
+|  }
+| ],
+| "sample_plan": {
+|  "schema": "glyd-plan/1",
+|  "level": "kestrel",
+|  "context": 8192
+| },
+| "paths": {
+|  "cache": "~/.cache/glyd"
+| }
+\}
+--- ENV
+|HOME=/home/runner
+--- STDOUT
+|2 checks, GPU NVIDIA GeForce RTX 4080 SUPER, sample plan kestrel
+|the bundle is not what it should be:
+|  not ok: backend-cuda: CUDA 11.8: too old
+|  CUDA: CUDA 11.8: too old
+--- STDERR
+--- EXIT
+|1

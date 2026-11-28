@@ -1,0 +1,9 @@
+--- IN fit.json
+|{"chunk":512,"context":8192,"draft_bytes":0,"exact":true,"experts":null,"family":"gemma4","free_bytes":16865296384,"gpu":"NVIDIA GeForce RTX 4080 SUPER","gpu_total_bytes":13958643712,"kv_bytes":1610612736,"kv_format":"bf16","level":"kestrel","model":"m","reserve_bytes":1073741824,"schema":"glyd-plan/1","spread":null,"tokens_per_second":41.5,"users":1,"weights_bytes":9663688761,"weights_on_gpu_bytes":9663688761,"work_bytes":734003200}
+--- IN loaded.json
+\{"loaded":{"gpu_used_bytes":12570329088,"planned_gpu_used_bytes":0,"weights_bytes":9663689761},"plan":{"context":8192,"draft_bytes":0,"experts":null,"family":"gemma4","free_bytes":16865296384,"gpu":"NVIDIA GeForce RTX 4080 SUPER","gpu_total_bytes":13958643712,"kv_bytes":1610612736,"kv_format":"bf16","level":"kestrel","model":"m","reserve_bytes":1073741824,"schema":"glyd-plan/1","spread":null,"users":1,"weights_bytes":9663688761,"weights_on_gpu_bytes":9663688761,"work_bytes":734003200},"schema":"glyd-plan/1"}
+--- STDOUT
+--- STDERR
+|KeyError: 'chunk'
+--- EXIT
+|1

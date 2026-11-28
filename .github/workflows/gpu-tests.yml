@@ -53,7 +53,7 @@ jobs:
         with:
           persist-credentials: false
       - name: The checkout's files get the times their content last changed (so cargo builds what changed, not the checkout)
-        run: python3 scripts/ci_restore_mtimes.py "/cache/mtimes-sm${{ inputs.archs }}.json"
+        run: cargo xtask ci-restore-mtimes "/cache/mtimes-sm${{ inputs.archs }}.json"
       - name: Build the engine (development build, kernels for sm_${{ inputs.archs }}) and the GPU library
         run: bash scripts/ci_gpu_build.sh
       - name: Kernel checks (no model)
@@ -112,7 +112,7 @@ jobs:
           "$E" fit "${{ inputs.model }}" --json > /tmp/fit.json
           cat /tmp/fit.json
           GLYD_PLAN_REPORT=/tmp/loaded.json "$E" run "${{ inputs.model }}" --prompt "Say hello." --no-think > /dev/null
-          python3 scripts/ci_plan_check.py /tmp/fit.json /tmp/loaded.json
+          cargo xtask ci-plan-check /tmp/fit.json /tmp/loaded.json
       - name: The OpenAI, Anthropic and Ollama clients and the Open Responses schema against a served ${{ inputs.client_model }} (chat, streams, tools, thinking, JSON schema; tests/clients)
         run: |
           python3 -m venv /tmp/clients && /tmp/clients/bin/pip install -q openai anthropic ollama requests jsonschema
@@ -155,7 +155,7 @@ jobs:
       - name: glyd doctor on this GPU (the bundle, every check, the sample plan, nothing secret)
         run: |
           "$E" doctor --bundle /tmp/doctor-bundle.json
-          python3 scripts/ci_doctor_check.py /tmp/doctor-bundle.json
+          cargo xtask ci-doctor-check /tmp/doctor-bundle.json
       - name: The clients against a random model made here (Qwen3.8's layout, a character-level tokenizer, its chat template; tests/clients/tiny_check.py), whatever its weights write
         run: |
           [ -x /tmp/clients/bin/python ] || python3 -m venv /tmp/clients

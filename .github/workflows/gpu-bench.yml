@@ -7,7 +7,7 @@ name: GPU bench
 on:
   push:
     branches: [main]
-    paths: ['glyd-engine/**', 'gpu/**', 'glyd-gpu/**', 'Cargo.lock', 'scripts/ci_gpu_build.sh', 'scripts/ci_restore_mtimes.py', '.github/workflows/gpu-bench.yml']
+    paths: ['glyd-engine/**', 'gpu/**', 'glyd-gpu/**', 'Cargo.lock', 'scripts/ci_gpu_build.sh', 'xtask/src/ci_restore_mtimes.rs', '.github/workflows/gpu-bench.yml']
   pull_request:
     types: [labeled, synchronize]
   workflow_dispatch:
@@ -63,7 +63,7 @@ jobs:
         with:
           persist-credentials: false
       - name: The checkout's files get the times their content last changed
-        run: python3 scripts/ci_restore_mtimes.py "/cache/mtimes-sm${GLYD_ENGINE_ARCHS}.json"
+        run: cargo xtask ci-restore-mtimes "/cache/mtimes-sm${GLYD_ENGINE_ARCHS}.json"
       - name: Build the engine and the GPU library
         run: bash scripts/ci_gpu_build.sh
       - name: Bench (the gate's loads, five runs each; again where another job had the GPU)

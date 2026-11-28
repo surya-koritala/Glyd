@@ -1,0 +1,4 @@
+fde2b2a64ed7fba0f1592803320e18e778d1b9719d66aaf466920b318218747c https://github.com/surya-koritala/Glyd/releases/download/v0.36.0/glyd-v0.36.0-macos-arm64.tar.gz
+2c78fcfcb5f8c6d93c529143daf285a96d8697b5138afd81648450faf4a88c78 https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.36.0.tar.gz
+450f9b1aa5359dfcc8dd20247266782023ffcf6a5018c4717b5e3488fc8d9ca0 https://github.com/surya-koritala/Glyd/releases/download/v0.36.0/glyd-v0.36.0-linux-x86_64.tar.gz
+d7eb64fa87ba926e6c49f695eced6bf08e585acdcb976c74c1ad26d324006601 https://github.com/surya-koritala/Glyd/releases/download/v0.36.0/glyd-v0.36.0-linux-aarch64.tar.gz

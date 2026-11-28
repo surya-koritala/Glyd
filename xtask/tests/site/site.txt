@@ -1,0 +1,33 @@
+--- IN release.json
+|{
+|  "release": "v0.35.0",
+|  "date": "2026-11-27",
+|  "installScript": "v0.35.0",
+|  "highlights": [
+|    "Four more families run — Domyn Edge, Granite Swash.",
+|    "Speed: 41.5 tokens a second"
+|  ],
+|  "history": [{"tag": "v0.34.2", "gaps": [], "n": 3, "ratio": 1.50}],
+|  "gpu": null,
+|  "flags": {}
+|}
+--- OUT release.json
+|{
+|  "release": "v0.36.0",
+|  "date": "2026-11-27",
+|  "installScript": "v0.36.0",
+|  "highlights": [
+|    "Four more families run — Domyn Edge, Granite Swash.",
+|    "Speed: 41.5 tokens a second"
+|  ],
+|  "history": [
+|    {
+|      "tag": "v0.34.2",
+|      "gaps": [],
+|      "n": 3,
+|      "ratio": 1.5
+|    }
+|  ],
+|  "gpu": null,
+|  "flags": {}
+|}

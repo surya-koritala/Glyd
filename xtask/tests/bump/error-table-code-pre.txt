@@ -1,0 +1,9 @@
+--- ARGS
+|0.36.0rc1
+--- IN scripts/install.ps1
+|$GlydVersion = '0.35.0'
+--- STDOUT
+--- STDERR
+|scripts/install.ps1: 0 matches of "^\\$GlydVersion = if \\(\\$env:GLYD_VERSION\\) \\{ \\$env:GLYD_VERSION \\} else \\{ '(?P<v>[^']+)' \\}", expected 1 (this script's table is out of date)
+--- EXIT
+|1
