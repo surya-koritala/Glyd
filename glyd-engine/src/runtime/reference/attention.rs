@@ -150,6 +150,12 @@ pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>,
         (matches!(a.rounding, Eager | Sdpa), a.rounding == Eager, matches!(a.rounding, Flash | Eager), a.rounding == Sdpa);
     let prod = |role: &str| -> Result<Vec<f32>> { Ok(p.prod(role, h)?.into_iter().map(r16).collect()) };
     let raw_q = prod("q")?;
+    if a.indexer.as_ref().is_some_and(|ix| ix.rope_style.is_some()) {
+        return err("attention: its indexer turns as the attention does: a pairing of its own is a latent attention's indexer's");
+    }
+    if a.gate.is_some_and(|g| g.from == GateFrom::Latent) {
+        return err("attention: an output gate from the query latent, where the queries are one product of the block's input (no latent)");
+    }
     let in_q = a.gate.is_some_and(|g| g.from == GateFrom::InQuery);
     let (mut q, gate) = if in_q {
         let (mut q, mut g) = (Vec::with_capacity(nh * hd), Vec::with_capacity(nh * hd));
@@ -472,6 +478,7 @@ mod tests {
             rope: 0,
             q_in: None,
             pos_scale: false,
+            rope_style: None,
         });
         p.put("index_qk", &[48, 32], fill("qsa.qk", 48 * 32, -0.5, 0.5));
         p.put("index_q_norm", &[16], fill("qsa.qn", 16, -0.3, 0.3));
@@ -548,6 +555,7 @@ mod tests {
             shared: false,
             form: IndexForm::Max { norm: Norm::rms_plus_one(1e-6), local: 1 },
             rope: 0,
+            rope_style: None,
             q_in: None,
             pos_scale: false,
         };
@@ -592,6 +600,7 @@ mod tests {
             shared: false,
             form: IndexForm::Max { norm: n, local: 1 },
             rope: 0,
+            rope_style: None,
             q_in: None,
             pos_scale: false,
         });

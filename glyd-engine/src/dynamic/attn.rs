@@ -190,6 +190,9 @@ impl AttnOp {
         if a.sinks || a.bias || a.indexer.is_some() {
             return err("attention with sinks, a bias or an indexer: not an operation of this executor");
         }
+        if a.gate.is_some_and(|g| g.from == kinds::GateFrom::Latent) {
+            return err(format!("attention: {}", kinds::GateFrom::LATENT_NOT_RUN));
+        }
         let in_query = a.gate.is_some_and(|g| g.from == kinds::GateFrom::InQuery);
         let q_step = if in_query { 2 * d } else { d };
         let k_off = nq * q_step;
@@ -1265,7 +1268,8 @@ mod tests {
         assert!(scaled.msg.contains("v_scale 0.707"), "{}", scaled.msg);
         // (the block-max indexer, a choice a KV head: refused by its name, as an attention and as the attention of an indexer's picks)
         let form = kinds::IndexForm::Max { norm: Norm::rms_plus_one(1e-6), local: 1 };
-        let ix = kinds::Indexer { heads: 2, head_dim: 128, top_k: 2048, block: 128, shared: false, form, rope: 0, q_in: None, pos_scale: false };
+        let ix =
+            kinds::Indexer { heads: 2, head_dim: 128, top_k: 2048, block: 128, shared: false, form, rope: 0, rope_style: None, q_in: None, pos_scale: false };
         let sparse = Attn { indexer: Some(ix), ..kind(128, None) };
         for got in [AttnOp::of(&sparse, Slot::Mix, 0, Some(0), Some((2, 3))), AttnOp::picked(&sparse, Slot::Mix, 0, Some(0), Some((2, 3)))] {
             let Err(e) = got else { panic!("a block-max indexer, and taken") };

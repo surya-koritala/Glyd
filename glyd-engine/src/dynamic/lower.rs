@@ -56,6 +56,7 @@ fn bf16_round(x: f32) -> f32 {
 /// Gemma 4 (dense): pairs of blocks, sliding or global attention with sandwich norms, then the gated MLP with its sandwich norms and the per-layer scalar; the
 /// embedding scaled and normed into the first layer, the tied and soft-capped head. `eos` and `max_pos` are the generation config's and the config's.
 pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     let m = &d.desc;
     if m.embed.per_layer.is_some() {
         return err("Gemma 4: per-layer inputs (E2B, E4B): not an operation of the executor yet");
@@ -221,6 +222,7 @@ pub fn gemma4(d: &Described, shape: Shape, eos: Vec<i64>, max_pos: usize) -> Res
 /// layer, fp32, in `states`), and an attention's gate one value a head (LFM's: its matrix stacked after q, k and v, the rows padded to rows that pack). A
 /// kind this lowering does not take (a bias, a rope with scaling, a norm or activation of another kind) is refused, named.
 pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     use super::SmallForm;
     use crate::runtime::kinds::{Act, Collapse, NormKind, NormWeight, Residual, RopeScaling};
     let m = &d.desc;
@@ -557,6 +559,7 @@ pub fn dense(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> 
 /// name (the table of n-grams held as saved, on the GPU or on the host as its kind says, the embedding too: `tables::held`); the small tensors as saved (A_log fp32, as the delta rule reads it: `dynamic::qwen4x`). `max_pos`: the positions
 /// each sequence's states hold (the indexer's keys and pools, the sparse attention's keys and values: a row a position).
 pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     use crate::runtime::kinds::{Act, Collapse, IndexForm, Ngram, NormWeight, Residual, RopeScaling};
     let m = &d.desc;
     let what = "Qwen3.8-Flash-Next";
@@ -1072,6 +1075,7 @@ fn block_head<L: Lowered>(d: &Described, eos: Vec<i64>, max_pos: usize, blocks: 
 /// hand-written `dynamic::qwen35::describe`); stage `st` of a model split across GPUs. A layer whose feed-forward is a mixture of experts (the layout's with experts: a softmax router, the gated shared expert)
 /// runs `Op::Moe` in the MLP's place, block k the stage's k-th such layer's (`dynamic::experts`), and names no MLP matrices.
 pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     use super::qwen35::per_layer;
     use crate::qwen35::Kind;
     let m = &d.desc;
@@ -1285,6 +1289,7 @@ pub fn qwen35(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -
 /// in and out products, an attention layer's q, k and v as one and o; the embedding, then the head where it is not the embedding. A layer's experts are its
 /// block's, read apart.
 pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     use super::nemotron::per_layer;
     use crate::kern::{MAMBA2_HEAD, MAMBA2_STATE};
     use crate::nemotron::NhKind;
@@ -1449,6 +1454,7 @@ pub fn nemotron(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage)
 /// Every matrix and small tensor is named from the description's roles, in the order the operations index them, a small tensor made from its values where its
 /// operation reads it so (`SmallForm`): the executor's loader reads them (`dynamic::muse`), each layer's experts its kind's block (`dynamic::experts`).
 pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     let m = &d.desc;
     if m.blocks.len() % 2 != 0 {
         return err(format!("Muse Spark: {} blocks, where each layer is an attention block and an experts block", m.blocks.len()));
@@ -1615,6 +1621,7 @@ pub fn muse(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> 
 /// and beta; a latent layer's q_a, q_b, kv_a and o; a dense MLP's gate and up as one, and down; then the embedding and, on the last stage, the head. A layer's
 /// experts are its block's, read apart (`dynamic::experts`).
 pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     use super::glm::{dense_ops, glm_desc, kda_ops, per_layer};
     use crate::glm::GlmKind;
     use crate::kern::GM_D;
@@ -1636,6 +1643,7 @@ pub fn glm(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> R
     }
     let layers = m.blocks.len() / 2;
     let (hc, round) = match &m.blocks[0].residual {
+        Residual::Streams(s) if s.eps_outside => return err(format!("GLM-5.3-Flash: {}", crate::runtime::kinds::StreamsP::EPS_OUTSIDE_NOT_RUN)),
         Residual::Streams(s) if !s.lagged => ((s.eps, s.sinkhorn_iters as i32), s.rounding),
         r => return err(format!("GLM-5.3-Flash: a residual of {r:?}, not mHC's streams")),
     };
@@ -1812,6 +1820,7 @@ pub(crate) fn split_apart_picks(l: usize) -> String {
 /// norm and kv_b, then its own indexer's (`MlaIndexer::at`'s order); the last stage's final norm. Matrices: a layer's q_a, q_b, kv_a, o, then a dense MLP's
 /// gate and up as one and its down (a layer of experts holds its own); the embedding, then the head where it is not the embedding.
 pub fn latent_moe(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     use super::mla::{MlaIn, MlaOp};
     use crate::moe::Act;
     use crate::runtime::kinds::{Collapse, NormKind, NormWeight, Residual, Rounding};
@@ -2036,6 +2045,7 @@ fn padded(members: Vec<String>, shape: Shape, to: usize) -> Result<Item> {
 /// checkpoint holds them, `early` whether the cached experts are guessed ahead. Every matrix and small tensor the operations use is named from the
 /// description's roles (`kimi_names`); the blocks of experts are read apart, in the layers' order.
 pub fn kimi(d: &Described, eos: Vec<i64>, max_pos: usize, st: &super::Stage, w32: &[(bool, bool)], early: bool) -> Result<ModelDesc> {
+    super::split::runs(d)?;
     use super::kimi::{kimi_desc, KimiDims, KimiLayer};
     use crate::runtime::kinds::{Act, Decay, Residual};
     let m = &d.desc;

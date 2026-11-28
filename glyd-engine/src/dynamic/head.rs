@@ -108,6 +108,9 @@ pub(super) fn shift_rings(d: &mut ModelDesc, by: usize) -> Result<()> {
 /// the model's layers, or a layer of no attention on the streams, is refused.
 pub(super) fn tap(d: &mut ModelDesc, kinds: &crate::runtime::describe::Described) -> Result<()> {
     let ds = kinds.desc.mtp.first().and_then(|h| h.dspark.as_ref()).ok_or_else(|| Error(format!("{}: taps for a draft head of no DSpark form", d.family)))?;
+    if ds.after {
+        return err(format!("{}: {}", d.family, crate::runtime::kinds::DSpark::AFTER_NOT_RUN));
+    }
     let of = ds.targets.len();
     for (at, &l) in ds.targets.iter().enumerate() {
         let layers = d.layers.len();

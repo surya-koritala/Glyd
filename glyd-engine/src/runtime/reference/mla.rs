@@ -100,7 +100,11 @@ fn index_turn(ix: &Indexer, rot: &Option<(&Rope, (Vec<f32>, f32))>, x: &mut [f32
     }
     match rot {
         Some((r, (inv, af))) if r.dim == ix.rope && x.len() >= r.dim => {
-            rope::apply(r, inv, *af, x, pos);
+            // (the indexer's own pairing of its channels, where it is not the attention's: the same angles)
+            match ix.rope_style.filter(|st| *st != r.style) {
+                Some(style) => rope::apply(&Rope { style, ..(*r).clone() }, inv, *af, x, pos),
+                None => rope::apply(r, inv, *af, x, pos),
+            }
             Ok(())
         }
         _ => err(format!(
@@ -316,9 +320,14 @@ pub fn step_with(m: &Mla, p: &Params, c: &mut LatentCache, shared: Option<&Laten
     }
     // (the gate's product: a value a channel of each head's output, or one a head, `GateFrom::Head`)
     let per_head = m.gate.is_some_and(|g| g.from == crate::runtime::kinds::GateFrom::Head);
-    let gate = match m.gate {
-        Some(_) => Some(p.prod("g", h)?),
-        None => None,
+    let gate = match (m.gate, &qr) {
+        // (of the normed query latent, a value a channel of the heads' outputs: `GateFrom::Latent`)
+        (Some(g), Some(qr)) if g.from == crate::runtime::kinds::GateFrom::Latent => Some(p.prod("g", qr)?),
+        (Some(g), None) if g.from == crate::runtime::kinds::GateFrom::Latent => {
+            return err("MLA: an output gate from the query latent, and this layer's queries are one product (no latent)")
+        }
+        (Some(_), _) => Some(p.prod("g", h)?),
+        (None, _) => None,
     };
     if let Some(gv) = gate.as_ref().filter(|gv| gv.len() != if per_head { nh } else { nh * vd }) {
         return err(format!("MLA: a gate of {} values for {nh} heads{}", gv.len(), if per_head { "" } else { " of their values' width" }));
@@ -331,6 +340,9 @@ pub fn step_with(m: &Mla, p: &Params, c: &mut LatentCache, shared: Option<&Laten
             None => return err("MLA: a shared indexer attends to the picks of the latent attention before it, and none were lent to it"),
         },
         Some(ix) => {
+            // (a window: the query's last tokens are read whatever is picked, and the indexer picks among the ones before them)
+            let last = m.window.map_or(0, |w| w.min(seen.len()));
+            let (before, recent) = seen.split_at(seen.len() - last);
             // (the indexer's queries: of the block's input through their norm where the kind says so; each head scaled by position, then turned)
             let q_in = match ix.q_in {
                 Some(n) => {
@@ -346,15 +358,15 @@ pub fn step_with(m: &Mla, p: &Params, c: &mut LatentCache, shared: Option<&Laten
                 }
                 index_turn(ix, &rot, x, pos)
             };
-            let mut got = picks(ix, p, c, &seen, q_in.as_deref().or(qr.as_deref()), h, &turn)?;
-            // (a check's picks for this query in the place of the indexer's own: entries the query sees, each once, in order)
+            let mut got = picks(ix, p, c, before, q_in.as_deref().or(qr.as_deref()), h, &turn)?;
+            // (a check's picks for this query in the place of the indexer's own: entries the indexer may pick, each once, in order)
             if let Some(t) = c.take.pop_front().filter(|t| !t.is_empty()) {
-                if t.windows(2).any(|w| w[0] >= w[1]) || t.iter().any(|e| seen.binary_search(e).is_err()) {
-                    return err(format!("MLA: picks to take of {t:?}: entries the query at {pos} sees, each once, in order"));
+                if t.windows(2).any(|w| w[0] >= w[1]) || t.iter().any(|e| before.binary_search(e).is_err()) {
+                    return err(format!("MLA: picks to take of {t:?}: entries the query at {pos} may pick, each once, in order"));
                 }
                 got.picks = t;
             }
-            let r = (got.picks.clone(), got.gap);
+            let r = (got.picks.iter().chain(recent).copied().collect(), got.gap);
             if let Some(v) = c.picked.as_mut() {
                 v.push(got);
             }
@@ -366,6 +378,13 @@ pub fn step_with(m: &Mla, p: &Params, c: &mut LatentCache, shared: Option<&Laten
     if m.indexer.is_some() {
         c.picks = seen.clone();
         c.made.push(seen.clone());
+    }
+    if m.window.is_some() && m.indexer.as_ref().is_none_or(|ix| ix.shared || ix.block > 1) {
+        return err("MLA: a window of the last tokens beside the picks is of a layer with its own indexer of a key a token");
+    }
+    let sinks = if m.sinks { Some(p.vec("sinks")?) } else { None };
+    if sinks.is_some_and(|s| s.len() != nh) {
+        return err(format!("MLA: sinks of {} values for {nh} heads", sinks.map_or(0, <[f32]>::len)));
     }
     let fac = if m.pos_scale { Some(factors_of(p, "q_scale_s", "q_scale_b", nh, pos)?) } else { None };
     let lat_of = |j: usize| if m.kv_from.is_some() { &lats[j] } else { &c.lat[j] };
@@ -388,6 +407,8 @@ pub fn step_with(m: &Mla, p: &Params, c: &mut LatentCache, shared: Option<&Laten
                 (dot(&qh[..nope], &k_nope) + dot(&qh[nope..], &l[kr..])) * m.scale
             })
             .collect();
+        // (a sink: one more logit in the softmax, the head's value as it is, which weighs nothing)
+        s.extend(sinks.map(|k| k[head]));
         softmax(&mut s);
         let mut o = vec![0f64; vd];
         for (&j, &pj) in seen.iter().zip(&s) {
@@ -395,10 +416,17 @@ pub fn step_with(m: &Mla, p: &Params, c: &mut LatentCache, shared: Option<&Laten
                 *ov += pj as f64 * dot(rows(nope + d), &lat_of(j)[..kr]) as f64;
             }
         }
-        let mut o: Vec<f32> = o.into_iter().map(|v| v as f32).collect();
-        if let (Some(g), Some(gv)) = (m.gate, &gate) {
+        out.extend(o.into_iter().map(|v| v as f32));
+    }
+    // (the heads' outputs mixed with each other where the kind says, before the gate)
+    if m.head_mix > 0 {
+        super::head_mix(p.vec("mix_u")?, p.vec("mix_v")?, nh, m.head_mix, &mut out)?;
+    }
+    if let (Some(g), Some(gv)) = (m.gate, &gate) {
+        for (head, o) in out.chunks_mut(vd).enumerate() {
             if let Some(n) = g.norm {
-                o = norm(&n, &o, None, None);
+                let y = norm(&n, o, None, None);
+                o.copy_from_slice(&y);
             }
             if per_head {
                 let z = act(g.act, gv[head]);
@@ -407,7 +435,6 @@ pub fn step_with(m: &Mla, p: &Params, c: &mut LatentCache, shared: Option<&Laten
                 o.iter_mut().zip(&gv[head * vd..][..vd]).for_each(|(x, &z)| *x *= act(g.act, z));
             }
         }
-        out.extend(o);
     }
     p.prod("o", &out)
 }
@@ -432,6 +459,7 @@ mod tests {
             rope: 0,
             q_in: None,
             pos_scale: false,
+            rope_style: None,
         };
         let m = Mla {
             heads: 2,
@@ -447,6 +475,9 @@ mod tests {
             scale: 0.25,
             absorbed: true,
             indexer: Some(ix),
+            head_mix: 0,
+            sinks: false,
+            window: None,
             pos_scale: false,
             kv_from: None,
             rope_learned: false,
@@ -761,6 +792,9 @@ mod tests {
             scale: ((nope + rd) as f32).powf(-0.5),
             absorbed: true,
             indexer: None,
+            head_mix: 0,
+            sinks: false,
+            window: None,
             pos_scale: false,
             kv_from: None,
             rope_learned: false,
@@ -801,6 +835,244 @@ mod tests {
         assert_eq!(run(&m, &one), half, "a head's gate of a half halves its output");
     }
 
+    /// A latent attention of 2 heads (queries in a low rank of 10, no rotary), its weights drawn under `tag`, its output product the identity: a step's
+    /// output is then the heads' outputs after the kind's mix and gate. `g` reads the query latent.
+    fn latent_gated(tag: &str) -> (Mla, Params) {
+        use crate::runtime::kinds::{Act, GateFrom, OutGate};
+        let (nh, nope, vd, kr, ql) = (2usize, 8usize, 6usize, 12usize, 10usize);
+        let m = Mla {
+            heads: nh,
+            q_lora: Some(ql),
+            kv_lora: kr,
+            nope,
+            rope_dim: 0,
+            v_dim: vd,
+            rope: None,
+            q_norm: Norm::rms(1e-6),
+            kv_norm: Norm::rms(1e-6),
+            gate: Some(OutGate { act: Act::Sigmoid, from: GateFrom::Latent, norm: None }),
+            scale: (nope as f32).powf(-0.5),
+            absorbed: true,
+            indexer: None,
+            head_mix: 0,
+            sinks: false,
+            window: None,
+            pos_scale: false,
+            kv_from: None,
+            rope_learned: false,
+        };
+        let mut p = Params::new();
+        for (role, shape) in [("q_a", [ql, D]), ("q_b", [nh * nope, ql]), ("kv_a", [kr, D]), ("kv_b", [nh * (nope + vd), kr]), ("g", [nh * vd, ql])] {
+            p.put(role, &shape, fill(&format!("{tag}.{role}"), shape[0] * shape[1], -0.4, 0.4));
+        }
+        p.put("q_a_norm", &[ql], fill(&format!("{tag}.q_a_norm"), ql, 0.5, 1.5));
+        p.put("kv_a_norm", &[kr], fill(&format!("{tag}.kv_a_norm"), kr, 0.5, 1.5));
+        let w = nh * vd;
+        p.put("o", &[w, w], (0..w * w).map(|i| (i / w == i % w) as u32 as f32).collect());
+        (m, p)
+    }
+
+    fn steps(m: &Mla, p: &Params, n: usize) -> Vec<Vec<f32>> {
+        let mut c = LatentCache::default();
+        inputs(n).iter().enumerate().map(|(t, h)| step(m, p, &mut c, h, t as u32).unwrap()).collect()
+    }
+
+    /// A gate from the query latent (`GateFrom::Latent`, ERNIE's `gate_proj`): each channel of the heads' outputs times sigmoid of `g`'s product of the
+    /// normed query latent, by hand from the gate-less layer's heads. It reads the latent, not the block's input: the same `g` under a gate of the
+    /// block's input is refused by its width, and a layer whose queries are one product has no latent to gate by. A `g` of zero halves, to the bit.
+    #[test]
+    fn a_gate_from_the_query_latent_by_hand() {
+        use crate::runtime::kinds::{GateFrom, OutGate};
+        use crate::runtime::reference::sigmoid;
+        let (m, p) = latent_gated("mla.latent");
+        let bare = Mla { gate: None, ..m.clone() };
+        let (heads, gated) = (steps(&bare, &p, 6), steps(&m, &p, 6));
+        for (t, h) in inputs(6).iter().enumerate() {
+            let qr = norm(&m.q_norm, &p.prod("q_a", h).unwrap(), p.opt("q_a_norm"), None);
+            let gv = p.prod("g", &qr).unwrap();
+            let want: Vec<f32> = heads[t].iter().zip(&gv).map(|(o, &z)| o * sigmoid(z)).collect();
+            assert_eq!(gated[t], want, "token {t}");
+        }
+        assert!(rel(&gated[5], &heads[5]) > 1e-3, "the gate changes the answer");
+        let mut c = LatentCache::default();
+        let own = Mla { gate: m.gate.map(|g| OutGate { from: GateFrom::Own, ..g }), ..m.clone() };
+        assert!(step(&own, &p, &mut c, &inputs(1)[0], 0).unwrap_err().msg.contains("g: shape"));
+        let mut one = p.clone();
+        one.put("q", &[16, D], fill("mla.latent.q", 16 * D, -0.4, 0.4));
+        let mut c = LatentCache::default();
+        assert!(step(&Mla { q_lora: None, ..m.clone() }, &one, &mut c, &inputs(1)[0], 0).unwrap_err().msg.contains("no latent"));
+        let mut zero = p.clone();
+        zero.put("g", &[12, 10], vec![0.0; 120]);
+        let half: Vec<Vec<f32>> = heads.iter().map(|r| r.iter().map(|x| 0.5 * x).collect()).collect();
+        assert_eq!(steps(&m, &zero, 6), half);
+    }
+
+    /// The low-rank mix of the heads' outputs on a latent attention (`Mla::head_mix`, ERNIE's): the heads' outputs of the layer without it, mixed
+    /// (`head_mix`: held by hand in its own test), and where the layer gates, mixed first and gated after, which is another answer than the other
+    /// order. A V of zero is the layer without the mix, to the bit.
+    #[test]
+    fn the_heads_outputs_are_mixed_before_the_gate() {
+        use crate::runtime::reference::{head_mix, sigmoid};
+        let (gated, mut p) = latent_gated("mla.mix");
+        let (u, v) = (fill("mla.mix.u", 2 * 3, -0.6, 0.6), fill("mla.mix.v", 2 * 3, -0.6, 0.6));
+        p.put("mix_u", &[2, 3], u.clone());
+        p.put("mix_v", &[2, 3], v.clone());
+        let bare = Mla { gate: None, ..gated.clone() };
+        let heads = steps(&bare, &p, 6);
+        let mixed = steps(&Mla { head_mix: 3, ..bare.clone() }, &p, 6);
+        let both = steps(&Mla { head_mix: 3, ..gated.clone() }, &p, 6);
+        let gate_only = steps(&gated, &p, 6);
+        for (t, h) in inputs(6).iter().enumerate() {
+            let mut want = heads[t].clone();
+            head_mix(&u, &v, 2, 3, &mut want).unwrap();
+            assert_eq!(mixed[t], want, "token {t}");
+            let qr = norm(&gated.q_norm, &p.prod("q_a", h).unwrap(), p.opt("q_a_norm"), None);
+            let gv = p.prod("g", &qr).unwrap();
+            let after: Vec<f32> = want.iter().zip(&gv).map(|(o, &z)| o * sigmoid(z)).collect();
+            assert_eq!(both[t], after, "token {t}: mixed, then gated");
+            let mut other = gate_only[t].clone();
+            head_mix(&u, &v, 2, 3, &mut other).unwrap();
+            assert!(rel(&both[t], &other) > 1e-4, "token {t}: gated, then mixed is another answer");
+        }
+        let mut zero = p.clone();
+        zero.put("mix_v", &[2, 3], vec![0.0; 6]);
+        assert_eq!(steps(&Mla { head_mix: 3, ..gated.clone() }, &zero, 6), gate_only);
+        let mut c = LatentCache::default();
+        assert!(step(&Mla { head_mix: 2, ..gated.clone() }, &p, &mut c, &inputs(1)[0], 0).is_err(), "U and V of another rank");
+        assert!(!format!("{gated:?}").contains("head_mix") && format!("{:?}", Mla { head_mix: 3, ..gated }).ends_with("indexer: None, head_mix: 3 }"));
+    }
+
+    /// Sinks on a latent attention (`Mla::sinks`, ERNIE's `softmax_offset`): a head's sink is one more logit of its softmax, the value as it is (not
+    /// scaled as the scores are), and weighs nothing. The last of four tokens written out a second time, key by key; a sink far below the scores is
+    /// the layer without sinks, to the bit; a sink far above them leaves nothing of the output.
+    #[test]
+    fn a_latent_attentions_sinks_join_the_softmax_and_weigh_nothing() {
+        let (gated, mut p) = latent_gated("mla.sink");
+        let (nh, nope, vd, kr) = (2usize, 8usize, 6usize, 12usize);
+        let bare = Mla { gate: None, ..gated };
+        let m = Mla { sinks: true, ..bare.clone() };
+        let sinks = vec![0.3f32, -0.7];
+        p.put("sinks", &[nh], sinks.clone());
+        let (hs, got) = (inputs(4), steps(&m, &p, 4));
+        let lats: Vec<Vec<f32>> = hs.iter().map(|h| norm(&m.kv_norm, &p.prod("kv_a", h).unwrap(), p.opt("kv_a_norm"), None)).collect();
+        let q = p.prod("q_b", &norm(&m.q_norm, &p.prod("q_a", &hs[3]).unwrap(), p.opt("q_a_norm"), None)).unwrap();
+        let kv_b = p.vec("kv_b").unwrap();
+        let row = |head: usize, r: usize| &kv_b[(head * (nope + vd) + r) * kr..][..kr];
+        for head in 0..nh {
+            let mut s: Vec<f32> = lats
+                .iter()
+                .map(|l| {
+                    let key: Vec<f32> = (0..nope).map(|d| dot(row(head, d), l)).collect();
+                    dot(&q[head * nope..][..nope], &key) * m.scale
+                })
+                .collect();
+            s.push(sinks[head]);
+            softmax(&mut s);
+            assert!(s[4] > 0.05, "the sink takes a share: {}", s[4]);
+            for d in 0..vd {
+                let want = lats.iter().zip(&s).map(|(l, &a)| a as f64 * dot(row(head, nope + d), l) as f64).sum::<f64>() as f32;
+                assert_eq!(got[3][head * vd + d], want, "head {head}, value {d}");
+            }
+        }
+        let plain = steps(&bare, &p, 4);
+        assert!(rel(&got[3], &plain[3]) > 1e-2);
+        let mut far = p.clone();
+        far.put("sinks", &[nh], vec![-1e30; nh]);
+        assert_eq!(steps(&m, &far, 4), plain, "a sink of no weight");
+        far.put("sinks", &[nh], vec![60.0; nh]);
+        assert!(steps(&m, &far, 4)[3].iter().zip(&plain[3]).all(|(a, b)| a.abs() < 1e-12 + b.abs() * 1e-12));
+        far.put("sinks", &[3], vec![0.0; 3]);
+        let mut c = LatentCache::default();
+        assert!(step(&m, &far, &mut c, &hs[0], 0).is_err() && step(&m, &plain_params(&p), &mut c, &hs[0], 0).is_err());
+        assert!(!format!("{bare:?}").contains("sinks") && format!("{m:?}").ends_with("indexer: None, sinks: true }"));
+    }
+
+    /// `p` without its sinks.
+    fn plain_params(p: &Params) -> Params {
+        let mut q = p.clone();
+        q.t.remove("sinks");
+        q
+    }
+
+    /// A window beside the indexer's picks (`Mla::window`, ERNIE's latent layers): a query attends to its last `window` tokens whatever is picked, and
+    /// the indexer keeps its `top_k` among the tokens before them. With an indexer keeping 2 and a window of 3, over nine tokens: each query's entries
+    /// are the indexer's picks, all before the window, then the window's; the picks are the best two by the indexer's own scores of the tokens before the
+    /// window; the output is, to the bit, the layer without a window made to take those entries; and it is another answer than the layer without the
+    /// window. A token at a time is all there is here: the cache is the state. A window with no indexer of the layer's own is refused.
+    #[test]
+    fn a_window_of_the_last_tokens_is_read_beside_the_picks() {
+        let (plain, p) = layer(2, 1);
+        let m = Mla { window: Some(3), ..plain.clone() };
+        let hs = inputs(9);
+        let (mut a, mut b, mut c) = (LatentCache { picked: Some(Vec::new()), ..Default::default() }, LatentCache::default(), LatentCache::default());
+        let mut differ = false;
+        for (t, h) in hs.iter().enumerate() {
+            let got = step(&m, &p, &mut a, h, t as u32).unwrap();
+            let (recent, before) = ((t + 1).min(3), (t + 1).saturating_sub(3));
+            let entries = a.picks.clone();
+            assert_eq!(entries.len(), before.min(2) + recent, "token {t}: {entries:?}");
+            assert_eq!(entries[entries.len() - recent..], (t + 1 - recent..=t).collect::<Vec<_>>()[..], "token {t}: the window");
+            let rec = a.picked.as_ref().unwrap().last().unwrap().clone();
+            assert_eq!(rec.picks[..], entries[..entries.len() - recent], "token {t}: the picks before the window");
+            assert!(rec.picks.iter().all(|&e| e < before), "token {t}: {:?}", rec.picks);
+            if before > 2 {
+                // (the indexer's own scores of the tokens before the window: one a token, the best two kept)
+                assert_eq!(rec.score.len(), before, "token {t}");
+                let mut ord: Vec<usize> = (0..before).collect();
+                ord.sort_by(|&x, &y| rec.score[y].total_cmp(&rec.score[x]).then(x.cmp(&y)));
+                ord.truncate(2);
+                ord.sort_unstable();
+                assert_eq!(rec.picks, ord, "token {t}");
+            }
+            // (the layer without a window, taking those entries)
+            b.take.push_back(entries.clone());
+            assert_eq!(step(&plain, &p, &mut b, h, t as u32).unwrap(), got, "token {t}");
+            differ |= rel(&step(&plain, &p, &mut c, h, t as u32).unwrap(), &got) > 1e-4;
+        }
+        assert!(differ, "the window changed no row");
+        let mut d = LatentCache::default();
+        assert!(step(&Mla { indexer: None, ..m.clone() }, &p, &mut d, &hs[0], 0).is_err());
+        assert!(!format!("{plain:?}").contains("window") && format!("{m:?}").ends_with("window: 3 }"));
+    }
+
+    /// An indexer's rotary that pairs its channels its own way (`Indexer::rope_style`, ERNIE's: halves beside the attention's interleaved pairs): each
+    /// token's key in the cache is its LayerNorm-ed key with channel i and channel i + rope / 2 turned by the angle of the attention's i-th
+    /// frequency at the token's position, by hand; the attention's own shared key part is turned as before; and the same style as the attention's,
+    /// said or not, is one indexer.
+    #[test]
+    fn an_indexers_rotary_pairs_its_channels_its_own_way() {
+        use crate::runtime::kinds::RopeStyle;
+        let (m0, mut p) = layer(4, 1);
+        let r = Rope { style: RopeStyle::Interleaved, ..Rope::plain(1e4, 8) };
+        p.put("q_b", &[48, 24], fill("mla.q_b.turned", 48 * 24, -0.3, 0.3));
+        p.put("kv_a", &[24, D], fill("mla.kv_a.turned", 24 * D, -0.3, 0.3));
+        let ix = |style| Indexer { rope: 8, rope_style: style, ..m0.indexer.clone().unwrap() };
+        let of = |style| Mla { rope_dim: 8, rope: Some(r.clone()), scale: 24f32.lpowf(-0.5), indexer: Some(ix(style)), ..m0.clone() };
+        let hs = inputs(12);
+        let run = |m: &Mla| {
+            let mut c = LatentCache::default();
+            let rows: Vec<Vec<f32>> = hs.iter().enumerate().map(|(t, h)| step(m, &p, &mut c, h, t as u32).unwrap()).collect();
+            (rows, c)
+        };
+        let ((halves, a), (pairs, b), (said, _)) = (run(&of(Some(RopeStyle::Half))), run(&of(None)), run(&of(Some(RopeStyle::Interleaved))));
+        for (t, h) in hs.iter().enumerate() {
+            let k = key_norm(&ix(None), &p, &p.prod("indexer_wk", h).unwrap()).unwrap();
+            let (inv, _) = rope::inv_freq_at(&r, t as u32 + 1);
+            let mut want = k.clone();
+            for i in 0..4 {
+                let angle = t as f32 * inv[i];
+                let (cos, sin) = ((angle as f64).lcos() as f32, (angle as f64).lsin() as f32);
+                (want[i], want[i + 4]) = (k[i] * cos - k[i + 4] * sin, k[i + 4] * cos + k[i] * sin);
+            }
+            assert_eq!(a.ikey[t], want, "token {t}'s key, turned in halves");
+            assert_eq!(a.ikey[t] == b.ikey[t], t == 0, "token {t}: another pairing is another key past position 0");
+        }
+        assert_eq!(a.lat, b.lat, "the attention's own rotary is as it was");
+        assert_eq!(pairs, said);
+        assert!(halves.iter().zip(&pairs).skip(4).any(|(x, y)| rel(x, y) > 1e-4), "the pairing changed no pick");
+        assert!(!format!("{:?}", ix(None)).contains("rope_style") && format!("{:?}", ix(Some(RopeStyle::Half))).ends_with("rope: 8, rope_style: Half }"));
+    }
+
     /// A latent attention whose queries are one product, with a rotary on the shared key part (Mistral Large's shape, small): `heads` heads of 8 + 4.
     fn direct(rotary: bool) -> (Mla, Params) {
         use crate::runtime::kinds::RopeStyle;
@@ -822,6 +1094,9 @@ mod tests {
             pos_scale: false,
             kv_from: None,
             rope_learned: false,
+            head_mix: 0,
+            sinks: false,
+            window: None,
         };
         let mut p = Params::new();
         for (role, shape) in [("q", [nh * 12, D]), ("kv_a", [kr + rd, D]), ("kv_b", [nh * (nope + vd), kr]), ("o", [D, nh * vd])] {
@@ -954,7 +1229,18 @@ mod tests {
         use crate::runtime::kinds::{NormWeight, Rounding};
         let (m0, mut p) = direct(true);
         let ln = Norm { kind: NormKind::Layer, weight: NormWeight::Plain, eps: 1e-6, rounding: Rounding::F32 };
-        let ix = Indexer { heads: 2, head_dim: 8, top_k: 4, block: 1, shared: false, form: IndexForm::LAYER_KEYS, rope: 4, q_in: Some(ln), pos_scale: true };
+        let ix = Indexer {
+            heads: 2,
+            head_dim: 8,
+            top_k: 4,
+            block: 1,
+            shared: false,
+            form: IndexForm::LAYER_KEYS,
+            rope: 4,
+            q_in: Some(ln),
+            pos_scale: true,
+            rope_style: None,
+        };
         let m = Mla { indexer: Some(ix.clone()), ..m0.clone() };
         for (role, shape) in [("indexer_wq_b", [16, D]), ("indexer_wk", [8, D]), ("indexer_weights", [2, D])] {
             p.put(role, &shape, fill(&format!("mla.in.{role}"), shape[0] * shape[1], -0.5, 0.5));
@@ -1034,5 +1320,64 @@ mod tests {
         .unwrap_err()
         .msg;
         assert!(e.contains("reads the query's low rank"), "{e}");
+    }
+
+    /// The two families' forms of the latent attention together: an indexer whose queries are the block's input's, scaled by position, turning in its own
+    /// pairing (halves under the attention's interleaved rotary), on a layer with sinks that reads a window of its last three tokens beside the four
+    /// picks. Each query's entries are picks before the window, then the window; the layer is, to the bit, the layer without a window made to take
+    /// those entries; and sinks far below the scores are the layer without sinks.
+    #[test]
+    fn a_window_and_sinks_beside_an_indexer_on_the_blocks_input() {
+        use crate::runtime::kinds::{NormWeight, RopeStyle, Rounding};
+        let (m0, mut p) = direct(true);
+        let ln = Norm { kind: NormKind::Layer, weight: NormWeight::Plain, eps: 1e-6, rounding: Rounding::F32 };
+        let ix = Indexer {
+            heads: 2,
+            head_dim: 8,
+            top_k: 4,
+            block: 1,
+            shared: false,
+            form: IndexForm::LAYER_KEYS,
+            rope: 4,
+            q_in: Some(ln),
+            pos_scale: true,
+            rope_style: Some(RopeStyle::Half),
+        };
+        for (role, shape) in [("indexer_wq_b", [16, D]), ("indexer_wk", [8, D]), ("indexer_weights", [2, D])] {
+            p.put(role, &shape, fill(&format!("mla.both.{role}"), shape[0] * shape[1], -0.5, 0.5));
+        }
+        for (role, n, lo, hi) in
+            [("indexer_q_norm", D, 0.5, 1.5), ("indexer_q_norm_bias", D, -0.1, 0.1), ("indexer_k_norm", 8, 0.5, 1.5), ("indexer_k_norm_bias", 8, -0.1, 0.1)]
+        {
+            p.put(role, &[n], fill(&format!("mla.both.{role}"), n, lo, hi));
+        }
+        (p.put("indexer_scale_s", &[2], vec![1.5, -1.0]), p.put("indexer_scale_b", &[2], vec![0.25, 0.5]));
+        p.put("sinks", &[2], vec![0.3, -0.7]);
+        let plain = Mla { indexer: Some(ix), sinks: true, ..m0.clone() };
+        let m = Mla { window: Some(3), ..plain.clone() };
+        let hs = inputs(12);
+        let (mut a, mut b, mut c) = (LatentCache::default(), LatentCache::default(), LatentCache::default());
+        let (mut rows, mut differ) = (Vec::new(), false);
+        for (t, h) in hs.iter().enumerate() {
+            let got = step(&m, &p, &mut a, h, t as u32).unwrap();
+            let (recent, before) = ((t + 1).min(3), (t + 1).saturating_sub(3));
+            let entries = a.picks.clone();
+            assert_eq!(entries.len(), before.min(4) + recent, "token {t}: {entries:?}");
+            assert!(entries[..entries.len() - recent].iter().all(|&e| e < before), "token {t}: {entries:?}");
+            assert_eq!(entries[entries.len() - recent..], (t + 1 - recent..=t).collect::<Vec<_>>()[..], "token {t}: the window");
+            b.take.push_back(entries);
+            assert_eq!(step(&plain, &p, &mut b, h, t as u32).unwrap(), got, "token {t}: the layer without a window, taking those entries");
+            differ |= rel(&step(&plain, &p, &mut c, h, t as u32).unwrap(), &got) > 1e-4;
+            rows.push(got);
+        }
+        assert!(differ, "the window changed no row");
+        let mut far = p.clone();
+        far.put("sinks", &[2], vec![-1e30; 2]);
+        let run = |m: &Mla, p: &Params| -> Vec<Vec<f32>> {
+            let mut c = LatentCache::default();
+            hs.iter().enumerate().map(|(t, h)| step(m, p, &mut c, h, t as u32).unwrap()).collect()
+        };
+        assert_eq!(run(&m, &far), run(&Mla { sinks: false, ..m.clone() }, &p), "sinks far below the scores are no sinks");
+        assert_ne!(run(&m, &far), rows);
     }
 }
