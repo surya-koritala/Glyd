@@ -280,7 +280,8 @@ impl Indexer {
 }
 
 /// The derived form, with `form` said only where it is not the gated form with LayerNorm-ed keys (`IndexForm::LAYER_KEYS`), `rope` only where it
-/// rotates and `rope_style` only where it is its own: those indexers' descriptions read as they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
+/// rotates and `rope_style` only where it is its own: those indexers' descriptions read as they did before the fields
+/// (the digests of tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for Indexer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Indexer");
@@ -399,7 +400,8 @@ impl std::fmt::Debug for Attn {
 ///
 /// Roles: `q` [heads * (nope + rope_dim), hidden] or with `q_lora` `q_a` [q_lora, hidden], `q_a_norm` [q_lora], `q_b` [heads * (nope +
 /// rope_dim), q_lora]; `kv_a` [kv_lora + rope_dim, hidden], `kv_a_norm` [kv_lora], `kv_b` [heads * (nope + v_dim), kv_lora], `o` [hidden,
-/// heads * v_dim]; `g` [heads * v_dim, hidden] with a gate ([heads, hidden] with a `Head` one, [heads * v_dim, q_lora] with a `Latent` one). The cache holds per token the normed latent and the
+/// heads * v_dim]; `g` [heads * v_dim, hidden] with a gate ([heads, hidden] with a `Head` one, [heads * v_dim, q_lora] with a `Latent` one).
+/// The cache holds per token the normed latent and the
 /// shared key part (kv_lora + rope_dim values); `absorbed` names how a backend computes it (the same function). With a `head_mix`, `mix_u` and `mix_v`
 /// [heads, head_mix]; with `sinks`, `sinks` [heads].
 #[derive(Clone, PartialEq)]
@@ -1208,13 +1210,35 @@ impl std::fmt::Debug for MtpHead {
 /// `final_norm`, the model's head: the base logits. Sequentially, position j's logits add `markov_head` [vocab, rank] `markov_embed`[prev]
 /// ([vocab, rank]: the Markov embedding of the token before it, the anchor at j = 0) and the token is chosen; with `confidence`,
 /// sigmoid(`confidence` [1, hidden + rank] [pre-norm hidden, Markov embedding]) estimates its acceptance.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct DSpark {
     pub block: usize,
     pub noise: u32,
     pub targets: Vec<usize>,
     pub markov_rank: usize,
     pub confidence: bool,
+    /// Where a target layer's features are read, the mean over the streams either way: false, the streams the layer's attention reads (before the
+    /// layer: DeepSeek's); true, the streams the layer leaves (after its feed-forward: ERNIE's).
+    pub after: bool,
+}
+
+impl DSpark {
+    /// The refusal of a drafter whose targets are read after their layers: the CPU reference's taps read them there, the executor's at a layer's input.
+    pub const AFTER_NOT_RUN: &'static str = "a drafter whose targets are read after their layers, which the executor does not run yet";
+}
+
+/// The derived form, with `after` said only where it is set: the other drafters' descriptions read as they did before the field (the digests of
+/// tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for DSpark {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("DSpark");
+        s.field("block", &self.block).field("noise", &self.noise).field("targets", &self.targets).field("markov_rank", &self.markov_rank);
+        s.field("confidence", &self.confidence);
+        if self.after {
+            s.field("after", &self.after);
+        }
+        s.finish()
+    }
 }
 
 /// A vision tower: the Qwen-VL vision transformer (Qwen3.8-Flash-Next's `Qwen4ExpVisionModel`). An image's patches of `channels` x `frames` x `patch` x `patch`

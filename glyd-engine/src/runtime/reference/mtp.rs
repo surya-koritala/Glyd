@@ -143,8 +143,10 @@ impl RefDSpark {
             return err("a DSpark head's layers are not its blocks");
         }
         let layers = head.blocks.iter().zip(blocks).map(|(b, r)| Ok(RefLayer::new(b.clone(), d.desc.hidden, params(r)?))).collect::<Result<Vec<_>>>()?;
-        // (the model's head on the draft's logits: the correction's roles are the model's own)
-        let logits = super::model::Logits::of(&d.desc.head, &params(&d.extra)?)?;
+        // (the model's head on the draft's logits: the correction's two roles are the model's own, read where the head has the correction and only they, so
+        // that a drafter's checkpoint without the model's other roles loads as it did)
+        let fix: Vec<_> = d.extra.iter().filter(|(r, _)| d.desc.head.correction && r.starts_with("logit_")).cloned().collect();
+        let logits = super::model::Logits::of(&d.desc.head, &params(&fix)?)?;
         Ok(RefDSpark { head: head.clone(), hidden: d.desc.hidden, p: params(own)?, blocks: layers, collapse: d.desc.head.collapse, logits: Some(logits) })
     }
 
@@ -323,7 +325,7 @@ mod tests {
         }
         p.put("main_norm", &[D], fill("ds.main_norm", D, 0.5, 1.5));
         p.put("final_norm", &[D], fill("ds.final_norm", D, 0.5, 1.5));
-        let dspark = DSpark { block, noise: 23, targets: vec![5, 6], markov_rank: 4, confidence: true };
+        let dspark = DSpark { block, noise: 23, targets: vec![5, 6], markov_rank: 4, confidence: true, after: false };
         let h = MtpHead {
             blocks,
             norm_embed: Norm::rms(1e-6),

@@ -2,8 +2,8 @@
 //! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), Qwen3.8-Flash-Next (Ibis's
 //! model: gated residuals, the indexer on GQA, the hashed n-gram embedding), gemma-4 text, GLM-5.3 and
 //! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, DeepSeek-V4, Nemotron 3
-//! (`nemotron_h`), LFM3 (`lfm3`: described, not run yet), Ling 3 (`bailing_hybrid`: described, not run yet), ERNIE 5.5 (`ernie5_5_moe`: its
-//! config read and held, refused at the parts no kind says yet), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
+//! (`nemotron_h`), LFM3 (`lfm3`: described, not run yet), Ling 3 (`bailing_hybrid`: described, not run yet), ERNIE 5.5 (`ernie5_5_moe`:
+//! described, not run yet), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
 //! through the tables of their naming convention (`names`); a format detail such as Kimi-K3's MXFP4 experts (`.weight_packed` for
 //! `.weight`) is the loader's. The config comes parsed once (`config::ModelConfig`).
 //!
@@ -4161,7 +4161,8 @@ fn dspark_head(k: &Keys, layers: usize, window: Comp, moe: Moe, residual: Residu
         .and_then(|v| v.as_array())
         .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect())
         .ok_or_else(|| Error("dspark_target_layer_ids: a list of layers".into()))?;
-    let dspark = DSpark { block, noise: k.usize("dspark_noise_token_id")? as u32, targets, markov_rank: k.usize("dspark_markov_rank")?, confidence: true };
+    let dspark =
+        DSpark { block, noise: k.usize("dspark_noise_token_id")? as u32, targets, markov_rank: k.usize("dspark_markov_rank")?, confidence: true, after: false };
     let b = |body: Body| Block { norm_in: norm, body, norm_out: None, residual: residual.clone() };
     let blocks = (0..layers).flat_map(|_| [b(Body::Mixer(Mixer::Compressed(window.clone()))), b(Body::Ffn(Ffn::Moe(moe.clone())))]).collect();
     Ok(Some(MtpHead { blocks, norm_embed: norm, norm_hidden: norm, final_norm: norm, dspark: Some(dspark), input: MtpInput::Joined }))
@@ -4608,27 +4609,50 @@ fn v41_shapes(out: &Described, inter: usize) -> std::collections::BTreeMap<Strin
     sh
 }
 
-/// What an ERNIE 5.5 layer computes that no layer kind says yet, each with the checkpoint's tensors it is in (`ernie5_5`'s refusal names them all).
-pub const ERNIE_LACKS: &[&str] =
-    &["the drafter's targets, read after their layers (dspark_target_layer_ids: the mean of the streams each target layer leaves)"];
+/// Each of `want`'s roles' tensors at the shape the checkpoint stores it in, from the role's own shape: one tensor as it is; a matrix stored transposed
+/// turned; tensors stacked by rows (or scalars joined) each an equal part of the rows; an expert's matrices each the shape given.
+fn shape_sources(shapes: &mut BTreeMap<String, Vec<usize>>, r: &[(String, Source)], want: &[(&str, Vec<usize>)]) {
+    for (role, s) in want {
+        match r.iter().find(|(x, _)| x == role) {
+            Some((_, Source::Tensor(n))) => {
+                shapes.insert(n.clone(), s.clone());
+            }
+            Some((_, Source::Transposed(n))) => {
+                shapes.insert(n.clone(), s.iter().rev().copied().collect());
+            }
+            Some((_, Source::Rows(v))) => {
+                let mut part = s.clone();
+                part[0] /= v.len().max(1);
+                shapes.extend(v.iter().map(|n| (n.clone(), part.clone())));
+            }
+            Some((_, Source::Experts(e))) => shapes.extend(e.iter().flatten().map(|n| (n.clone(), s.clone()))),
+            _ => {}
+        }
+    }
+}
 
 /// ERNIE 5.5 (`ernie5_5_moe`, `Ernie5_5_MoeForCausalLM`; text in, text out: no tower): DeepSeek-V4's decoder (residual streams, the compressed
-/// attention with a window, grouped low-rank output) with layers of a second sort and seven parts of its own. `compress_ratios` says each layer's
-/// attention: 128, the compressed attention (`Comp`: one key-value head of `head_dim`, the window of `sliding_window` tokens and every closed window of
-/// 128 as one entry, sinks, no indexer; the YaRN rotary of `compress_rope_theta`); -2, a latent attention over the whole context (`Mla` of the
-/// `hybrid_mla_*` widths, the plain rotary of `rope_theta` in interleaved pairs) whose indexer keeps `index_topk` tokens a query (a key a token,
-/// LayerNorm-ed with a bias; DeepSeek-V3.2's form). The feed-forward is a dense SiTU MLP on the first `first_k_dense_replace` layers and experts after
-/// them: `n_routed_experts` in a latent of `moe_latent_size` (a projection down, the weighed sum normed, a projection up), a shared expert on the
-/// full vector. A DSpark drafter of `dspark_target_layer_ids`' length follows under `model.mtp.`.
+/// attention with a window, grouped low-rank output) with layers of a second sort and parts of its own, each a parameter of a kind. `compress_ratios`
+/// says each layer's attention: 128, the compressed attention (`Comp`: one key-value head of `head_dim`, the window of `sliding_window` tokens and every
+/// closed window of 128 as one entry, sinks, no indexer; the YaRN rotary of `compress_rope_theta`); -2, a latent attention (`Mla` of the `hybrid_mla_*`
+/// widths, the plain rotary of `rope_theta` in interleaved pairs, sinks) that reads its last `sliding_window` tokens and the `index_topk` tokens before
+/// them its indexer keeps (a key a token, LayerNorm-ed with a bias, its own rotary in halves; DeepSeek-V3.2's form). Both gate their output by the
+/// query latent (`GateFrom::Latent`) and mix their heads' outputs at a rank of a quarter of the heads (`head_mix`). The feed-forward is a dense SiTU
+/// MLP on the first `first_k_dense_replace` layers and experts after them: `n_routed_experts` in a latent of `moe_latent_size` (a projection down, the
+/// weighed sum normed, a projection up), two routers whose sigmoid scores add and a learned scale an expert, a shared expert on the full vector. The
+/// residual streams' norm has its epsilon outside the root (`StreamsP::eps_outside`); the head's logits take the four-part correction
+/// (`Head::correction`), a bf16 tensor between operations. A DSpark drafter of `dspark_target_layer_ids`' length is under `model.mtp.`: its layers the
+/// compressed attention's window with the compressing layers' rotary, its targets read after their layers (`DSpark::after`).
 ///
-/// Read from SGLang's implementation (models/ernie55.py, configs/ernie55.py, models/ernie55_dspark.py), the one reader of the family: the release
-/// ships no modeling code. Every key is read and held to what that reader computes; a key it does not read is held to the released value, so that
-/// a release that changes one is stopped here. The builder then refuses: `ERNIE_LACKS` are parts of every layer, and a description without them
-/// would be of another model.
+/// Read from SGLang's implementation (models/ernie55.py, configs/ernie55.py, models/ernie55_dspark.py, layers/attention/ernie55_backend.py), the one
+/// reader of the family: the release ships no modeling code. Every key is read and held to what that reader computes; a key it does not read is held to
+/// the released value, so that a release that changes one is stopped here. Nothing here is held to a run of the release: the CPU reference of each part
+/// is its formula as that reader computes it, in f32 (the reader rounds to bf16 between operations in places the kinds do not say: the gate's sigmoid,
+/// the heads' mix, the routers' weights).
 fn ernie5_5(tc: &Map<String, Value>) -> Result<Described> {
     let mt = "ernie5_5_moe";
     let k = Keys::new(tc, mt);
-    let (d, layers, _vocab, _eps, tied) = common(&k, None)?;
+    let (d, layers, vocab, eps, tied) = common(&k, None)?;
     if tied {
         return err(format!("{mt}: tie_word_embeddings = true is not supported (the release has a head of its own)"));
     }
@@ -4727,7 +4751,8 @@ fn ernie5_5(tc: &Map<String, Value>) -> Result<Described> {
     }
     comp_m.insert("rope_theta".into(), Value::from(k.opt_f64("compress_rope_theta")?.unwrap_or(160_000.0)));
     comp_m.entry("attention_factor").or_insert(Value::from(1.0));
-    rope(&comp_m, rd, k.opt_usize("max_position_embeddings")?, &format!("{mt} rope_scaling"))?;
+    let mut comp_rope = rope(&comp_m, rd, k.opt_usize("max_position_embeddings")?, &format!("{mt} rope_scaling"))?;
+    comp_rope.style = RopeStyle::Interleaved;
     // the latent attention and its indexer
     let (mh, mnope, mrd, mvd) = (
         k.usize("hybrid_mla_num_attention_heads")?,
@@ -4789,16 +4814,238 @@ fn ernie5_5(tc: &Map<String, Value>) -> Result<Described> {
     if !targets.is_empty() && !matches!(draft, (Some(b), Some(r), Some(_)) if b > 0 && r > 0) {
         return err(format!("{mt}: a DSpark drafter without its dspark_block_size, dspark_markov_rank (its Markov head) or dspark_noise_token_id"));
     }
-    k.finish()?;
-    let _ = (d, window, q_lora, o_lora);
-    err(format!(
-        "{mt}: its config is read ({} layers of compressed attention and {latent_layers} of latent attention, {dense} dense feed-forward and {} of {ne} experts, \
-         {hc} residual streams, a drafter of {} layers), and it is not described yet. Parts of every layer have no layer kind: {}",
-        layers - latent_layers,
-        layers - dense,
-        targets.len(),
-        ERNIE_LACKS.join("; ")
-    ))
+    // (the heads' mix has a rank of a quarter of the heads, as the reader makes it; its indexer keeps more tokens than the window it does not pick among)
+    if heads % 4 != 0 || mh % 4 != 0 {
+        return err(format!("{mt}: {heads} and {mh} heads, where the heads' mix has a rank of a quarter of them"));
+    }
+    if latent_layers > 0 && itop <= window {
+        return err(format!(
+            "{mt}: index_topk = {itop} is not above sliding_window ({window}): a latent layer reads its window and the tokens before it its indexer keeps"
+        ));
+    }
+    let cv = &names::ERNIE;
+    let norm = Norm::rms(eps);
+    let gate = Some(OutGate { act: Act::Sigmoid, from: GateFrom::Latent, norm: None });
+    let streams =
+        StreamsP { streams: hc, sinkhorn_iters: hc_iters, eps: hc_eps as f32, norm_eps: eps, rounding: Rounding::Once, lagged: false, eps_outside: true };
+    let residual = Residual::Streams(streams);
+    let comp = Comp {
+        heads,
+        head_dim: hd,
+        q_lora,
+        o_groups,
+        o_lora,
+        window,
+        ratio: 128,
+        overlap: false,
+        rope: comp_rope.clone(),
+        indexer: None,
+        norm_eps: eps,
+        ape: true,
+        q_head_norm: true,
+        share: None,
+        gate,
+        head_mix: heads / 4,
+    };
+    let main_rope = Rope { style: RopeStyle::Interleaved, ..Rope::plain(theta, mrd) };
+    let mla = Mla {
+        heads: mh,
+        q_lora: Some(mq),
+        kv_lora: mkv,
+        nope: mnope,
+        rope_dim: mrd,
+        v_dim: mvd,
+        rope: (mrd > 0).then(|| main_rope.clone()),
+        q_norm: norm,
+        kv_norm: norm,
+        gate,
+        scale: ((mnope + mrd) as f32).powf(-0.5),
+        absorbed: true,
+        indexer: Some(Indexer {
+            heads: ih,
+            head_dim: idim,
+            top_k: itop,
+            block: 1,
+            shared: false,
+            form: IndexForm::LAYER_KEYS,
+            rope: mrd,
+            rope_style: Some(RopeStyle::Half),
+        }),
+        head_mix: mh / 4,
+        sinks: true,
+        window: Some(window),
+    };
+    let situ = Mlp { act: Act::Situ { beta: beta as f32, linear: linear as f32 }, gated: true, bias: false, clamp: None };
+    let moe = Moe {
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias: true,
+            groups: None,
+            top_k,
+            renorm: true,
+            scale: 1.0,
+            hash: false,
+            routers: 2,
+            expert_scale: true,
+        },
+        experts: ne,
+        expert: situ,
+        shared: Some(situ),
+        shared_gate: false,
+        latent: Some(Latent { dim: latent, norm_in: None, expert_norm: None, norm_out: Some(norm) }),
+    };
+    // each block's roles, and every tensor's shape as the checkpoint stores it
+    let mut shapes: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let hc_shapes = [("hc_fn", vec![(2 + hc) * hc, hc * d]), ("hc_base", vec![(2 + hc) * hc]), ("hc_scale", vec![3])];
+    let comp_shapes = |ratio: usize| {
+        let mut v = vec![
+            ("norm_in", vec![d]),
+            ("q_a", vec![q_lora, d]),
+            ("q_a_norm", vec![q_lora]),
+            ("q_b", vec![heads * hd, q_lora]),
+            ("kv", vec![hd, d]),
+            ("kv_norm", vec![hd]),
+            ("o_a", vec![o_groups * o_lora, heads * hd / o_groups]),
+            ("o_b", vec![d, o_groups * o_lora]),
+            ("g", vec![o_groups * o_lora, q_lora]),
+            ("mix_u", vec![heads, heads / 4]),
+            ("mix_v", vec![heads, heads / 4]),
+            ("sinks", vec![heads]),
+        ];
+        if ratio > 0 {
+            v.extend([("comp_kv", vec![hd, d]), ("comp_gate", vec![hd, d]), ("comp_ape", vec![ratio, hd]), ("comp_norm", vec![hd])]);
+        }
+        v
+    };
+    let mla_shapes = [
+        ("norm_in", vec![d]),
+        ("q_a", vec![mq, d]),
+        ("q_a_norm", vec![mq]),
+        ("q_b", vec![mh * (mnope + mrd), mq]),
+        ("kv_a", vec![mkv + mrd, d]),
+        ("kv_a_norm", vec![mkv]),
+        ("kv_b", vec![mh * (mnope + mvd), mkv]),
+        ("o", vec![d, mh * mvd]),
+        ("g", vec![mh * mvd, mq]),
+        ("mix_u", vec![mh, mh / 4]),
+        ("mix_v", vec![mh, mh / 4]),
+        ("sinks", vec![mh]),
+        ("indexer_wq_b", vec![ih * idim, mq]),
+        ("indexer_wk", vec![idim, d]),
+        ("indexer_k_norm", vec![idim]),
+        ("indexer_k_norm_bias", vec![idim]),
+        ("indexer_weights", vec![ih, d]),
+    ];
+    let moe_shapes = [
+        ("norm_in", vec![d]),
+        ("router", vec![2 * ne, d]),
+        ("choice_bias", vec![ne]),
+        ("expert_scale", vec![ne]),
+        ("latent_down", vec![latent, d]),
+        ("latent_up", vec![d, latent]),
+        ("latent_norm_out", vec![latent]),
+        ("shared_gate", vec![moe_inter, d]),
+        ("shared_up", vec![moe_inter, d]),
+        ("shared_down", vec![d, moe_inter]),
+        ("experts_gate_up", vec![moe_inter, latent]),
+        ("experts_down", vec![latent, moe_inter]),
+    ];
+    let mlp_shapes = [("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])];
+    // (a layer's attention block at `at`: the compressed attention of `ratio`, a compressor where it compresses)
+    let comp_roles = |at: &str, ratio: usize, shapes: &mut BTreeMap<String, Vec<usize>>| {
+        let mut r = names::roles(part::ERNIE_COMP_ATTN, at, 0, all);
+        if ratio > 0 {
+            r.extend(names::roles(part::ERNIE_COMP, at, 0, all));
+        }
+        r.extend(names::roles(part::ERNIE_HC_ATTN, at, 0, all));
+        shape_sources(shapes, &r, &[comp_shapes(ratio), hc_shapes.to_vec()].concat());
+        r
+    };
+    let moe_roles = |at: &str, shapes: &mut BTreeMap<String, Vec<usize>>| {
+        let mut r = names::roles(part::ERNIE_MOE, at, ne, all);
+        r.extend(names::roles(part::ERNIE_HC_FFN, at, 0, all));
+        shape_sources(shapes, &r, &[moe_shapes.to_vec(), hc_shapes.to_vec()].concat());
+        r
+    };
+    let block = |body: Body| Block { norm_in: norm, body, norm_out: None, residual: residual.clone() };
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for (l, &ratio) in ratios.iter().enumerate() {
+        let p = cv.layer("model.", l);
+        if ratio == -2 {
+            let mut r = names::roles(part::ERNIE_MLA, &p, 0, all);
+            r.extend(names::roles(part::ERNIE_HC_ATTN, &p, 0, all));
+            shape_sources(&mut shapes, &r, &[mla_shapes.to_vec(), hc_shapes.to_vec()].concat());
+            blocks.push(block(Body::Mixer(Mixer::Mla(mla.clone()))));
+            roles.push(r);
+        } else {
+            blocks.push(block(Body::Mixer(Mixer::Compressed(comp.clone()))));
+            roles.push(comp_roles(&p, 128, &mut shapes));
+        }
+        if l < dense {
+            let mut r = names::roles(part::NORM_POST, &p, 0, all);
+            r.extend(names::roles(part::MLP_BODY, &p, 0, all));
+            r.extend(names::roles(part::ERNIE_HC_FFN, &p, 0, all));
+            shape_sources(&mut shapes, &r, &[mlp_shapes.to_vec(), hc_shapes.to_vec()].concat());
+            blocks.push(block(Body::Ffn(Ffn::Mlp(situ))));
+            roles.push(r);
+        } else {
+            blocks.push(block(Body::Ffn(Ffn::Moe(moe.clone()))));
+            roles.push(moe_roles(&p, &mut shapes));
+        }
+    }
+    // the drafter: a stage a target layer, each the compressed attention's window (with the compressing layers' rotary) and the experts
+    let stage = Comp { ratio: 0, ..comp.clone() };
+    let mut draft = if targets.is_empty() { None } else { dspark_head(&k, targets.len(), stage, moe.clone(), residual.clone(), norm)? };
+    if let Some(ds) = draft.as_mut().and_then(|h| h.dspark.as_mut()) {
+        ds.after = true;
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: hc, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: norm,
+        head: Head {
+            tied,
+            softcap: None,
+            scale: 1.0,
+            collapse: Collapse::Weighted { eps: hc_eps as f32, norm_eps: eps },
+            rounding: Rounding::Twice,
+            correction: true,
+        },
+        mtp: draft.into_iter().collect(),
+        vision: None,
+        rope: None,
+    };
+    let mut out = finish(&k, desc, cv, "model.", roles, 0)?;
+    let head_shapes = [("out_hc_fn", vec![hc, hc * d]), ("out_hc_base", vec![hc]), ("out_hc_scale", vec![1])];
+    shape_sources(&mut shapes, &out.extra, &[head_shapes.to_vec(), vec![("logit_ranges", vec![4]), ("logit_ts", vec![4])]].concat());
+    for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
+        shapes.insert(n.clone(), vec![vocab, d]);
+    }
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(ds) = out.desc.mtp.first().and_then(|h| h.dspark.as_ref()) {
+        let mut stages = Vec::new();
+        for i in 0..ds.targets.len() {
+            let p = format!("model.mtp.{i}");
+            stages.push(comp_roles(&p, 0, &mut shapes));
+            stages.push(moe_roles(&p, &mut shapes));
+        }
+        let own = names::roles(part::ERNIE_DRAFT, "model.mtp", 0, all);
+        let own_shapes = [
+            ("main_proj", vec![d, ds.targets.len() * d]),
+            ("main_norm", vec![d]),
+            ("markov_embed", vec![vocab, ds.markov_rank]),
+            ("markov_head", vec![vocab, ds.markov_rank]),
+            ("confidence", vec![1, d + ds.markov_rank]),
+            ("final_norm", vec![d]),
+        ];
+        shape_sources(&mut shapes, &own, &[own_shapes.to_vec(), head_shapes.to_vec()].concat());
+        out.mtp = vec![(stages, own)];
+    }
+    out.shapes = shapes;
+    Ok(out)
 }
 
 /// Nemotron 3 (`nemotron_h`, `NemotronHForCausalLM`): a layer is one block, `x + mixer(norm(x))`, its mixer named by the pattern:

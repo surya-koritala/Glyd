@@ -2057,15 +2057,25 @@ pub fn ref_dspark(dir: &Path) -> Result<(Vec<f32>, Vec<f32>, crate::runtime::ref
 }
 
 /// The CPU reference of the kinds on the model in `dir` over `tokens` (one sequence from position 0): each position's taps for its DSpark drafter
-/// (`kinds::DSpark::targets`), the mean of the streams each target layer's attention reads (after an n-gram block before it), the targets' side by side.
+/// (`kinds::DSpark::targets`), the mean of the streams each target layer's attention reads (after an n-gram block before it), or of the streams the
+/// layer leaves where the drafter reads its targets after them (`DSpark::after`: the next layer's input, the model's last streams after the last
+/// layer), the targets' side by side.
 pub fn ref_taps(dir: &Path, tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
     let mut m = ref_model(dir)?;
     let ds = m.desc.mtp.first().and_then(|h| h.dspark.clone()).ok_or_else(|| Error("the description has no DSpark drafter".into()))?;
     // (the block of each target layer's attention: a layer's mixer the l-th of the blocks')
     let mixers: Vec<usize> =
         m.desc.blocks.iter().enumerate().filter(|(_, b)| matches!(b.body, crate::runtime::kinds::Body::Mixer(_))).map(|(i, _)| i).collect();
-    let at: Vec<usize> =
-        ds.targets.iter().map(|&t| mixers.get(t).copied().ok_or_else(|| Error(format!("target layer {t} of {}", mixers.len())))).collect::<Result<_>>()?;
+    let blocks = m.desc.blocks.len();
+    let at: Vec<usize> = ds
+        .targets
+        .iter()
+        .map(|&t| match (mixers.get(t), ds.after) {
+            (Some(&a), false) => Ok(a),
+            (Some(_), true) => Ok(mixers.get(t + 1).copied().unwrap_or(blocks)),
+            (None, _) => err(format!("target layer {t} of {}", mixers.len())),
+        })
+        .collect::<Result<_>>()?;
     let (n, d) = (m.desc.embed.streams.max(1), m.desc.hidden);
     let mut out = vec![vec![0f32; at.len() * d]; tokens.len()];
     let mut b = 0usize;

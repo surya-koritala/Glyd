@@ -3359,43 +3359,180 @@ fn ernie_config(keys: serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(c)
 }
 
-/// ERNIE 5.5's released config has a builder that reads every key of it and says what it found: 37 layers of the compressed attention and 6 of the
-/// latent one, a dense feed-forward on the first layer and experts on the rest, four residual streams, a drafter of three layers. It is then
-/// refused: each part of a layer that no layer kind says is named with its tensors, and no key is left unread.
+/// ERNIE 5.5's released config describes: every key of it read, 37 layers of the compressed attention and 6 of the latent one (each with its gate from
+/// the query latent and its heads' mix; the latent ones with sinks, their window beside the indexer's picks and the indexer's own pairing), a dense
+/// feed-forward on the first layer and experts in a latent on the rest (two routers, a scale an expert), four residual streams whose norm has its
+/// epsilon outside the root, the corrected logits, a drafter of three stages whose targets are read after their layers. The counts are the config's:
+/// a model of other layers says its own, and one with no drafter's keys has none. What it still refuses is the executor's to say: each part the
+/// executor has no operation for, by its name, and no loader.
 #[test]
-fn ernie_5_5s_released_config_is_read_and_refused_at_the_parts_no_kind_says() {
-    use super::describe::{keys_named, ERNIE_LACKS};
+fn ernie_5_5s_released_config_is_read_and_described_part_by_part() {
+    use super::describe::keys_named;
+    use super::kinds::{Act, Body, Collapse, Ffn, GateFrom, IndexForm, Mixer, OutGate, Residual, RopeScaling, RopeStyle, Rounding, RouterScore};
     let c = ernie_config(serde_json::json!({}));
     assert_eq!(c.as_object().unwrap().len(), 97, "every key of the release's config.json");
-    let e = describe(&c).expect_err("refused").msg;
-    let read = "ernie5_5_moe: its config is read (37 layers of compressed attention and 6 of latent attention, 1 dense feed-forward and 42 of 512 experts, \
-                4 residual streams, a drafter of 3 layers), and it is not described yet.";
-    assert!(e.starts_with(read), "{e}");
-    assert_eq!(ERNIE_LACKS.len(), 1);
-    for part in ERNIE_LACKS {
-        assert!(e.contains(part), "{part}: {e}");
+    let d = describe(&c).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((d.desc.blocks.len(), d.desc.hidden, d.desc.vocab, d.convention, d.mtp_layers), (86, 4096, 201216, "ERNIE", 0));
+    let gate = Some(OutGate { act: Act::Sigmoid, from: GateFrom::Latent, norm: None });
+    let (mut comp, mut latent, mut dense, mut sparse) = (0, 0, 0, 0);
+    for (i, b) in d.desc.blocks.iter().enumerate() {
+        let l = i / 2;
+        let Residual::Streams(s) = b.residual else { panic!("block {i}") };
+        assert_eq!((s.streams, s.sinkhorn_iters, s.eps, s.norm_eps, s.rounding, s.lagged, s.eps_outside), (4, 20, 1e-6, 1e-6, Rounding::Once, false, true));
+        assert!(b.norm_out.is_none() && b.norm_in == super::kinds::Norm::rms(1e-6), "block {i}");
+        match &b.body {
+            Body::Mixer(Mixer::Compressed(x)) => {
+                assert!(l % 7 != 0 || l == 0, "layer {l}");
+                assert_eq!((x.heads, x.head_dim, x.q_lora, x.o_groups, x.o_lora, x.window, x.ratio, x.overlap), (64, 512, 1024, 8, 1024, 128, 128, false));
+                assert!(x.indexer.is_none() && x.ape && x.q_head_norm && x.share.is_none() && x.gate == gate && x.head_mix == 16, "layer {l}");
+                assert_eq!((x.rope.theta, x.rope.dim, x.rope.style), (160_000.0, 64, RopeStyle::Interleaved), "layer {l}");
+                assert!(
+                    matches!(x.rope.scaling, RopeScaling::Yarn { factor, original_max: 65536, attention_factor: Some(a), .. } if factor == 16.0 && a == 1.0)
+                );
+                comp += 1;
+            }
+            Body::Mixer(Mixer::Mla(x)) => {
+                assert!(l % 7 == 0 && l > 0, "layer {l}");
+                assert_eq!((x.heads, x.q_lora, x.kv_lora, x.nope, x.rope_dim, x.v_dim), (64, Some(1024), 512, 192, 64, 256), "layer {l}");
+                assert_eq!((x.gate, x.scale, x.head_mix, x.sinks, x.window), (gate, 256f32.powf(-0.5), 16, true, Some(128)), "layer {l}");
+                let r = x.rope.as_ref().unwrap();
+                assert_eq!((r.theta, r.dim, r.style, &r.scaling), (8e6, 64, RopeStyle::Interleaved, &RopeScaling::None), "layer {l}");
+                let ix = x.indexer.as_ref().unwrap();
+                assert_eq!((ix.heads, ix.head_dim, ix.top_k, ix.block, ix.shared, ix.rope), (64, 128, 2048, 1, false, 64), "layer {l}");
+                assert_eq!((ix.form, ix.rope_style), (IndexForm::LAYER_KEYS, Some(RopeStyle::Half)), "layer {l}");
+                latent += 1;
+            }
+            Body::Ffn(Ffn::Mlp(m)) => {
+                assert!(l == 0 && m.gated && !m.bias && m.clamp.is_none() && m.act == Act::Situ { beta: 4.0, linear: 25.0 }, "layer {l}");
+                dense += 1;
+            }
+            Body::Ffn(Ffn::Moe(m)) => {
+                let r = &m.router;
+                assert_eq!((m.experts, r.top_k, r.routers, r.expert_scale, r.bias, r.renorm, r.scale), (512, 10, 2, true, true, true, 1.0), "layer {l}");
+                assert!(r.score == RouterScore::Sigmoid && !r.hash && r.groups.is_none() && !m.shared_gate && m.shared == Some(m.expert), "layer {l}");
+                assert_eq!(m.expert.act, Act::Situ { beta: 4.0, linear: 25.0 }, "layer {l}");
+                let lt = m.latent.as_ref().unwrap();
+                assert!(lt.dim == 2048 && lt.norm_in.is_none() && lt.expert_norm.is_none() && lt.norm_out == Some(super::kinds::Norm::rms(1e-6)), "layer {l}");
+                sparse += 1;
+            }
+            _ => panic!("block {i}"),
+        }
     }
-    for tensor in ["dspark_target_layer_ids"] {
-        assert!(e.contains(tensor), "{tensor}: {e}");
-    }
-    assert!(keys_named(&e).is_empty() && !e.contains("has no description builder yet"), "{e}");
-    // (the counts are the config's: a model of other layers says its own)
-    let small = ernie_config(serde_json::json!({
-        "num_hidden_layers": 3, "compress_ratios": [128, -2, -2], "first_k_dense_replace": 2, "dspark_target_layer_ids": [2], "n_routed_experts": 16,
-    }));
-    let e = describe(&small).expect_err("refused").msg;
-    assert!(
-        e.contains(
-            "(1 layers of compressed attention and 2 of latent attention, 2 dense feed-forward and 1 of 16 experts, 4 residual streams, a drafter of 1 layers)"
-        ),
-        "{e}"
+    assert_eq!((comp, latent, dense, sparse), (37, 6, 1, 42));
+    let h = d.desc.head;
+    assert!(!h.tied && h.correction && h.rounding == Rounding::Twice && h.softcap.is_none() && h.scale == 1.0);
+    assert_eq!(h.collapse, Collapse::Weighted { eps: 1e-6, norm_eps: 1e-6 });
+    assert_eq!(d.desc.embed.streams, 4);
+    // (the drafter: three stages of the window alone with the compressing layers' rotary and the experts, its targets read after their layers)
+    assert_eq!((d.desc.mtp.len(), d.mtp.len()), (1, 1));
+    let head = &d.desc.mtp[0];
+    let ds = head.dspark.as_ref().unwrap();
+    assert_eq!(
+        (ds.block, ds.noise, ds.targets.clone(), ds.markov_rank, ds.confidence, ds.after, head.blocks.len()),
+        (7, 1024, vec![40, 41, 42], 256, true, true, 6)
     );
+    for (i, b) in head.blocks.iter().enumerate() {
+        match &b.body {
+            Body::Mixer(Mixer::Compressed(x)) => {
+                assert!(i % 2 == 0 && x.ratio == 0 && x.window == 128 && x.gate == gate && x.head_mix == 16 && x.rope.theta == 160_000.0, "draft block {i}")
+            }
+            Body::Ffn(Ffn::Moe(m)) => assert!(i % 2 == 1 && m.router.routers == 2 && m.router.expert_scale && m.experts == 512, "draft block {i}"),
+            b => panic!("draft block {i}: {b:?}"),
+        }
+    }
+    assert_eq!((d.embed.as_str(), d.final_norm.as_str(), d.head.as_deref()), ("model.embed_tokens.weight", "model.norm.weight", Some("lm_head.weight")));
+    assert!(d.scales.is_empty() && d.fp8_block.is_none() && d.unread.is_empty());
+    // (the counts are the config's: a model of other layers says its own)
+    let small = describe(&ernie_config(serde_json::json!({
+        "num_hidden_layers": 3, "compress_ratios": [128, -2, -2], "first_k_dense_replace": 2, "dspark_target_layer_ids": [2], "n_routed_experts": 16,
+    })))
+    .unwrap_or_else(|e| panic!("{}", e.msg));
+    let sorts: Vec<&str> = small
+        .desc
+        .blocks
+        .iter()
+        .map(|b| match &b.body {
+            Body::Mixer(Mixer::Compressed(_)) => "compressed",
+            Body::Mixer(Mixer::Mla(_)) => "latent",
+            Body::Ffn(Ffn::Mlp(_)) => "dense",
+            Body::Ffn(Ffn::Moe(m)) if m.experts == 16 => "experts",
+            b => panic!("{b:?}"),
+        })
+        .collect();
+    assert_eq!(sorts, ["compressed", "dense", "latent", "dense", "latent", "experts"]);
+    assert_eq!(small.desc.mtp[0].blocks.len(), 2, "a drafter of one stage");
     // (no drafter: the keys of one are not asked for)
     let mut bare = ernie_config(serde_json::json!({}));
     for key in ["dspark_block_size", "dspark_markov_rank", "dspark_noise_token_id", "dspark_target_layer_ids"] {
         bare.as_object_mut().unwrap().remove(key);
     }
-    assert!(describe(&bare).expect_err("refused").msg.contains("a drafter of 0 layers"));
+    let bare = describe(&bare).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert!(bare.desc.mtp.is_empty() && bare.mtp.is_empty() && !bare.names().iter().any(|n| n.starts_with("model.mtp.")));
+    // (what the builder itself still refuses: a form the reader does not compute, in words)
+    for (keys, want) in [
+        (serde_json::json!({"index_topk": 128}), "index_topk = 128 is not above sliding_window (128)"),
+        (serde_json::json!({"num_attention_heads": 62, "o_groups": 2}), "62 and 64 heads, where the heads' mix has a rank of a quarter of them"),
+    ] {
+        let e = describe(&ernie_config(keys.clone())).expect_err("refused").msg;
+        assert!(e.starts_with("ernie5_5_moe: ") && e.contains(want) && keys_named(&e).is_empty(), "{keys}: {e}");
+    }
+    // (described, not run: the executor names the first part it has no operation for, and has no loader)
+    let e = crate::dynamic::split::loader(&d).err().map(|e| e.msg).unwrap_or_default();
+    assert_eq!(e, crate::dynamic::split::STORED_FORM_NOT_RUN);
+    assert!(e.ends_with("which the executor does not run yet"));
+    let Err(e) = crate::dynamic::split::lowered_described(&d, 43, 4096) else { panic!("lowered") };
+    assert_eq!(e.msg, crate::dynamic::split::STORED_FORM_NOT_RUN);
+}
+
+/// ERNIE-5.5-Flash-Preview's released header: the description reads every one of its 70,826 tensors, the drafter's too, each at the shape the
+/// checkpoint stores it in and in the type it is released in; the matrices stored transposed, the scalars stored apart and the two routers are named
+/// by their source's form.
+#[test]
+fn ernie_5_5_flash_preview_describes_its_whole_checkpoint() {
+    use super::describe::Source;
+    let h = fixture("headers/ERNIE-5.5-Flash-Preview-BF16.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    assert_eq!(cfg, ernie_config(serde_json::json!({})), "the release's config is the one the tests of the builder read");
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let (have, tensors) = (header_names(&h), header_tensors(&h));
+    assert_eq!((have.len(), d.names().len()), (70_826, 70_826));
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    let fp32 = |n: &str| {
+        let ends = ["e_score_correction_bias", "attn_sink", "compressor.ape"];
+        n.contains("hyper_connection.") || n.contains("mhc_contract.") || n.contains("block_sparse_moe.gate.") || ends.iter().any(|e| n.ends_with(e))
+    };
+    for n in d.names() {
+        let (dtype, shape, _) = &tensors[&n];
+        assert_eq!(d.shapes.get(&n), Some(shape), "{n}");
+        assert_eq!(dtype, if fp32(&n) { "F32" } else { "BF16" }, "{n}");
+    }
+    let role = |b: usize, r: &str| d.blocks[b].iter().find(|(x, _)| x == r).unwrap_or_else(|| panic!("block {b}: no {r}")).1.clone();
+    assert_eq!(role(0, "hc_fn"), Source::Transposed("model.layers.0.self_attention_hyper_connection.mapping_proj.weight".into()));
+    assert_eq!(d.shapes["model.layers.0.self_attention_hyper_connection.mapping_proj.weight"], [16384, 24]);
+    let alphas = ["alpha_pre", "alpha_post", "alpha_res"].map(|a| format!("model.layers.3.mlp_hyper_connection.{a}")).to_vec();
+    assert_eq!(role(7, "hc_scale"), Source::Rows(alphas));
+    let routers = ["weight", "weight_1"].map(|w| format!("model.layers.3.block_sparse_moe.gate.{w}")).to_vec();
+    assert_eq!(role(7, "router"), Source::Rows(routers));
+    assert_eq!(role(7, "expert_scale"), Source::Tensor("model.layers.3.block_sparse_moe.gate.routed_scaling_factor_param".into()));
+    assert_eq!(role(14, "sinks"), Source::Tensor("model.layers.7.self_attn.core_attention.softmax_offset".into()));
+    assert_eq!(role(12, "sinks"), Source::Tensor("model.layers.6.self_attn.core_attention.attn_sink".into()));
+    assert_eq!(role(12, "o_a"), Source::Tensor("model.layers.6.self_attn.linear_o_group_proj".into()));
+    assert_eq!(
+        (d.shapes["model.layers.6.self_attn.gate_proj.weight"].clone(), d.shapes["model.layers.7.self_attn.gate_proj.weight"].clone()),
+        (vec![8192, 1024], vec![16384, 1024])
+    );
+    let extra = |r: &str| d.extra.iter().find(|(x, _)| x == r).unwrap().1.clone();
+    assert_eq!(extra("out_hc_fn"), Source::Transposed("model.mhc_contract.hc_head_fn".into()));
+    assert_eq!(extra("logit_ranges"), Source::Tensor("model.lm_head.multimax_ranges".into()));
+    let (stages, own) = &d.mtp[0];
+    assert_eq!(stages.len(), 6);
+    let own_of = |r: &str| own.iter().find(|(x, _)| x == r).unwrap().1.clone();
+    assert_eq!(own_of("markov_embed"), Source::Transposed("model.mtp.markov_head.markov_w1.weight".into()));
+    assert_eq!(d.shapes["model.mtp.markov_head.markov_w1.weight"], [256, 201216]);
+    assert_eq!(own_of("main_proj"), Source::Tensor("model.mtp.feature_projection.weight".into()));
+    assert_eq!(d.shapes["model.mtp.feature_projection.weight"], [4096, 12288]);
+    assert!(stages[4].iter().any(|(r, s)| r == "kv" && *s == Source::Tensor("model.mtp.2.self_attn.linear_kv_proj.weight".into())));
+    assert!(!stages[4].iter().any(|(r, _)| r.starts_with("comp_")), "a stage's attention is the window's: no compressor");
 }
 
 /// The ERNIE builder holds each key to what its reader computes: a setting of another form is refused by its key before the parts are, a key nobody
@@ -3447,4 +3584,194 @@ fn ernie_5_5_holds_every_key_to_the_form_its_reader_computes() {
     // (a key no builder knows is named, with every other one, before the parts are)
     let e = refusal(serde_json::json!({"attn_merger_rank": 16, "vha_rank": 16}));
     assert_eq!(keys_named(&e), ["attn_merger_rank", "vha_rank"], "{e}");
+}
+
+/// A small config of the ERNIE layout with `keys` over it: three layers of hidden 32 on two residual streams, the first and the last of the compressed
+/// attention (4 heads of 8, a window of 4, compressing by 128) and the second a latent attention (4 heads, an indexer keeping 6 tokens before the
+/// window); a dense feed-forward on the first layer and 8 experts in a latent of 12 on the others; a drafter of two stages.
+fn ernie_tiny(keys: serde_json::Value) -> serde_json::Value {
+    let mut c = ernie_config(serde_json::json!({
+        "hidden_size": 32, "num_hidden_layers": 3, "vocab_size": 61, "compress_ratios": [128, -2, 128], "sliding_window": 4,
+        "num_attention_heads": 4, "head_dim": 8, "qk_nope_head_dim": 4, "qk_rope_head_dim": 4, "qk_pos_emb_head_dim": 4, "v_head_dim": 8, "kv_lora_rank": 8,
+        "q_lora_rank": 12, "o_lora_rank": 6, "o_groups": 2,
+        "hybrid_mla_num_attention_heads": 4, "hybrid_mla_num_key_value_heads": 4, "hybrid_mla_q_lora_rank": 10, "hybrid_mla_kv_lora_rank": 12,
+        "hybrid_mla_qk_nope_head_dim": 4, "hybrid_mla_qk_rope_head_dim": 4, "hybrid_mla_v_head_dim": 6,
+        "index_n_heads": 2, "index_head_dim": 8, "index_topk": 6,
+        "hc_mult": 2, "first_k_dense_replace": 1, "intermediate_size": 48, "moe_intermediate_size": 16, "moe_latent_size": 12,
+        "n_routed_experts": 8, "num_experts_per_tok": 2,
+        "dspark_block_size": 3, "dspark_markov_rank": 4, "dspark_noise_token_id": 60, "dspark_target_layer_ids": [1, 2],
+    }));
+    c.as_object_mut().unwrap().extend(keys.as_object().unwrap().clone());
+    c
+}
+
+/// The ERNIE layout on the CPU reference: a random model of the small config, every tensor of the shape its description gives and in the form the
+/// checkpoint stores it (the mixing matrices transposed, the three scales apart, the two routers apart). Over a prompt of 135 tokens, past the first
+/// closed window of 128 and past the latent layer's window and picks: a prompt at once, a token at a time and a prompt then its next tokens are the same
+/// bits, and a later token changes no earlier row; the compressed layers each hold their one entry and the latent layer's last query reads its six picks
+/// and its window of four. Each part is read, to the bit where a value of it is the layer without it: gates of zero are the output products halved; a
+/// mix whose V is zero, sinks far below the scores, a correction whose factors are zero and scales of one are the description without the part; and the
+/// window, the second router and the place of the norm's epsilon each change the answer. The drafter loads and drafts its block, its base logits bf16.
+#[test]
+fn ernie_on_the_reference_runs_both_sorts_of_layer_and_reads_each_part() {
+    use super::describe::Described;
+    use super::kinds::{Body, Ffn, Mixer, Residual};
+    use super::reference::{bf16, mtp::RefDSpark, SeqState};
+    // (a fixed draw a tensor: its name's bytes seed it; a norm's weights near 1)
+    fn draw(n: &str, len: usize) -> Vec<f32> {
+        let mut s = n.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |a, b| (a ^ b as u64).wrapping_mul(0x0100_0000_01B3));
+        let norm = n.contains("norm");
+        (0..len)
+            .map(|_| {
+                s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                let u = ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5;
+                if norm {
+                    1.0 + 0.2 * u
+                } else {
+                    0.6 * u
+                }
+            })
+            .collect()
+    }
+    // (`set`: for the tensors whose names end so, a factor on the draw and a value added: (0, c) is every value c)
+    type Set<'a> = &'a [(&'a str, f32, f32)];
+    fn tensor(d: &Described, set: Set, n: &str) -> Option<(Vec<usize>, Vec<f32>)> {
+        let shape = d.shapes.get(n)?.clone();
+        let (a, b) = set.iter().find(|(end, _, _)| n.ends_with(end)).map_or((1.0, 0.0), |x| (x.1, x.2));
+        Some((shape.clone(), draw(n, shape.iter().product()).into_iter().map(|v| a * v + b).collect()))
+    }
+    let cfg = ernie_tiny(serde_json::json!({}));
+    let described = |edit: &dyn Fn(&mut Described)| {
+        let mut d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        edit(&mut d);
+        d
+    };
+    let load = |edit: &dyn Fn(&mut Described), set: Set| -> RefModel {
+        let d = described(edit);
+        RefModel::load(&d, &|n: &str| tensor(&d, set, n)).unwrap_or_else(|e| panic!("{}", e.msg))
+    };
+    let same = |_: &mut Described| {};
+    let toks: Vec<u32> = (0..135u32).map(|t| (t * 7 + 3) % 59).collect();
+    let run = |edit: &dyn Fn(&mut Described), set: Set| load(edit, set).forward(&toks, 0).unwrap_or_else(|e| panic!("{}", e.msg));
+    let mut m = load(&same, &[]);
+    let rows = m.forward(&toks, 0).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert!(rows.len() == 135 && rows.iter().flatten().all(|x| x.is_finite() && *x == bf16(*x)), "bf16 logits");
+    // (both sorts ran past their first choices: an entry of the first 128 tokens in each compressed layer, six picks and the window in the latent one)
+    for b in [0, 4] {
+        let Some(SeqState::Comp(c)) = m.layers[b].seqs.get(&0) else { panic!("block {b}") };
+        assert_eq!((c.comp.entries.len(), c.win.len()), (1, 135), "block {b}");
+    }
+    let Some(SeqState::Mla(c)) = m.layers[2].seqs.get(&0) else { panic!("block 2") };
+    assert_eq!((c.picks.len(), &c.picks[6..]), (10, &[131usize, 132, 133, 134][..]));
+    assert!(c.picks[..6].iter().all(|&e| e < 131) && c.ikey.len() == 135);
+    // (the stored forms: a mixing matrix is the checkpoint's turned, the scales the three scalars in their order, the routers one above the other)
+    let d = described(&same);
+    let stored = draw("model.layers.0.self_attention_hyper_connection.mapping_proj.weight", 64 * 8);
+    let fn0 = m.layers[0].p.vec("hc_fn").unwrap();
+    assert!((0..8).all(|i| (0..64).all(|j| fn0[i * 64 + j] == stored[j * 8 + i])));
+    let alphas: Vec<f32> = ["alpha_pre", "alpha_post", "alpha_res"].iter().map(|a| draw(&format!("model.layers.1.mlp_hyper_connection.{a}"), 1)[0]).collect();
+    assert_eq!(m.layers[3].p.vec("hc_scale").unwrap(), &alphas[..]);
+    let router = m.layers[3].p.vec("router").unwrap();
+    assert_eq!((router.len(), &router[8 * 32..]), (2 * 8 * 32, &draw("model.layers.1.block_sparse_moe.gate.weight_1", 8 * 32)[..]));
+    // (a later token changes no earlier row, and the last row reads the first token)
+    let mut other = toks.clone();
+    other[134] = 58;
+    assert_eq!(load(&same, &[]).forward(&other, 0).unwrap()[..134], rows[..134]);
+    other = toks.clone();
+    other[0] = 44;
+    assert_ne!(load(&same, &[]).forward(&other, 0).unwrap()[134], rows[134], "the last row reads the first token");
+    // (a token at a time, and a prompt then its next tokens: the same bits)
+    let mut m = load(&same, &[]);
+    let by_step: Vec<Vec<f32>> = toks.iter().enumerate().flat_map(|(t, &tok)| m.forward(&[tok], t as u32).unwrap_or_else(|e| panic!("{}", e.msg))).collect();
+    assert_eq!(by_step, rows, "a token at a time is the prompt");
+    let mut m = load(&same, &[]);
+    let mut parts = m.forward(&toks[..100], 0).unwrap();
+    parts.extend(m.forward(&toks[100..], 100).unwrap());
+    assert_eq!(parts, rows, "a prompt, then its next tokens");
+    // the gates: of zero they are a half, the output products halved
+    let ungated = |d: &mut Described| {
+        for b in d.desc.blocks.iter_mut() {
+            match &mut b.body {
+                Body::Mixer(Mixer::Mla(x)) => x.gate = None,
+                Body::Mixer(Mixer::Compressed(x)) => x.gate = None,
+                _ => {}
+            }
+        }
+    };
+    let halved = run(&same, &[("self_attn.gate_proj.weight", 0.0, 0.0)]);
+    assert_eq!(halved, run(&ungated, &[("self_attn.o_proj.weight", 0.5, 0.0)]), "gates of a half are the output products halved");
+    assert_ne!(halved[134], rows[134], "the gates as drawn are not a half");
+    // the heads' mix
+    let unmixed = |d: &mut Described| {
+        for b in d.desc.blocks.iter_mut() {
+            match &mut b.body {
+                Body::Mixer(Mixer::Mla(x)) => x.head_mix = 0,
+                Body::Mixer(Mixer::Compressed(x)) => x.head_mix = 0,
+                _ => {}
+            }
+        }
+    };
+    let plain = run(&unmixed, &[]);
+    assert_eq!(run(&same, &[("self_attn.vha_postmix_V", 0.0, 0.0)]), plain, "a mix whose V is zero is no mix");
+    assert_ne!(plain[134], rows[134]);
+    // the latent attention's sinks, and its window
+    let latent = |f: &'static dyn Fn(&mut super::kinds::Mla)| {
+        move |d: &mut Described| {
+            for b in d.desc.blocks.iter_mut() {
+                if let Body::Mixer(Mixer::Mla(x)) = &mut b.body {
+                    f(x);
+                }
+            }
+        }
+    };
+    let sinkless = run(&latent(&|x| x.sinks = false), &[]);
+    assert_eq!(run(&same, &[("core_attention.softmax_offset", 0.0, -1e30)]), sinkless, "sinks far below the scores are no sinks");
+    assert_ne!(sinkless[134], rows[134]);
+    assert_ne!(run(&latent(&|x| x.window = None), &[])[134], rows[134], "the window is read beside the picks");
+    // the logits' correction
+    let uncorrected = run(&|d: &mut Described| d.desc.head.correction = false, &[]);
+    assert_eq!(run(&same, &[("lm_head.multimax_ts", 0.0, 0.0)]), uncorrected, "a correction whose factors are zero is none");
+    assert_ne!(uncorrected[134], rows[134]);
+    // the routers: scales of one are no scale; the second router is read
+    let experts = |f: &'static dyn Fn(&mut super::kinds::Router)| {
+        move |d: &mut Described| {
+            for b in d.desc.blocks.iter_mut() {
+                if let Body::Ffn(Ffn::Moe(x)) = &mut b.body {
+                    f(&mut x.router);
+                }
+            }
+        }
+    };
+    let unscaled = run(&experts(&|r| r.expert_scale = false), &[]);
+    assert_eq!(run(&same, &[("gate.routed_scaling_factor_param", 0.0, 1.0)]), unscaled, "scales of one are no scale");
+    assert_ne!(unscaled[134], rows[134]);
+    assert_ne!(run(&same, &[("block_sparse_moe.gate.weight_1", 0.0, 0.0)])[134], rows[134], "the second router is read");
+    // the streams' norm: its epsilon inside the root is another model
+    let inside = |d: &mut Described| {
+        for b in d.desc.blocks.iter_mut() {
+            if let Residual::Streams(s) = &mut b.residual {
+                s.eps_outside = false;
+            }
+        }
+    };
+    // (at an epsilon that is something beside the streams: at the release's 1e-6 the two forms part below the bf16 of the logits)
+    let coarse = ernie_tiny(serde_json::json!({"rms_norm_eps": 0.05}));
+    let at_coarse = |edit: &dyn Fn(&mut Described)| {
+        let mut d = describe(&coarse).unwrap_or_else(|e| panic!("{}", e.msg));
+        edit(&mut d);
+        RefModel::load(&d, &|n: &str| tensor(&d, &[], n)).unwrap().forward(&toks[..12], 0).unwrap_or_else(|e| panic!("{}", e.msg))
+    };
+    assert_ne!(at_coarse(&inside)[11], at_coarse(&same)[11]);
+    // the drafter: its two stages and its own roles load (the Markov embedding turned), and a block of three is drafted from a context of six positions
+    let src = |n: &str| tensor(&d, &[], n);
+    let mut drafter = RefDSpark::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((drafter.blocks.len(), drafter.p.t["markov_embed"].shape.clone()), (4, vec![61, 4]));
+    let w1 = draw("model.mtp.markov_head.markov_w1.weight", 4 * 61);
+    assert!((0..61).all(|v| (0..4).all(|r| drafter.p.vec("markov_embed").unwrap()[v * 4 + r] == w1[r * 61 + v])));
+    let ctx: Vec<Vec<f32>> = (0..6).map(|t| draw(&format!("context {t}"), 2 * 32)).collect();
+    let (embed, head) = (src("model.embed_tokens.weight").unwrap().1, src("lm_head.weight").unwrap().1);
+    let out = drafter.draft(&ctx, 5, &embed, &head).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((out.tokens.len(), out.base.len(), out.confidence.len()), (3, 3, 3));
+    assert!(out.base.iter().flatten().all(|x| x.is_finite() && *x == bf16(*x)), "the drafter's base logits take the model's head's arithmetic");
+    assert!(out.logits.iter().flatten().all(|x| x.is_finite()) && out.confidence.iter().all(|c| (0.0..=1.0).contains(c)));
 }

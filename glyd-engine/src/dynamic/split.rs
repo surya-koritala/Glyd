@@ -1066,6 +1066,9 @@ pub fn not_run(d: &crate::runtime::describe::Described) -> Option<&'static str> 
     }) {
         return Some(Indexer::ROPE_STYLE_NOT_RUN);
     }
+    if d.desc.mtp.iter().any(|h| h.dspark.as_ref().is_some_and(|x| x.after)) {
+        return Some(crate::runtime::kinds::DSpark::AFTER_NOT_RUN);
+    }
     None
 }
 
@@ -1405,6 +1408,10 @@ mod tests {
             assert_eq!(super::loader(&d).map(|_| ()).unwrap_err().msg, part);
             assert!(of(&kind).contains(part), "{part}: {}", of(&kind));
         }
+        // (a drafter whose targets are read after their layers)
+        let mut d = base.clone();
+        d.desc.mtp[0].dspark.as_mut().expect("a DSpark drafter").after = true;
+        refused(&d, crate::runtime::kinds::DSpark::AFTER_NOT_RUN);
         // (and by each lowering itself, whatever chose it: the dense one's, of a plain decoder with the correction)
         let plain = serde_json::json!({"architectures": ["X"], "model_type": "llama", "hidden_size": 256, "intermediate_size": 512, "num_hidden_layers": 2,
             "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 64, "vocab_size": 1024, "rms_norm_eps": 1e-5, "rope_theta": 10000.0,
