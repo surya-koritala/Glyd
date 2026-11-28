@@ -184,13 +184,15 @@ pub fn act(a: Act, x: f32) -> f32 {
             r * r
         }
         Act::Situ { beta, .. } => beta * (x / beta).ltanh() * sigmoid(x),
+        Act::SwigluOai { alpha } => x * sigmoid(alpha * x),
     }
 }
 
-/// A gated pair: act(g) u, with situ's cap on the up (u -> linear tanh(u / linear)).
+/// A gated pair: act(g) u, with situ's cap on the up (u -> linear tanh(u / linear)) and the gpt-oss SwiGLU's shift of it (u -> u + 1).
 pub fn gated(a: Act, g: f32, u: f32) -> f32 {
     match a {
         Act::Situ { linear, .. } => act(a, g) * linear * (u / linear).ltanh(),
+        Act::SwigluOai { .. } => act(a, g) * (u + 1.0),
         _ => act(a, g) * u,
     }
 }

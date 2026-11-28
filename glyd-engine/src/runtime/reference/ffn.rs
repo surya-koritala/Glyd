@@ -335,5 +335,25 @@ mod tests {
         assert!((activate(&Mlp { clamp: None, ..k }, Some(0.5), 2.0) - want).abs() < 1e-6);
         let r2 = Mlp { act: Act::Relu2, gated: false, ..m };
         assert_eq!((activate(&r2, None, -1.0), activate(&r2, None, 3.0)), (0.0, 9.0));
+        // (the gpt-oss SwiGLU, MiniMax M3's at alpha 1.702 and a limit of 7: min(g, 7) sigmoid(1.702 min(g, 7)) (clamp(u, -7, 7) + 1); the gate is held above
+        // only, the shifted up reaches -6 and 8, and an up of -1 gives nothing)
+        let oai = Mlp { act: Act::SwigluOai { alpha: 1.702 }, clamp: Some(Clamp::Gate(7.0)), ..m };
+        let half = |g: f32| g / (1.0 + (-1.702 * g).lexp());
+        for (g, u, want) in [
+            (0.5f32, 2.0f32, half(0.5) * 3.0),
+            (9.0, 2.0, half(7.0) * 3.0),
+            (-9.0, 2.0, half(-9.0) * 3.0),
+            (0.5, 20.0, half(0.5) * 8.0),
+            (0.5, -20.0, half(0.5) * -6.0),
+        ] {
+            let got = activate(&oai, Some(g), u);
+            assert!((got - want).abs() <= 1e-6 * want.abs().max(1.0), "gate {g}, up {u}: {got}, by hand {want}");
+        }
+        assert_eq!(activate(&oai, Some(3.0), -1.0), 0.0);
+        // (at alpha 1 its gate is SiLU's, and the shift is what is left: silu(g) (u + 1))
+        let one = Mlp { act: Act::SwigluOai { alpha: 1.0 }, clamp: None, ..m };
+        assert_eq!(activate(&one, Some(0.75), 2.0), super::super::silu(0.75) * 3.0);
+        assert_eq!((oai.not_run(), m.not_run()), (Some(Act::SWIGLU_OAI_NOT_RUN), None));
+        assert_eq!(oai.act.name(), "swigluoai");
     }
 }

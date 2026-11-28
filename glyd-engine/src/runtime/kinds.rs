@@ -196,9 +196,20 @@ pub enum Act {
         beta: f32,
         linear: f32,
     },
+    /// The SwiGLU of gpt-oss, the gate's sigmoid sharpened and the up shifted: a gated pair's act(g, u) = g sigmoid(alpha g) (u + 1); as a single
+    /// activation, its gate factor g sigmoid(alpha g) (alpha 1: SiLU). With an MLP's `Clamp::Gate(l)` the gate is min(g, l) and the up clamp(u, -l, l)
+    /// before both, so the shifted up is within 1 - l and 1 + l (MiniMax M3's `hidden_act` "swigluoai" with `swiglu_alpha` and `swiglu_limit`). In `Ref`.
+    SwigluOai {
+        alpha: f32,
+    },
 }
 
 impl Act {
+    /// The refusal of the gpt-oss SwiGLU: the CPU reference computes it (`reference::gated`), the executor's activations have no sharpened sigmoid and no
+    /// shifted up.
+    pub const SWIGLU_OAI_NOT_RUN: &'static str =
+        "the SwiGLU whose gate is g sigmoid(alpha g) and whose up is shifted by 1 (swigluoai), which the executor does not run yet";
+
     /// The name transformers' configs give the activation (`hidden_act`, `output_gate_type`).
     pub fn name(&self) -> &'static str {
         match self {
@@ -208,6 +219,7 @@ impl Act {
             Act::Gelu => "gelu",
             Act::Relu2 => "relu2",
             Act::Situ { .. } => "situ",
+            Act::SwigluOai { .. } => "swigluoai",
         }
     }
 }
@@ -653,6 +665,13 @@ pub struct Mlp {
     pub bias: bool,
     /// SwiGLU limits: the gate held to the limit above and the up both ways (`Clamp`: where the gate is held).
     pub clamp: Option<Clamp>,
+}
+
+impl Mlp {
+    /// What of an MLP the executor has no operation for yet (the CPU reference computes it), in words; None where it has none of them.
+    pub fn not_run(&self) -> Option<&'static str> {
+        matches!(self.act, Act::SwigluOai { .. }).then_some(Act::SWIGLU_OAI_NOT_RUN)
+    }
 }
 
 /// A gated MLP's SwiGLU limit l: the up is clamp(up, -l, l) in both forms; the gate is held to l before its activation or after it, which are two
