@@ -102,6 +102,15 @@ pub const ERNIE: Convention = Convention {
     ..HF
 };
 
+/// Hunyuan's: Hugging Face's layout under `model.`, with the hyper-head's roles (`model.hc_head`). Its drafter (`model.dfly_layers.`) and its vision
+/// tower with the adapter into the text model's width (`vit.`) are parts the description leaves: the text model runs without either.
+pub const HUNYUAN: Convention = Convention {
+    name: "Hunyuan",
+    extra: &[("out_hc_fn", "hc_head.hc_head_fn"), ("out_hc_base", "hc_head.hc_head_base"), ("out_hc_scale", "hc_head.hc_head_scale")],
+    unread: &["vit.", "model.dfly_layers."],
+    ..HF
+};
+
 /// Mistral's own names, as its consolidated checkpoints hold them (Mistral Large's release, whose config's `transformers_weights` points transformers at
 /// that checkpoint): no prefix, the embedding `tok_embeddings`, the head `output`; the vision encoder, its norm, patch merger and adapter into the text
 /// model's width, and the draft model (`mtp_dspark.`), which the text model does not run.
@@ -758,6 +767,82 @@ pub mod part {
         ("out_hc_scale", "mhc_contract.hc_head_scale"),
     ];
 
+    // ---- Hunyuan: DeepSeek-V3's names for the latent attention, with its gate, sinks and the norm after it; the compressed indexer under
+    // `self_attn.compressed_indexer`; the streams' weights under `hc_attn_layer.hc_pre` and `hc_mlp_layer.hc_pre`; the experts stacked a layer; the
+    // n-gram memory under `engram_layer`
+    /// The latent attention: its products, the output gate of the block's input, the sinks, and the norm of its output (`norm_out`, where the layer has it).
+    pub const HY_MLA: Roles = &[
+        ("norm_in", "input_layernorm.weight"),
+        ("q_a", "self_attn.q_a_proj.weight"),
+        ("q_a_norm", "self_attn.q_a_layernorm.weight"),
+        ("q_b", "self_attn.q_b_proj.weight"),
+        ("kv_a", "self_attn.kv_a_proj_with_mqa.weight"),
+        ("kv_a_norm", "self_attn.kv_a_layernorm.weight"),
+        ("kv_b", "self_attn.kv_b_proj.weight"),
+        ("g", "self_attn.linear_gate.weight"),
+        ("o", "self_attn.o_proj.weight"),
+        ("sinks", "self_attn.learnable_sink_param"),
+        ("norm_out", "self_attn.post_proj_norm.weight"),
+    ];
+    /// The compressed indexer (`IndexForm::Grouped`): a token's key and its norm, a group's value and gate products of the key, its position term and
+    /// its norm, the queries' product of the query latent, the heads' weights.
+    pub const HY_INDEXER: Roles = &[
+        ("indexer_wk", "self_attn.compressed_indexer.token_key_projection.weight"),
+        ("indexer_k_norm", "self_attn.compressed_indexer.token_key_norm.weight"),
+        ("indexer_pool_value", "self_attn.compressed_indexer.key_value_projection.weight"),
+        ("indexer_pool_gate", "self_attn.compressed_indexer.key_gate_projection.weight"),
+        ("indexer_pool_ape", "self_attn.compressed_indexer.intra_group_ape"),
+        ("indexer_pool_norm", "self_attn.compressed_indexer.key_norm.weight"),
+        ("indexer_wq_b", "self_attn.compressed_indexer.query_projection.weight"),
+        ("indexer_weights", "self_attn.compressed_indexer.head_weight_projection.weight"),
+    ];
+    /// The streams that do not mix, around a block (`StreamsP::apart`).
+    pub const HY_HC_ATTN: Roles =
+        &[("hc_fn", "hc_attn_layer.hc_pre.hc_fn"), ("hc_base", "hc_attn_layer.hc_pre.hc_base"), ("hc_scale", "hc_attn_layer.hc_pre.hc_scale")];
+    pub const HY_HC_FFN: Roles =
+        &[("hc_fn", "hc_mlp_layer.hc_pre.hc_fn"), ("hc_base", "hc_mlp_layer.hc_pre.hc_base"), ("hc_scale", "hc_mlp_layer.hc_pre.hc_scale")];
+    /// The dense MLP with the norm of its output.
+    pub const HY_MLP: Roles = &[
+        ("norm_in", "post_attention_layernorm.weight"),
+        ("gate", "mlp.gate_proj.weight"),
+        ("up", "mlp.up_proj.weight"),
+        ("down", "mlp.down_proj.weight"),
+        ("norm_out", "mlp.post_fc2_norm.weight"),
+    ];
+    /// The experts in a latent: the router and its choice bias, the latent's two projections, the shared expert on the full vector, a layer's routed
+    /// experts stacked in two tensors (`experts_gate_up` [experts, 2 inter, latent], the gate's rows first; `experts_down` [experts, latent, inter]),
+    /// and the norm of the sum.
+    pub const HY_MOE: Roles = &[
+        ("norm_in", "post_attention_layernorm.weight"),
+        ("router", "mlp.gate.weight"),
+        ("choice_bias", "mlp.gate.e_score_correction_bias"),
+        ("latent_down", "mlp.routed_expert_down_proj.weight"),
+        ("latent_up", "mlp.routed_expert_up_proj.weight"),
+        ("shared_gate", "mlp.shared_experts.gate_proj.weight"),
+        ("shared_up", "mlp.shared_experts.up_proj.weight"),
+        ("shared_down", "mlp.shared_experts.down_proj.weight"),
+        ("experts_gate_up", "mlp.experts.gate_up_proj"),
+        ("experts_down", "mlp.experts.down_proj"),
+        ("norm_out", "mlp.combine_output_norm.weight"),
+    ];
+    /// The n-gram memory (`NgramForm::EngramNormed`): its tables as one tensor, the compressed vocabulary, the value's weight. The roles that are a
+    /// tensor a table or a stream are the patterns below, `{S}` the table's or the stream's number (`hy_memory`).
+    pub const HY_MEMORY: Roles = &[
+        ("ngram", "engram_layer.multi_head_embedding.embedding.weight"),
+        ("ngram_map", "engram_layer.lookup_table"),
+        ("value_gamma", "engram_layer.unified_pre_gamma"),
+    ];
+    /// (role, a tensor a table) and (role, a tensor a stream, the tensor after the streams'): the rows' norms; the streams' norm, the keys' norm and the
+    /// streams' scales; the keys' products then the value's, and their biases.
+    pub const HY_MEMORY_TABLES: Roles = &[("ngram_norm", "engram_layer.lookup_per_head_norms.{S}.weight")];
+    pub const HY_MEMORY_STREAMS: &[(&str, &str, &str)] = &[
+        ("norm_in", "engram_layer.norm_query.{S}.weight", ""),
+        ("norm_key", "engram_layer.norm_key.{S}.weight", ""),
+        ("stream_scale", "engram_layer.unified_per_hc_scales.{S}", ""),
+        ("kv", "engram_layer.key_projs.{S}.weight", "engram_layer.value_proj.weight"),
+        ("kv_bias", "engram_layer.key_projs.{S}.bias", "engram_layer.value_proj.bias"),
+    ];
+
     // ---- Nemotron-H: a layer is one block, `norm` then the mixer
     pub const NH_MAMBA: Roles = &[
         ("norm_in", "norm.weight"),
@@ -810,6 +895,21 @@ pub fn roles(table: Roles, at: &str, experts: usize, keep: impl Fn(&str) -> bool
 /// One tensor saved in `n` shards along its rows (`{S}` in `pat` the shard's number), under the path `at`: the shards stacked.
 pub fn shards(pat: &str, at: &str, n: usize) -> Source {
     Source::Rows((0..n).map(|s| format!("{at}.{}", pat.replace("{S}", &s.to_string()))).collect())
+}
+
+/// Hunyuan's n-gram memory's roles under the layer's path `at`, for `tables` tables and `streams` streams (`part::HY_MEMORY` and its two patterns): a
+/// role that is a tensor a table or a stream is those joined in order, the value's after the streams' where the role has one.
+pub fn hy_memory(at: &str, tables: usize, streams: usize) -> Vec<(String, Source)> {
+    let mut r = roles(part::HY_MEMORY, at, 0, all);
+    r.extend(part::HY_MEMORY_TABLES.iter().map(|&(role, pat)| (role.to_string(), shards(pat, at, tables))));
+    for &(role, pat, last) in part::HY_MEMORY_STREAMS {
+        let Source::Rows(mut v) = shards(pat, at, streams) else { unreachable!("shards are rows") };
+        if !last.is_empty() {
+            v.push(format!("{at}.{last}"));
+        }
+        r.push((role.to_string(), Source::Rows(v)));
+    }
+    r
 }
 
 /// Every role of `table`.

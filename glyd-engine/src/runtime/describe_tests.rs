@@ -4260,55 +4260,240 @@ fn hy4_config(text: serde_json::Value, top: serde_json::Value) -> serde_json::Va
     c
 }
 
-/// Hy4 Flash's released config has a builder that reads every key of it, the text model's and the top level's, and says what it found: 12 layers of
-/// latent attention with the compressed indexer and 30 in a window, a dense feed-forward on the first layer and experts on the rest, four residual
-/// streams, the n-gram memory on four layers, a drafter of five. It is then refused: each part that no layer kind says is named with its tensors, and
-/// no key is left unread.
+/// Hy4 Flash's released config describes: every key of it read, the text model's and the top level's; 12 layers of latent attention with the
+/// compressed indexer and 30 in a window, each sort with its own heads and rotary, sinks and the gate of the block's input; a dense feed-forward on the
+/// first layer and experts in a latent on the rest; four residual streams that do not mix; the n-gram memory a block before the attention of four
+/// layers, numbered from 1; the hyper-head and fp32 logits. The drafter and the vision tower are left, by name: no draft head is described. The counts
+/// are the config's: a model of other layers says its own. What it still refuses is the executor's to say: each part the executor has no operation
+/// for, by its name, and no loader. (Until every part had a kind the builder refused here and named the parts that had none: the latent attention's
+/// sinks and window, the compressed indexer, the streams, the memory's form.)
 #[test]
-fn hy4_flashs_released_config_is_read_and_refused_at_the_parts_no_kind_says() {
-    use super::describe::{keys_named, HY4_LACKS};
+fn hy4_flashs_released_config_is_read_and_described_part_by_part() {
+    use super::describe::keys_named;
+    use super::kinds::{Act, Body, Clamp, Collapse, Ffn, GateFrom, IndexForm, Mixer, NgramForm, Norm, OutGate, Residual, RopeScaling, RopeStyle, Rounding};
+    use super::kinds::{RouterScore, TableAt};
     let none = || serde_json::json!({});
     let c = hy4_config(none(), none());
     let keys = |v: &serde_json::Value| v.as_object().unwrap().len();
     assert_eq!((keys(&c), keys(&c["text_config"]), keys(&c["vision_config"])), (25, 110, 41), "every key of the release's config.json");
-    let e = describe(&c).expect_err("refused").msg;
-    let read =
-        "hy_v4_flash: its config is read (12 layers of latent attention with a compressed indexer and 30 in a window of 512 tokens, 1 dense feed-forward \
-                and 41 of 512 experts, 4 residual streams, an n-gram memory on 4 layers, a drafter of 5 layers), and it is not described yet.";
-    assert!(e.starts_with(read), "{e}");
-    assert_eq!(HY4_LACKS.len(), 1);
-    for part in HY4_LACKS {
-        assert!(e.contains(part), "{part}: {e}");
+    let d = describe(&c).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((d.desc.blocks.len(), d.desc.hidden, d.desc.vocab, d.convention, d.mtp_layers), (88, 3072, 120832, "Hunyuan", 0));
+    let norm = Norm::rms(1e-5);
+    let gate = Some(OutGate { act: Act::Sigmoid, from: GateFrom::Own, norm: None });
+    let (mut l, mut sparse, mut sliding, mut dense, mut experts, mut memory) = (0usize, 0, 0, 0, 0, Vec::new());
+    for (i, b) in d.desc.blocks.iter().enumerate() {
+        match &b.body {
+            Body::Ngram(n) => {
+                assert!(b.residual == Residual::Add && b.norm_out.is_none() && b.norm_in == Norm::rms(0.0078125), "block {i}");
+                assert_eq!((n.order, n.heads, n.dim, n.base, n.vocab, n.eos, n.streams, n.conv), (3, 8, 1536, 10_312_000, 120832, 120002, 4, 0), "block {i}");
+                assert_eq!(
+                    (n.seed, n.index, n.form, n.table, n.norm),
+                    (10007 * (l as u64 + 1), memory.len(), NgramForm::EngramNormed, TableAt::Host, b.norm_in)
+                );
+                assert!(matches!(d.desc.blocks[i + 1].body, Body::Mixer(_)), "block {i}: before its layer's attention");
+                memory.push(l + 1);
+                continue;
+            }
+            Body::Mixer(Mixer::Mla(x)) => {
+                let is_sparse = l == 0 || l % 4 == 1;
+                assert_eq!((x.q_lora, x.kv_lora, x.nope, x.rope_dim, x.v_dim, x.scale), (Some(1024), 512, 192, 64, 256, 1.0 / 16.0), "layer {l}");
+                assert!(x.sinks && x.gate == gate && x.head_mix == 0 && x.absorbed && !x.pos_scale && x.kv_from.is_none() && !x.rope_learned, "layer {l}");
+                assert!(x.q_norm == norm && x.kv_norm == norm && b.norm_in == norm && b.norm_out == Some(norm), "layer {l}");
+                let r = x.rope.as_ref().unwrap();
+                assert_eq!((r.dim, r.style, &r.scaling, r.mrope), (64, RopeStyle::Interleaved, &RopeScaling::None, Some([12, 10, 10])), "layer {l}");
+                if is_sparse {
+                    let ix = x.indexer.as_ref().unwrap();
+                    assert_eq!((x.heads, x.window, r.theta), (32, None, 1e7), "layer {l}");
+                    assert_eq!(
+                        (ix.heads, ix.head_dim, ix.top_k, ix.block, ix.shared, ix.rope, ix.rope_style),
+                        (16, 128, 2048, 4, false, 64, None),
+                        "layer {l}"
+                    );
+                    assert!(ix.form == IndexForm::Grouped { key: norm, pool: norm } && ix.q_in.is_none() && !ix.pos_scale, "layer {l}");
+                    sparse += 1;
+                } else {
+                    assert_eq!((x.heads, x.window, r.theta), (64, Some(512), 1e4), "layer {l}");
+                    assert!(x.indexer.is_none(), "layer {l}");
+                    sliding += 1;
+                }
+            }
+            Body::Ffn(Ffn::Mlp(m)) => {
+                assert!(l == 0 && m.gated && !m.bias && m.clamp.is_none() && m.act == Act::Silu && b.norm_out == Some(norm), "layer {l}");
+                dense += 1;
+                l += 1;
+            }
+            Body::Ffn(Ffn::Moe(m)) => {
+                let r = &m.router;
+                assert_eq!((m.experts, r.top_k, r.routers, r.expert_scale, r.bias, r.renorm, r.scale), (512, 16, 1, false, true, true, 3.998), "layer {l}");
+                assert!(r.score == RouterScore::Sigmoid && !r.hash && r.groups.is_none() && !m.shared_gate && b.norm_out == Some(norm), "layer {l}");
+                assert!(matches!(m.expert.clamp, Some(Clamp::Gate(limit)) if limit == 10.0) && m.shared.is_some_and(|s| s.clamp.is_none()), "layer {l}");
+                let lt = m.latent.as_ref().unwrap();
+                assert!(lt.dim == 1536 && lt.norm_in.is_none() && lt.expert_norm.is_none() && lt.norm_out.is_none(), "layer {l}");
+                experts += 1;
+                l += 1;
+            }
+            b => panic!("block {i}: {b:?}"),
+        }
+        let Residual::Streams(s) = b.residual else { panic!("block {i}") };
+        assert_eq!(
+            (s.streams, s.sinkhorn_iters, s.eps, s.norm_eps, s.rounding, s.lagged, s.eps_outside, s.apart),
+            (4, 0, 1e-6, 1e-5, Rounding::Once, false, false, Some(2.0))
+        );
     }
-    // (the latent attention's sinks, a sliding layer's window, the streams that do not mix, the n-gram memory's form and the compressed indexer are said
-    // by the kinds: no part of the refusal)
-    for said in ["learnable_sink_param", "q_b_proj", "hc_pre", "lookup_table", "token_key_projection", "intra_group_ape"] {
-        assert!(!e.contains(said), "{said}: {e}");
-    }
-    for tensor in ["mtp_fusion.gate", "hidden_correction", "confidence_head"] {
-        assert!(e.contains(tensor), "{tensor}: {e}");
-    }
-    assert!(keys_named(&e).is_empty() && !e.contains("has no description builder yet"), "{e}");
+    assert_eq!((l, sparse, sliding, dense, experts, memory), (42, 12, 30, 1, 41, vec![2, 12, 22, 32]));
+    let h = d.desc.head;
+    assert!(!h.tied && !h.correction && h.rounding == Rounding::F32 && h.softcap.is_none() && h.scale == 1.0);
+    assert_eq!((h.collapse, d.desc.embed.streams, d.desc.final_norm), (Collapse::Weighted { eps: 1e-6, norm_eps: 1e-5 }, 4, norm));
+    assert_eq!((d.embed.as_str(), d.final_norm.as_str(), d.head.as_deref()), ("model.embed_tokens.weight", "model.norm.weight", Some("lm_head.weight")));
+    // (the drafter and the tower: left by name, nothing of either described or read)
+    assert!(d.desc.mtp.is_empty() && d.mtp.is_empty() && d.desc.vision.is_none() && d.scales.is_empty() && d.fp8_block.is_none());
+    assert_eq!(d.unread, ["vit.", "model.dfly_layers."]);
+    assert!(!d.names().iter().any(|n| n.starts_with("vit.") || n.contains("dfly")));
     // (the counts are the config's: a model of other layers says its own; a layer's names as the readers fold them; one layer for every draft layer's picks)
+    let primes = |from: usize, n: usize| -> Vec<u64> {
+        let prime = |n: &u64| (2..).take_while(|i| i * i <= *n).all(|i| n % i != 0);
+        (10_312_000u64..).filter(prime).skip(from).take(n).collect()
+    };
     let small = hy4_config(
         serde_json::json!({
             "num_hidden_layers": 3, "layer_types": ["sparse", "sliding_attention", "indexed_attention"], "swa_pattern": [0, 1, 0], "indexer_types": null,
             "mlp_layer_types": ["dense", "dense", "sparse"], "first_k_dense_replace": 2, "n_routed_experts": 32, "sliding_window": 64, "window_size": [63, 0],
-            "engram_layer_ids": [3], "engram_layer_head_vocab_sizes": {"3": vec![vec![10_312_007; 8]; 2]},
+            "engram_layer_ids": [3], "engram_layer_head_vocab_sizes": {"3": [primes(0, 8), primes(8, 8)]},
         }),
         serde_json::json!({"dfly_num_hidden_layers": 1, "dfly_target_index_layer": 2, "dfly_target_kv_layers": [2]}),
     );
-    let e = describe(&small).expect_err("refused").msg;
-    let read = "(2 layers of latent attention with a compressed indexer and 1 in a window of 64 tokens, 2 dense feed-forward and 1 of 32 experts, \
-                4 residual streams, an n-gram memory on 1 layers, a drafter of 1 layers)";
-    assert!(e.contains(read), "{e}");
+    let small = describe(&small).unwrap_or_else(|e| panic!("{}", e.msg));
+    let sorts: Vec<String> = small
+        .desc
+        .blocks
+        .iter()
+        .map(|b| match &b.body {
+            Body::Ngram(n) => format!("memory {}", n.seed / 10007),
+            Body::Mixer(Mixer::Mla(x)) if x.indexer.is_some() => "indexed".into(),
+            Body::Mixer(Mixer::Mla(x)) => format!("window {}", x.window.unwrap()),
+            Body::Ffn(Ffn::Mlp(_)) => "dense".into(),
+            Body::Ffn(Ffn::Moe(m)) => format!("experts {}", m.experts),
+            b => panic!("{b:?}"),
+        })
+        .collect();
+    assert_eq!(sorts, ["indexed", "dense", "window 64", "dense", "memory 3", "indexed", "experts 32"]);
     // (the text model alone, its keys at the top level, with no memory: no drafter's keys are asked for, nor the tables')
     let mut flat = c["text_config"].clone();
     for key in ["engram_layer_ids", "engram_layer_head_vocab_sizes", "engram_vocab_size"] {
         flat[key] = serde_json::Value::Null;
     }
-    let e = describe(&flat).expect_err("refused").msg;
-    assert!(e.contains("an n-gram memory on 0 layers, a drafter of 0 layers), and it is not described yet"), "{e}");
+    let flat = describe(&flat).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert!(flat.desc.blocks.len() == 84 && !flat.desc.blocks.iter().any(|b| matches!(b.body, Body::Ngram(_))));
+    // (the forms the config can turn: no norm of a block's output; none of the attention's on the layers with the indexer; no limit, no latent)
+    let bare = describe(&hy4_config(serde_json::json!({"sandwich_norm": false, "swiglu_limit": 0.0, "enable_lm_head_fp32": false}), none())).unwrap();
+    assert!(bare.desc.blocks.iter().all(|b| b.norm_out.is_none()) && bare.desc.head.rounding == Rounding::Once);
+    assert!(!bare.names().iter().any(|n| n.contains("post_proj_norm") || n.contains("combine_output_norm") || n.contains("post_fc2_norm")));
+    assert!(bare.desc.blocks.iter().all(|b| !matches!(&b.body, Body::Ffn(Ffn::Moe(m)) if m.expert.clamp.is_some())));
+    let skip = describe(&hy4_config(serde_json::json!({"dsa_skip_attn_post_norm": true}), none())).unwrap();
+    let normed = |b: &super::kinds::Block| matches!(&b.body, Body::Mixer(Mixer::Mla(x)) if x.indexer.is_none() == b.norm_out.is_some());
+    assert!(skip.desc.blocks.iter().filter(|b| matches!(b.body, Body::Mixer(_))).all(normed));
+    // (what the builder itself still refuses: a form the readers do not compute or the kinds do not say, in words)
+    for (text, want) in [
+        (serde_json::json!({"engram_fp8_embedding": true}), "engram_fp8_embedding = true is not supported (only false"),
+        (
+            serde_json::json!({"engram_layer_ids": [2], "engram_layer_head_vocab_sizes": {"2": [primes(1, 8), primes(9, 8)]}}),
+            "layer 2's tables are not the primes 1 to 16 past 10312000 in order (10312007 to ",
+        ),
+    ] {
+        let e = describe(&hy4_config(text.clone(), none())).expect_err("refused").msg;
+        assert!(e.starts_with("hy_v4_flash: ") && e.contains(want) && keys_named(&e).is_empty(), "{text}: {e}");
+    }
+    // (described, not run: the executor names the first part it has no operation for, and has no loader)
+    let e = crate::dynamic::split::loader(&d).err().map(|e| e.msg).unwrap_or_default();
+    assert_eq!(e, super::kinds::StreamsP::APART_NOT_RUN);
+    let Err(e) = crate::dynamic::split::lowered_described(&d, 42, 4096) else { panic!("lowered") };
+    assert_eq!(e.msg, super::kinds::StreamsP::APART_NOT_RUN);
+    // (and each of the family's other parts, where the ones before it are taken out of the description)
+    let mut rest = d.clone();
+    let mut named = Vec::new();
+    while let Some(part) = crate::dynamic::split::not_run(&rest) {
+        assert!(part.ends_with("which the executor does not run yet"), "{part}");
+        named.push(part);
+        for b in rest.desc.blocks.iter_mut() {
+            match (&mut b.residual, &mut b.body, part) {
+                (Residual::Streams(s), _, super::kinds::StreamsP::APART_NOT_RUN) => s.apart = None,
+                (_, Body::Mixer(Mixer::Mla(x)), super::kinds::Mla::SINKS_NOT_RUN) => x.sinks = false,
+                (_, Body::Mixer(Mixer::Mla(x)), super::kinds::Mla::WINDOW_NOT_RUN) => x.window = None,
+                (_, Body::Mixer(Mixer::Mla(x)), super::kinds::Indexer::GROUPED_NOT_RUN) => x.indexer = None,
+                (_, Body::Ngram(n), super::kinds::Ngram::NORMED_NOT_RUN) => n.form = NgramForm::Engram,
+                _ => {}
+            }
+        }
+        assert!(named.len() <= 5, "{named:?}");
+    }
+    use super::kinds::{Indexer, Mla, Ngram, StreamsP};
+    assert_eq!(named, [StreamsP::APART_NOT_RUN, Mla::SINKS_NOT_RUN, Mla::WINDOW_NOT_RUN, Indexer::GROUPED_NOT_RUN, Ngram::NORMED_NOT_RUN]);
+}
+
+/// Hy4-flash's released header: the description reads every tensor of the text model, each at the shape the checkpoint stores it in (the compressed
+/// vocabulary's length is the checkpoint's own, and no key of the config's) and in the type it is released in; what it does not read is the drafter's
+/// and the vision tower's, each by its prefix, and nothing else. The streams' weights, the sinks, the routers' choice bias and the indexer's four
+/// pooling tensors are fp32, the compressed vocabulary int32, the rest bf16.
+#[test]
+fn hy4_flash_describes_its_text_models_whole_checkpoint() {
+    use super::describe::Source;
+    let h = fixture("headers/Hy4-flash.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    assert_eq!(cfg, hy4_config(serde_json::json!({}), serde_json::json!({})), "the release's config is the one the tests of the builder read");
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let (have, tensors) = (header_names(&h), header_tensors(&h));
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    let left: Vec<&String> = have.iter().filter(|n| !d.names().contains(*n)).collect();
+    let (tower, drafter) = (left.iter().filter(|n| n.starts_with("vit.")).count(), left.iter().filter(|n| n.starts_with("model.dfly_layers.")).count());
+    assert_eq!((have.len(), d.names().len(), tower, drafter, left.len()), (1964, 1436, 441, 87, 528));
+    let fp32 = |n: &str| {
+        let ends = ["learnable_sink_param", "e_score_correction_bias", "intra_group_ape", "key_gate_projection.weight", "key_value_projection.weight"];
+        n.contains(".hc_pre.") || n.contains("hc_head.") || n.ends_with("compressed_indexer.key_norm.weight") || ends.iter().any(|e| n.ends_with(e))
+    };
+    for n in d.names() {
+        let (dtype, shape, _) = &tensors[&n];
+        if n.ends_with("engram_layer.lookup_table") {
+            assert_eq!((dtype.as_str(), shape, d.shapes.get(&n)), ("I32", &vec![120818], None), "{n}");
+            continue;
+        }
+        assert_eq!(d.shapes.get(&n), Some(shape), "{n}");
+        assert_eq!(dtype, if fp32(&n) { "F32" } else { "BF16" }, "{n}");
+    }
+    // (blocks: layer 0's attention and MLP; layer 1's memory, attention with the indexer and experts; layer 2's attention in a window)
+    let role = |b: usize, r: &str| d.blocks[b].iter().find(|(x, _)| x == r).unwrap_or_else(|| panic!("block {b}: no {r}")).1.clone();
+    let at = |l: usize, n: &str| format!("model.layers.{l}.{n}");
+    assert_eq!(role(0, "sinks"), Source::Tensor(at(0, "self_attn.learnable_sink_param")));
+    assert_eq!(role(0, "g"), Source::Tensor(at(0, "self_attn.linear_gate.weight")));
+    assert_eq!(role(0, "indexer_pool_ape"), Source::Tensor(at(0, "self_attn.compressed_indexer.intra_group_ape")));
+    assert_eq!(role(0, "hc_fn"), Source::Tensor(at(0, "hc_attn_layer.hc_pre.hc_fn")));
+    assert_eq!((d.shapes[&at(0, "hc_attn_layer.hc_pre.hc_fn")].clone(), d.shapes[&at(0, "hc_mlp_layer.hc_pre.hc_scale")].clone()), (vec![8, 12288], vec![2]));
+    assert_eq!(role(1, "norm_out"), Source::Tensor(at(0, "mlp.post_fc2_norm.weight")));
+    assert_eq!(role(2, "ngram"), Source::Tensor(at(1, "engram_layer.multi_head_embedding.embedding.weight")));
+    assert_eq!(d.shapes[&at(1, "engram_layer.multi_head_embedding.embedding.weight")], [164_994_380, 96]);
+    assert_eq!(d.shapes[&at(31, "engram_layer.multi_head_embedding.embedding.weight")], [165_008_942, 96]);
+    assert_eq!(role(2, "ngram_map"), Source::Tensor(at(1, "engram_layer.lookup_table")));
+    let rows = |pat: &str, n: usize| Source::Rows((0..n).map(|s| at(1, &pat.replace("{S}", &s.to_string()))).collect());
+    assert_eq!(role(2, "ngram_norm"), rows("engram_layer.lookup_per_head_norms.{S}.weight", 16));
+    assert_eq!(role(2, "norm_in"), rows("engram_layer.norm_query.{S}.weight", 4));
+    assert_eq!(role(2, "stream_scale"), rows("engram_layer.unified_per_hc_scales.{S}", 4));
+    let Source::Rows(mut kv) = rows("engram_layer.key_projs.{S}.weight", 4) else { unreachable!() };
+    kv.push(at(1, "engram_layer.value_proj.weight"));
+    assert_eq!(role(2, "kv"), Source::Rows(kv));
+    assert!(
+        d.blocks[3].iter().any(|(r, _)| r == "indexer_wk") && !d.blocks[5].iter().any(|(r, _)| r.starts_with("indexer_")),
+        "a sliding layer has no indexer"
+    );
+    assert_eq!(
+        (d.shapes[&at(2, "self_attn.q_b_proj.weight")].clone(), d.shapes[&at(1, "self_attn.q_b_proj.weight")].clone()),
+        (vec![16384, 1024], vec![8192, 1024])
+    );
+    assert_eq!(role(4, "experts_gate_up"), Source::Tensor(at(1, "mlp.experts.gate_up_proj")));
+    assert_eq!(
+        (d.shapes[&at(1, "mlp.experts.gate_up_proj")].clone(), d.shapes[&at(1, "mlp.experts.down_proj")].clone()),
+        (vec![512, 3072, 1536], vec![512, 1536, 1536])
+    );
+    let extra = |r: &str| d.extra.iter().find(|(x, _)| x == r).unwrap().1.clone();
+    assert_eq!(extra("out_hc_fn"), Source::Tensor("model.hc_head.hc_head_fn".into()));
 }
 
 /// The Hy4 builder holds each key to what the family's readers compute: a setting of another form is refused by its key before the parts are, a key
@@ -4370,6 +4555,11 @@ fn hy4_flash_holds_every_key_to_the_form_its_readers_compute() {
         (serde_json::json!({"engram_vocab_size": [10312000, 10400000]}), "layer 2's table of 10312177 rows is not past engram_vocab_size (10400000)"),
         (serde_json::json!({"engram_n_head_per_ngram": 7}), "an n-gram memory of orders up to 3, 7 heads an order over 768 values"),
         (serde_json::json!({"engram_pad_id": 120832}), "engram_pad_id 120832 of 120832"),
+        (
+            serde_json::json!({"qk_rope_head_dim": 256, "swa_qk_rope_head_dim": 256, "head_dim": 256, "qk_head_dim": 448, "swa_qk_head_dim": 448,
+                "rope_parameters": {"rope_theta": 10000}}),
+            "qk_rope_head_dim = 256 is past the indexer's keys of 128",
+        ),
     ] {
         let e = refusal(text.clone(), serde_json::json!({}));
         assert!(e.starts_with("hy_v4_flash") && e.contains(want), "{text}: {e}");
@@ -4398,4 +4588,179 @@ fn hy4_flash_holds_every_key_to_the_form_its_readers_compute() {
     // (a key no builder knows is named, the top level's and the text model's, with every other one, before the parts are)
     let e = refusal(serde_json::json!({"attn_merger_rank": 16}), serde_json::json!({"dfly_new_setting": 1, "quantization_config": {}}));
     assert_eq!(keys_named(&e), ["dfly_new_setting", "quantization_config", "attn_merger_rank"], "{e}");
+}
+
+/// A small config of the Hy4 Flash layout with `keys` over the text model's: four layers of hidden 32 on two residual streams, the first and the third
+/// of latent attention with the compressed indexer (4 heads; groups of 4 tokens, two closed groups and the query's own kept: 12 tokens), the second and
+/// the fourth in a window of 6 tokens (2 heads); a dense feed-forward on the first layer and 8 experts in a latent of 12 on the others; the n-gram
+/// memory on the layer the config numbers 2 (four tables of 53, 59, 61 and 67 rows of 4); a drafter of one layer, which the description leaves.
+fn hy4_tiny(keys: serde_json::Value) -> serde_json::Value {
+    let mut text = serde_json::json!({
+        "hidden_size": 32, "num_hidden_layers": 4, "vocab_size": 64, "max_position_embeddings": 4096,
+        "layer_types": ["deepseek_sparse_attention", "sliding_attention", "deepseek_sparse_attention", "sliding_attention"], "swa_pattern": [0, 1, 0, 1],
+        "indexer_types": ["full", "full", "full", "full"], "mlp_layer_types": ["dense", "sparse", "sparse", "sparse"], "first_k_dense_replace": 1,
+        "num_attention_heads": 4, "num_key_value_heads": 4, "qk_nope_head_dim": 4, "qk_rope_head_dim": 4, "qk_head_dim": 8, "head_dim": 4, "v_head_dim": 6,
+        "q_lora_rank": 12, "kv_lora_rank": 10, "swa_num_attention_heads": 2, "swa_qk_nope_head_dim": 4, "swa_qk_rope_head_dim": 4, "swa_qk_head_dim": 8,
+        "swa_v_head_dim": 6, "sliding_window": 6, "window_size": [5, 0],
+    });
+    let rest = serde_json::json!({
+        "rope_parameters": {"deepseek_sparse_attention": {"rope_theta": 10000000, "rope_type": "default"},
+            "sliding_attention": {"rope_theta": 10000, "rope_type": "default"}},
+        "index_topk": 12, "compressed_indexer_candidate_topk": 12, "compressed_indexer_group_topk": 3, "compressed_indexer_compress_ratio": 4,
+        "compressed_indexer_num_attention_heads": 2, "hc_mult": 2, "intermediate_size": 48, "moe_intermediate_size": 16, "routed_expert_hidden_size": 12,
+        "n_routed_experts": 8, "num_experts_per_tok": 2,
+        "engram_layer_ids": [2], "engram_layer_head_vocab_sizes": {"2": [[53, 59], [61, 67]]}, "engram_vocab_size": [50, 50], "engram_n_embed_per_ngram": 8,
+        "engram_n_head_per_ngram": 2, "engram_pad_id": 60,
+    });
+    for part in [rest, keys] {
+        text.as_object_mut().unwrap().extend(part.as_object().unwrap().clone());
+    }
+    let top = serde_json::json!({
+        "dfly_num_hidden_layers": 1, "dfly_target_index_layer": [2], "dfly_target_kv_layers": [2], "dfly_mask_token_id": 9, "dfly_target_index_topk": 12,
+    });
+    hy4_config(text, top)
+}
+
+/// The Hy4 Flash layout on the CPU reference: a random model of the small config, every tensor of the shape its description gives and in the form the
+/// checkpoint stores it (the memory's keys and value apart, a norm a table and a stream apart), its compressed vocabulary a tensor shorter than the
+/// vocabulary. Over a prompt of 45 tokens, the pad token and a token past the map among them, past the window and past the groups the indexer keeps: a
+/// prompt at once, a token at a time and a prompt then its next tokens are the same bits (a group's key is made when its last token arrives, the
+/// memory keeps its last tokens), and a later token changes no earlier row. The layers with the indexer hold a key a closed group, and their last
+/// query keeps two whole groups and its own token. Each part is read, to the bit where a value of it is the model without it: sinks far below the
+/// scores are no sinks; a memory whose value weighs nothing is the model with no memory block; and the window, the indexer, the streams' magnitude, the
+/// experts and their limit each change the answer. No drafter is loaded: the description has none.
+#[test]
+fn hy4_on_the_reference_runs_both_sorts_of_layer_the_streams_the_memory_and_the_experts() {
+    use super::describe::{Described, Source};
+    use super::kinds::{Body, Ffn, Mixer, Residual};
+    use super::reference::SeqState;
+    // (a fixed draw a tensor: its name's bytes seed it; a norm's weights near 1)
+    fn draw(n: &str, len: usize) -> Vec<f32> {
+        let mut s = n.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |a, b| (a ^ b as u64).wrapping_mul(0x0100_0000_01B3));
+        let norm = n.contains("norm");
+        (0..len)
+            .map(|_| {
+                s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                let u = ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5;
+                if norm {
+                    1.0 + 0.2 * u
+                } else {
+                    0.6 * u
+                }
+            })
+            .collect()
+    }
+    // (`set`: for the tensors whose names end so, a factor on the draw and a value added: (0, c) is every value c. The compressed vocabulary is the
+    // checkpoint's own: 48 ids below 40 for a vocabulary of 64, the tokens past it their own ids)
+    type Set<'a> = &'a [(&'a str, f32, f32)];
+    fn tensor(d: &Described, set: Set, n: &str) -> Option<(Vec<usize>, Vec<f32>)> {
+        if n.ends_with("engram_layer.lookup_table") {
+            return Some((vec![48], (0..48).map(|t| ((t * 5 + 1) % 40) as f32).collect()));
+        }
+        let shape = d.shapes.get(n)?.clone();
+        let (a, b) = set.iter().find(|(end, _, _)| n.ends_with(end)).map_or((1.0, 0.0), |x| (x.1, x.2));
+        Some((shape.clone(), draw(n, shape.iter().product()).into_iter().map(|v| a * v + b).collect()))
+    }
+    let cfg = hy4_tiny(serde_json::json!({}));
+    let described = |edit: &dyn Fn(&mut Described)| {
+        let mut d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        edit(&mut d);
+        d
+    };
+    let load = |edit: &dyn Fn(&mut Described), set: Set| -> RefModel {
+        let d = described(edit);
+        RefModel::load(&d, &|n: &str| tensor(&d, set, n)).unwrap_or_else(|e| panic!("{}", e.msg))
+    };
+    let same = |_: &mut Described| {};
+    let mut toks: Vec<u32> = (0..45u32).map(|t| (t * 7 + 3) % 59).collect();
+    (toks[20], toks[21]) = (60, 62);
+    let run = |edit: &dyn Fn(&mut Described), set: Set| load(edit, set).forward(&toks, 0).unwrap_or_else(|e| panic!("{}", e.msg));
+    // (blocks: layer 0's attention and MLP; layer 1's memory, attention and experts; layers 2 and 3's attention and experts)
+    let d = described(&same);
+    let sorts: Vec<&str> = d
+        .desc
+        .blocks
+        .iter()
+        .map(|b| match &b.body {
+            Body::Ngram(_) => "memory",
+            Body::Mixer(Mixer::Mla(x)) if x.indexer.is_some() => "indexed",
+            Body::Mixer(Mixer::Mla(_)) => "window",
+            Body::Ffn(Ffn::Mlp(_)) => "dense",
+            Body::Ffn(Ffn::Moe(_)) => "experts",
+            b => panic!("{b:?}"),
+        })
+        .collect();
+    assert_eq!(sorts, ["indexed", "dense", "memory", "window", "experts", "indexed", "experts", "window", "experts"]);
+    let mut m = load(&same, &[]);
+    let rows = m.forward(&toks, 0).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert!(rows.len() == 45 && rows.iter().all(|r| r.len() == 64) && rows.iter().flatten().all(|x| x.is_finite()), "fp32 logits");
+    // (the layers with the indexer: a key each of the 11 closed groups, the last query's two best groups whole and its own token; the layers in a
+    // window: every token's latent kept, and no picks)
+    for b in [0, 5] {
+        let Some(SeqState::Mla(c)) = m.layers[b].seqs.get(&0) else { panic!("block {b}") };
+        assert_eq!((c.ikey.len(), c.pool.len(), c.picks.len(), c.picks[8]), (45, 11, 9, 44), "block {b}: {:?}", c.picks);
+        assert!(c.picks[..8].chunks(4).all(|g| g[0] % 4 == 0 && g[0] < 44 && g.windows(2).all(|w| w[1] == w[0] + 1)), "block {b}: {:?}", c.picks);
+    }
+    for b in [3, 7] {
+        let Some(SeqState::Mla(c)) = m.layers[b].seqs.get(&0) else { panic!("block {b}") };
+        assert!(c.lat.len() == 45 && c.ikey.is_empty() && c.pool.is_empty() && c.picks.is_empty(), "block {b}");
+    }
+    // (the stored forms: the memory's keys' products and its value's one above the other, a table's norm after another's)
+    let kv = m.layers[2].p.vec("kv").unwrap();
+    assert_eq!((kv.len(), &kv[2 * 32 * 16..]), (3 * 32 * 16, &draw("model.layers.1.engram_layer.value_proj.weight", 32 * 16)[..]));
+    let per = m.layers[2].p.vec("ngram_norm").unwrap();
+    assert_eq!((per.len(), &per[12..]), (16, &draw("model.layers.1.engram_layer.lookup_per_head_norms.3.weight", 4)[..]));
+    assert_eq!((m.layers[2].p.t["ngram"].shape.clone(), m.layers[2].p.vec("ngram_map").unwrap().len()), (vec![240, 4], 48));
+    assert!(matches!(&d.blocks[2].iter().find(|(r, _)| r == "kv_bias").unwrap().1, Source::Rows(v) if v.len() == 3));
+    // (a later token changes no earlier row)
+    let mut other = toks.clone();
+    other[44] = 58;
+    assert_eq!(load(&same, &[]).forward(&other, 0).unwrap()[..44], rows[..44]);
+    // (a token at a time, and a prompt then its next tokens: the same bits)
+    let mut m = load(&same, &[]);
+    let by_step: Vec<Vec<f32>> = toks.iter().enumerate().flat_map(|(t, &tok)| m.forward(&[tok], t as u32).unwrap_or_else(|e| panic!("{}", e.msg))).collect();
+    assert_eq!(by_step, rows, "a token at a time is the prompt");
+    let mut m = load(&same, &[]);
+    let mut parts = m.forward(&toks[..30], 0).unwrap();
+    parts.extend(m.forward(&toks[30..], 30).unwrap());
+    assert_eq!(parts, rows, "a prompt, then its next tokens");
+    // the latent attention's sinks, a sliding layer's window, a layer's indexer
+    let latent = |f: &'static dyn Fn(&mut super::kinds::Mla)| {
+        move |d: &mut Described| {
+            for b in d.desc.blocks.iter_mut() {
+                if let Body::Mixer(Mixer::Mla(x)) = &mut b.body {
+                    f(x);
+                }
+            }
+        }
+    };
+    let sinkless = run(&latent(&|x| x.sinks = false), &[]);
+    assert_eq!(run(&same, &[("self_attn.learnable_sink_param", 0.0, -1e30)]), sinkless, "sinks far below the scores are no sinks");
+    assert_ne!(sinkless[44], rows[44]);
+    assert_ne!(run(&latent(&|x| x.window = None), &[])[44], rows[44], "a sliding layer reads its window alone");
+    assert_ne!(run(&latent(&|x| x.indexer = None), &[])[44], rows[44], "a layer with the indexer reads its picks alone");
+    // the n-gram memory: a value that weighs nothing is the model with no memory block
+    let no_memory = |d: &mut Described| {
+        d.desc.blocks.remove(2);
+        d.blocks.remove(2);
+    };
+    let without = run(&no_memory, &[]);
+    assert_eq!(run(&same, &[("engram_layer.unified_pre_gamma", 0.0, 0.0)]), without, "a memory whose value weighs nothing is no memory");
+    assert_ne!(without[44], rows[44]);
+    // the streams: their output's magnitude; the experts, and their limit
+    let magnitude = |d: &mut Described| {
+        for b in d.desc.blocks.iter_mut() {
+            if let Residual::Streams(s) = &mut b.residual {
+                s.apart = Some(1.0);
+            }
+        }
+    };
+    assert_ne!(run(&magnitude, &[])[44], rows[44], "the streams' output weights take the magnitude");
+    assert_ne!(run(&same, &[("mlp.experts.down_proj", 0.0, 0.0)])[44], rows[44], "the routed experts are read");
+    let held = hy4_tiny(serde_json::json!({"swiglu_limit": 0.01}));
+    let held = describe(&held).unwrap_or_else(|e| panic!("{}", e.msg));
+    let held = RefModel::load(&held, &|n: &str| tensor(&held, &[], n)).unwrap().forward(&toks, 0).unwrap();
+    assert_ne!(held[44], rows[44], "the routed experts' limit");
+    // (no drafter: the description has none, and none of its tensors is asked for)
+    assert!(d.desc.mtp.is_empty() && !d.names().iter().any(|n| n.contains("dfly")));
 }
