@@ -1,10 +1,10 @@
-name: Condor CI
+name: Ibis CI
 on:
   push:
     branches: [main]
-    paths: ['condor/**', '.github/workflows/condor-ci.yml']
+    paths: ['ibis/**', '.github/workflows/ibis-ci.yml']
   pull_request:
-    paths: ['condor/**', '.github/workflows/condor-ci.yml']
+    paths: ['ibis/**', '.github/workflows/ibis-ci.yml']
 permissions:
   contents: read
 # a pull request's older run is cancelled by its newer one; any other run is a group of its own, so none is cancelled or held back (as ci.yml)
@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: condor
+        working-directory: ibis
     steps:
       - uses: actions/checkout@v4
       - name: Shell scripts parse

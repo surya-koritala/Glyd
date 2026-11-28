@@ -38,6 +38,6 @@ missing fails the gate.
 
 | Step | What it is | Read more |
 | :--- | :--- | :--- |
-| `parity-kimi-k3`, `parity-deepseek-v4`, `parity-glm-5.3` | Single-user parity of each large family on its reference hardware. | [Condor](condor.md) |
+| `parity-kimi-k3`, `parity-deepseek-v4`, `parity-glm-5.3` | Single-user parity of each large family on its reference hardware. | [Ibis](ibis.md) |
 | `bench-no-regression` | `glyd bench --compare` of the gate's loads against the previous record on the same GPU: no regression beyond the measured band. | [benchmarks/](https://github.com/surya-koritala/Glyd/tree/main/benchmarks) |
 | `packs-since-v0.29` | Every pack Glyd has published since v0.29 still loads to its recorded logits. With `--engine`, the gate runs the suite itself: `glyd-engine packcheck --gpu --engine`. | [Levels](levels.md) |

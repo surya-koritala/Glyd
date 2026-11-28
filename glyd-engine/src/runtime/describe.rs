@@ -1,5 +1,5 @@
 //! Model descriptions from `config.json` (R3a, #136): a `ModelDesc` of layer kinds and the weight map that names each block role's
-//! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), Qwen3.8-Flash-Next (Condor's
+//! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), Qwen3.8-Flash-Next (Ibis's
 //! model: gated residuals, the indexer on GQA, the hashed n-gram embedding), gemma-4 text, GLM-5.3 and
 //! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, DeepSeek-V4, Nemotron 3
 //! (`nemotron_h`), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
@@ -123,7 +123,7 @@ impl Described {
     }
 
     /// The tensors of its attention blocks' own matrices (a block whose mixer attends over the context: `Mixer::Attention`, `Mla`, `Compressed`), its residual's
-    /// and its norms' roles aside, and the LM head where it is not the embedding: the matrices a second layout holds (Condor's server's `--hi`, v0.34.2's
+    /// and its norms' roles aside, and the LM head where it is not the embedding: the matrices a second layout holds (Ibis's server's `--hi`, v0.34.2's
     /// engine's: the long context's precision kept where the rest is at fewer bits).
     pub fn attention_and_head(&self) -> BTreeSet<String> {
         let mut s: BTreeSet<String> = self.head.iter().cloned().collect();
@@ -1699,7 +1699,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     Ok(out)
 }
 
-/// Qwen3.8-Flash-Next (`qwen4_exp_text`, Condor's model): the Qwen3.5 hybrid's Gated DeltaNet and gated attention, the attention's Qwen Sparse
+/// Qwen3.8-Flash-Next (`qwen4_exp_text`, Ibis's model): the Qwen3.5 hybrid's Gated DeltaNet and gated attention, the attention's Qwen Sparse
 /// Attention indexer (`IndexForm::Mean`), the softmax-routed experts with the gated shared expert, every block inside gated residuals over
 /// `hc_count` streams (`Residual::GatedStreams`), the final mixer (`Collapse::GatedMix`), and the hashed n-gram embedding (`Body::Ngram`)
 /// before each layer `ple_layer_ids` names. A layer is two blocks, three with the n-gram embedding. The MTP layers are the draft head

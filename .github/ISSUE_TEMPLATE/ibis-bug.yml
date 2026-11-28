@@ -1,4 +1,4 @@
-name: "Condor: something went wrong"
+name: "Ibis: something went wrong"
 description: An install, download, start or answer that did not work.
 labels: [bug]
 body:

@@ -26,7 +26,7 @@
         },
         {
           "size": "flash-next", "repo": "Qwen/Qwen3.8-Flash-Next", "released": "2026-08-24",
-          "license": "qwen-community-1.0", "gated": false, "measured": "condor/results/v0.2.4"
+          "license": "qwen-community-1.0", "gated": false, "measured": "ibis/results/v0.2.4"
         }
       ]
     },

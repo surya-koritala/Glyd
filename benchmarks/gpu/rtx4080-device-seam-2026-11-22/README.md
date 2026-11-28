@@ -25,7 +25,7 @@ this branch is main with the three commits of M2 batch 13. Both built on the mac
 - The eight users' first token moves between sessions (0.103 to 0.123 s) and moves the same way for both builds: it is when the eight requests reach the round, not the build.
 - Checked on the same machine before the bench: `bufcheck` (a buffer of either of two contexts on the GPU written, read, zeroed and freed while the other is current, its
   256 MB back), `keepcheck`, `roundcheck` and `usercheck` on every family's random model, `twomodels`, Nemotron-H's `nhtoy` and `nhoffload`, and `tiercheck` on random
-  DeepSeek-V4, GLM-5.3, Muse Spark and Kimi-K3 models (0 logits differ against every expert resident), and the Condor prefill (`cb2prefill`, with its copier threads and
+  DeepSeek-V4, GLM-5.3, Muse Spark and Kimi-K3 models (0 logits differ against every expert resident), and the Ibis prefill (`cb2prefill`, with its copier threads and
   without: worst 4.66e-4 of a row's norm against the host's kernels, bound 2e-3). With typed launches the same again, and `bench --compare` against main: within the noise
   band. `logitscheck` there: the fixtures of every family's random model pass but the five `.sm89` ones of bits recorded on the CI machine's GPU, which a rented card
   does not reproduce (as in the records before; the CI's GPU job checks them).

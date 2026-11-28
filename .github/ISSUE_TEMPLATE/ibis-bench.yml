@@ -1,4 +1,4 @@
-name: "Condor: bench result or slow speed"
+name: "Ibis: bench result or slow speed"
 description: Share how fast it runs on your hardware, or report that it is slower than expected.
 labels: [performance]
 body:

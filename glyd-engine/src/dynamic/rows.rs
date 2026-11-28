@@ -544,7 +544,7 @@ thread_local! {
 }
 
 /// Whether this process's engines that no plan sized take their pools (and an expert cache its places: src/dynamic/qwen4x.rs) from the GPU's free memory: a
-/// development check's, which says so (`size_by_free_memory`). Every product path (`run`, `serve`, `fit`, Condor's `qwenserve`) loads by its plan
+/// development check's, which says so (`size_by_free_memory`). Every product path (`run`, `serve`, `fit`, Ibis's `qwenserve`) loads by its plan
 /// (`Dyn::take_plan`, `split::open_plan`); an engine no plan sized is refused in words where none says so.
 static FREE_SIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 

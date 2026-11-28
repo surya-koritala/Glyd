@@ -1,5 +1,5 @@
 //! Qwen3.5's kernels (kernels/qwen35.cu) with typed launches: the gated delta rule, its convolution and gated norm, the zero-centered norms (`Kern35`), which the executor's
-//! Qwen3.5 layout and Condor run.
+//! Qwen3.5 layout and Ibis run.
 
 use crate::dev::Dev;
 use crate::ffi::{Result, Stream};

@@ -101,7 +101,7 @@ pub trait NhHost {
     /// # Safety
     /// Live device buffers of those sizes, on the engine's stream.
     unsafe fn lin(&self, w: &Mat, x: u64, m: usize, y: u64) -> Result<()>;
-    /// y [m, n] = x [m, k] w^T in bf16, w a block's own rows on the GPU (rows it decodes for a call: Condor's shared expert).
+    /// y [m, n] = x [m, k] w^T in bf16, w a block's own rows on the GPU (rows it decodes for a call: Ibis's shared expert).
     ///
     /// # Safety
     /// Live device buffers of those sizes, on the engine's stream.

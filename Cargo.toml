@@ -9,7 +9,7 @@ readme = "README.md"
 keywords = ["compression", "storage", "s3", "zstd", "deduplication"]
 categories = ["compression"]
 license = "Apache-2.0"
-exclude = ["corpus/", "benchmarks/", "docs/codec/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/", "glyd-store/", "gpu/", "glyd-gpu/", "glyd-engine/", "glyd-gpu-py/", "condor/", "starlings/", "fuzz/", "research/", "tools/", "cards/", "huggingface/", "ckpt/"]
+exclude = ["corpus/", "benchmarks/", "docs/codec/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/", "glyd-store/", "gpu/", "glyd-gpu/", "glyd-engine/", "glyd-gpu-py/", "ibis/", "starlings/", "fuzz/", "research/", "tools/", "cards/", "huggingface/", "ckpt/"]
 
 [workspace]
 members = [
@@ -17,8 +17,8 @@ members = [
     # Starlings (starlings/crates): edition 2024, rust-version 1.97.1 (the toolchain pinned for the whole workspace), rustfmt defaults (starlings/rustfmt.toml).
     "starlings/crates/starlings-protocol", "starlings/crates/starlings-core", "starlings/crates/starlings-adapters", "starlings/crates/starlings-cli", "starlings/crates/starlings-security",
 ]
-# fuzz/ and starlings/fuzz are workspaces of their own (libFuzzer's runtime stays out of normal builds); condor/ has no Rust
-exclude = ["condor", "fuzz", "starlings/fuzz"]
+# fuzz/ and starlings/fuzz are workspaces of their own (libFuzzer's runtime stays out of normal builds); ibis/ has no Rust
+exclude = ["ibis", "fuzz", "starlings/fuzz"]
 
 [workspace.dependencies]
 # Starlings' dependencies, in one place for its five crates (the other crates name theirs themselves).

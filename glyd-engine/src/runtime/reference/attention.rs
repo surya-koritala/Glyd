@@ -1,6 +1,6 @@
 //! MHA, GQA and MQA attention (`kinds::Attn`): full or sliding window, optional q/k/v norms, rope (full, partial, proportional or none),
 //! learned sinks, a score soft-cap, a factor on the values, an output gate, and the rounding points of `kinds::AttnRounding`. Query head h reads KV head
-//! h / (heads / kv_heads). One token at a time against the sequence's cache; a prompt is its tokens in order. With Condor's indexer
+//! h / (heads / kv_heads). One token at a time against the sequence's cache; a prompt is its tokens in order. With Ibis's indexer
 //! (`IndexForm::Mean`) a query attends only to the tokens it picks (`mean_picks`).
 
 use super::Libm;
@@ -22,7 +22,7 @@ pub struct KvCache {
 /// A rope and its angles at a step (`rope::inv_freq_at`).
 type Rot<'a> = Option<(&'a Rope, (Vec<f32>, f32))>;
 
-/// Which of the cache entries `seen` (in order, the sequence's first token first) a query attends to with Condor's indexer: while the complete
+/// Which of the cache entries `seen` (in order, the sequence's first token first) a query attends to with Ibis's indexer: while the complete
 /// pools of `block` tokens number no more than the `top_k / block` it keeps, every one; else the pools of the best scores, each pool's key
 /// the mean of its tokens' raw keys (rounded where the attention rounds), normed by `knorm` (role `index_k_norm`) and rotated at the
 /// pool's first position, a pool's score sum_h relu(q_h . key) / sqrt(head_dim) with `q` the normed and rotated index queries; then the
@@ -164,7 +164,7 @@ pub fn step_with(a: &Attn, p: &Params, c: &mut KvCache, store: Option<&KvCache>,
         None => None,
         Some(ix) => {
             let IndexForm::Mean { norm: inorm } = ix.form else {
-                return err("attention: an indexer of the gated form (GLM-5.3-Flash's, DeepSeek-V4's) is a latent or compressed attention's; on GQA the reference has Condor's");
+                return err("attention: an indexer of the gated form (GLM-5.3-Flash's, DeepSeek-V4's) is a latent or compressed attention's; on GQA the reference has Ibis's");
             };
             let qk = prod("index_qk")?;
             let dim = ix.head_dim;
@@ -364,7 +364,7 @@ mod tests {
         assert_ne!(want, bf16((bf16(f[0]) as f64 + bf16(f[1]) as f64 * 3.0) as f32));
     }
 
-    /// An attention of 2 query heads over one KV head of 16 (a rotary of 8) with Condor's indexer of 2 heads of 16 keeping 4 tokens in pools of
+    /// An attention of 2 query heads over one KV head of 16 (a rotary of 8) with Ibis's indexer of 2 heads of 16 keeping 4 tokens in pools of
     /// 2, its roles from the generator.
     fn qsa() -> (Attn, Params) {
         let (mut a, mut p) = layer(2, 1, 16, 32);
@@ -380,7 +380,7 @@ mod tests {
     /// While a query sees no more complete pools than the indexer keeps (2 pools: 5 tokens, the fifth a tail), it attends to every token: the
     /// attention without the indexer, to the bit; past that it does not.
     #[test]
-    fn condors_indexer_keeps_everything_until_its_pools_run_out() {
+    fn ibis_indexer_keeps_everything_until_its_pools_run_out() {
         let (a, p) = qsa();
         let plain = Attn { indexer: None, ..a.clone() };
         let (x, y) = (run(&a, &p, 32, 9), run(&plain, &p, 32, 9));
@@ -397,7 +397,7 @@ mod tests {
     /// The picks by hand for the ninth token: its queries normed and rotated, the four complete pools' keys (the mean of the raw keys, normed,
     /// rotated at the pool's first position), their scores, the best two pools' tokens and the tail token 8.
     #[test]
-    fn condors_indexer_picks_by_hand() {
+    fn ibis_indexer_picks_by_hand() {
         let (a, p) = qsa();
         let mut c = KvCache::default();
         let xs = fill("attn.input", 9 * 32, -1.0, 1.0);

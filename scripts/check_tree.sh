@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The source tree stays source: data files in benchmarks/, research/ and condor/results/ are at most 64 KB, and no tracked
+# The source tree stays source: data files in benchmarks/, research/ and ibis/results/ are at most 64 KB, and no tracked
 # file is over 1 MiB, unless scripts/large-files.allow lists it (a path, or a prefix ending in /).
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -11,7 +11,7 @@ while IFS= read -r -d '' f; do
   [[ -f "$f" ]] || continue
   size=$(wc -c < "$f")
   case "$f" in
-    benchmarks/*|research/*|condor/results/*)
+    benchmarks/*|research/*|ibis/results/*)
       case "${f##*.}" in json|jsonl|txt|log|csv|tsv|out|err|eval|npz|npy|bin|f32|parquet|safetensors)
         if (( size > 65536 )) && ! allowed "$f"; then echo "data file over 64 KB: $f ($size bytes)"; bad=1; fi ;;
       esac ;;

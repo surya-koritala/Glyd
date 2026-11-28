@@ -440,7 +440,7 @@ impl ConfigQx {
     }
 }
 
-/// Which of Condor's packs of experts a directory serves as (`qwenget` makes them: DIR/pack or DIR/fast, DIR/precise, DIR/best): precise where asked (`--precise`), best
+/// Which of Ibis's packs of experts a directory serves as (`qwenget` makes them: DIR/pack or DIR/fast, DIR/precise, DIR/best): precise where asked (`--precise`), best
 /// where the directory's name starts with "best", else fast. Each takes its own sidecars and its own skipping of the misses' tail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PackMode {

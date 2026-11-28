@@ -769,7 +769,7 @@ pub fn cgroup_free(limit: u64, current: u64, stat: &str) -> u64 {
 }
 
 /// The host memory a process can still take: what /proc/meminfo says is available, or less where a control group (v2 or v1) limits it below that (`cgroup_free`). None where the system does not say (not Linux).
-/// The one probe of it (#137: Condor's server had its own): every path that plans memory reads it here. GLYD_MEMAVAIL_GB (a development build's): a test's stand-in for a smaller computer.
+/// The one probe of it (#137: Ibis's server had its own): every path that plans memory reads it here. GLYD_MEMAVAIL_GB (a development build's): a test's stand-in for a smaller computer.
 pub fn host_memory() -> Option<u64> {
     if let Some(g) = crate::tune!("GLYD_MEMAVAIL_GB").and_then(|v| v.parse::<f64>().ok()) {
         return Some((g * (1u64 << 30) as f64) as u64);

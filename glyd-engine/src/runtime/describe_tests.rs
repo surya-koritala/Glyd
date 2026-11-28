@@ -1339,7 +1339,7 @@ fn qwen38_2_4ts_stacked_experts_are_rows_of_its_tensors() {
     assert!(!plan.contains(r#""from": ["model.layers.7.mlp.experts.511.gate_proj""#));
 }
 
-/// Every config of tests/fixtures describes from its own file, the toy and tiny ones as the released (Condor's Qwen3.8-Flash-Next too: 48 layers of two blocks, and
+/// Every config of tests/fixtures describes from its own file, the toy and tiny ones as the released (Ibis's Qwen3.8-Flash-Next too: 48 layers of two blocks, and
 /// the n-gram embedding's block before its second layer).
 #[test]
 fn every_fixture_config_describes() {
@@ -1511,10 +1511,10 @@ fn nemotron_3_5_lightning_describes_and_leaves_its_draft_head() {
     }
 }
 
-/// The tiny Qwen3.8-Flash-Next of tests/fixtures/qwen4x_tiny_manifest.json (the tensors transformers saved for that config: Condor's random model of the `qwen4x`
+/// The tiny Qwen3.8-Flash-Next of tests/fixtures/qwen4x_tiny_manifest.json (the tensors transformers saved for that config: Ibis's random model of the `qwen4x`
 /// logits case is made from it): its config describes exactly those tensors, each at its saved shape.
 #[test]
-fn condors_tiny_config_describes_its_tensors() {
+fn ibis_tiny_config_describes_its_tensors() {
     let m = fixture("qwen4x_tiny_manifest.json");
     let cfg: serde_json::Value = serde_json::from_str(m["config"].as_str().unwrap()).unwrap();
     let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
@@ -1576,12 +1576,12 @@ fn a_vision_tower_is_described_or_refused_in_words() {
     }
 }
 
-/// Condor's released config (tests/fixtures/qwen4x_config.json) describes every tensor Condor's engine loads (src/qwen4x.rs: each layer's matrices, the gated
+/// Ibis's released config (tests/fixtures/qwen4x_config.json) describes every tensor Ibis's engine loads (src/qwen4x.rs: each layer's matrices, the gated
 /// residuals' and the final mixer's, the n-gram embedding's products; the MTP layer's, its front's and its final mixer's as the draft head) and the vision
 /// tower as the release's own engine read it (src/vision.rs: 27 blocks of 16 heads over 1,152, 4,304 neurons, a 48 x 48 position table, patches of 3 x 2 x
 /// 16 x 16 merged 2 x 2 into rows of 2,560, image token 248,056), nothing left; and what it does not take is refused in words.
 #[test]
-fn condors_released_config() {
+fn ibis_released_config() {
     use super::kinds::*;
     let cfg = fixture("qwen4x_config.json");
     let d = describe(&cfg).unwrap();
@@ -1660,8 +1660,8 @@ fn condors_released_config() {
     assert!(plain.desc.blocks.len() == 96 && !plain.desc.blocks.iter().any(|b| matches!(b.body, Body::Ngram(_))));
 }
 
-/// Condor's model from its config.json alone, on the CPU reference of the layer kinds, against Condor's own engine: the random tiny Qwen3.8-Flash-Next of the `qwen4x`
-/// logits case (src/logits.rs `qwen4x_random`) and the rows its engine recorded on an RTX 4080 SUPER at kestrel (tests/fixtures/qwen4x_condor_rows.json.gz, that engine's
+/// Ibis's model from its config.json alone, on the CPU reference of the layer kinds, against Ibis's own engine: the random tiny Qwen3.8-Flash-Next of the `qwen4x`
+/// logits case (src/logits.rs `qwen4x_random`) and the rows its engine recorded on an RTX 4080 SUPER at kestrel (tests/fixtures/qwen4x_ibis_rows.json.gz, that engine's
 /// record: no logits case reads it, as the family is held to this reference and not to that engine's bits), where the random
 /// model's experts are on the six-bit grid kestrel holds them on and the engine's other matrices are lossless: the engine runs this model's weights, its activations
 /// bf16. The two implementations share no code. The prompt of 24 and the 12 decode steps (the prompt of 150 takes 50 s more here, and measured KL 4.0e-5): KL mean 8.5e-6, max 5.0e-5, the
@@ -1669,7 +1669,7 @@ fn condors_released_config() {
 /// 1.8e-4 and the best token 4 of 6; with the n-gram hash's seed off by one, 1.1e-2 and 0 of 6.
 #[cfg(feature = "dev")]
 #[test]
-fn condors_model_on_the_reference_against_condors_engine() {
+fn ibis_model_on_the_reference_against_ibis_engine() {
     use super::kinds::{Body, Mixer};
     use super::reference::model::checkpoint_tensor;
     use crate::logits::{compare, Bound, Fixture};
@@ -1678,7 +1678,7 @@ fn condors_model_on_the_reference_against_condors_engine() {
     let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
     let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
     let ck = glyd_gpu::safetensors::Checkpoint::open(&dir).unwrap();
-    let mut fx = Fixture::read(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qwen4x_condor_rows.json.gz")).unwrap();
+    let mut fx = Fixture::read(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qwen4x_ibis_rows.json.gz")).unwrap();
     // (the long prompt's row left out)
     fx.rows.pop();
     fx.long.clear();

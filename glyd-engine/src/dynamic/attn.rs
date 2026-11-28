@@ -269,7 +269,7 @@ impl AttnOp {
         Ok(op)
     }
 
-    /// The operation of a sparse attention (`a` with an indexer: Condor's, `IndexForm::Mean`) whose keys and values are ring `ring`, over the indexer's picks
+    /// The operation of a sparse attention (`a` with an indexer: Ibis's, `IndexForm::Mean`) whose keys and values are ring `ring`, over the indexer's picks
     /// (`picked`); the rest as `of`. The kernel of the picks takes heads of 256 and an in-query gate.
     pub fn picked(a: &kinds::Attn, src: Slot, ring: usize, table: Option<usize>, qk: Option<(usize, usize)>) -> Result<AttnOp> {
         if a.head_dim != 256 || !a.gate.is_some_and(|g| g.from == kinds::GateFrom::InQuery && g.norm.is_none()) || a.window.is_some() || a.softcap.is_some() {

@@ -442,7 +442,7 @@ impl Support {
         if now.is_empty() {
             return Some(Refusal::unsupported(
                 format!("{name} ({}) does not run with glyd run yet", self.name),
-                "Run it with Condor: condor/README.md (glyd run takes it with ROADMAP P8)",
+                "Run it with Ibis: ibis/README.md (glyd run takes it with ROADMAP P8)",
             ));
         }
         let fix = match now[0] {

@@ -38,13 +38,13 @@
 //! Each comparison runs the CUDA backend's entry point of its kind (`runtime::cuda`: the executor's own operations through `Dyn::op`). The
 //! embedding (its rows, scale, norm and streams, with the residual's operations into the first block) is held at the residual's bound; the
 //! head (the LM head's product of the GPU's own final-normed row, rounded into the bf16 logits, and its soft-cap) at the MLP's, the same
-//! arithmetic of one product. Not compared kind by kind: MTP heads (their blocks are the kinds above). Condor's kinds (Qwen3.8-Flash-Next: the gated residuals and the final
+//! arithmetic of one product. Not compared kind by kind: MTP heads (their blocks are the kinds above). Ibis's kinds (Qwen3.8-Flash-Next: the gated residuals and the final
 //! mixer, the indexer on GQA, the n-gram embedding) are `kindcheck`'s cases `qwen4x` and `qwen4x-s2`: on an A10 its Gated DeltaNet
 //! 1.3e-2, its attention over the indexer's picks 4.7e-3, its experts 6.6e-3, the residuals 9.8e-3; the n-gram embedding, which adds its
 //! output into the streams in place, is compared by the streams it leaves (8.2e-3; its own output, the streams' change, 9.8e-3 of its
 //! largest magnitude, printed and not judged). The family's two random models whole are held too: the executor's logits against `Ref`'s on
-//! the executor's own routers' choices (`logitscheck`, `paritycheck`: `logits::held_on_choices`), and `Ref` against Condor's own engine's
-//! rows (`describe_tests::condors_model_on_the_reference_against_condors_engine`: KL mean 8.5e-6, max 5.0e-5).
+//! the executor's own routers' choices (`logitscheck`, `paritycheck`: `logits::held_on_choices`), and `Ref` against Ibis's own engine's
+//! rows (`describe_tests::ibis_model_on_the_reference_against_ibis_engine`: KL mean 8.5e-6, max 5.0e-5).
 //!
 //! A mixture of experts' router can be told the experts to take (`RefLayer::take`, `ffn::route_taking`): a check then holds an engine to
 //! `Ref` on the engine's own choices, where a near tie taken the other way would move a row by more than arithmetic does. The choice's
@@ -609,7 +609,7 @@ pub fn norm_groups(n: &crate::runtime::kinds::Norm, x: &[f32], w: Option<&[f32]>
     x.chunks(group).enumerate().flat_map(|(i, c)| norm::norm(n, c, w.map(|w| &w[i * group..][..group]), None)).collect()
 }
 
-/// Condor's gated residual on one token's `n` streams `xt` [n hidden]: each stream normed by `norm` (its weight `w`) into nx; the mix m =
+/// Ibis's gated residual on one token's `n` streams `xt` [n hidden]: each stream normed by `norm` (its weight `w`) into nx; the mix m =
 /// sigmoid(up silu(down nx / n)); the block's input the mean over the streams of m_s nx_s; and with `inject`, the streams' weights of the
 /// block's output 2 sigmoid(inject nx / n) (the final mixer has none).
 pub fn gated_mix(
@@ -1004,7 +1004,7 @@ impl Backend for Ref {
     }
 
     /// Every kind, in any format a source decodes to f32, at the speed of plain Rust (DeepSeek-V4's compressed attention too: `comp.rs`; a latent
-    /// attention's indexer: `mla.rs`; Condor's on GQA: `attention.rs`; its n-gram embedding: `ngram.rs`). The match names each kind, so that a kind added
+    /// attention's indexer: `mla.rs`; Ibis's on GQA: `attention.rs`; its n-gram embedding: `ngram.rs`). The match names each kind, so that a kind added
     /// to `KindRef` is decided here. (A gated-form indexer on plain attention is not in the reference: such a layer says so where it would pick. A latent
     /// attention's `shared` indexer attends to the picks of the layer before it, which the model lends: `RefModel::share_into`.)
     fn supports(&self, kind: &KindRef, _: &Format) -> Support {
@@ -1064,7 +1064,7 @@ mod tests {
     use super::*;
     use crate::runtime::kinds::{Decay, Linear, LinearKind, Norm};
 
-    /// Condor's gated residual by hand on one token of two streams of 4 (a rank of 3): each stream normed with its own part of the weight, the
+    /// Ibis's gated residual by hand on one token of two streams of 4 (a rank of 3): each stream normed with its own part of the weight, the
     /// bottleneck's mix, the mean over the streams, the streams' weights of the output; a block between gated residuals takes no other norm and
     /// adds w_s o to stream s; the final mixer (`Collapse::GatedMix`) is the mix without the weights.
     #[test]

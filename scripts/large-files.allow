@@ -4,8 +4,8 @@ benchmarks/moe-skew-2026-10-09/nemotron/
 # model and checkpoint inventories the engine's tests read
 research/models-2026/models.json
 research/inventory-2026/inventory.json
-# Condor's demo media (README)
-condor/docs/media/
+# Ibis's demo media (README)
+ibis/docs/media/
 # codec test vectors
 tests/data/
 # vendored code under its own license

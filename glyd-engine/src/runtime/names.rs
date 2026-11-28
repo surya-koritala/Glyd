@@ -121,7 +121,7 @@ pub const DEEPSEEK_HF: Convention = Convention {
     ..DEEPSEEK
 };
 
-/// Qwen3.8-Flash-Next's (Condor's model): Hugging Face's, with no final norm of its own (its final mixer's per-stream norm is the final
+/// Qwen3.8-Flash-Next's (Ibis's model): Hugging Face's, with no final norm of its own (its final mixer's per-stream norm is the final
 /// norm, the mixer's bottleneck the model's own roles).
 pub const QWEN4X: Convention = Convention {
     name: "Qwen3.8-Flash-Next",
@@ -258,7 +258,7 @@ pub mod part {
         ("shared_router", "mlp.shared_expert_gate.weight"),
     ];
 
-    // ---- Qwen3.8-Flash-Next (Condor): the gated residuals around each block, the indexer, the experts stacked, the n-gram embedding
+    // ---- Qwen3.8-Flash-Next (Ibis): the gated residuals around each block, the indexer, the experts stacked, the n-gram embedding
     pub const QX_GR_ATTN: Roles = &[
         ("norm_in", "attn_hyper_connection.hc_norm.weight"),
         ("mix_down", "attn_hyper_connection.input_mix_weight_down.weight"),

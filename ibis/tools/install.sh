@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install Glyd's engine for Condor under $GLYD_QWEN (default ~/.glyd-qwen-3.8-flash): the glyd-engine program and its GPU library.
+# Install Glyd's engine for Ibis under $GLYD_QWEN (default ~/.glyd-qwen-3.8-flash): the glyd-engine program and its GPU library.
 # Linux x86-64 or aarch64, an NVIDIA GPU (Ampere or newer) with driver 580+. No sudo.
 #
 #   tools/install.sh [VERSION]     prebuilt: the engine bundle of a Glyd release (default: the latest), built by the release workflow
@@ -9,11 +9,11 @@
 # GLYD_RELEASE_URL: a mirror, or file:///dir, holding glyd-engine-vX.Y.Z-linux-ARCH.tar.gz and its .sha256 (a test before a release).
 # GLYD_ENGINE_TARBALL: a local glyd-engine-vX.Y.Z-linux-ARCH.tar.gz to install as it is.
 set -euo pipefail
-HERE=$(cd "$(dirname "$0")/.." && pwd)          # condor/
+HERE=$(cd "$(dirname "$0")/.." && pwd)          # ibis/
 ROOT=$(cd "$HERE/.." && pwd)                    # the Glyd checkout it lives in
 H=${GLYD_QWEN:-$HOME/.glyd-qwen-3.8-flash}; mkdir -p "$H/bin" "$H/lib"
 REPO=surya-koritala/Glyd
-LEGACY=https://github.com/surya-koritala/condor/releases/download/v0.2.4   # Condor's last separately built engine (same source, before the merge)
+LEGACY=https://github.com/surya-koritala/ibis/releases/download/v0.2.4   # Ibis's last separately built engine (same source, before the merge)
 VER=${1:-latest}
 command -v nvidia-smi > /dev/null || { echo "no nvidia-smi: an NVIDIA driver is needed" >&2; exit 1; }
 case $(uname -m) in x86_64|amd64) ARCH=x86_64;; aarch64|arm64) ARCH=aarch64;; *) echo "unsupported CPU: $(uname -m)" >&2; exit 1;; esac
@@ -77,8 +77,8 @@ from_release() {
   fi
   rm -f "$name" "$name.sha256"
   [ "$ARCH" = x86_64 ] || { echo "Glyd $tag has no engine for linux-$ARCH: run tools/install.sh --source" >&2; exit 1; }
-  # (Glyd releases before the open-source merge carry no engine bundle: Condor's own last build of the same source)
-  echo "Glyd $tag has no engine bundle yet; installing Condor's last engine build (v0.2.4). tools/install.sh --source builds it here instead."
+  # (Glyd releases before the open-source merge carry no engine bundle: Ibis's own last build of the same source)
+  echo "Glyd $tag has no engine bundle yet; installing Ibis's last engine build (v0.2.4). tools/install.sh --source builds it here instead."
   LIB=libglyd_gpu_cuda13.so  # (that build loads its GPU library)
   for f in glyd-engine $LIB SHA256SUMS; do curl -fsSL --retry 3 -o "$f.new" "$LEGACY/$f" && mv "$f.new" "$f"; done
   grep -q ' glyd-engine$' SHA256SUMS && grep -q " ${LIB//./\\.}\$" SHA256SUMS && sha256sum -c --quiet --ignore-missing SHA256SUMS ||

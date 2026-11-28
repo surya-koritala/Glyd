@@ -12,7 +12,7 @@ use crate::ffi::{Error, Result};
 /// The rows of the table into In: the table (a matrix of the part, held as saved: bf16 [rows, row]), the hash's numbers (small int64 tensors: the `order`
 /// multipliers, each table's size, each table's offset), the sequence's last `order` - 1 tokens (state `hist`, int32), `per` tables an order (`row` values a
 /// table's row), the end token `eos` (a position before the sequence reads as it); `map`: each token first mapped to its compressed vocabulary's id (small int32
-/// [vocabulary], Engram's); `segments`: a segment ends at `eos`, the tokens before it read as `eos` (Condor's).
+/// [vocabulary], Engram's); `segments`: a segment ends at `eos`, the tokens before it read as `eos` (Ibis's).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NgramRows {
     pub table: usize,
@@ -39,7 +39,7 @@ pub struct NgramConv {
 
 /// The gated add into S of Gu's keys (4 hidden: a stream's each) and value (hidden) a row: the streams' norm as queries `q` and the keys' `k` (small, [4 hidden]
 /// each; (1 + w) where `plus_one`, else w), each stream's gate sigmoid(signed sqrt(max(|<k_s, q_s>| / sqrt(hidden), 1e-6))); with `conv`, the gated value normed
-/// and convolved added to it (Condor's), else the gated value alone (Engram's).
+/// and convolved added to it (Ibis's), else the gated value alone (Engram's).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NgramAdd {
     pub q: usize,

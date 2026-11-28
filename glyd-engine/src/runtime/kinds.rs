@@ -231,15 +231,15 @@ pub struct OutGate {
 }
 
 /// A sparse-attention indexer: per query, a score sum_h w_h relu(q_h . k) of each past key (one key a token, a pooled key a block of
-/// `block` tokens, or a compressed entry), the best kept. Condor's block indexer, GLM's pooled-key indexer and DeepSeek-V4's
+/// `block` tokens, or a compressed entry), the best kept. Ibis's block indexer, GLM's pooled-key indexer and DeepSeek-V4's
 /// compressed-entry indexer are this kind with parameters. In `Ref`: a latent attention's (`reference::mla`, GLM-5.3-Flash),
-/// DeepSeek-V4's (`reference::comp`) and Condor's on a GQA attention (`reference::attention`, `IndexForm::Mean`).
+/// DeepSeek-V4's (`reference::comp`) and Ibis's on a GQA attention (`reference::attention`, `IndexForm::Mean`).
 #[derive(Clone, PartialEq)]
 pub struct Indexer {
     pub heads: usize,
     pub head_dim: usize,
     /// What a query keeps. A latent attention: `top_k` tokens, as the `top_k / block` best complete pools of `block` tokens and the tokens
-    /// of the incomplete last pool (GLM-5.3-Flash's `index_topk`; `block` 1: the best `top_k` tokens; Condor's `indexer_budget` in pools of
+    /// of the incomplete last pool (GLM-5.3-Flash's `index_topk`; `block` 1: the best `top_k` tokens; Ibis's `indexer_budget` in pools of
     /// `indexer_compress_ratio`). DeepSeek-V4: `top_k` compressed entries (`block` is its ratio).
     pub top_k: usize,
     /// Tokens a pooled key covers (GLM-5.3-Flash's `index_kpool`; 1: a key per token).
@@ -278,7 +278,7 @@ pub enum IndexForm {
     /// model's eps (Kimi-K3.1's `dsa_config.index_k_norm_type` rmsnorm, its LayerNorm otherwise; DeepSeek-V4's compressed entries, normed by
     /// their compressor's `idx_norm`).
     Gated { key: Norm },
-    /// Condor's Qwen Sparse Attention (Qwen3.8-Flash-Next): the `heads` queries and ONE key from one product of the block's input (role
+    /// Ibis's Qwen Sparse Attention (Qwen3.8-Flash-Next): the `heads` queries and ONE key from one product of the block's input (role
     /// `index_qk` [(heads + 1) head_dim, hidden]); each query head normed by `norm` (role `index_q_norm` [head_dim]) and rotated as the
     /// attention's queries (its rope, on the first `dim` channels of the head); the raw keys cached, a pool's key the mean of its tokens'
     /// raw keys, normed by `norm` (role `index_k_norm`) and rotated at the pool's first position; a pool's score sum_h relu(q_h . k) /
@@ -475,7 +475,7 @@ impl std::fmt::Debug for Comp {
 /// Which delta rule a linear-attention layer runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinearKind {
-    /// Gated DeltaNet (Qwen3.5/3.8, Condor): one decay per value head.
+    /// Gated DeltaNet (Qwen3.5/3.8, Ibis): one decay per value head.
     GatedDeltaNet,
     /// Kimi delta attention (Kimi-K3, GLM-5.3): one decay per key channel.
     KimiDelta,
@@ -597,7 +597,7 @@ pub struct Latent {
 
 /// A mixture of experts. Roles: the router's; `experts_gate_up` [experts, 2 inter, in] (or `experts_up` [experts, inter, in] when the
 /// expert MLP is not gated), `experts_down` [experts, out, inter]; the shared expert's `shared_*`; with `shared_gate`, `shared_router`
-/// [1, hidden] (the shared output times sigmoid of it: Qwen3.5/3.8 MoE, Condor).
+/// [1, hidden] (the shared output times sigmoid of it: Qwen3.5/3.8 MoE, Ibis).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Moe {
     pub router: Router,
@@ -614,7 +614,7 @@ pub enum Ffn {
     Moe(Moe),
 }
 
-/// A hashed n-gram embedding added to the residual streams (Condor's per-layer embedding, Qwen3.8-Flash-Next's `ple`).
+/// A hashed n-gram embedding added to the residual streams (Ibis's per-layer embedding, Qwen3.8-Flash-Next's `ple`).
 ///
 /// Per position, for each order n of 2..=`order`, the token and the n - 1 tokens before it inside its segment (a segment ends at the
 /// token `eos`; a token before the segment's start, or before the sequence, reads as `eos`) hashed: mixed = XOR over p < n of
@@ -755,7 +755,7 @@ pub struct GateP {
 
 /// n residual streams mixed per block: mHC (GLM-5.3, DeepSeek-V4). The block's input is a weighted sum of the streams; its output is
 /// spread back over them with the Sinkhorn-projected mixing of the streams. Roles `hc_fn` [(2 + n) n, n hidden], `hc_base` [(2 + n) n],
-/// `hc_scale` [3]. Condor's gated residuals are the other rule of several streams (`GatedStreamsP`).
+/// `hc_scale` [3]. Ibis's gated residuals are the other rule of several streams (`GatedStreamsP`).
 #[derive(Clone, Copy, PartialEq)]
 pub struct StreamsP {
     pub streams: usize,
@@ -802,7 +802,7 @@ pub struct DepthMixP {
     pub starts: bool,
 }
 
-/// Condor's gated residuals (Qwen3.8-Flash-Next's `GatedResidual`): `streams` copies of the hidden width, flattened. The block's `norm_in`
+/// Ibis's gated residuals (Qwen3.8-Flash-Next's `GatedResidual`): `streams` copies of the hidden width, flattened. The block's `norm_in`
 /// (role [streams hidden], a weight a stream) norms each stream on its own (n), and there is no other pre-norm; the block's input is the
 /// mean over the streams of m_s n_s, m = sigmoid(`mix_up` silu(`mix_down` n / streams)) a value per stream and channel; after the block
 /// each stream s adds w_s o, w = 2 sigmoid(`inject` n / streams). No mixing of the streams with each other (mHC's has). Roles `mix_down`
@@ -920,7 +920,7 @@ pub enum Collapse {
     /// DeepSeek-V4's hyper-head: a weighted sum of the streams, the weights sigmoid(`out_hc_fn` rms(streams) `out_hc_scale` +
     /// `out_hc_base`) + eps (roles [n, n hidden], [1], [n]).
     Weighted { eps: f32, norm_eps: f32 },
-    /// Condor's final mixer: the gated residuals' input mix (`GatedStreamsP`) with the model's roles `out_mix_down`, `out_mix_up`, each stream
+    /// Ibis's final mixer: the gated residuals' input mix (`GatedStreamsP`) with the model's roles `out_mix_down`, `out_mix_up`, each stream
     /// normed by the final norm (its weight [n hidden], a stream's each) before the mix, and no norm after it.
     GatedMix,
     /// Lagged mHC's (DeepSeek-V4.1, no hyper-head): the streams weighed by the last block's own input weights (`StreamsP::lagged`).

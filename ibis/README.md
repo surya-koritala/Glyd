@@ -1,4 +1,4 @@
-# Condor
+# Ibis
 
 Qwen3.8-Flash-Next (180B, MoE) on one 12-16 GB NVIDIA GPU with 32-64 GB of RAM, on Linux or Windows. Glyd's engine and our own
 compressed weights. OpenAI- and Anthropic-compatible APIs, a chat page, MCP. Apache-2.0, like the rest of Glyd. More Flash-class models will come here.
@@ -79,7 +79,7 @@ Those machines' RAM read 27-65 GB/s (this 4080 desktop: 70), which shows on long
 ## Install
 
 ```sh
-git clone https://github.com/surya-koritala/Glyd && cd Glyd/condor
+git clone https://github.com/surya-koritala/Glyd && cd Glyd/ibis
 ./setup.sh
 ```
 
@@ -90,7 +90,7 @@ context, and opens `http://127.0.0.1:8080`. Enter takes the defaults. Run it aga
 Windows (PowerShell, NVIDIA driver 580+):
 
 ```powershell
-git clone https://github.com/surya-koritala/Glyd; cd Glyd\condor
+git clone https://github.com/surya-koritala/Glyd; cd Glyd\ibis
 powershell -ExecutionPolicy Bypass -File setup.ps1
 ```
 
@@ -98,7 +98,7 @@ powershell -ExecutionPolicy Bypass -File setup.ps1
 Server 2022, 64 GB RAM, only NVIDIA's driver installed): clean install and `tests/` passing in fast and precise mode; about 40 tok/s
 chat in fast mode on that 8-core machine (the L4 has 40% of a 4080's bandwidth). Not yet tested on a GeForce card under Windows or in WSL2.
 
-With an AI coding assistant: `Set up https://github.com/surya-koritala/Glyd (the condor/ folder) on this PC - follow condor/docs/AI_SETUP.md`.
+With an AI coding assistant: `Set up https://github.com/surya-koritala/Glyd (the ibis/ folder) on this PC - follow ibis/docs/AI_SETUP.md`.
 
 ## Modes
 
@@ -115,7 +115,7 @@ Switch: `tools/download.sh --best` (or `--fast`), then `tools/serve.sh --best`. 
 - OpenAI-compatible API at `http://127.0.0.1:8080/v1` (any key, any model name); Anthropic-compatible at `/v1/messages`, e.g.
   `ANTHROPIC_BASE_URL=http://127.0.0.1:8080 claude`.
 - Agent frameworks and tool calls, what's tested: [docs/CLIENTS.md](docs/CLIENTS.md).
-- MCP: `claude mcp add glyd -- ~/.glyd-qwen-3.8-flash/bin/glyd-engine qwenmcp --repo /path/to/condor`
+- MCP: `claude mcp add glyd -- ~/.glyd-qwen-3.8-flash/bin/glyd-engine qwenmcp --repo /path/to/ibis`
 - Images: PNG or JPEG in OpenAI `image_url` parts (base64, or a URL on a public host) or Anthropic image blocks, up to 1,024 tokens
   an image by default. An image adds 0.3-2 s to the prompt on a 4080 SUPER; text speed is unchanged.
 - Several users: 4 requests at once by default, each streaming from the start (`GLYD_USERS=N tools/serve.sh`, 1 to 64).
@@ -140,13 +140,13 @@ Switch: `tools/download.sh --best` (or `--fast`), then `tools/serve.sh --best`. 
 - Slower than the numbers above: check the CPU (above) and the context: on a 16 GB card a bigger `GLYD_CTX` takes VRAM from the expert
   cache (one user saw 11-15% slower at 131,072 than at the default 32,768).
 
-Anything else: open an [issue](https://github.com/surya-koritala/Glyd/issues) (choose "Condor: something went wrong") with what it printed. Security: [SECURITY.md](SECURITY.md).
+Anything else: open an [issue](https://github.com/surya-koritala/Glyd/issues) (choose "Ibis: something went wrong") with what it printed. Security: [SECURITY.md](SECURITY.md).
 
 ## License
 
 - Model: [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) by the Qwen team, under its license; the compressed
   weights on [Hugging Face](https://huggingface.co/glyd/Qwen3.8-Flash-Next-hummingbird) carry the same license.
-- Condor (scripts, chat app, benchmarks, docs) and Glyd's engine, whose source is the rest of this repository
+- Ibis (scripts, chat app, benchmarks, docs) and Glyd's engine, whose source is the rest of this repository
   ([glyd-engine/](../glyd-engine), [gpu/](../gpu)): [Apache 2.0](LICENSE), for any use, commercial included.
 
 PRs welcome: [CONTRIBUTING.md](CONTRIBUTING.md). Thanks to the Qwen team for open-weighting this model.

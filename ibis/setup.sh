@@ -7,7 +7,7 @@ H=${GLYD_QWEN:-$HOME/.glyd-qwen-3.8-flash}; YES=0; [ "${1:-}" = --yes ] && YES=1
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 ask() { local q=$1 d=$2 a; if [ "$YES" = 1 ]; then echo "$d"; return; fi; read -r -p "$q [$d]: " a < /dev/tty; echo "${a:-$d}"; }
 
-say "Condor: Qwen3.8-Flash-Next (Hummingbird level) on your GPU"
+say "Ibis: Qwen3.8-Flash-Next (Hummingbird level) on your GPU"
 command -v nvidia-smi > /dev/null || { echo "No NVIDIA driver found (nvidia-smi). Install the NVIDIA driver 580 or newer, then run this again."; exit 1; }
 read -r GPU VRAM DRV < <(nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader,nounits | head -1 | awk -F', ' '{gsub(/ /,"_",$1); print $1, $2, $3}')
 RAM=$(free -g | awk '/^Mem:/ {print $2}'); DISK=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc 0-9)

@@ -1,9 +1,0 @@
-Glyd Condor
-Copyright 2026 Surya Koritala
-
-Condor (the setup scripts, the chat app, the benchmarks, the results and the documentation) and the Glyd engine it runs are under the
-Apache License 2.0: see LICENSE. Condor is the condor/ folder of the Glyd repository (https://github.com/surya-koritala/Glyd); the
-engine's source is the rest of that repository (glyd-engine/, gpu/).
-
-The packed weights on Hugging Face are derived from Qwen3.8-Flash-Next and carry the base model's license. Neither they nor the original
-checkpoint are in this repository.

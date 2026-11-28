@@ -1475,8 +1475,8 @@ pub fn gemma4_kv_random(out: &Path) -> Result<()> {
 }
 
 /// Qwen3.8-Flash-Next on the description executor (src/dynamic/qwen4x.rs) at every level, as the other cases' engines: the matrices at the level (penguin's lossless
-/// packs where none is), the experts lossless at penguin and in a lossy level's codes at the others. Condor's own engine (deleted in R3d) ran no level of the case: the family is held to
-/// the CPU reference of the kinds, not to that engine's bits (its kestrel rows on an RTX 4080 SUPER are its record, tests/fixtures/qwen4x_condor_rows.json.gz, which
+/// packs where none is), the experts lossless at penguin and in a lossy level's codes at the others. Ibis's own engine (deleted in R3d) ran no level of the case: the family is held to
+/// the CPU reference of the kinds, not to that engine's bits (its kestrel rows on an RTX 4080 SUPER are its record, tests/fixtures/qwen4x_ibis_rows.json.gz, which
 /// the reference's own test reads), and `paritycheck` holds the executor to the reference alone. The penguin fixture's bound is the kind's (the Qwen3.5
 /// layout's fixture's: KL mean 1e-4, max 2.5e-4), and the case asks to be held on its routers' choices (`Case::on_choices`): the random model's 16 experts, 4 a token,
 /// leave choices within 1e-2 of the next expert (`reference::ffn::margin`), which a bf16 engine may take either way, and one taken the other way moves its row and
@@ -3174,7 +3174,7 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
 // ---- the description path against the CPU reference on its own choices, layer by layer (R3b, #137; R3d, #140)
 
 /// The cases `paritycheck` takes: (case, the description path). (R3b retired Qwen3.5's, Gemma 4's and Nemotron-H's hand-written engines on their parity
-/// records, #410 and the R3b pull requests; R3d Condor's, the last, once the executor served its model.)
+/// records, #410 and the R3b pull requests; R3d Ibis's, the last, once the executor served its model.)
 type ParityCase = (&'static str, fn(&Path, &str) -> Result<Box<dyn Run>>);
 
 fn parity_cases() -> Vec<ParityCase> {
@@ -3203,8 +3203,8 @@ fn qwen4x_desc(dir: &Path, level: &str) -> Result<Box<dyn Run>> {
 /// Printed beside them and not required: each row's KL against the reference's own choices (never left out); its residual after each layer against the
 /// reference's; and what the executor's first choice apart leaves in the rows after it, by the kind of state that carries it (`carry_lines`). Exit 1
 /// where a requirement fails. With `--choice ROW:LAYER` no engine runs: the reference alone takes the nearest other choice in that row's pass and layer,
-/// and the same lines say what it leaves (any machine, no GPU). (Condor's own engine ran beside it here until it was deleted: its record is
-/// tests/fixtures/qwen4x_condor_rows.json.gz, which `runtime::describe_tests` holds the reference to.)
+/// and the same lines say what it leaves (any machine, no GPU). (Ibis's own engine ran beside it here until it was deleted: its record is
+/// tests/fixtures/qwen4x_ibis_rows.json.gz, which `runtime::describe_tests` holds the reference to.)
 pub fn parity(a: &crate::args::Args) -> Result<()> {
     let want: Vec<&str> = a.pos.iter().skip(1).map(String::as_str).collect();
     let pairs: Vec<ParityCase> = parity_cases().into_iter().filter(|p| want.is_empty() || want.contains(&p.0)).collect();
@@ -8077,7 +8077,7 @@ fn replies_digest(tokens: &[Vec<u32>], logits: &[Vec<u32>]) -> String {
 }
 
 /// `usercheck CASE [--level L] [--users N] [--tokens T] [--dir DIR [--places N [--mode M] [--device-plan] | --ctx plan]] | --ctx C] [--prompt-tokens P] [--stagger D] [--pack P [--precise]]` (gemma4, qwen35, muse, kimi, glm, qwen4x, qwen4x-s2): the case's random model on the
-/// description executor (or the model in DIR, with `--places` its experts in the expert cache, with `--ctx plan` as `serve --users N` plans and loads it (a model larger than the GPU: its experts in the expert cache, every user's keys, values and states first), with `--pack` Condor's from its pack of codebook experts; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
+/// description executor (or the model in DIR, with `--places` its experts in the expert cache, with `--ctx plan` as `serve --users N` plans and loads it (a model larger than the GPU: its experts in the expert cache, every user's keys, values and states first), with `--pack` Ibis's from its pack of codebook experts; with `--ctx` a context of C tokens; with `--prompt-tokens` prompts of P (k + 1) / N tokens), each of N prompts replied to alone as `run` replies (the reference), then by the scheduler (src/dynamic/rows.rs) alone, then all at once. Alone through
 /// the scheduler every reply is the reference, token for token; at once too where GLYD_ENGINE_BATCH_PREFILL=0 (prompts one a pass, decode steps of the rows that decode: 16 or fewer here, whose bits
 /// are each row's own pass's). With prompts run together the replies that differ are counted, not refused (a step of more than 16 rows is another kernel's; a random model's near ties turn on its last
 /// bits: `roundcheck` measures the logits); their tokens and sample logits are printed as one digest, which runs held to the same bits compare (GLYD_TABLES=gpu against
@@ -8251,7 +8251,7 @@ pub fn users_check(a: &crate::args::Args) -> Result<()> {
         }
         (Some(d), _) => {
             let o = DynOpts { ctx: (len(users - 1) + tokens + 64).next_multiple_of(256), chunk: 256, graph: true, device: 0, layout };
-            // (--pack P [--precise]: Condor's experts from its pack of codebook rows in the expert cache)
+            // (--pack P [--precise]: Ibis's experts from its pack of codebook rows in the expert cache)
             let e = match a.flag("pack") {
                 Some(p) if case == "qwen4x" => crate::dynamic::qwen4x::load_pack(Path::new(d), Path::new(p), a.has("precise"), users, &o)?,
                 Some(_) => return err("--pack: the qwen4x case's pack of experts"),
