@@ -82,6 +82,11 @@ pub const MIMO: Convention = Convention { name: "MiMo V2", unread: &["audio_enco
 /// LFM's: Hugging Face's, the norm after the last layer under the name `embedding_norm` (it norms no embedding: the head reads it), and no towers.
 pub const LFM: Convention = Convention { name: "LFM", final_norm: "{p}embedding_norm.weight", unread: &[], ..HF };
 
+/// Ling's (the `bailing_hybrid` text model under `model.`, in its vision-language wrapper too): Hugging Face's, the embedding under the name
+/// `word_embeddings`; the vision tower and its projector into the text model's width, which the text model does not run. Its draft layers follow the
+/// model's under the same names (`model.layers.{L}.`) and are read as draft heads.
+pub const LING: Convention = Convention { name: "Ling", embed: "{p}word_embeddings.weight", unread: &["model.visual.", "linear_proj."], ..HF };
+
 /// Kimi-K3's (the `kimi_linear` text model under `language_model.`), with the depth mix's output roles.
 pub const KIMI: Convention = Convention {
     name: "Kimi linear",
@@ -475,6 +480,49 @@ pub mod part {
         ("shared_up", "block_sparse_moe.shared_experts.up_proj.weight"),
         ("shared_down", "block_sparse_moe.shared_experts.down_proj.weight"),
     ];
+
+    // ---- Ling: a layer's mixer under `attention` (the Kimi delta attention or the latent attention), the experts' choice bias `expert_bias`
+    /// Kimi delta attention with every product at its full rank: q, k, v, o, the forget gate `f_proj`, the output gate `g_proj`, beta, the three
+    /// convolutions, A_log, dt_bias and the gated norm.
+    pub const LING_KDA: Roles = &[
+        ("q", "attention.q_proj.weight"),
+        ("k", "attention.k_proj.weight"),
+        ("v", "attention.v_proj.weight"),
+        ("o", "attention.o_proj.weight"),
+        ("decay", "attention.f_proj.weight"),
+        ("gate", "attention.g_proj.weight"),
+        ("beta", "attention.b_proj.weight"),
+        ("conv", "attention.q_conv1d.weight|attention.k_conv1d.weight|attention.v_conv1d.weight"),
+        ("a_log", "attention.A_log"),
+        ("dt_bias", "attention.dt_bias"),
+        ("norm", "attention.o_norm.weight"),
+    ];
+    /// The latent attention: q as one product (or in a low rank), the key-value latent, the output gate (`g` [heads, hidden] where it is a value a
+    /// head), and the output product under the name `dense`.
+    pub const LING_MLA: Roles = &[
+        ("q_a", "attention.q_a_proj.weight"),
+        ("q_a_norm", "attention.q_a_layernorm.weight"),
+        ("q_b", "attention.q_b_proj.weight"),
+        ("q", "attention.q_proj.weight"),
+        ("kv_a", "attention.kv_a_proj_with_mqa.weight"),
+        ("kv_a_norm", "attention.kv_a_layernorm.weight"),
+        ("kv_b", "attention.kv_b_proj.weight"),
+        ("g", "attention.g_proj.weight"),
+        ("o", "attention.dense.weight"),
+    ];
+    /// Sigmoid-routed experts with a choice bias and one shared MLP (the shared one before the routed ones, as `MOE`).
+    pub const LING_MOE: Roles = &[
+        ("router", "mlp.gate.weight"),
+        ("choice_bias", "mlp.gate.expert_bias"),
+        ("shared_gate", "mlp.shared_experts.gate_proj.weight"),
+        ("shared_up", "mlp.shared_experts.up_proj.weight"),
+        ("shared_down", "mlp.shared_experts.down_proj.weight"),
+        ("experts_gate_up", "mlp.experts.{E}.gate_proj.weight|mlp.experts.{E}.up_proj.weight"),
+        ("experts_down", "mlp.experts.{E}.down_proj.weight"),
+    ];
+    /// A draft head's own roles in a layer after the model's (`kinds::MtpInput::Joined`).
+    pub const LING_MTP: Roles =
+        &[("eh_proj", "eh_proj.weight"), ("norm_embed", "enorm.weight"), ("norm_hidden", "hnorm.weight"), ("final_norm", "final_layernorm.weight")];
 
     // ---- Muse Spark: gated residuals, the gated attention output, the latent experts stacked
     pub const MUSE_ATTN: Roles = &[

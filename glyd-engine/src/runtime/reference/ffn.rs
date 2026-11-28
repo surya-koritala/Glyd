@@ -3,12 +3,13 @@
 
 use super::{gated, matvec_w, norm::norm, sigmoid, softmax, softplus, Params};
 use crate::ffi::{err, Result};
-use crate::runtime::kinds::{Mlp, Moe, Router, RouterScore};
+use crate::runtime::kinds::{Clamp, Mlp, Moe, Router, RouterScore};
 
-/// act(gate) * up, or act(up), from a gated MLP's two sums, with the SwiGLU limits.
+/// act(gate) * up, or act(up), from a gated MLP's two sums, with the SwiGLU limits (`Clamp`: the gate held before its activation, or the activated gate).
 fn activate(m: &Mlp, g: Option<f32>, u: f32) -> f32 {
     match (g, m.clamp) {
-        (Some(g), Some(l)) => gated(m.act, g.min(l), u.clamp(-l, l)),
+        (Some(g), Some(Clamp::Gate(l))) => gated(m.act, g.min(l), u.clamp(-l, l)),
+        (Some(g), Some(Clamp::Activated(l))) => super::act(m.act, g).min(l) * u.clamp(-l, l),
         (Some(g), None) => gated(m.act, g, u),
         (None, _) => super::act(m.act, u),
     }
@@ -318,8 +319,16 @@ mod tests {
 
     #[test]
     fn activations() {
-        let m = Mlp { act: Act::Silu, gated: true, bias: false, clamp: Some(1.0) };
+        let m = Mlp { act: Act::Silu, gated: true, bias: false, clamp: Some(Clamp::Gate(1.0)) };
         assert_eq!(activate(&m, Some(3.0), -5.0), -super::super::silu(1.0));
+        // (the limit on the activated gate, Ling's: silu(3) is over 1 and held to it, where the gate held first gives silu(1); under the limit the two agree,
+        // and the up is held both ways in both)
+        let after = Mlp { clamp: Some(Clamp::Activated(1.0)), ..m };
+        assert_eq!(activate(&after, Some(3.0), -5.0), -1.0);
+        assert_eq!(activate(&after, Some(3.0), 0.25), 0.25);
+        assert_eq!(activate(&after, Some(0.5), 0.25), activate(&m, Some(0.5), 0.25));
+        assert_eq!(activate(&after, Some(-2.0), 7.0), super::super::silu(-2.0));
+        assert_eq!((format!("{:?}", m.clamp), format!("{:?}", after.clamp)), ("Some(1.0)".to_string(), "Some(Activated(1.0))".to_string()));
         let k = Mlp { act: Act::Situ { beta: 4.0, linear: 25.0 }, ..m };
         // the kimi_ref formula
         let want = 4.0 * (0.5f32 / 4.0).ltanh() * sigmoid(0.5) * 25.0 * (2.0f32 / 25.0).ltanh();

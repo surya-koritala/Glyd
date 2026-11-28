@@ -220,7 +220,7 @@ pub enum GateFrom {
     /// Interleaved with the queries in `q`: per head, head_dim query rows then head_dim gate rows (Qwen3.5/3.8 `q_proj`).
     InQuery,
     /// Its own product of one value a head, role `g` [heads, hidden]: every channel of a head's output times the head's one gate (LFM's
-    /// `self_attn.gate_proj`). On plain attention (`Attn`) alone.
+    /// `self_attn.gate_proj` on plain attention, Ling's `attention.g_proj` on the latent attention: its "head_wise" gate).
     Head,
 }
 
@@ -373,8 +373,8 @@ impl std::fmt::Debug for Attn {
 ///
 /// Roles: `q` [heads * (nope + rope_dim), hidden] or with `q_lora` `q_a` [q_lora, hidden], `q_a_norm` [q_lora], `q_b` [heads * (nope +
 /// rope_dim), q_lora]; `kv_a` [kv_lora + rope_dim, hidden], `kv_a_norm` [kv_lora], `kv_b` [heads * (nope + v_dim), kv_lora], `o` [hidden,
-/// heads * v_dim]; `g` [heads * v_dim, hidden] with a gate. The cache holds per token the normed latent and the shared key part
-/// (kv_lora + rope_dim values); `absorbed` names how a backend computes it (the same function).
+/// heads * v_dim]; `g` [heads * v_dim, hidden] with a gate ([heads, hidden] with a `Head` one). The cache holds per token the normed latent and the
+/// shared key part (kv_lora + rope_dim values); `absorbed` names how a backend computes it (the same function).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mla {
     pub heads: usize,
@@ -577,8 +577,50 @@ pub struct Mlp {
     pub act: Act,
     pub gated: bool,
     pub bias: bool,
-    /// SwiGLU limits: the gate clamped above and the up both ways (DeepSeek-V4).
-    pub clamp: Option<f32>,
+    /// SwiGLU limits: the gate held to the limit above and the up both ways (`Clamp`: where the gate is held).
+    pub clamp: Option<Clamp>,
+}
+
+/// A gated MLP's SwiGLU limit l: the up is clamp(up, -l, l) in both forms; the gate is held to l before its activation or after it, which are two
+/// functions (silu(l) is under l).
+#[derive(Clone, Copy, PartialEq)]
+pub enum Clamp {
+    /// act(min(gate, l)): the gate before its activation (DeepSeek-V4's `swiglu_limit`, GLM-5.3-Flash's).
+    Gate(f32),
+    /// min(act(gate), l): the activated gate (Ling's `expert_swiglu_limit_list` and `share_expert_swiglu_limit_list`).
+    Activated(f32),
+}
+
+impl Clamp {
+    /// The limit, whichever value of the gate it holds.
+    pub fn limit(&self) -> f32 {
+        match *self {
+            Clamp::Gate(l) | Clamp::Activated(l) => l,
+        }
+    }
+
+    /// The limit of the form the executor's kernels compute (the gate before its activation); the other form is refused by its name.
+    pub fn before(c: Option<Clamp>) -> crate::ffi::Result<Option<f32>> {
+        match c {
+            None => Ok(None),
+            Some(Clamp::Gate(l)) => Ok(Some(l)),
+            Some(Clamp::Activated(l)) => crate::ffi::err(format!("{}: {l}", Clamp::ACTIVATED_NOT_RUN)),
+        }
+    }
+
+    /// The refusal of a SwiGLU whose limit holds the activated gate: the CPU reference computes it, the executor's kernels hold the gate before its activation.
+    pub const ACTIVATED_NOT_RUN: &'static str = "a SwiGLU limit on the activated gate (min(silu(gate), limit)), which the executor does not run yet";
+}
+
+/// The limit alone where the gate is held before its activation: descriptions of that form read as they did when the limit was a number (the digests of
+/// tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Clamp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Clamp::Gate(l) => write!(f, "{l:?}"),
+            Clamp::Activated(l) => write!(f, "Activated({l:?})"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -763,7 +805,9 @@ impl Body {
         Some(match self {
             Body::Mixer(Mixer::Attention(_)) => &[&["q", "k", "v"], &["o"]],
             Body::Mixer(Mixer::Linear(l)) if l.kind == LinearKind::GatedDeltaNet => &[&["qkv", "gate"], &["beta", "decay"], &["o"]],
-            Body::Mixer(Mixer::Linear(_)) => &[&["q", "k", "v"], &["o"], &["decay_a"], &["decay_b"], &["gate"], &["gate_a"], &["gate_b"], &["beta"]],
+            Body::Mixer(Mixer::Linear(_)) => {
+                &[&["q", "k", "v"], &["o"], &["decay"], &["decay_a"], &["decay_b"], &["gate"], &["gate_a"], &["gate_b"], &["beta"]]
+            }
             Body::Mixer(Mixer::Mla(_)) => &[&["q_a"], &["q_b"], &["q"], &["kv_a"], &["kv_b"], &["g"], &["o"]],
             Body::Mixer(Mixer::Mamba2(_) | Mixer::ShortConv(_)) => &[&["in"], &["o"]],
             Body::Ffn(Ffn::Mlp(_)) => &[&["gate", "up"], &["down"]],

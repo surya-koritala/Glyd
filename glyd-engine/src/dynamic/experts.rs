@@ -129,6 +129,8 @@ pub fn cfg(m: &kinds::Moe, hidden: usize, inter: usize) -> Result<MoeCfg> {
     if r.logit_scale != 1.0 && normed(m).is_none() {
         return err(format!("experts of {m:?}: a logit scale is the router's of experts whose outputs are normed"));
     }
+    // (the SwiGLU limit the kernels compute holds the gate before its activation; the limit on the activated gate is refused by its name)
+    let limit = kinds::Clamp::before(m.expert.clamp).map_err(|e| e.context(&format!("experts of {:?}", m.expert)))?;
     let scoring = match r.score {
         RouterScore::Softmax => Scoring::Softmax,
         RouterScore::Sigmoid => Scoring::Sigmoid,
@@ -142,7 +144,7 @@ pub fn cfg(m: &kinds::Moe, hidden: usize, inter: usize) -> Result<MoeCfg> {
     }
     let act = match (m.expert.act, m.expert.gated, normed(m)) {
         (kinds::Act::Silu, true, Some(n)) if n.kind == NormKind::Rms && n.weight == NormWeight::InputPlusOne && m.shared.is_none() => {
-            Act::SwiGlu { limit: Some(m.expert.clamp.unwrap_or(f32::INFINITY)) }
+            Act::SwiGlu { limit: Some(limit.unwrap_or(f32::INFINITY)) }
         }
         (_, _, Some(n)) => {
             return err(format!(
@@ -150,7 +152,7 @@ pub fn cfg(m: &kinds::Moe, hidden: usize, inter: usize) -> Result<MoeCfg> {
                 m.expert
             ))
         }
-        (kinds::Act::Silu, true, None) => Act::SwiGlu { limit: m.expert.clamp },
+        (kinds::Act::Silu, true, None) => Act::SwiGlu { limit },
         (kinds::Act::GeluTanh, true, None) if m.expert.clamp.is_none() => Act::GeGlu,
         (kinds::Act::Relu2, false, None) if m.expert.clamp.is_none() => Act::Relu2,
         (kinds::Act::Situ { beta, linear }, true, None) if m.expert.clamp.is_none() => Act::Situ { beta, linear },
@@ -1819,7 +1821,7 @@ mod tests {
         c.check().unwrap();
         let mut g = qwen();
         g.router = Router { score: RouterScore::Sigmoid, bias: true, scale: 2.5, top_k: 8, ..g.router };
-        (g.expert.clamp, g.shared, g.shared_gate) = (Some(10.0), None, false);
+        (g.expert.clamp, g.shared, g.shared_gate) = (Some(kinds::Clamp::Gate(10.0)), None, false);
         let c = super::cfg(&g, 4096, 2048).unwrap();
         assert_eq!((c.router.scoring, c.router.scale, c.router.bf16_logits, c.act), (Scoring::Sigmoid, 2.5, false, Act::SwiGlu { limit: Some(10.0) }));
     }

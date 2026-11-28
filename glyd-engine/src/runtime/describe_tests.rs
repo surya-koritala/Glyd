@@ -1886,7 +1886,7 @@ fn deepseek_v41_flashs_published_config_describes() {
     let Body::Ffn(Ffn::Moe(m)) = &h.blocks[1].body else { panic!() };
     assert_eq!((h.blocks.len(), m.experts, m.router.top_k, h.dspark.as_ref().unwrap().targets.clone()), (6, 128, 3, vec![37, 38, 39]));
     let Body::Ffn(Ffn::Moe(m)) = &d.desc.blocks[1].body else { panic!() };
-    assert_eq!((m.experts, m.router.top_k, m.router.logit_scale, m.router.scale, m.expert.clamp), (384, 6, 1.0, 1.5, Some(10.0)));
+    assert_eq!((m.experts, m.router.top_k, m.router.logit_scale, m.router.scale, m.expert.clamp), (384, 6, 1.0, 1.5, Some(super::kinds::Clamp::Gate(10.0))));
 }
 
 /// DeepSeek-V4.1's Engram keys that are no model's are refused by name, on the path a user's config.json takes: a list of layers that is not one (it was read as
@@ -2911,4 +2911,406 @@ fn lfm3_on_the_reference_is_causal_keeps_its_taps_and_steps_as_it_prompts() {
     assert_ne!(rows[6], run(&lfm_tiny(&sorts, serde_json::json!({"use_attention_gate": false})), &a)[6], "the gate changes the answer");
     assert_ne!(rows[6], run(&lfm_tiny(&sorts, serde_json::json!({"use_sandwich_norm": false})), &a)[6], "the second norms change it");
     assert_ne!(rows[6], run(&lfm_tiny(&sorts, serde_json::json!({"conv_bias": true})), &a)[6], "the convolution's biases change it");
+}
+
+/// Ling: the released Ling-3.2-air (its recorded header) describes as 42 layers on a plain residual. Its mixers are 35 Kimi delta attentions (32 heads of
+/// 128, a convolution of 4 taps a product, the bounded decay at -5, a sigmoid-gated norm) and 7 latent attentions, the last layer of every six (32
+/// heads, a latent of 512, 128 + 64 query channels of which the 64 turn in interleaved pairs at 6,000,000, values of 128, a sigmoid gate of one value a
+/// head). Its first two feed-forwards are gated MLPs and the other 40 are 512 experts in 8 groups of which 4 are kept, the best 8 divided by their sum
+/// and times 2.5, beside a shared MLP; the experts' SwiGLU limit holds the activated gate, 4 on the last seven layers, and the shared MLP's 5 then 7 on
+/// the last eight. Its draft layer is a draft head of a latent attention and experts with no limit. Every shape is the checkpoint's, every FP8 tensor
+/// of the header has its scales named and no other has, and the checkpoint is read whole but the vision tower and its projector.
+#[test]
+fn ling_3_2_air_describes_its_two_mixers_its_experts_and_its_draft_head() {
+    use super::kinds::{Act, Body, Clamp, Decay, Ffn, GateFrom, LinearKind, Mixer, MtpInput, OutGate, Rope, RopeStyle, RouterScore};
+    let h = fixture("headers/Ling-3.2-air.json");
+    let cfg: serde_json::Value = serde_json::from_str(h["config"].as_str().unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((d.desc.blocks.len(), d.desc.head.tied, d.desc.final_norm.eps, d.desc.embed.scale, d.fp8_block), (84, false, 1e-6, 1.0, Some(128)));
+    assert_eq!((d.desc.hidden, d.desc.vocab, d.convention), (2560, 157184, "Ling"));
+    let rope = Rope { style: RopeStyle::Interleaved, ..Rope::plain(6e6, 64) };
+    assert_eq!(d.desc.rope, Some(rope.clone()));
+    let gate = Some(OutGate { act: Act::Sigmoid, from: GateFrom::Head, norm: None });
+    let (mut delta, mut latent, mut dense, mut sparse) = (0, 0, 0, 0);
+    for (i, b) in d.desc.blocks.iter().enumerate() {
+        let l = i / 2;
+        assert!(b.norm_out.is_none() && b.residual == super::kinds::Residual::Add, "block {i}");
+        match &b.body {
+            Body::Mixer(Mixer::Linear(x)) => {
+                assert!(l % 6 != 5, "layer {l}");
+                assert_eq!((x.kind, x.k_heads, x.v_heads, x.k_dim, x.v_dim, x.conv), (LinearKind::KimiDelta, 32, 32, 128, 128, 4), "layer {l}");
+                assert_eq!((x.decay, x.gate_act, x.norm_eps), (Decay::Bounded(-5.0), Act::Sigmoid, 1e-6), "layer {l}");
+                delta += 1;
+            }
+            Body::Mixer(Mixer::Mla(x)) => {
+                assert!(l % 6 == 5, "layer {l}");
+                assert_eq!((x.heads, x.q_lora, x.kv_lora, x.nope, x.rope_dim, x.v_dim), (32, None, 512, 128, 64, 128), "layer {l}");
+                assert_eq!((x.rope.as_ref(), x.gate, x.scale, x.kv_norm.eps), (Some(&rope), gate, 192f32.powf(-0.5), 1e-6), "layer {l}");
+                assert!(x.indexer.is_none(), "layer {l}");
+                latent += 1;
+            }
+            Body::Ffn(Ffn::Mlp(m)) => {
+                assert!(l < 2 && m.gated && !m.bias && m.act == Act::Silu && m.clamp.is_none(), "layer {l}");
+                dense += 1;
+            }
+            Body::Ffn(Ffn::Moe(m)) => {
+                let r = &m.router;
+                assert_eq!((m.experts, r.top_k, r.groups, r.renorm, r.bias, r.scale), (512, 8, Some((8, 4)), true, true, 2.5), "layer {l}");
+                assert!(r.score == RouterScore::Sigmoid && !r.hash && m.latent.is_none() && !m.shared_gate, "layer {l}");
+                // (the limits a layer, as the config's two lists say them)
+                let limit = |key: &str| cfg["text_config"][key][l].as_f64().filter(|x| *x != 0.0).map(|x| Clamp::Activated(x as f32));
+                assert_eq!(
+                    (m.expert.clamp, m.shared.unwrap().clamp),
+                    (limit("expert_swiglu_limit_list"), limit("share_expert_swiglu_limit_list")),
+                    "layer {l}"
+                );
+                assert_eq!(m.expert.clamp, (l >= 35).then_some(Clamp::Activated(4.0)), "layer {l}");
+                assert_eq!(m.shared.unwrap().clamp, (l >= 34).then_some(Clamp::Activated(if l >= 40 { 7.0 } else { 5.0 })), "layer {l}");
+                sparse += 1;
+            }
+            _ => panic!("block {i}"),
+        }
+    }
+    assert_eq!((delta, latent, dense, sparse), (35, 7, 2, 40));
+    // (the draft layer: one head of the joined form, a latent attention with its gate a head and the experts, past the limit lists)
+    assert_eq!((d.desc.mtp.len(), d.mtp.len(), d.mtp_layers), (1, 1, 1));
+    let head = &d.desc.mtp[0];
+    assert!(head.input == MtpInput::Joined && head.dspark.is_none() && head.blocks.len() == 2);
+    assert!(matches!(&head.blocks[0].body, Body::Mixer(Mixer::Mla(x)) if x.gate == gate && x.heads == 32));
+    assert!(matches!(&head.blocks[1].body, Body::Ffn(Ffn::Moe(m)) if m.expert.clamp.is_none() && m.shared.unwrap().clamp.is_none() && m.experts == 512));
+    for n in ["model.layers.42.eh_proj.weight", "model.layers.42.final_layernorm.weight", "model.layers.42.attention.g_proj.weight"] {
+        assert!(d.names().contains(n), "{n}");
+    }
+    assert_eq!((d.embed.as_str(), d.final_norm.as_str(), d.head.as_deref()), ("model.word_embeddings.weight", "model.norm.weight", Some("lm_head.weight")));
+    // every tensor the description reads, at the checkpoint's shape and in the stored format the description says
+    let have = header_names(&h);
+    let tensors = header_tensors(&h);
+    let scale_names: BTreeSet<&String> = d.scales.values().collect();
+    let (mut fp8, mut plain) = (0, 0);
+    for n in d.names() {
+        let (dtype, shape, _) = &tensors[&n];
+        match (dtype.as_str(), d.scales.get(&n)) {
+            // (an FP8 matrix: its scales a block of 128 x 128, the last row and column of blocks what is left)
+            ("F8_E4M3", Some(s)) => {
+                assert_eq!((s, d.shapes.get(&n)), (&format!("{n}_scale_inv"), Some(shape)), "{n}");
+                assert_eq!(tensors[s].1, [shape[0].div_ceil(128), shape[1].div_ceil(128)], "{s}");
+                fp8 += 1;
+            }
+            (_, None) if scale_names.contains(&n) => {}
+            (_, None) => {
+                // (not FP8: the bf16 tensors, and the fp32 ones the release keeps so: the choice biases, A_log, dt_bias)
+                let fp32 = n.ends_with("expert_bias") || n.ends_with("A_log") || n.ends_with("dt_bias");
+                assert_eq!(dtype, if fp32 { "F32" } else { "BF16" }, "{n}: with no scales named");
+                assert_eq!(d.shapes.get(&n), Some(shape), "{n}");
+                plain += 1;
+            }
+            (t, s) => panic!("{n}: {t}, scales {s:?}"),
+        }
+    }
+    // (35 delta attentions of six FP8 products and 7 latent attentions of four, the draft layer's of five with its gate; two dense MLPs and 41 shared
+    // ones of three matrices; 41 layers of 512 experts of three)
+    assert_eq!(fp8, 35 * 6 + 7 * 4 + 5 + 2 * 3 + 41 * 3 + 41 * 512 * 3);
+    assert_eq!(d.names().len(), 2 * fp8 + plain);
+    // (as released, bf16: the model's latent attentions' gates and every delta attention's beta, the routers, a draft head's joined product)
+    for n in
+        ["model.layers.5.attention.g_proj.weight", "model.layers.0.attention.b_proj.weight", "model.layers.2.mlp.gate.weight", "model.layers.42.eh_proj.weight"]
+    {
+        assert!(!d.scales.contains_key(n) && tensors[n].0 == "BF16", "{n}");
+    }
+    assert_eq!(tensors["model.layers.42.attention.g_proj.weight"].0, "F8_E4M3");
+    assert_eq!(d.shapes["model.layers.5.attention.g_proj.weight"], [32, 2560]);
+    assert_eq!(d.shapes["model.layers.0.attention.k_conv1d.weight"], [4096, 1, 4]);
+    assert_eq!(d.unread, ["model.visual.", "linear_proj."]);
+    assert!(have.iter().any(|n| n.starts_with("model.visual.")) && have.contains("linear_proj.0.weight"));
+    assert!(!d.names().iter().any(|n| n.starts_with("model.visual.") || n.starts_with("linear_proj.")));
+    d.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+    // (described, not run: the executor names what it lacks)
+    let e = crate::dynamic::split::loader(&d).err().map(|e| e.msg).unwrap_or_default();
+    assert!(e.contains("Kimi delta attention on plain residuals"), "{e}");
+}
+
+/// A small config of the Ling layout in its wrapper with `keys` over its text config: five layers in groups of two (layers 1 and 3 latent attentions,
+/// and layer 4, past the last whole group), the first layer's feed-forward dense and the others 8 experts in 2 groups; a limit on the activated gate
+/// on the last two layers.
+fn ling_tiny(keys: serde_json::Value) -> serde_json::Value {
+    let mut text = serde_json::json!({
+        "model_type": "bailing_hybrid", "hidden_size": 32, "num_hidden_layers": 5, "vocab_size": 61, "rms_norm_eps": 1e-6, "max_position_embeddings": 4096,
+        "num_attention_heads": 2, "num_key_value_heads": 2, "head_dim": 8, "short_conv_kernel_size": 3, "layer_group_size": 2,
+        "no_kda_lora": true, "kda_safe_gate": true, "kda_lower_bound": -5.0,
+        "q_lora_rank": null, "kv_lora_rank": 12, "qk_nope_head_dim": 8, "qk_rope_head_dim": 4, "v_head_dim": 6, "rope_theta": 6000000,
+        "mrope_section": [0, 1, 1], "partial_rotary_factor": 0.5, "use_mla_nope": false, "gated_attention_proj_granularity_type": "head_wise",
+    });
+    // (the feed-forward's keys, and the earlier attention's that the layout does not read)
+    let ffn = serde_json::json!({
+        "intermediate_size": 48, "first_k_dense_replace": 1, "num_experts": 8, "num_experts_per_tok": 2, "moe_intermediate_size": 16,
+        "moe_shared_expert_intermediate_size": 16, "n_group": 2, "topk_group": 1, "routed_scaling_factor": 2.5, "norm_topk_prob": true,
+        "score_function": "sigmoid", "router_dtype": "fp32", "moe_router_enable_expert_bias": true,
+        "expert_swiglu_limit_list": [0, 0, 0, 0.05, 0.05], "share_expert_swiglu_limit_list": [0, 0, 0, 0.02, 0.04],
+        "use_qk_norm": true, "group_norm_size": 1, "linear_silu": true, "rotary_dim": 64,
+    });
+    for more in [ffn, keys] {
+        text.as_object_mut().unwrap().extend(more.as_object().unwrap().clone());
+    }
+    serde_json::json!({
+        "architectures": ["BailingMoeV3VLForConditionalGeneration"], "model_type": "bailing_moe_v3_vl", "tie_word_embeddings": false, "norm_query_embeds": false,
+        "image_token_id": 60, "vision_config": {"model_type": "qwen3_moe_vit", "depth": 2}, "text_config": text,
+    })
+}
+
+/// The Ling builder reads a config as the release's code does: the latent attentions the last layer of each group and every layer past the last whole
+/// group; a gate a head or a channel; the queries one product or a low rank; the bounded decay or the softplus one; a limit a layer where its list has
+/// one that is not 0; draft layers as heads past the lists; a quantization_config's FP8 matrices named with their scales. A key whose default the
+/// release's code and transformers' give differently is asked for, and what the builder does not know is refused by name.
+#[test]
+fn ling_reads_its_config_as_the_releases_code_does() {
+    use super::describe::Source;
+    use super::kinds::{Body, Clamp, Decay, Ffn, GateFrom, Mixer};
+    let ok = |keys: serde_json::Value| describe(&ling_tiny(keys)).unwrap_or_else(|e| panic!("{}", e.msg));
+    let d = ok(serde_json::json!({}));
+    let sorts: Vec<bool> = d.desc.blocks.iter().step_by(2).map(|b| matches!(b.body, Body::Mixer(Mixer::Mla(_)))).collect();
+    assert_eq!(sorts, [false, true, false, true, true], "the last of each group of two, and the layer past the last whole group");
+    assert!(matches!(&d.desc.blocks[0].body, Body::Mixer(Mixer::Linear(x)) if x.decay == Decay::Bounded(-5.0) && (x.k_heads, x.k_dim, x.conv) == (2, 8, 3)));
+    assert!(matches!(&d.desc.blocks[1].body, Body::Ffn(Ffn::Mlp(m)) if m.clamp.is_none()));
+    let moe = |d: &super::describe::Described, l: usize| match &d.desc.blocks[2 * l + 1].body {
+        Body::Ffn(Ffn::Moe(m)) => m.clone(),
+        b => panic!("layer {l}: {b:?}"),
+    };
+    assert_eq!(
+        (moe(&d, 2).expert.clamp, moe(&d, 3).expert.clamp, moe(&d, 4).shared.unwrap().clamp),
+        (None, Some(Clamp::Activated(0.05)), Some(Clamp::Activated(0.04)))
+    );
+    assert_eq!((moe(&d, 1).router.groups, moe(&d, 1).router.renorm, moe(&d, 1).router.scale), (Some((2, 1)), true, 2.5));
+    assert_eq!(d.shapes["model.layers.1.attention.g_proj.weight"], [2, 32]);
+    assert_eq!(d.shapes["model.layers.0.attention.g_proj.weight"], [16, 32]);
+    assert_eq!(d.shapes["model.layers.1.attention.q_proj.weight"], [24, 32]);
+    assert!(d.desc.mtp.is_empty() && d.scales.is_empty() && d.fp8_block.is_none() && d.desc.rope.as_ref().unwrap().mrope.is_none());
+    assert!(
+        matches!(&d.blocks[0].iter().find(|(r, _)| r == "conv").unwrap().1, Source::Rows(v) if v.len() == 3 && v[1] == "model.layers.0.attention.k_conv1d.weight")
+    );
+    // (the text model alone, with no wrapper: the same description)
+    let alone = describe(&ling_tiny(serde_json::json!({}))["text_config"]).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!((format!("{:?}", alone.desc), alone.names()), (format!("{:?}", d.desc), d.names()));
+    // (a gate a channel; the queries in a low rank; the softplus decay; one expert a token is not divided by itself; whole groups alone)
+    let wide = ok(serde_json::json!({"gated_attention_proj_granularity_type": "element_wise"}));
+    assert!(matches!(&wide.desc.blocks[2].body, Body::Mixer(Mixer::Mla(x)) if x.gate.unwrap().from == GateFrom::Own));
+    assert_eq!(wide.shapes["model.layers.1.attention.g_proj.weight"], [12, 32]);
+    let low = ok(serde_json::json!({"q_lora_rank": 10}));
+    assert!(matches!(&low.desc.blocks[2].body, Body::Mixer(Mixer::Mla(x)) if x.q_lora == Some(10)));
+    assert_eq!(
+        (low.shapes["model.layers.1.attention.q_b_proj.weight"].clone(), low.shapes["model.layers.1.attention.q_a_layernorm.weight"].clone()),
+        (vec![24, 10], vec![10])
+    );
+    assert!(!low.names().contains("model.layers.1.attention.q_proj.weight") && !d.names().iter().any(|n| n.contains("q_a_proj")));
+    assert!(matches!(&ok(serde_json::json!({"kda_safe_gate": false})).desc.blocks[0].body, Body::Mixer(Mixer::Linear(x)) if x.decay == Decay::Softplus));
+    assert!(!moe(&ok(serde_json::json!({"num_experts_per_tok": 1})), 1).router.renorm);
+    assert_eq!(
+        ok(serde_json::json!({"num_hidden_layers": 4})).desc.blocks.iter().step_by(2).filter(|b| matches!(b.body, Body::Mixer(Mixer::Mla(_)))).count(),
+        2
+    );
+    // (lists shorter than the layers, and nulls: no limit there; a draft layer is a head past the lists, a latent attention and the experts)
+    let short = ok(serde_json::json!({"expert_swiglu_limit_list": [null, 3], "share_expert_swiglu_limit_list": null, "num_nextn_predict_layers": 2}));
+    assert_eq!((moe(&short, 1).expert.clamp, moe(&short, 2).expert.clamp, moe(&short, 4).shared.unwrap().clamp), (Some(Clamp::Activated(3.0)), None, None));
+    assert_eq!((short.desc.mtp.len(), short.mtp.len(), short.mtp_layers), (2, 2, 2));
+    assert!(
+        matches!(&short.desc.mtp[1].blocks[0].body, Body::Mixer(Mixer::Mla(_)))
+            && matches!(&short.desc.mtp[1].blocks[1].body, Body::Ffn(Ffn::Moe(m)) if m.expert.clamp.is_none())
+    );
+    assert!(short.names().contains("model.layers.6.final_layernorm.weight") && short.shapes["model.layers.5.eh_proj.weight"] == [32, 64]);
+    // (a quantization_config names the FP8 products' scales and leaves out what it lists; the convolutions, the routers' biases and a head's own roles have none)
+    let quant = serde_json::json!({"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128], "activation_scheme": "dynamic",
+        "modules_to_not_convert": ["model.visual", "lm_head", "model.word_embeddings", "model.layers.0.attention.b_proj", "model.layers.1.attention.g_proj",
+            "model.layers.1.mlp.gate"]});
+    let mut q = ling_tiny(serde_json::json!({"num_nextn_predict_layers": 1}));
+    q["quantization_config"] = quant.clone();
+    let q = describe(&q).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!(q.fp8_block, Some(128));
+    for held in [
+        "model.layers.0.attention.f_proj.weight",
+        "model.layers.0.attention.g_proj.weight",
+        "model.layers.2.attention.b_proj.weight",
+        "model.layers.1.attention.dense.weight",
+        "model.layers.3.attention.g_proj.weight",
+        "model.layers.5.attention.g_proj.weight",
+        "model.layers.0.mlp.gate_proj.weight",
+        "model.layers.1.mlp.shared_experts.up_proj.weight",
+        "model.layers.4.mlp.experts.7.down_proj.weight",
+    ] {
+        assert_eq!(q.scales.get(held), Some(&format!("{held}_scale_inv")), "{held}");
+    }
+    for left in [
+        "model.layers.0.attention.b_proj.weight",
+        "model.layers.1.attention.g_proj.weight",
+        "model.layers.1.mlp.gate.weight",
+        "model.layers.2.mlp.gate.weight",
+        "model.layers.0.attention.q_conv1d.weight",
+        "model.layers.0.attention.o_norm.weight",
+        "model.layers.5.eh_proj.weight",
+        "model.word_embeddings.weight",
+        "lm_head.weight",
+    ] {
+        assert!(q.names().contains(left) && !q.scales.contains_key(left), "{left}");
+    }
+    let refused = |c: serde_json::Value| describe(&c).err().map(|e| e.msg).unwrap_or_default();
+    for (keys, word) in [
+        (serde_json::json!({"layer_group_size": null}), "no layer_group_size"),
+        (serde_json::json!({"layer_group_size": 0}), "layer_group_size = 0"),
+        (serde_json::json!({"first_k_dense_replace": null}), "no first_k_dense_replace"),
+        (serde_json::json!({"routed_scaling_factor": null}), "no routed_scaling_factor"),
+        (serde_json::json!({"rope_theta": null}), "no rope_theta"),
+        (serde_json::json!({"kda_safe_gate": null}), "no kda_safe_gate"),
+        (serde_json::json!({"kda_lower_bound": null}), "kda_lower_bound = None"),
+        (serde_json::json!({"kda_lower_bound": 5.0}), "kda_lower_bound = Some(5.0)"),
+        (serde_json::json!({"gated_attention_proj_granularity_type": null}), "no gated_attention_proj_granularity_type"),
+        (serde_json::json!({"gated_attention_proj_granularity_type": "group_wise"}), "gated_attention_proj_granularity_type group_wise"),
+        (serde_json::json!({"no_kda_lora": false}), "no_kda_lora is not true"),
+        (serde_json::json!({"no_kda_lora": null}), "no_kda_lora is not true"),
+        (serde_json::json!({"use_mla_nope": true}), "use_mla_nope"),
+        (serde_json::json!({"rope_interleave": false}), "rope_interleave"),
+        (serde_json::json!({"rope_scaling": {"type": "yarn", "factor": 4.0}}), "rope_scaling"),
+        (serde_json::json!({"num_key_value_heads": 1}), "num_key_value_heads"),
+        (serde_json::json!({"qk_rope_head_dim": 3}), "qk_rope_head_dim = 3"),
+        (serde_json::json!({"mrope_section": [1, 1, 1]}), "mrope_section = [1,1,1]"),
+        (serde_json::json!({"mrope_section": [0, 2, 0]}), "mrope_section"),
+        (serde_json::json!({"router_dtype": "bf16"}), "router_dtype"),
+        (serde_json::json!({"score_function": "softmax"}), "score_function"),
+        (serde_json::json!({"moe_router_enable_expert_bias": false}), "moe_router_enable_expert_bias"),
+        (serde_json::json!({"norm_topk_prob": false}), "norm_topk_prob"),
+        (serde_json::json!({"n_group": 3}), "n_group = 3"),
+        (serde_json::json!({"topk_group": 3}), "topk_group = 3"),
+        (serde_json::json!({"num_shared_experts": 0}), "num_shared_experts = 0"),
+        (serde_json::json!({"expert_swiglu_limit_list": [0, -1]}), "expert_swiglu_limit_list[1] = -1"),
+        (serde_json::json!({"share_expert_swiglu_limit_list": 5}), "share_expert_swiglu_limit_list = 5"),
+        (serde_json::json!({"use_bias": true}), "use_bias"),
+        (serde_json::json!({"hidden_act": "gelu"}), "hidden_act"),
+        (serde_json::json!({"use_nGPT": false, "value_norm": false}), "config keys use_nGPT, value_norm are not understood"),
+        (serde_json::json!({"layer_types": ["full_attention"]}), "config key layer_types is not understood"),
+    ] {
+        let e = refused(ling_tiny(keys));
+        assert!(e.contains(word), "{word}: {e}");
+    }
+    // (the wrapper's own keys; a quantization of another format)
+    for (key, v, word) in [
+        ("norm_query_embeds", serde_json::json!(true), "norm_query_embeds = true"),
+        ("audio_config", serde_json::json!({}), "config key audio_config is not understood"),
+        ("quantization_config", serde_json::json!({"quant_method": "fp8", "fmt": "e4m3"}), "weight_block_size"),
+        ("quantization_config", serde_json::json!({"quant_method": "awq", "weight_block_size": [128, 128]}), "quantization awq"),
+    ] {
+        let mut c = ling_tiny(serde_json::json!({}));
+        c[key] = v;
+        let e = refused(c);
+        assert!(e.contains(word), "{word}: {e}");
+    }
+    // (no delta attention, no key of it asked: groups of one are latent attentions throughout)
+    let all = ok(serde_json::json!({"layer_group_size": 1, "kda_safe_gate": null, "no_kda_lora": null}));
+    assert!(all.desc.blocks.iter().step_by(2).all(|b| matches!(b.body, Body::Mixer(Mixer::Mla(_)))));
+}
+
+/// The Ling layout on the CPU reference, a random model of each small config (every tensor of the shape its description gives). A prompt at once and
+/// the same prompt a token at a time (the delta attentions' states and convolutions and the latent attentions' caches kept between the calls) are the
+/// same bits, and a later token changes no earlier row. The gate a head is read: with every `g_proj` of the latent attentions at zero each head's gate
+/// is a half, and the answer is, to the bit, the one of the model with no gate whose `dense` is halved. The limits are read, and on the activated gate:
+/// a limit that bites is another answer than none, a limit far above the activations is none, to the bit, and the same limit held on the gate before
+/// its activation (another family's form) is another answer. The decay's two forms differ.
+#[test]
+fn ling_on_the_reference_steps_as_it_prompts_gates_a_head_and_limits_the_activated_gate() {
+    use super::kinds::{Body, Clamp, Ffn, Mixer};
+    // (a fixed draw a tensor: its name's bytes seed it; a norm's weights near 1)
+    fn draw(n: &str, len: usize) -> Vec<f32> {
+        let mut s = n.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |a, b| (a ^ b as u64).wrapping_mul(0x0100_0000_01B3));
+        let norm = n.contains("norm");
+        (0..len)
+            .map(|_| {
+                s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                let u = ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5;
+                if norm {
+                    1.0 + 0.2 * u
+                } else {
+                    0.6 * u
+                }
+            })
+            .collect()
+    }
+    // (`edit`: a change to the description before it is loaded; `gate`: a value for every latent attention's `g_proj`, None as drawn; `dense_x`: a
+    // factor on every latent attention's output product)
+    let load = |cfg: &serde_json::Value, edit: &dyn Fn(&mut super::kinds::ModelDesc), gate: Option<f32>, dense_x: f32| -> RefModel {
+        let mut d = describe(cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+        edit(&mut d.desc);
+        let latent: BTreeSet<String> = d
+            .desc
+            .blocks
+            .iter()
+            .zip(&d.blocks)
+            .filter(|(b, _)| matches!(b.body, Body::Mixer(Mixer::Mla(_))))
+            .flat_map(|(_, r)| r.iter().filter(|(role, _)| role == "g").flat_map(|(_, s)| s.names()))
+            .collect();
+        let src = |n: &str| {
+            let shape = d.shapes.get(n)?.clone();
+            let len: usize = shape.iter().product();
+            let v = match gate {
+                Some(g) if latent.contains(n) => vec![g; len],
+                _ => draw(n, len),
+            };
+            let x = if n.ends_with(".attention.dense.weight") { dense_x } else { 1.0 };
+            Some((shape, v.into_iter().map(|v| v * x).collect()))
+        };
+        RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg))
+    };
+    let same = |_: &mut super::kinds::ModelDesc| {};
+    let run = |cfg: &serde_json::Value, toks: &[u32]| load(cfg, &same, None, 1.0).forward(toks, 0).unwrap_or_else(|e| panic!("{}", e.msg));
+    let a: [u32; 7] = [5, 9, 13, 17, 21, 25, 29];
+    let base = ling_tiny(serde_json::json!({}));
+    let rows = run(&base, &a);
+    assert_eq!((rows.len(), rows[6].len()), (7, 61));
+    assert!(rows.iter().flatten().all(|x| x.is_finite()) && rows[6].iter().any(|&x| x != rows[6][0]), "finite, and not one value");
+    // (causal, and the whole context is seen: the states and the caches carry the first token to the last row)
+    let mut later = a;
+    later[6] = 44;
+    assert_eq!(rows[..6], run(&base, &later)[..6], "a later token changes no earlier row");
+    let mut first = a;
+    first[0] = 44;
+    assert_ne!(rows[6], run(&base, &first)[6], "the last row reads the first token");
+    // (a token at a time, and a prompt then its next tokens: the same bits)
+    let mut m = load(&base, &same, None, 1.0);
+    let mut by_step = Vec::new();
+    for (t, &tok) in a.iter().enumerate() {
+        by_step.extend(m.forward(&[tok], t as u32).unwrap_or_else(|e| panic!("{}", e.msg)));
+    }
+    assert_eq!(by_step, rows, "a token at a time is the prompt");
+    let mut m = load(&base, &same, None, 1.0);
+    let mut parts = m.forward(&a[..4], 0).unwrap();
+    parts.extend(m.forward(&a[4..], 4).unwrap());
+    assert_eq!(parts, rows, "a prompt, then its next tokens");
+    // the gate a head
+    let ungated = |d: &mut super::kinds::ModelDesc| {
+        for b in d.blocks.iter_mut() {
+            if let Body::Mixer(Mixer::Mla(x)) = &mut b.body {
+                x.gate = None;
+            }
+        }
+    };
+    let halved = load(&base, &same, Some(0.0), 1.0).forward(&a, 0).unwrap();
+    assert_eq!(halved, load(&base, &ungated, None, 0.5).forward(&a, 0).unwrap(), "gates of a half are the output product halved");
+    assert_ne!(rows[6], halved[6], "the gate as drawn is not a half");
+    assert_ne!(rows[6], run(&ling_tiny(serde_json::json!({"gated_attention_proj_granularity_type": "element_wise"})), &a)[6]);
+    // the limits, on the activated gate
+    let none = ling_tiny(serde_json::json!({"expert_swiglu_limit_list": null, "share_expert_swiglu_limit_list": null}));
+    let free = run(&none, &a);
+    assert_ne!(rows[6], free[6], "a limit that bites is another answer");
+    assert_eq!(
+        free,
+        run(&ling_tiny(serde_json::json!({"expert_swiglu_limit_list": [1e9, 1e9, 1e9, 1e9, 1e9], "share_expert_swiglu_limit_list": [0, 1e9]})), &a)
+    );
+    assert_ne!(free[6], run(&ling_tiny(serde_json::json!({"share_expert_swiglu_limit_list": null})), &a)[6], "the routed experts' limit alone bites");
+    assert_ne!(free[6], run(&ling_tiny(serde_json::json!({"expert_swiglu_limit_list": null})), &a)[6], "the shared MLP's limit alone bites");
+    let before = |d: &mut super::kinds::ModelDesc| {
+        for b in d.blocks.iter_mut() {
+            if let Body::Ffn(Ffn::Moe(m)) = &mut b.body {
+                m.expert.clamp = m.expert.clamp.map(|c| Clamp::Gate(c.limit()));
+                m.shared = m.shared.map(|s| super::kinds::Mlp { clamp: s.clamp.map(|c| Clamp::Gate(c.limit())), ..s });
+            }
+        }
+    };
+    assert_ne!(rows[6], load(&base, &before, None, 1.0).forward(&a, 0).unwrap()[6], "the gate held before its activation is another function");
+    // the decay's two forms
+    assert_ne!(rows[6], run(&ling_tiny(serde_json::json!({"kda_safe_gate": false})), &a)[6]);
 }
