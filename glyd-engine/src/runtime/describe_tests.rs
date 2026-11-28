@@ -4626,3 +4626,44 @@ fn mimo_v2s_fused_matrix_as_released_in_fp8_is_its_weights_on_the_reference() {
     // (two fused matrices, the second layer's `o`, the first's dense MLP: in blocks of 8, none is read by the checkpoint's names alone)
     assert_eq!((held, by_description), (6, 6));
 }
+
+/// An MXFP4 matrix as `twins` stores one under the names a release gives the two tensors: 4-bit codes two a byte along a row, the even column in the
+/// low four bits, and a byte's power-of-two scale (2^(s - 127), here 1/32 to 1/8) a run of 32; each weight its code's E2M1 value (a sign, two bits of
+/// exponent, one of fraction, here in f64) times its run's scale.
+fn mxfp4_runs(n: &str, scales: &str, shape: &[usize], next: &mut dyn FnMut() -> u64) -> (Vec<Written>, Vec<f32>) {
+    let (rows, cols) = (shape[0], shape[1]);
+    assert_eq!(cols % 32, 0, "{n}");
+    let packed: Vec<u8> = (0..rows * cols / 2).map(|_| next() as u8).collect();
+    let s: Vec<u8> = (0..rows * cols / 32).map(|_| 122 + (next() % 3) as u8).collect();
+    let e2m1 = |c: u8| {
+        let (e, m) = (((c >> 1) & 3) as i32, (c & 1) as f64);
+        (if c & 8 != 0 { -1.0 } else { 1.0 }) * if e == 0 { m / 2.0 } else { (1.0 + m / 2.0) * 2f64.powi(e - 1) }
+    };
+    let values = (0..rows * cols).map(|i| (e2m1((packed[i / 2] >> (4 * (i % 2))) & 15) * 2f64.powi(s[i / 32] as i32 - 127)) as f32).collect();
+    let stored = vec![(n.to_string(), "U8", vec![rows as u64, cols as u64 / 2], packed), (scales.to_string(), "U8", vec![rows as u64, cols as u64 / 32], s)];
+    (stored, values)
+}
+
+/// MiMo V2 as released, on the CPU reference: a random model of the small config in the release's three stored forms (the fused matrix FP8 with a grid
+/// of scales a shard, the other products FP8 with one grid, the experts' matrices 4-bit codes two a byte under `X.weight` with a byte's scale a run of
+/// 32 under `X.weight_scale`) answers to the bit as the same weights in bf16 do. None of its quantized matrices is read by the checkpoint's names
+/// alone: each by the description's scales.
+#[test]
+fn mimo_v2_as_released_with_packed_experts_is_its_weights_on_the_reference() {
+    let cfg = mimo_tiny(serde_json::json!({"moe_intermediate_size": 32, "quantization_config": {"quant_method": "fp8", "fmt": "e4m3",
+        "weight_block_size": [8, 8], "store_dtype": "mxfp4", "mxfp4_block_size": 32, "activation_scheme": "dynamic",
+        "ignored_layers": ["model.layers.0.self_attn.o_proj"]}}));
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let st = d.stored();
+    let experts = d.scales.keys().filter(|n| n.contains(".experts.")).count();
+    assert_eq!(experts, 6 * 3);
+    let (plain, released) = twins("mimo", &cfg, &d, &|n, s, shape, next| {
+        if n.contains(".experts.") {
+            assert_eq!(s, format!("{n}_scale"));
+            return Some(mxfp4_runs(n, s, shape, next));
+        }
+        Some(fp8_shard_grids(n, s, shape, 8, st.shards.get(n).copied().unwrap_or(1), next))
+    });
+    let (held, by_description) = twins_agree(&d, &plain, &released, &[5, 9, 13, 17, 21, 25]);
+    assert_eq!((held, by_description), (experts + 6, experts + 6));
+}

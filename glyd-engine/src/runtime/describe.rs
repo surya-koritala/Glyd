@@ -1475,7 +1475,9 @@ struct MimoSort {
 ///    `mimo_v2_nextn.py`; layer j drafts step j, vLLM's `mimo_v2_mtp.py`).
 /// Stored formats (`quantization_config`, `mimo_quant`): the fused products and the dense MLPs FP8 with their block scales, which on a fused matrix
 /// start again at every shard (a shard's rows are not a whole number of blocks); `o`, the routers, the norms, the embedding and the head bf16; the
-/// routed experts MXFP4, `weight` the codes and `weight_scale` the scales, the format Kimi-K3's experts are packed in under compressed-tensors' names.
+/// routed experts MXFP4, `weight` the codes and `weight_scale` the scales, the format Kimi-K3's experts are packed in under compressed-tensors' names
+/// (two codes a byte, the even column in the low four bits, as llama.cpp's converter unpacks this release's experts). The CPU reference reads the
+/// three forms by the description's scales and shards (`Described::stored`, `formats::Stored`); the executor's loaders read none of them.
 /// Where the references differ: an unsaid `rope_theta` is 10,000 in SGLang and 1,000,000 in vLLM (SGLang's is taken); transformers' earlier class has
 /// one set of heads with twice the key heads on sliding layers and a rotary a layer type in `rope_parameters`, where this layout says each sort's keys.
 /// The audio encoder, the speech embeddings and the vision tower (`audio_config`, `vision_config`, `processor_config`, `vision_model_type`) are left

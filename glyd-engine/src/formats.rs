@@ -4,7 +4,7 @@
 //! `X.weight_scale`). A weight times a power of two is exact in f32, and in bf16 where it is in range. And a table read by rows stored at 4 bits (NF4 levels
 //! times a bf16 scale a row: `X.q4`), as v0.34.2 decoded it. Where a description names a matrix's scales (`Stored`), the scales' tensor is the one it names,
 //! whatever its suffix, and the block is the one the scales' shape and the config's `weight_block_size` give: fp32 scales a block (`X.qscale_weight` as
-//! `X.weight_scale_inv`), or a byte's power of two a run of 32 columns of a row.
+//! `X.weight_scale_inv`), or a byte's power of two a run of 32 columns of a row; and MXFP4 codes under a release's own names.
 
 use crate::ffi::{err, Error, Result};
 use glyd_gpu::safetensors::Checkpoint;
@@ -164,6 +164,9 @@ impl Stored {
     ///  - FP8 (E4M3) with fp32 scales a block (`grid_block`): each value its code's value times its block's scale, one fp32 product (`fp8_scaled_blocks`);
     ///  - FP8 with a byte's power-of-two scale (U8 or E8M0: 2^(s - 127)) a block: the product, exact, as the bf16 it is (`fp8_blocks`).
     ///
+    ///  - 4-bit codes two a byte (U8 [rows, cols / 2]) with a byte's power-of-two scale a run of 32 of a row (U8 or E8M0 [rows, cols / 32]): the MXFP4
+    ///    matrix [rows, cols] (`mxfp4`), under whatever names the release stores the two (MiMo V2's experts: `X.weight`, `X.weight_scale`).
+    ///
     /// A matrix the description cuts in shards whose scales are a grid a shard is decoded a shard at a time, each with its grid.
     ///
     /// None where the description names no scales for it, or the two tensors are not one of these.
@@ -191,6 +194,9 @@ impl Stored {
                     v
                 };
                 Some((vec![rows, cols], v))
+            }
+            ("U8", "U8" | "F8_E8M0") if st.shape == [rows as u64, cols as u64 / 16] => {
+                Some((vec![rows, cols * 2], mxfp4(&ck.read(name).ok()?, &ck.read(sn).ok()?, rows, cols * 2).ok()?))
             }
             _ => None,
         }
@@ -676,6 +682,61 @@ mod tests {
         assert_eq!(st.tensor(&ck, we), Some((vec![rows, cols], want)));
         let uncut = Stored { scales, ..Stored::default() };
         assert_eq!((uncut.tensor(&ck, w), uncut.tensor(&ck, we), tensor(&ck, w)), (None, None, None), "8 rows of blocks, where the whole matrix has 7");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// E2M1's definition in f64: a sign, two bits of exponent with bias 1, one of fraction; exponent 0 subnormal (0 or a half).
+    fn e2m1_f64(c: u8) -> f64 {
+        let (e, m) = (((c >> 1) & 3) as i32, (c & 1) as f64);
+        let v = if e == 0 { m / 2.0 } else { (1.0 + m / 2.0) * 2f64.powi(e - 1) };
+        if c & 8 != 0 {
+            -v
+        } else {
+            v
+        }
+    }
+
+    /// MXFP4 under a release's own names: 4-bit codes two a byte along a row, the even column in the low four bits, and a byte's power-of-two scale a
+    /// run of 32 (W = e2m1(code) x 2^(scale - 127)). Every pair of codes in a byte under scales from 2^-127 to 2^125 (6 x 2^125 is within fp32) is the formula in f64, to the bit;
+    /// a byte of codes 1 and 2 is 0.5 then 1, not 1 then 0.5. Stored as `X.weight` (U8) with `X.weight_scale`, the matrix is read by a description that
+    /// names the scales so and not without one; under compressed-tensors' names it is read as before, by either.
+    #[test]
+    fn mxfp4_codes_under_a_releases_own_names() {
+        let (rows, cols) = (8usize, 64usize);
+        let packed: Vec<u8> = (0..rows * cols / 2).map(|i| (i % 256) as u8).collect();
+        let runs: Vec<u8> = vec![0, 1, 2, 60, 100, 119, 120, 121, 124, 125, 126, 127, 128, 130, 200, 252];
+        let got = mxfp4(&packed, &runs, rows, cols).unwrap();
+        for (i, g) in got.iter().enumerate() {
+            let code = (packed[i / 2] >> (4 * (i % 2))) & 15;
+            let want = e2m1_f64(code) * 2f64.powi(runs[i / 32] as i32 - 127);
+            assert_eq!((g.to_bits(), *g as f64), ((want as f32).to_bits(), want), "weight {i}: code {code}, scale {}", runs[i / 32]);
+        }
+        assert_eq!(mxfp4(&[0x21; 16], &[127], 1, 32).unwrap()[..2], [0.5, 1.0], "the even column in the low four bits");
+        assert!((0..16u8).all(|c| E2M1[c as usize] as f64 == e2m1_f64(c) && (E2M1[c as usize] == 0.0) == (c & 7 == 0)));
+        assert!(
+            mxfp4(&packed, &runs[1..], rows, cols).is_err()
+                && mxfp4(&packed[..48], &[127; 3], 1, 96).is_ok()
+                && mxfp4(&packed[..24], &[127; 2], 1, 48).is_err()
+        );
+        let dir = std::env::temp_dir().join(format!("glyd-formats-mxfp4-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (own, ct) = ("model.layers.1.mlp.experts.0.gate_proj", "model.layers.1.mlp.experts.1.gate_proj");
+        let names = [
+            (format!("{own}.weight"), "U8", vec![rows as u64, cols as u64 / 2], &packed[..]),
+            (format!("{own}.weight_scale"), "U8", vec![rows as u64, cols as u64 / 32], &runs[..]),
+            (format!("{ct}.weight_packed"), "U8", vec![rows as u64, cols as u64 / 2], &packed[..]),
+            (format!("{ct}.weight_scale"), "U8", vec![rows as u64, cols as u64 / 32], &runs[..]),
+            ("model.layers.1.mlp.gate.weight".to_string(), "U8", vec![rows as u64, cols as u64 / 2], &packed[..]),
+            ("model.layers.1.mlp.gate.weight_scale".to_string(), "U8", vec![rows as u64, 1], &runs[..rows]),
+        ];
+        let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = names.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), *b)).collect();
+        crate::pack::write_safetensors(&dir.join("model.safetensors"), &[("format", "pt".to_string())], &refs).unwrap();
+        let ck = Checkpoint::open(&dir).unwrap();
+        let st = Stored { scales: [0, 2, 4].into_iter().map(|i| (names[i].0.clone(), names[i + 1].0.clone())).collect(), ..Stored::default() };
+        assert_eq!(st.tensor(&ck, &names[0].0), Some((vec![rows, cols], got.clone())));
+        assert_eq!((tensor(&ck, &names[0].0), Stored::default().tensor(&ck, &names[0].0)), (None, None), "bytes, until a description names their scales");
+        assert_eq!((st.tensor(&ck, &names[2].0), tensor(&ck, &names[2].0)), (Some((vec![rows, cols], got.clone())), Some((vec![rows, cols], got))));
+        assert_eq!(st.tensor(&ck, &names[4].0), None, "scales of another run's shape");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
