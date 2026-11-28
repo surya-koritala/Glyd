@@ -105,7 +105,7 @@ Glyd supports model families, not individual models: any size or fine-tune of th
 | Muse | penguin, hummingbird |
 | Domyn Edge | penguin, kestrel, linnet, wren |
 | Granite | penguin, kestrel, linnet, wren |
-| Mellum | kestrel, linnet, wren |
+| Mellum | penguin, kestrel, linnet, wren |
 | Aion | penguin, kestrel, linnet, wren |
 
 The engine tells a family by a model's `config.json`, not by its name.
