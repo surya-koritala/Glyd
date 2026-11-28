@@ -248,14 +248,16 @@ pub struct OutGate {
 /// A sparse-attention indexer: per query, a score sum_h w_h relu(q_h . k) of each past key (one key a token, a pooled key a block of
 /// `block` tokens, or a compressed entry), the best kept. Ibis's block indexer, GLM's pooled-key indexer and DeepSeek-V4's
 /// compressed-entry indexer are this kind with parameters. In `Ref`: a latent attention's (`reference::mla`, GLM-5.3-Flash),
-/// DeepSeek-V4's (`reference::comp`) and Ibis's on a GQA attention (`reference::attention`, `IndexForm::Mean`).
+/// DeepSeek-V4's (`reference::comp`), and on a GQA attention (`reference::attention`) Ibis's (`IndexForm::Mean`) and MiniMax M3's, whose score is not
+/// this sum: each index head keeps blocks of its own by the best dot product in each (`IndexForm::Max`).
 #[derive(Clone, PartialEq)]
 pub struct Indexer {
     pub heads: usize,
     pub head_dim: usize,
     /// What a query keeps. A latent attention: `top_k` tokens, as the `top_k / block` best complete pools of `block` tokens and the tokens
     /// of the incomplete last pool (GLM-5.3-Flash's `index_topk`; `block` 1: the best `top_k` tokens; Ibis's `indexer_budget` in pools of
-    /// `indexer_compress_ratio`). DeepSeek-V4: `top_k` compressed entries (`block` is its ratio).
+    /// `indexer_compress_ratio`). DeepSeek-V4: `top_k` compressed entries (`block` is its ratio). The block-max form: the `top_k / block` best blocks of
+    /// `block` positions, the query's own among them (MiniMax M3's `sparse_topk_blocks` blocks of `sparse_block_size`).
     pub top_k: usize,
     /// Tokens a pooled key covers (GLM-5.3-Flash's `index_kpool`; 1: a key per token).
     pub block: usize,
@@ -313,9 +315,24 @@ pub enum IndexForm {
     /// raw keys, normed by `norm` (role `index_k_norm`) and rotated at the pool's first position; a pool's score sum_h relu(q_h . k) /
     /// sqrt(head_dim), the heads unweighted.
     Mean { norm: Norm },
+    /// MiniMax M3's sparse attention: the `heads` queries from one product of the block's input (role `index_q` [heads head_dim, hidden]) and ONE key a
+    /// token from another (`index_k` [head_dim, hidden]); each query head normed by `norm` (role `index_q_norm` [head_dim]) and the key by `norm` (role
+    /// `index_k_norm`), each rotated at its own token's position by the attention's rope (on the first `dim` channels of the head); a token's normed and
+    /// rotated key is what the cache holds. Blocks are of `block` POSITIONS (a token at position p is in block p / block, whatever the cache holds before
+    /// it), the last one incomplete as often as not. Index head h scores a block by the largest q_h . k among the block's tokens at or before the query
+    /// (no relu, no factor, no sum over the heads), keeps the query's own block and the `local` - 1 before it whatever they score, and with them the best
+    /// up to `top_k / block` blocks in all. Each index head chooses for one KV head (`heads` is the attention's `kv_heads`): the query heads of KV head h
+    /// attend to the tokens of the blocks index head h kept, and to no other. While the blocks number no more than `top_k / block`, every token is
+    /// attended to. The indexer has no values and adds nothing to the output. Equal scores keep the earlier block.
+    Max { norm: Norm, local: usize },
 }
 
 impl IndexForm {
+    /// The refusal of an attention whose indexer keeps blocks by their best key, a choice an index head: the CPU reference computes it (`reference::attention`),
+    /// the executor's sparse attention is the mean-pooled one.
+    pub const MAX_NOT_RUN: &'static str =
+        "a sparse attention whose indexer keeps blocks by their best key, a choice a KV head (the block-max indexer), which the executor does not run yet";
+
     /// The gated form whose keys are LayerNorm-ed with a bias at 1e-6 (GLM-5.3-Flash's and the full-size GLM's).
     pub const LAYER_KEYS: IndexForm = IndexForm::Gated { key: Norm { kind: NormKind::Layer, weight: NormWeight::Plain, eps: 1e-6, rounding: Rounding::F32 } };
 }

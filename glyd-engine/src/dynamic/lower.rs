@@ -697,6 +697,9 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
                     }
                     Mixer::Attention(a) => {
                         let ix = a.indexer.as_ref().ok_or_else(|| Error(format!("{what}: an attention with no indexer")))?;
+                        if let IndexForm::Max { .. } = ix.form {
+                            return err(format!("{what}: {}", IndexForm::MAX_NOT_RUN));
+                        }
                         let IndexForm::Mean { norm: inorm } = ix.form else {
                             return err(format!("{what}: an indexer of {:?}, where the model's pools are mean-pooled", ix.form));
                         };
