@@ -199,6 +199,9 @@ impl AttnOp {
         if nk == 0 || nq % nk != 0 || nq / nk > MAX_G {
             return err(format!("{nq} query heads over {nk} key-value heads: the kernels take up to {MAX_G} a key-value head"));
         }
+        if a.indexer.as_ref().is_some_and(|x| matches!(x.form, kinds::IndexForm::Max { .. })) {
+            return err(kinds::IndexForm::MAX_NOT_RUN);
+        }
         if a.sinks || a.bias || a.indexer.is_some() {
             return err("attention with sinks, a bias or an indexer: not an operation of this executor");
         }
@@ -321,6 +324,9 @@ impl AttnOp {
     /// The operation of a sparse attention (`a` with an indexer: Ibis's, `IndexForm::Mean`) whose keys and values are ring `ring`, over the indexer's picks
     /// (`picked`); the rest as `of`. The kernel of the picks takes heads of 256 and an in-query gate.
     pub fn picked(a: &kinds::Attn, src: Slot, ring: usize, table: Option<usize>, qk: Option<(usize, usize)>) -> Result<AttnOp> {
+        if a.indexer.as_ref().is_some_and(|x| matches!(x.form, kinds::IndexForm::Max { .. })) {
+            return err(kinds::IndexForm::MAX_NOT_RUN);
+        }
         if a.head_dim != 256 || !a.gate.is_some_and(|g| g.from == kinds::GateFrom::InQuery && g.norm.is_none()) || a.window.is_some() || a.softcap.is_some() {
             return err(format!(
                 "a sparse attention of heads of {} (a window {:?}, a soft-cap {:?}): the kernel of the picks takes heads of 256 and an in-query gate",
@@ -1371,6 +1377,15 @@ mod tests {
         assert_eq!((scaled.v_scale, scaled.args(3, 1e-5).v_scale, m.v_scale, m.args(3, 1e-5).v_scale), (0.707, 0.707, 1.0, 1.0));
         let Err(zero) = AttnOp::of(&Attn { v_scale: 0.0, ..kind(128, None) }, Slot::Mix, 0, Some(0), Some((2, 3))) else { panic!("values times 0, and taken") };
         assert!(zero.msg.contains("values are scaled by 0"), "{}", zero.msg);
+        // (the block-max indexer, a choice a KV head: refused by its name, as an attention and as the attention of an indexer's picks)
+        let form = kinds::IndexForm::Max { norm: Norm::rms_plus_one(1e-6), local: 1 };
+        let ix =
+            kinds::Indexer { heads: 2, head_dim: 128, top_k: 2048, block: 128, shared: false, form, rope: 0, rope_style: None, q_in: None, pos_scale: false };
+        let sparse = Attn { indexer: Some(ix), ..kind(128, None) };
+        for got in [AttnOp::of(&sparse, Slot::Mix, 0, Some(0), Some((2, 3))), AttnOp::picked(&sparse, Slot::Mix, 0, Some(0), Some((2, 3)))] {
+            let Err(e) = got else { panic!("a block-max indexer, and taken") };
+            assert_eq!(e.msg, kinds::IndexForm::MAX_NOT_RUN);
+        }
     }
 
     /// kernels/attn.cu's AttnArgs: 16 pointers, a long long and an unsigned long long, 24 ints, 6 floats, no padding.
