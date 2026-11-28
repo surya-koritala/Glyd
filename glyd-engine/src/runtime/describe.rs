@@ -5472,9 +5472,6 @@ fn ernie5_5(tc: &Map<String, Value>) -> Result<Described> {
 
 /// What a Hy4 Flash layer computes that no layer kind says yet, each with the checkpoint's tensors it is in (`hy4_flash`'s refusal names them all).
 pub const HY4_LACKS: &[&str] = &[
-    "the latent attention's sinks: a learned logit a head in the softmax's sum, which attends to nothing (self_attn.learnable_sink_param)",
-    "a window on the latent attention: a sliding layer's queries read the last sliding_window tokens alone, with heads and widths of their own \
-     (the layers whose self_attn.q_b_proj and kv_b_proj are of swa_num_attention_heads heads)",
     "the compressed indexer: a normed key a token, every closed group of compressed_indexer_compress_ratio tokens one key (the softmax over its tokens, a \
      channel at a time, of a gate product plus a learned position bias weighs a value product; normed again; turned at the group's first position), a query \
      keeping the tokens of its best compressed_indexer_group_topk - 1 groups and of its own open group (self_attn.compressed_indexer.token_key_projection, \
@@ -5489,6 +5486,41 @@ pub const HY4_LACKS: &[&str] = &[
      keys at dfly_target_kv_layers with its picks at dfly_target_index_layer; the model's last state joined to the first row through a learned gate \
      (mtp_fusion.eh_proj, mtp_fusion.gate), each drafted state corrected by the token before it (hidden_correction), an acceptance estimate (confidence_head)",
 ];
+
+/// Hy4 Flash's latent attention of one sort of layer: `heads` heads of `nope` + `rd` and values of `vd` (`w`) from the latents `q_lora` and `kv_lora`
+/// (`lora`), each latent RMS-normed, the rotary on a head's trailing `rd` channels in interleaved pairs, the score's scale (nope + rd)^-0.5, a sink a
+/// head, each channel of the heads' outputs times the sigmoid of a product of the block's input (`self_attn.linear_gate`). A sliding layer's has the
+/// `window` and no indexer; a layer with the indexer no window.
+///
+/// The sink is `Mla::sinks` as it stands: the readers hand the fp32 `learnable_sink_param` to their sparse kernel, which multiplies a head's output by
+/// exp(lse) / (exp(lse) + exp(sink)), lse over the scaled scores (vLLM models/hy_v4/nvidia/flashmla_sparse.py): one more logit in the softmax, the value
+/// as it is, which weighs nothing. The window is `Mla::window` with no indexer: both readers give a sliding layer's query the tokens
+/// p - sliding_window + 1 ..= p that are in the sequence, itself the last (vLLM models/hy_v4_flash/nvidia/swa.py `window_indices`, SGLang's
+/// `window_indices` kernel), and `window_size` is held to [sliding_window - 1, 0].
+fn hy4_mla(w: (usize, usize, usize, usize), lora: (usize, usize), rope: Rope, eps: f32, window: Option<usize>, indexer: Option<Indexer>) -> Mla {
+    let (heads, nope, rd, vd) = w;
+    Mla {
+        heads,
+        q_lora: Some(lora.0),
+        kv_lora: lora.1,
+        nope,
+        rope_dim: rd,
+        v_dim: vd,
+        rope: Some(Rope { style: RopeStyle::Interleaved, ..rope }),
+        q_norm: Norm::rms(eps),
+        kv_norm: Norm::rms(eps),
+        gate: Some(OutGate { act: Act::Sigmoid, from: GateFrom::Own, norm: None }),
+        scale: ((nope + rd) as f32).powf(-0.5),
+        absorbed: true,
+        indexer,
+        head_mix: 0,
+        sinks: true,
+        window,
+        pos_scale: false,
+        kv_from: None,
+        rope_learned: false,
+    }
+}
 
 /// The names a config gives a layer of latent attention with the indexer (`layer_types`, and the per-sort `rope_parameters`): transformers' own, and the
 /// three the family's readers fold into it.
@@ -5513,8 +5545,8 @@ const HY4_SPARSE: &[&str] = &["deepseek_sparse_attention", "indexed_attention", 
 /// the release ships no modeling code, and transformers and llama.cpp read Hy4 without Flash's parts. Every key is read. A key a reader reads is held
 /// to what the readers compute; a key neither reads is held to the released value, so that a release that changes one is stopped here; a key of the
 /// training alone (an initial value, a loss's weight) is read and not held. The builder then refuses: `HY4_LACKS` are parts of its layers, and a
-/// description without them would be of another model. What the kinds do say of it: the latent attention with its output gate, both feed-forwards
-/// with the norm after them, the hyper-head, the fp32 logits.
+/// description without them would be of another model. What the kinds do say of it: the latent attention of both sorts of layer with its sinks, its
+/// output gate and a sliding layer's window (`hy4_mla`), both feed-forwards with the norm after them, the hyper-head, the fp32 logits.
 fn hy4_flash(c: &ModelConfig) -> Result<Described> {
     let (mt, tc) = ("hy_v4_flash", &c.text);
     let k = Keys::new(tc, mt);
@@ -5673,6 +5705,7 @@ fn hy4_flash(c: &ModelConfig) -> Result<Described> {
         return err(format!("{mt}: rope_parameters has {key} beside a rotary a sort of layer"));
     }
     let mut sections = BTreeSet::new();
+    let mut ropes: [Option<Rope>; 2] = [None, None];
     for (is_sliding, sort) in [(false, "deepseek_sparse_attention"), (true, "sliding_attention")] {
         if !sliding.contains(&is_sliding) {
             continue;
@@ -5706,6 +5739,7 @@ fn hy4_flash(c: &ModelConfig) -> Result<Described> {
             }
         }
         sections.insert(r.mrope);
+        ropes[is_sliding as usize] = Some(r);
     }
     if sections.len() > 1 {
         return err(format!("{mt}: rope_parameters' mrope_section differs between the two sorts of layer"));
@@ -5874,6 +5908,8 @@ fn hy4_flash(c: &ModelConfig) -> Result<Described> {
     let mut left = if c.nested { unread(&top) } else { Vec::new() };
     left.extend(unread(&k));
     not_understood(mt, left.iter())?;
+    // (the sliding layers' attention, which the kinds say: held here until the other parts have theirs)
+    let _sliding_attention = ropes[1].take().map(|r| hy4_mla(swa, (q_lora, kv_lora), r, eps as f32, Some(window), None));
     let slide = sliding.iter().filter(|&&s| s).count();
     let dense = dense.iter().filter(|&&x| x).count();
     err(format!(

@@ -4276,13 +4276,13 @@ fn hy4_flashs_released_config_is_read_and_refused_at_the_parts_no_kind_says() {
         "hy_v4_flash: its config is read (12 layers of latent attention with a compressed indexer and 30 in a window of 512 tokens, 1 dense feed-forward \
                 and 41 of 512 experts, 4 residual streams, an n-gram memory on 4 layers, a drafter of 5 layers), and it is not described yet.";
     assert!(e.starts_with(read), "{e}");
-    assert_eq!(HY4_LACKS.len(), 6);
+    assert_eq!(HY4_LACKS.len(), 4);
     for part in HY4_LACKS {
         assert!(e.contains(part), "{part}: {e}");
     }
+    // (the latent attention's sinks and a sliding layer's window are said by the kind: no part of the refusal)
+    assert!(!e.contains("learnable_sink_param") && !e.contains("q_b_proj"), "{e}");
     for tensor in [
-        "learnable_sink_param",
-        "q_b_proj",
         "compressed_indexer.token_key_projection",
         "key_gate_projection",
         "intra_group_ape",

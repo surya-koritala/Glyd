@@ -372,15 +372,16 @@ pub fn step_with(m: &Mla, p: &Params, c: &mut LatentCache, shared: Option<&Laten
             }
             r
         }
-        None => (seen, f32::INFINITY),
+        // (a window and no indexer: the query's last tokens alone, itself the last of them)
+        None => (seen[seen.len() - m.window.map_or(seen.len(), |w| w.min(seen.len()))..].to_vec(), f32::INFINITY),
     };
     c.margin = margin;
     if m.indexer.is_some() {
         c.picks = seen.clone();
         c.made.push(seen.clone());
     }
-    if m.window.is_some() && m.indexer.as_ref().is_none_or(|ix| ix.shared || ix.block > 1) {
-        return err("MLA: a window of the last tokens beside the picks is of a layer with its own indexer of a key a token");
+    if m.window.is_some() && m.indexer.as_ref().is_some_and(|ix| ix.shared || ix.block > 1) {
+        return err("MLA: a window of the last tokens beside the picks is of a layer whose own indexer has a key a token");
     }
     let sinks = if m.sinks { Some(p.vec("sinks")?) } else { None };
     if sinks.is_some_and(|s| s.len() != nh) {
@@ -1030,9 +1031,46 @@ mod tests {
             differ |= rel(&step(&plain, &p, &mut c, h, t as u32).unwrap(), &got) > 1e-4;
         }
         assert!(differ, "the window changed no row");
+        // (beside the picks of an indexer of the layer's own with a key a token: a pooled or a shared one with a window is refused; with no indexer the
+        // window is all the query reads, which `a_window_alone_is_the_last_tokens` holds)
         let mut d = LatentCache::default();
-        assert!(step(&Mla { indexer: None, ..m.clone() }, &p, &mut d, &hs[0], 0).is_err());
+        let pooled = Mla { indexer: m.indexer.clone().map(|ix| Indexer { block: 2, ..ix }), ..m.clone() };
+        assert!(step(&pooled, &p, &mut d, &hs[0], 0).unwrap_err().msg.contains("a key a token"));
         assert!(!format!("{plain:?}").contains("window") && format!("{m:?}").ends_with("window: 3 }"));
+    }
+
+    /// A window with no indexer (`Mla::window`, Hunyuan's sliding layers): a query at p attends to p - window + 1 ..= p and to nothing before them.
+    /// On a layer with a rotary in interleaved pairs and sinks, a window of 5 over twelve tokens: each query's output is, to the bit, the layer without a
+    /// window run from an empty cache on those tokens alone at their own positions (the sequence's first tokens while it is shorter than the window); it
+    /// is the unwindowed layer's until the window is full and another answer after; and a window of one token reads the query itself.
+    #[test]
+    fn a_window_alone_is_the_last_tokens() {
+        use crate::runtime::kinds::RopeStyle;
+        let (m0, mut p) = layer(4, 1);
+        p.put("q_b", &[48, 24], fill("mla.q_b.window", 48 * 24, -0.3, 0.3));
+        p.put("kv_a", &[24, D], fill("mla.kv_a.window", 24 * D, -0.3, 0.3));
+        p.put("sinks", &[2], vec![0.4, -0.2]);
+        let r = Rope { style: RopeStyle::Interleaved, ..Rope::plain(1e4, 8) };
+        let plain = Mla { rope_dim: 8, rope: Some(r), scale: 24f32.lpowf(-0.5), indexer: None, sinks: true, ..m0 };
+        let m = Mla { window: Some(5), ..plain.clone() };
+        let hs = inputs(12);
+        let (mut a, mut all) = (LatentCache::default(), LatentCache::default());
+        for (t, h) in hs.iter().enumerate() {
+            let got = step(&m, &p, &mut a, h, t as u32).unwrap();
+            let first = (t + 1).saturating_sub(5);
+            let mut alone = LatentCache::default();
+            let want = (first..=t).map(|j| step(&plain, &p, &mut alone, &hs[j], j as u32).unwrap()).last().unwrap();
+            assert_eq!(got, want, "token {t}: tokens {first} to {t} alone");
+            let whole = step(&plain, &p, &mut all, h, t as u32).unwrap();
+            assert_eq!(got == whole, t < 5, "token {t}: the window is every token until it is full");
+        }
+        assert_eq!(a.lat.len(), 12, "the cache keeps every token: the window is the query's");
+        let mut one = LatentCache::default();
+        for (t, h) in hs.iter().enumerate().take(3) {
+            let mut alone = LatentCache::default();
+            assert_eq!(step(&Mla { window: Some(1), ..plain.clone() }, &p, &mut one, h, t as u32).unwrap(), step(&plain, &p, &mut alone, h, t as u32).unwrap());
+        }
+        assert!(format!("{m:?}").ends_with("indexer: None, sinks: true, window: 5 }"));
     }
 
     /// An indexer's rotary that pairs its channels its own way (`Indexer::rope_style`, ERNIE's: halves beside the attention's interleaved pairs): each

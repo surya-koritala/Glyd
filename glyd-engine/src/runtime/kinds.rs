@@ -444,7 +444,8 @@ pub struct Mla {
     pub sinks: bool,
     /// With an indexer of the layer's own: the query attends to its last `window` tokens whatever the indexer picks, and the indexer picks its
     /// `top_k` among the tokens before them (ERNIE's latent layers: the model's `sliding_window`, so a query reads up to `top_k` + `window` tokens in
-    /// one softmax). None: the indexer picks among every token the query sees.
+    /// one softmax). With no indexer: the query attends to its last `window` tokens alone, itself the last of them (Hunyuan's sliding layers: a query
+    /// at p reads p - window + 1 ..= p, as `Attn::window`). None: the indexer picks among every token the query sees, or the query reads them all.
     pub window: Option<usize>,
     /// The queries scaled by their position ("scalable softmax"): each query head h, after its rotary, times `q_scale_s`[h] ln(pos + 1) + `q_scale_b`[h],
     /// pos the query's own position (the first token's 0, whose factor is the bias alone); the keys are not scaled, so every score of the query, and the
@@ -463,10 +464,10 @@ pub struct Mla {
 impl Mla {
     /// The refusal of a latent attention with sinks: the CPU reference computes them, the executor's latent attention has no sink.
     pub const SINKS_NOT_RUN: &'static str = "a latent attention with sinks, which the executor does not run yet";
-    /// The refusal of a latent attention whose last tokens are attended beside the indexer's picks: the CPU reference computes it, the executor's
-    /// indexer picks among every token.
+    /// The refusal of a latent attention with a window (its last tokens attended beside the indexer's picks, or alone): the CPU reference computes it,
+    /// the executor's indexer picks among every token and its latent attention with no indexer reads them all.
     pub const WINDOW_NOT_RUN: &'static str =
-        "a latent attention that reads a window of its last tokens beside its indexer's picks, which the executor does not run yet";
+        "a latent attention that reads a window of its last tokens (beside its indexer's picks, or alone), which the executor does not run yet";
 }
 
 /// The derived form, with `head_mix`, `sinks`, `window`, `pos_scale`, `kv_from` and `rope_learned` said only where they are set: the other latent

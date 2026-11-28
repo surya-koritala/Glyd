@@ -1402,6 +1402,7 @@ mod tests {
         for (edit, part) in [
             (&(|x: &mut Mla| x.sinks = true) as &dyn Fn(&mut Mla), Mla::SINKS_NOT_RUN),
             (&|x: &mut Mla| x.window = Some(128), Mla::WINDOW_NOT_RUN),
+            (&|x: &mut Mla| (x.indexer, x.window) = (None, Some(512)), Mla::WINDOW_NOT_RUN),
             (&|x: &mut Mla| x.indexer.as_mut().unwrap().rope_style = Some(RopeStyle::Half), Indexer::ROPE_STYLE_NOT_RUN),
             (&|x: &mut Mla| x.head_mix = 16, crate::runtime::kinds::HEAD_MIX_NOT_RUN),
             (&|x: &mut Mla| x.gate = gate, GateFrom::LATENT_NOT_RUN),
