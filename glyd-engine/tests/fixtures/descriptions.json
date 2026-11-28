@@ -261,7 +261,7 @@
     "kinds": "e49591501c977bb3",
     "weights": "a4359dec65860b12",
     "plan": "ab1b183f4358d678",
-    "family": "refused: m is a MiMoV2ForCausalLM model, which this engine has no description of yet"
+    "family": "Layers"
   },
   "headers/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.json": {
     "blocks": 52,

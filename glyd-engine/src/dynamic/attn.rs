@@ -137,7 +137,8 @@ pub struct GateAt {
 
 /// `Op::Attn`: the preparation of the projection's rows (slot `src`, rows `stride` wide: query head h at h `q_step`, the key heads from `k_off`, the value heads
 /// from `v_off`, each `dv` wide, or none: K = V, the keys' projection normed without a weight), then the causal attention of the queries over ring `ring`
-/// (`window` 0: every position) into Att (head h at h `dv`), gated where `gate`. `writes`: the layer writes its keys and values (a draft model's layers read the big model's ring and write none).
+/// (`window` 0: every position) into Att (head h at h `dv`), gated where `gate`. `writes`: the layer writes its keys and values (a draft model's layers read
+/// the big model's ring and write none).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AttnOp {
     pub src: Slot,
@@ -326,6 +327,17 @@ impl AttnOp {
         let mut x = AttnOp::of(&kinds::Attn { indexer: None, ..a.clone() }, src, ring, table, qk)?;
         x.picked = true;
         Ok(x)
+    }
+
+    /// Where head `j` of `heads` starts in the product's row (`off` + j `step`, or the same within its shard): kernels/attn.cu's at_head, line for line, which
+    /// the tests hold to the description's cuts of a fused matrix.
+    #[cfg(test)]
+    pub(crate) fn head_at(&self, j: usize, heads: usize, off: usize, step: usize) -> usize {
+        if self.shards <= 1 {
+            return off + j * step;
+        }
+        let per = heads / self.shards;
+        (j / per) * (self.stride / self.shards) + off + (j % per) * step
     }
 
     /// The kernels' arguments of this operation on n rows, the pointers null (`Dyn::attn` sets them).

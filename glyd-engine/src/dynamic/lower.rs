@@ -2956,6 +2956,42 @@ mod tests {
         assert_eq!(crate::runtime::config::ModelConfig::parse(text).unwrap().family(), Some(crate::support::Family::Layers));
     }
 
+    /// MiMo's small model (the logits checks' random one): the description reads every tensor of its manifest at the manifest's shape, and the dense lowering
+    /// names every one of them, a matrix's member (a layer's fused q-k-v matrix one member, as stored) or a small tensor; a ring a layer, of heads of 192, the
+    /// middle two a window of 9; three layers of experts; and it is a family the description is the whole of.
+    #[test]
+    fn the_random_mimo_lowers_with_every_tensor_named() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/mimo_tiny_manifest.json")).unwrap()).unwrap();
+        let text = manifest["config"].as_str().unwrap();
+        let kinds = crate::runtime::describe::describe(&serde_json::from_str(text).unwrap()).unwrap_or_else(|e| panic!("{}", e.msg));
+        let have: std::collections::BTreeSet<String> = manifest["tensors"].as_array().unwrap().iter().map(|t| t[0].as_str().unwrap().to_string()).collect();
+        kinds.check(&have, true).unwrap_or_else(|e| panic!("{}", e.msg));
+        for t in manifest["tensors"].as_array().unwrap() {
+            let shape: Vec<usize> = t[2].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+            assert_eq!(kinds.shapes.get(t[0].as_str().unwrap()), Some(&shape), "{}", t[0]);
+        }
+        let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+        // (the experts' tensors are their blocks', read apart: `experts::of_layers`)
+        let experts: std::collections::BTreeSet<String> =
+            super::super::experts::of_layers(&kinds, (0, 4), 2).flat_map(|(_, _, roles)| roles.iter().flat_map(|(_, s)| s.names())).collect();
+        let named: std::collections::BTreeSet<String> =
+            d.mats.iter().flat_map(|it| it.members.iter()).chain(&d.small).filter(|n| !n.is_empty()).cloned().chain(experts).collect();
+        assert_eq!(named, have);
+        assert_eq!((d.layers.len(), d.states.is_empty(), d.lm == d.embed + 1, d.final_norm.is_some()), (4, true, true, true));
+        assert_eq!(d.rings.iter().map(|r| (r.d, r.nk, r.window)).collect::<Vec<_>>(), vec![(192, 2, 0), (192, 4, 9), (192, 4, 9), (192, 2, 0)]);
+        assert_eq!((d.width(Slot::Proj), d.width(Slot::Qo), d.width(Slot::Att)), (2816, 8 * 192, 8 * 128));
+        let attn: Vec<(usize, usize, usize, bool)> = d
+            .layers
+            .iter()
+            .map(|ops| ops.iter().find_map(|o| if let Op::Attn(a) = o { Some((a.dv, a.shards, a.stride, a.sinks.is_some())) } else { None }).unwrap())
+            .collect();
+        assert_eq!(attn, [(128, 2, 2176, false), (128, 2, 2816, true), (128, 2, 2816, true), (128, 2, 2176, false)]);
+        let moe: Vec<bool> = d.layers.iter().map(|ops| ops.iter().any(|o| matches!(o, Op::Moe(_)))).collect();
+        assert_eq!(moe, [false, true, true, true]);
+        assert_eq!(crate::runtime::config::ModelConfig::parse(text).unwrap().family(), Some(crate::support::Family::Layers));
+    }
+
     /// A small config of MiMo's layout: three layers 256 wide, each a dense MLP; the first over the whole context (8 query heads over 2), the others sliding over
     /// 8 positions and the query's own (8 over 4, a sink a head); queries and keys of 192 with their first 64 channels turned, values of 128 times 0.707; the
     /// three products one matrix in 2 shards, or with `keys` over it.
@@ -3000,6 +3036,51 @@ mod tests {
             "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]});
         let Err(e) = dense(&mimo_config(serde_json::json!({"quantization_config": quant})), vec![2], 4096) else { panic!("a fused FP8 matrix, and lowered") };
         assert!(e.msg.contains("qkv_proj.weight is stored in FP8 with block scales that start again at each of its 2 shards"), "{}", e.msg);
+    }
+
+    /// Where the preparation's kernel finds each head of a fused matrix is where the description cuts it: for every attention layer of MiMo's released config
+    /// (its recorded header's, the stored formats left out: 64 query heads over 4 key heads on the whole-context layers and over 8 on the sliding ones, 4
+    /// shards) and of the small model's, head j of q, of k and of v, as the kernel's arithmetic places it (`AttnOp::head_at`), starts at the row the
+    /// description's cuts give the role's j-th head.
+    #[test]
+    fn the_kernels_place_of_a_head_is_the_descriptions_cut() {
+        let (text, _) = header("MiMo-V2.6-Flash-RL.json");
+        let mut released: serde_json::Value = serde_json::from_str(&text).unwrap();
+        released.as_object_mut().unwrap().remove("quantization_config");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("tests/fixtures/mimo_tiny_manifest.json")).unwrap()).unwrap();
+        let small: serde_json::Value = serde_json::from_str(manifest["config"].as_str().unwrap()).unwrap();
+        for (cfg, layers, shards) in [(released, 48, 4), (small, 4, 2)] {
+            let kinds = crate::runtime::describe::describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+            let d = dense(&kinds, vec![2], 4096).unwrap_or_else(|e| panic!("{}", e.msg));
+            assert_eq!(d.layers.len(), layers);
+            for (l, ops) in d.layers.iter().enumerate() {
+                let a = ops.iter().find_map(|o| if let Op::Attn(a) = o { Some(a) } else { None }).unwrap();
+                assert_eq!(a.shards, shards, "layer {l}");
+                // (the stored row of the role's row r: the cuts in order)
+                let stored = |r: &str, row: usize| -> usize {
+                    let Some(Source::RowsOf(_, cuts)) = role(&kinds.blocks[2 * l], r) else { panic!("layer {l}: {r} is not cut from rows") };
+                    let mut left = row;
+                    for &(from, to) in cuts {
+                        if left < to - from {
+                            return from + left;
+                        }
+                        left -= to - from;
+                    }
+                    panic!("layer {l}: {r} has no row {row}")
+                };
+                for h in 0..a.nq {
+                    assert_eq!(a.head_at(h, a.nq, 0, a.q_step), stored("q", h * a.d), "layer {l}: query head {h}");
+                }
+                for j in 0..a.nk {
+                    assert_eq!(a.head_at(j, a.nk, a.k_off, a.d), stored("k", j * a.d), "layer {l}: key head {j}");
+                    assert_eq!(a.head_at(j, a.nk, a.v_off.unwrap(), a.dv), stored("v", j * a.dv), "layer {l}: value head {j}");
+                    // (a head's rows are one run of its cut: the kernel reads them in a row)
+                    assert_eq!(stored("k", (j + 1) * a.d - 1), stored("k", j * a.d) + a.d - 1, "layer {l}: key head {j}");
+                    assert_eq!(stored("v", (j + 1) * a.dv - 1), stored("v", j * a.dv) + a.dv - 1, "layer {l}: value head {j}");
+                }
+            }
+        }
     }
 
     /// MiMo's experts on the dense lowering: a layer's feed-forward the Moe kind's block where the config says experts, whose shape and arithmetic the block's
