@@ -250,7 +250,8 @@ pub struct OutGate {
 /// A sparse-attention indexer: per query, a score sum_h w_h relu(q_h . k) of each past key (one key a token, a pooled key a block of
 /// `block` tokens, or a compressed entry), the best kept. Ibis's block indexer, GLM's pooled-key indexer and DeepSeek-V4's
 /// compressed-entry indexer are this kind with parameters. In `Ref`: a latent attention's (`reference::mla`, GLM-5.3-Flash),
-/// DeepSeek-V4's (`reference::comp`) and Ibis's on a GQA attention (`reference::attention`, `IndexForm::Mean`).
+/// DeepSeek-V4's (`reference::comp`) and Ibis's on a GQA attention (`reference::attention`, `IndexForm::Mean`). Hunyuan's compressed indexer is the
+/// form `IndexForm::Grouped` on a latent attention.
 #[derive(Clone, PartialEq)]
 pub struct Indexer {
     pub heads: usize,
@@ -266,7 +267,8 @@ pub struct Indexer {
     pub form: IndexForm,
     /// The gated form's rotary: the first `rope` channels of each query head and of each token's key rotated to their positions by the attention's rotary
     /// (the full-size GLM's indexer, its `qk_rope_head_dim`); 0: none (GLM-5.3-Flash, Kimi-K3.1, DeepSeek-V4). The mean form's
-    /// queries and pools are rotated as `IndexForm::Mean` says, whatever this is.
+    /// queries and pools are rotated as `IndexForm::Mean` says, whatever this is. The grouped form's: the TRAILING `rope` channels of each query head and
+    /// of each group's key (`IndexForm::Grouped`).
     pub rope: usize,
     /// How the indexer's own rotary pairs its `rope` channels where that is not the attention's pairing (the same frequencies and positions): ERNIE's
     /// latent attention turns interleaved pairs and its indexer halves, (i, i + rope / 2). None: as the attention's rotary.
@@ -284,6 +286,10 @@ impl Indexer {
     /// The refusal of an indexer whose rotary pairs its channels otherwise than its attention's: the CPU reference computes it, the executor turns the
     /// indexer's channels by the attention's table.
     pub const ROPE_STYLE_NOT_RUN: &'static str = "an indexer's rotary of another pairing than its attention's, which the executor does not run yet";
+    /// The refusal of an indexer of the grouped form (`IndexForm::Grouped`): the CPU reference computes it, the executor's indexers pool a product of the
+    /// block's input and score every complete pool.
+    pub const GROUPED_NOT_RUN: &'static str =
+        "an indexer whose closed groups of tokens are each one key pooled from the tokens' normed keys, which the executor does not run yet";
 }
 
 /// The derived form, with `form` said only where it is not the gated form with LayerNorm-ed keys (`IndexForm::LAYER_KEYS`), `rope` only where it
@@ -327,6 +333,22 @@ pub enum IndexForm {
     /// raw keys, normed by `norm` (role `index_k_norm`) and rotated at the pool's first position; a pool's score sum_h relu(q_h . k) /
     /// sqrt(head_dim), the heads unweighted.
     Mean { norm: Norm },
+    /// Hunyuan's compressed indexer, on a latent attention. A key a token from its own product of the block's input (`indexer_wk`), normed by `key`
+    /// (role `indexer_k_norm`) and not turned. Each closed group of `block` tokens (tokens g block .. (g + 1) block of the sequence) is one key: the
+    /// softmax over the group's tokens, a channel at a time, of `indexer_pool_gate` of the token's normed key plus `indexer_pool_ape` [block,
+    /// head_dim] weighs `indexer_pool_value` of it (both [head_dim, head_dim]: products of the key, not of the block's input); the sum normed by
+    /// `pool` (role `indexer_pool_norm`), and its TRAILING `Indexer::rope` channels turned to the group's first token's position by the attention's
+    /// rotary. The queries are a product of the attention's query latent (`indexer_wq_b`), each head's trailing `rope` channels turned to the query's
+    /// position. A group's score is sum_h w_h relu(q_h . key), w the weights' product of the block's input (`indexer_weights`) times heads^-0.5
+    /// head_dim^-0.5. A query scores the groups closed before its own (g < its index / block), keeps the best `top_k / block` - 1 of them whole and,
+    /// whatever they score, every token of its own group up to itself, full or not: `top_k` tokens at most. A group's key is made once, when its last
+    /// token arrives.
+    ///
+    /// This is the f32 form. The family's readers round each token's key, each group's key (after its norm, and again after its rotary) and each
+    /// query (after its rotary) to bf16, then turn every key and query by an orthonormal Hadamard transform and quantize it to FP8 with a
+    /// power-of-two scale a vector before they score; and they leave the turned channels de-interleaved, the same order in keys and queries, which
+    /// moves no score.
+    Grouped { key: Norm, pool: Norm },
 }
 
 impl IndexForm {

@@ -532,7 +532,9 @@ impl WeightSource for Params {
 fn roles(b: &Block) -> Vec<String> {
     let prods: &[&str] = match &b.body {
         Body::Mixer(Mixer::Attention(_)) => &["q", "k", "v", "o", "g"],
-        Body::Mixer(Mixer::Mla(_)) => &["q", "q_a", "q_b", "kv_a", "kv_b", "o", "g", "indexer_wq_b", "indexer_wk", "indexer_weights", "indexer_pool_gate"],
+        Body::Mixer(Mixer::Mla(_)) => {
+            &["q", "q_a", "q_b", "kv_a", "kv_b", "o", "g", "indexer_wq_b", "indexer_wk", "indexer_weights", "indexer_pool_gate", "indexer_pool_value"]
+        }
         Body::Mixer(Mixer::Linear(_)) => &["qkv", "q", "k", "v", "beta", "decay", "gate", "o"],
         Body::Mixer(Mixer::Compressed(_)) => &["q_a", "q_b", "kv", "o_a", "o_b", "g", "comp_kv", "comp_gate", "idx_kv", "idx_gate", "idx_q_b", "idx_weights"],
         Body::Mixer(Mixer::Mamba2(_) | Mixer::ShortConv(_)) => &["in", "o"],
@@ -574,6 +576,7 @@ fn roles(b: &Block) -> Vec<String> {
         "indexer_k_norm",
         "indexer_k_norm_bias",
         "indexer_pool_ape",
+        "indexer_pool_norm",
         "indexer_q_norm",
         "indexer_q_norm_bias",
         "indexer_scale_s",
@@ -800,6 +803,10 @@ impl RefLayer {
             Some(SeqState::Mla(c)) => {
                 let keep = c.pos.iter().take_while(|&&q| q < pos).count();
                 (c.pos.truncate(keep), c.lat.truncate(keep), c.ikey.truncate(keep), c.igate.truncate(keep));
+                // (a grouped indexer's keys of the groups that are still whole)
+                if let Body::Mixer(Mixer::Mla(m)) = &self.block.body {
+                    c.pool.truncate(keep / m.indexer.as_ref().map_or(1, |ix| ix.block.max(1)));
+                }
             }
             _ => {}
         }

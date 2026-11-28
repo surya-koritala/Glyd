@@ -1066,6 +1066,15 @@ pub fn not_run(d: &crate::runtime::describe::Described) -> Option<&'static str> 
     }) {
         return Some(Indexer::ROPE_STYLE_NOT_RUN);
     }
+    let grouped = |ix: &Option<Indexer>| ix.as_ref().is_some_and(|ix| matches!(ix.form, crate::runtime::kinds::IndexForm::Grouped { .. }));
+    if mixer(&|m| match m {
+        Mixer::Attention(a) => grouped(&a.indexer),
+        Mixer::Mla(x) => grouped(&x.indexer),
+        Mixer::Compressed(c) => grouped(&c.indexer),
+        _ => false,
+    }) {
+        return Some(Indexer::GROUPED_NOT_RUN);
+    }
     if blocks().any(|b| matches!(&b.body, Body::Ngram(n) if n.form == crate::runtime::kinds::NgramForm::EngramNormed)) {
         return Some(crate::runtime::kinds::Ngram::NORMED_NOT_RUN);
     }
@@ -1427,6 +1436,13 @@ mod tests {
             (&|x: &mut Mla| x.window = Some(128), Mla::WINDOW_NOT_RUN),
             (&|x: &mut Mla| (x.indexer, x.window) = (None, Some(512)), Mla::WINDOW_NOT_RUN),
             (&|x: &mut Mla| x.indexer.as_mut().unwrap().rope_style = Some(RopeStyle::Half), Indexer::ROPE_STYLE_NOT_RUN),
+            (
+                &|x: &mut Mla| {
+                    let n = crate::runtime::kinds::Norm::rms(1e-5);
+                    x.indexer.as_mut().unwrap().form = crate::runtime::kinds::IndexForm::Grouped { key: n, pool: n };
+                },
+                Indexer::GROUPED_NOT_RUN,
+            ),
             (&|x: &mut Mla| x.head_mix = 16, crate::runtime::kinds::HEAD_MIX_NOT_RUN),
             (&|x: &mut Mla| x.gate = gate, GateFrom::LATENT_NOT_RUN),
         ] {

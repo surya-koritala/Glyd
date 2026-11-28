@@ -5483,10 +5483,6 @@ fn ernie5_5(tc: &Map<String, Value>) -> Result<Described> {
 
 /// What a Hy4 Flash layer computes that no layer kind says yet, each with the checkpoint's tensors it is in (`hy4_flash`'s refusal names them all).
 pub const HY4_LACKS: &[&str] = &[
-    "the compressed indexer: a normed key a token, every closed group of compressed_indexer_compress_ratio tokens one key (the softmax over its tokens, a \
-     channel at a time, of a gate product plus a learned position bias weighs a value product; normed again; turned at the group's first position), a query \
-     keeping the tokens of its best compressed_indexer_group_topk - 1 groups and of its own open group (self_attn.compressed_indexer.token_key_projection, \
-     token_key_norm, key_value_projection, key_gate_projection, intra_group_ape, key_norm, query_projection, head_weight_projection)",
     "the drafter (model.dfly_layers.): a block of mask tokens after the last token, drafted in one pass by layers of one residual that read the model's own \
      keys at dfly_target_kv_layers with its picks at dfly_target_index_layer; the model's last state joined to the first row through a learned gate \
      (mtp_fusion.eh_proj, mtp_fusion.gate), each drafted state corrected by the token before it (hidden_correction), an acceptance estimate (confidence_head)",
@@ -5554,7 +5550,8 @@ const HY4_SPARSE: &[&str] = &["deepseek_sparse_attention", "indexed_attention", 
 /// output gate and a sliding layer's window (`hy4_mla`), both feed-forwards with the norm after them, the residual streams that do not mix
 /// (`StreamsP::apart`, the magnitude `hc_magnitude`: the readers' models/hy_v4/nvidia/hc.py, each result rounded once), the n-gram memory
 /// (`NgramForm::EngramNormed`: its compressed vocabulary the checkpoint's `lookup_table`, its rows and its value normed, a scale a stream beside the
-/// gate), the hyper-head, the fp32 logits.
+/// gate), the compressed indexer (`IndexForm::Grouped`: the f32 form; the readers round its keys and queries to bf16, turn them by a Hadamard transform
+/// and quantize them to FP8 before they score, which no kind says and the description does not), the hyper-head, the fp32 logits.
 fn hy4_flash(c: &ModelConfig) -> Result<Described> {
     let (mt, tc) = ("hy_v4_flash", &c.text);
     let k = Keys::new(tc, mt);
