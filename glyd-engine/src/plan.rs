@@ -3389,8 +3389,9 @@ pub mod sizing {
 
     /// The layers a stage of the model whose config.json is `c` (parsed once) may begin at, of its `nl`: every one but a layer whose latent attention takes the
     /// picks of the one before it (its indexer `shared`: `lower::latent_moe` keeps the two in one stage), and but a layer at or after which a compressed attention
-    /// reads a part of a layer before it (`CompShare`: its entries, picks or candidate blocks; `lower_comp::lower` keeps a source and its readers in one stage);
-    /// empty (every one) where the config describes no such layer.
+    /// reads a part of a layer before it (`CompShare`: its entries, picks or candidate blocks; `lower_comp::lower` keeps a source and its readers in one stage)
+    /// or a latent attention attends to the latents of a layer before it (`Mla::kv_from`, Mistral Large's sharing layers: none of the layers after the one
+    /// that makes the latents up to the last that reads them); empty (every one) where the config describes no such layer.
     pub fn stage_starts(c: &ModelConfig, nl: usize) -> Vec<bool> {
         use crate::runtime::kinds::{Body, Mixer};
         let Ok(d) = crate::runtime::describe::describe_config(c) else { return Vec::new() };
@@ -3405,6 +3406,11 @@ pub mod sizing {
                 _ => None,
             })
             .flat_map(|(b, sh)| [sh.entries, sh.picks, sh.candidates].into_iter().flatten().map(move |s| (layer(s), layer(b))))
+            // (a latent attention that attends to an earlier layer's latents, `Mla::kv_from`: the two in one stage, as `lower::latent_moe` keeps them)
+            .chain((0..nb).filter_map(|b| match &blocks[b].body {
+                Body::Mixer(Mixer::Mla(m)) => m.kv_from.map(|j| (layer(j), layer(b))),
+                _ => None,
+            }))
             .collect();
         if nl == 0 || nb < nl || (!blocks.iter().any(lent) && shared.is_empty()) {
             return Vec::new();

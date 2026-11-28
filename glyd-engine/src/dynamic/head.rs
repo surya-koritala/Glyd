@@ -89,6 +89,9 @@ pub(super) fn shift_rings(d: &mut ModelDesc, by: usize) -> Result<()> {
             Op::Attn(a) => a.ring += by,
             Op::Mla(a) => {
                 a.ring += by;
+                if let super::MlaIn::Borrowed { from } = &mut a.input {
+                    *from += by;
+                }
                 for p in a.indexer.as_mut().map(|x| &mut x.pick).into_iter().chain(a.lent.as_mut()) {
                     moved(&mut p.keys);
                 }

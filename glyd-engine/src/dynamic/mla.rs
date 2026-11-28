@@ -49,6 +49,10 @@ pub enum MlaIn {
     /// The queries one product of the layer's input, with no latent of their own (the operation's `q_b` is then [heads (nope + rope), hidden]: Ling's
     /// q_proj), and the key-value latent (and its shared key part) its own product.
     Direct { kv_a: usize },
+    /// The queries one product of the layer's input, and no key-value latent of the layer's own (`kinds::Mla::kv_from`, Mistral Large's sharing layers): its
+    /// rows attend to the latents and the shared key part another latent attention of the same widths keeps in ring `from`, as that layer normed and turned
+    /// them, expanded by this layer's own kv_b_proj; it writes none (the operation's `ring` is `from`), and has no kv_a and no norm of a latent.
+    Borrowed { from: usize },
 }
 
 /// Where the indexer's scores are computed as its family's reference computes them.
@@ -134,6 +138,17 @@ pub struct MlaIndexer {
     pub ape: usize,
     pub gate: usize,
     pub key: KeyNorm,
+    /// The queries of the layer's input and not of a query latent (`kinds::Indexer::q_in`, Mistral Large's): the input through nn.LayerNorm at this epsilon,
+    /// its weight and bias the small tensors `q_norm` and `q_bias` (as wide as the model), then `q_b` [heads dim, hidden]. None: `q_b` multiplies the normed
+    /// query latent, and the two are no tensors of the operation.
+    pub q_in: Option<f32>,
+    pub q_norm: usize,
+    pub q_bias: usize,
+    /// Each query head times s[h] ln(pos + 1) + b[h] before its rotary (`kinds::Indexer::pos_scale`): the small tensors `scale_s` and `scale_b` [heads];
+    /// false: no tensors of the operation.
+    pub pos_scale: bool,
+    pub scale_s: usize,
+    pub scale_b: usize,
 }
 
 impl MlaIndexer {
@@ -142,15 +157,19 @@ impl MlaIndexer {
         self.pick.ratio > 1
     }
 
-    /// Its small tensors: the four every indexer has, a LayerNorm's bias, a pooled indexer's two.
+    /// Its small tensors: the four every indexer has, a LayerNorm's bias, a pooled indexer's two, the norm of the layer's input its queries read (a weight and
+    /// a bias), its queries' scale by position (two).
     pub fn small_count(&self) -> usize {
-        4 + matches!(self.key, KeyNorm::Layer(_)) as usize + 2 * self.pooled() as usize
+        4 + matches!(self.key, KeyNorm::Layer(_)) as usize + 2 * self.pooled() as usize + 2 * self.q_in.is_some() as usize + 2 * self.pos_scale as usize
     }
 
     /// The same indexer with its small tensors from `s`, in the order a loader holds them (q_b, k, the key norm's weight, its bias where it has one, the head
-    /// weights, then a pooled indexer's bias and gate), and its cache the ring `ring`.
+    /// weights, then a pooled indexer's bias and gate, the weight and bias of the norm its queries read the layer's input through, its queries' scale by
+    /// position s and b), and its cache the ring `ring`.
     pub fn at(&self, s: usize, ring: usize) -> MlaIndexer {
         let w = s + 3 + matches!(self.key, KeyNorm::Layer(_)) as usize;
+        let qn = w + 1 + 2 * self.pooled() as usize;
+        let sc = qn + 2 * self.q_in.is_some() as usize;
         MlaIndexer {
             pick: IdxPick { keys: IdxKeys::Ring(ring), ..self.pick.clone() },
             q_b: s,
@@ -160,7 +179,18 @@ impl MlaIndexer {
             weights: w,
             ape: w + 1,
             gate: w + 2,
+            q_norm: qn,
+            q_bias: qn + 1,
+            scale_s: sc,
+            scale_b: sc + 1,
             ..self.clone()
+        }
+    }
+
+    /// The ring of its keys.
+    pub fn ring(&self) -> usize {
+        match self.pick.keys {
+            IdxKeys::Ring(r) | IdxKeys::Entries(r) | IdxKeys::Pools(r) => r,
         }
     }
 }
@@ -184,7 +214,12 @@ pub fn f8_small_name(name: &str) -> bool {
 /// (the normed value rounded, then times the weight, rounded: KimiRMSNorm, and transformers' RMSNorm in bf16, GLM-5.3's since its description says so) runs
 /// rms2_rows512 (512 threads, Kimi-K3's order of sums), any other rms2_rows (256 threads, the same roundings in another order of sums). Queries of one
 /// product (`MlaIn::Direct`) have no latent: `q_rank` is 0, `q_b` multiplies the layer's input, and the operation has two small tensors of the latent, the
-/// key-value latent's norm and kv_b_proj (`q_norm` is the first of them and is not read as a norm of the queries).
+/// key-value latent's norm and kv_b_proj (`q_norm` is the first of them and is not read as a norm of the queries); with another layer's latents
+/// (`MlaIn::Borrowed`) it has kv_b_proj alone, reads the ring `ring` and writes no cache but its own indexer's.
+///
+/// Mistral Large's forms: `pos_scale` (each query head times a factor of its position after the rotary, kernels/mla.cu `mla_pos_scale`), an indexer whose
+/// queries are the layer's input's (`MlaIndexer::q_in`) and scaled by position before their rotary (`MlaIndexer::pos_scale`), learned rotary frequencies
+/// (the description's table, made with them: `Rope::learned`), and layers with no shared key part (`rope` 0) beside layers with one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MlaOp {
     pub heads: usize,
@@ -214,6 +249,9 @@ pub struct MlaOp {
     /// A layer whose indexer is `shared`: no indexer of its own; its rows attend to the picks the latent attention with an indexer before it made for them, a pick
     /// of this shape (the lender's: its room a row, `tmax`).
     pub lent: Option<IdxPick>,
+    /// The queries scaled by their position after their rotary (`kinds::Mla::pos_scale`): head h's values times s[h] ln(pos + 1) + b[h], s and b the small
+    /// tensors [heads] at `.0` and `.1`, the operation's last two.
+    pub pos_scale: Option<(usize, usize)>,
 }
 
 /// A latent attention's rotary: table `table` of the description's (`ModelDesc::ropes`, `rope / 2` pairs) turns interleaved pairs of each query head's rope
@@ -227,12 +265,20 @@ pub struct MlaRot {
 impl MlaOp {
     /// The operation of layer kind `k` whose input products are `input`, its other matrices `q_b` and `o`, its small tensors from `s0` (the q latent's norm, the
     /// key-value latent's, kv_b_proj, then an indexer's in `MlaIndexer::at`'s order), its caches the rings `ring` and `ring + 1`; a kind with a rotary turns by
-    /// the description's table `table` (made for the kind's rotary: `ModelDesc::ropes`). A gate takes a fused product.
+    /// the description's table `table` (made for the kind's rotary, its scaling and its learned frequencies: `ModelDesc::ropes`). A gate takes a fused
+    /// product. A kind that attends to another layer's latents (`kinds::Mla::kv_from`) is given them as `MlaIn::Borrowed`: the operation's `ring` is then
+    /// that layer's, and `ring` here its own indexer's keys'. After an indexer's small tensors and a gate a head's: the queries' scale by position, s and b.
     #[allow(clippy::too_many_arguments)]
     pub fn of(k: &kinds::Mla, input: MlaIn, q_b: usize, o: usize, s0: usize, ring: usize, tail: bool, table: Option<usize>) -> Result<MlaOp> {
-        // (the forms the CPU reference computes and no kernel does: refused by their names)
-        if let Some(why) = k.not_run() {
-            return err(why);
+        // (another layer's latents: the kind and the input say so together)
+        let borrowed = match (k.kv_from, input) {
+            (Some(_), MlaIn::Borrowed { from }) => Some(from),
+            (None, MlaIn::Borrowed { .. }) => return err("a latent attention that makes its own latents, given another layer's"),
+            (Some(j), _) => return err(format!("a latent attention that attends to block {j}'s latents, given a key-value latent product of its own")),
+            (None, _) => None,
+        };
+        if k.rope_learned && k.rope.is_none() {
+            return err("a latent attention with learned rotary frequencies and no rotary");
         }
         // (the parts of a latent attention the CPU reference computes and no kernel does: each refused by its name, before the kind is read further)
         let not_run = [
@@ -249,8 +295,8 @@ impl MlaOp {
         // (the queries: through a latent of their own, in a fused product or apart; or one product of the layer's input)
         let q_rank = match (k.q_lora, input) {
             (Some(r), MlaIn::Fused { .. } | MlaIn::Apart { .. }) => r,
-            (None, MlaIn::Direct { .. }) => 0,
-            (Some(r), MlaIn::Direct { .. }) => {
+            (None, MlaIn::Direct { .. } | MlaIn::Borrowed { .. }) => 0,
+            (Some(r), MlaIn::Direct { .. } | MlaIn::Borrowed { .. }) => {
                 return err(format!("a latent attention whose queries have a latent of {r}, given as one product of the layer's input"))
             }
             (None, _) => {
@@ -259,12 +305,21 @@ impl MlaOp {
         };
         let rot = match (&k.rope, table) {
             (None, _) => None,
-            (Some(r), Some(t)) if r.style == kinds::RopeStyle::Interleaved && r.scaling == kinds::RopeScaling::None && r.mrope.is_none() && r.dim == k.rope_dim && r.freq_dim == r.dim && r.freqs * 2 == r.dim => {
+            // (the frequencies are the table's: the default ones, or YaRN's, which no sequence's length changes, and learned factors of them)
+            (Some(r), Some(t))
+                if r.style == kinds::RopeStyle::Interleaved
+                    && matches!(r.scaling, kinds::RopeScaling::None | kinds::RopeScaling::Yarn { .. })
+                    && r.mrope.is_none()
+                    && r.dim == k.rope_dim
+                    && r.freq_dim == r.dim
+                    && r.freqs * 2 == r.dim =>
+            {
                 Some(MlaRot { table: t, index: k.indexer.as_ref().filter(|x| !x.shared).map_or(0, |x| x.rope) })
             }
             (Some(r), _) => {
                 return err(format!(
-                    "a latent attention's rotary of {r:?}: the kernels turn interleaved pairs of the shared key part at the default frequencies, by the description's table"
+                    "a latent attention's rotary of {r:?}: the kernels turn interleaved pairs of the shared key part at the default frequencies or \
+                     YaRN's, by the description's table"
                 ))
             }
         };
@@ -283,6 +338,8 @@ impl MlaOp {
         if let Some(x) = k.indexer.as_ref().filter(|x| x.rope > 0 && rot.is_none()) {
             return err(format!("a latent attention's indexer whose first {} channels turn, under no rotary of the attention's", x.rope));
         }
+        // (its indexer's keys: the ring after its latents', or with another layer's latents the one ring of its own)
+        let iring = if borrowed.is_some() { ring } else { ring + 1 };
         let pick = |x: &kinds::Indexer| IdxPick {
             heads: x.heads,
             ratio: x.block.max(1),
@@ -291,11 +348,18 @@ impl MlaOp {
             tail,
             wscale: (x.heads as f32).powf(-0.5),
             score: IdxScore::F32 { dim: x.head_dim, scale: (x.head_dim as f32).powf(-0.5) },
-            keys: IdxKeys::Ring(ring + 1),
+            keys: IdxKeys::Ring(iring),
             weighted: true,
             cand: None,
         };
         let lent = k.indexer.as_ref().filter(|x| x.shared).map(pick);
+        // (the latent's small tensors: the q latent's norm where the queries have one, the key-value latent's norm where the latents are the layer's own,
+        // kv_b_proj; then an indexer's, the gate a head's, the queries' scale by position)
+        let base = match input {
+            MlaIn::Fused { .. } | MlaIn::Apart { .. } => 3,
+            MlaIn::Direct { .. } => 2,
+            MlaIn::Borrowed { .. } => 1,
+        };
         let indexer = match &k.indexer {
             None => None,
             Some(x) if x.shared => None,
@@ -310,14 +374,40 @@ impl MlaOp {
                         ))
                     }
                 };
-                let ix = MlaIndexer { pick: pick(x), dim: x.head_dim, q_b: 0, k: 0, k_norm: 0, k_bias: 0, weights: 0, ape: 0, gate: 0, key };
-                Some(ix.at(s0 + 3, ring + 1))
+                // (its queries: the normed query latent's product, or the layer's input's through a LayerNorm with a bias)
+                let q_in = match x.q_in {
+                    None => None,
+                    Some(n) if n.kind == kinds::NormKind::Layer && n.weight == kinds::NormWeight::Plain => Some(n.eps),
+                    Some(n) => {
+                        return err(format!(
+                            "a latent attention's indexer whose queries read the layer's input through {n:?}: the kernels take nn.LayerNorm with a bias"
+                        ))
+                    }
+                };
+                let ix = MlaIndexer {
+                    pick: pick(x),
+                    dim: x.head_dim,
+                    q_b: 0,
+                    k: 0,
+                    k_norm: 0,
+                    k_bias: 0,
+                    weights: 0,
+                    ape: 0,
+                    gate: 0,
+                    key,
+                    q_in,
+                    q_norm: 0,
+                    q_bias: 0,
+                    pos_scale: x.pos_scale,
+                    scale_s: 0,
+                    scale_b: 0,
+                };
+                Some(ix.at(s0 + base, iring))
             }
         };
-        // (the latent's small tensors: the q latent's norm where the queries have one, the key-value latent's norm, kv_b_proj; the gate a head's after them
-        // and an indexer's)
-        let base = if q_rank == 0 { 2 } else { 3 };
-        let head_gate = by_head.then(|| s0 + base + indexer.as_ref().map_or(0, MlaIndexer::small_count));
+        let after = s0 + base + indexer.as_ref().map_or(0, MlaIndexer::small_count);
+        let head_gate = by_head.then_some(after);
+        let scaled = after + by_head as usize;
         let a = MlaOp {
             heads: k.heads,
             nope: k.nope,
@@ -329,34 +419,45 @@ impl MlaOp {
             q_b,
             o,
             q_norm: s0,
-            kv_norm: s0 + base - 2,
+            kv_norm: (s0 + base).saturating_sub(2).max(s0),
             kv_b: s0 + base - 1,
             q_round: k.q_norm.rounding,
             gate,
             head_gate,
             scale: k.scale,
             eps: k.q_norm.eps,
-            ring,
+            ring: borrowed.unwrap_or(ring),
             indexer,
             rot,
             lent,
+            pos_scale: k.pos_scale.then_some((scaled, scaled + 1)),
         };
         a.check()?;
         Ok(a)
     }
 
-    /// The small tensors of the latent: the q latent's norm, the key-value latent's norm and kv_b_proj; the last two where the queries are one product.
+    /// The small tensors of the latent: the q latent's norm, the key-value latent's norm and kv_b_proj; the last two where the queries are one product;
+    /// kv_b_proj alone where the latents are another layer's.
     fn latent_small(&self) -> usize {
-        if self.q_rank == 0 {
-            2
-        } else {
-            3
+        match self.input {
+            MlaIn::Fused { .. } | MlaIn::Apart { .. } => 3,
+            MlaIn::Direct { .. } => 2,
+            MlaIn::Borrowed { .. } => 1,
         }
     }
 
-    /// The small tensors the operation reads: the latent's (`latent_small`), an indexer's (`MlaIndexer::small_count`), and the gate a head's.
+    /// Whether its latents are another layer's (`MlaIn::Borrowed`): it reads `ring` and writes none.
+    pub fn borrowed(&self) -> bool {
+        matches!(self.input, MlaIn::Borrowed { .. })
+    }
+
+    /// The small tensors the operation reads: the latent's (`latent_small`), an indexer's (`MlaIndexer::small_count`), the gate a head's, and the two of
+    /// the queries' scale by position.
     pub fn small_count(&self) -> usize {
-        self.latent_small() + self.indexer.as_ref().map_or(0, MlaIndexer::small_count) + self.head_gate.is_some() as usize
+        self.latent_small()
+            + self.indexer.as_ref().map_or(0, MlaIndexer::small_count)
+            + self.head_gate.is_some() as usize
+            + 2 * self.pos_scale.is_some() as usize
     }
 
     /// The small tensors it takes released in FP8 with fp32 block scales (the release's E4M3 codes in bf16 and their scales: `Part::scales`): kv_b_proj, and
@@ -367,31 +468,46 @@ impl MlaOp {
     }
 
     /// The matrices it multiplies by, in the order a loader holds them: a fused input product, q_b, o; or q_a, q_b, kv_a, o; or the queries' one product,
-    /// kv_a, o.
+    /// kv_a, o; or, with another layer's latents, the queries' one product and o.
     pub fn mat_count(&self) -> usize {
         match self.input {
             MlaIn::Fused { .. } | MlaIn::Direct { .. } => 3,
             MlaIn::Apart { .. } => 4,
+            MlaIn::Borrowed { .. } => 2,
         }
     }
 
     /// The same operation with its matrices from `m0` (`mat_count`'s order), its small tensors from `s0` (`MlaOp::of`'s order) and its rings from `ring`: a layer's
-    /// place in its description.
+    /// place in its description. With another layer's latents it keeps reading that layer's ring, its own indexer's keys at `ring`.
     pub fn placed(&self, m0: usize, s0: usize, ring: usize) -> MlaOp {
         let (input, q_b, o) = match self.input {
             MlaIn::Fused { .. } => (MlaIn::Fused { w: m0 }, m0 + 1, m0 + 2),
             MlaIn::Apart { .. } => (MlaIn::Apart { q_a: m0, kv_a: m0 + 2 }, m0 + 1, m0 + 3),
             MlaIn::Direct { .. } => (MlaIn::Direct { kv_a: m0 + 1 }, m0, m0 + 2),
+            MlaIn::Borrowed { from } => (MlaIn::Borrowed { from }, m0, m0 + 1),
         };
-        let indexer = self.indexer.as_ref().map(|x| x.at(s0 + 3, ring + 1));
+        let (own, iring) = match self.input {
+            MlaIn::Borrowed { from } => (from, ring),
+            _ => (ring, ring + 1),
+        };
         let base = self.latent_small();
-        let head_gate = self.head_gate.map(|_| s0 + base + indexer.as_ref().map_or(0, MlaIndexer::small_count));
-        MlaOp { input, q_b, o, q_norm: s0, kv_norm: s0 + base - 2, kv_b: s0 + base - 1, ring, indexer, head_gate, ..self.clone() }
+        let indexer = self.indexer.as_ref().map(|x| x.at(s0 + base, iring));
+        let after = s0 + base + indexer.as_ref().map_or(0, MlaIndexer::small_count);
+        let head_gate = self.head_gate.map(|_| after);
+        let pos_scale = self.pos_scale.map(|_| (after + head_gate.is_some() as usize, after + head_gate.is_some() as usize + 1));
+        let kv_norm = (s0 + base).saturating_sub(2).max(s0);
+        MlaOp { input, q_b, o, q_norm: s0, kv_norm, kv_b: s0 + base - 1, ring: own, indexer, head_gate, pos_scale, ..self.clone() }
     }
 
-    /// Its caches as rings of the description: the latents', and an indexer's [key | gate score] a token; keys alone.
+    /// Its caches as rings of the description: the latents' (none where they are another layer's), and an indexer's [key | gate score] a token; keys alone.
     pub fn rings(&self) -> Vec<super::Ring> {
-        std::iter::once(super::Ring::keys(self.kv_rank + self.rope, 1, 0)).chain(self.indexer.as_ref().map(|x| super::Ring::keys(2 * x.dim, 1, 0))).collect()
+        let latents = (!self.borrowed()).then(|| super::Ring::keys(self.kv_rank + self.rope, 1, 0));
+        latents.into_iter().chain(self.indexer.as_ref().map(|x| super::Ring::keys(2 * x.dim, 1, 0))).collect()
+    }
+
+    /// The rings it reads or writes: the latents' (its own, or the layer's it borrows them of) and its indexer's keys'.
+    pub fn ring_ids(&self) -> Vec<usize> {
+        std::iter::once(self.ring).chain(self.indexer.as_ref().map(MlaIndexer::ring)).collect()
     }
 
     /// The shapes the kernels take, or why not.
@@ -417,13 +533,15 @@ impl MlaOp {
         if self.gate && self.head_gate.is_some() {
             return err("a latent attention with a gate a channel and a gate a head");
         }
-        // (an indexer's queries are a product of the normed query latent, which queries of one product do not have)
-        if (self.q_rank == 0) != matches!(self.input, MlaIn::Direct { .. }) || (self.q_rank == 0 && (self.indexer.is_some() || self.lent.is_some())) {
+        // (an indexer's queries are a product of the normed query latent, which queries of one product do not have: theirs read the layer's input)
+        let one = matches!(self.input, MlaIn::Direct { .. } | MlaIn::Borrowed { .. });
+        let on_latent = self.indexer.as_ref().is_some_and(|x| x.q_in.is_none());
+        if (self.q_rank == 0) != one || (self.q_rank == 0 && on_latent) {
             return err(format!(
-                "a latent attention whose queries have a latent of {} in {:?}{}: queries of one product have none, and no indexer, whose queries are its product",
+                "a latent attention whose queries have a latent of {} in {:?}{}: queries of one product have none, and no indexer whose queries are its product",
                 self.q_rank,
                 self.input,
-                if self.indexer.is_some() || self.lent.is_some() { ", with an indexer" } else { "" }
+                if on_latent { ", with an indexer on the query latent" } else { "" }
             ));
         }
         if let Some(r) = self.rot {
@@ -490,11 +608,17 @@ impl MlaOp {
     }
 }
 
+/// The refusal of a latent attention that attends to another layer's latents where that layer's ring is held in 12-bit pages: the layer that writes them
+/// unpacks its sequence's pages into the one staging ring for itself, and no check has run a second reader of them.
+pub const BORROWED_PAGES_NOT_RUN: &str = "a latent attention that attends to another layer's latents held in 12-bit pages, which the executor does not run yet";
+
 /// kernels/mla.cu's kernels, each by its type (`crate::kt`).
 pub(crate) struct KernMla {
     rms2: crate::kt::rms2_rows,
     pub(super) rms2_512: crate::kt::rms2_rows512,
     layernorm: crate::kt::layernorm_rows,
+    layernorm_wide: crate::kt::layernorm_wide,
+    pos_scale: crate::kt::mla_pos_scale,
     scatter: crate::kt::scatter_rows,
     small: crate::kt::small_linear,
     small_f8: crate::kt::small_linear_f8s,
@@ -528,6 +652,8 @@ impl KernMla {
             rms2: dev.typed()?,
             rms2_512: dev.typed()?,
             layernorm: dev.typed()?,
+            layernorm_wide: dev.typed()?,
+            pos_scale: dev.typed()?,
             scatter: dev.typed()?,
             small: dev.typed()?,
             small_f8: dev.typed()?,
@@ -601,9 +727,12 @@ impl KernMla {
 /// The latent attentions' scratch, one for every layer, sized for the largest: the input products (`x`, a row as wide as the widest), the normed q latent, the
 /// queries, the values' output, the indexer's key or gate product and its queries (bf16), its head weights (fp32, as the kind's reference holds them: a near
 /// tie of the scores goes their way), a chunk's rows; for the rows the attention takes at a time
-/// the absorbed queries and the latent outputs (fp32), the indexer's scores, the picked tokens and their counts, and a few rows' partial results.
+/// the absorbed queries and the latent outputs (fp32), the indexer's scores, the picked tokens and their counts, and a few rows' partial results; and where
+/// an indexer's queries read the layer's input through a norm, a chunk's normed rows (`hn`, as wide as the model). Every one is sized over every latent
+/// attention of the description (`most`), whose layers may differ in their shared key part, their latents' source and their indexers.
 pub(crate) struct MlaRun {
     x: Buf,
+    hn: Buf,
     qr: Buf,
     q: Buf,
     ov: Buf,
@@ -635,10 +764,13 @@ impl MlaRun {
             MlaIn::Fused { w } => mats[w].whole_rows(),
             MlaIn::Apart { q_a, kv_a } => mats[q_a].whole_rows().max(mats[kv_a].whole_rows()),
             MlaIn::Direct { kv_a } => mats[kv_a].whole_rows(),
+            // (another layer's latents: no product of its own into x)
+            MlaIn::Borrowed { .. } => 0,
         });
         let b = |n: usize| Buf::new(n.max(4));
         Ok(Some(MlaRun {
             x: b(ch * x * 2)?,
+            hn: b(ch * most(&|a| if a.indexer.as_ref().is_some_and(|x| x.q_in.is_some()) { d.hidden } else { 0 }) * 2)?,
             qr: b(ch * most(&|a| a.q_rank) * 2)?,
             q: b(ch * most(&|a| a.heads * (a.nope + a.rope)) * 2)?,
             ov: b(ch * most(&|a| a.heads * a.v) * 2)?,
@@ -731,7 +863,7 @@ impl Dyn {
         if !(std::ptr::eq(p, &self.big) || matches!(p.d.first, Op::MtpIn { .. })) || self.pick_trace.borrow().is_none() {
             return Ok(());
         }
-        let (most, tab) = (a.rows_at_once(self.chunk, self.ctx), self.table_of(self.seq, a.ring + 1));
+        let (most, tab) = (a.rows_at_once(self.chunk, self.ctx), self.table_of(self.seq, ix.ring()));
         if n > most || !self.parts.is_empty() || tab != 0 {
             return err(format!(
                 "layer {l}: picks traced on a pass of {n} rows of one sequence, at most {most}, its ring unpaged (this one: {} sequences, {})",
@@ -761,7 +893,7 @@ impl Dyn {
         }
         r.iq.read(0, &mut q)?;
         r.wts.read(0, &mut w)?;
-        self.kc.read(self.ring_off[a.ring + 1].0 as usize, &mut ring)?;
+        self.kc.read(self.ring_off[ix.ring()].0 as usize, &mut ring)?;
         let f = |v: &[u16]| v.iter().map(|&h| f32::from_bits((h as u32) << 16)).collect::<Vec<f32>>();
         let mut picks = Vec::with_capacity(n);
         for (t, &c) in cnt.iter().enumerate() {
@@ -839,6 +971,11 @@ impl Dyn {
         let h = p.slot(Slot::H);
         // (12-bit pages: a row of the call to its staging row, `pw` wide, the channels past the latent's zero; then the rows into their pages)
         let staged = self.pages12(p, a.ring).map(|rp| (rp.shape.heads * rp.shape.channels, self.lossless.as_ref().expect("pages").rows_k.ptr));
+        // (another layer's latents: read from that layer's ring, which its operation wrote for these rows earlier in the pass; none written here)
+        let borrowed = a.borrowed();
+        if borrowed && staged.is_some() {
+            return err(BORROWED_PAGES_NOT_RUN);
+        }
         // (the rows that decode taken at once, and the pass's other sequences, each by itself)
         let lead = if staged.is_some() || self.parts.is_empty() { 0 } else { self.lead.get() };
         let seqs: Vec<(usize, usize, u64, usize)> = self.seq_parts(n).into_iter().skip(lead).collect();
@@ -849,7 +986,7 @@ impl Dyn {
         let q_row = match a.input {
             MlaIn::Fused { w } => p.mats[w].whole_rows(),
             MlaIn::Apart { q_a, .. } => p.mats[q_a].whole_rows(),
-            MlaIn::Direct { .. } => 0,
+            MlaIn::Direct { .. } | MlaIn::Borrowed { .. } => 0,
         };
         if let MlaIn::Fused { w: q_at } | MlaIn::Apart { q_a: q_at, .. } = a.input {
             self.lin(&p.mats[q_at], h, n, x)?;
@@ -869,6 +1006,10 @@ impl Dyn {
         if let Some(rt) = a.rot {
             self.mla_rope(r.q.ptr, nh * qw, (nh, qw), a.nope, pos, rt.table, a.rope / 2, n)?;
         }
+        // (the queries' scale by position, after the rotary: every channel of head h times s[h] ln(pos + 1) + b[h])
+        if let Some((ss, sb)) = a.pos_scale {
+            launch!(k.pos_scale, [nr, nh as u32, 1], [256, 1, 1], s; r.q.ptr, (nh * qw) as i32, qw as i32, qw as i32, pos, p.small[ss].ptr, p.small[sb].ptr)?;
+        }
         self.mark("latent attention: q")?;
         // the key-value latent normed into the cache, the shared key part after it
         let (kv, kv_row) = match a.input {
@@ -877,22 +1018,23 @@ impl Dyn {
                 self.lin(&p.mats[kv_a], h, n, x)?;
                 (x, p.mats[kv_a].whole_rows())
             }
+            MlaIn::Borrowed { .. } => (0, 0),
         };
         // (a rotary: the shared key part, after the latent, turned at the row's position before it is cached)
-        if let Some(rt) = a.rot {
+        if let Some(rt) = a.rot.filter(|_| !borrowed) {
             self.mla_rope(kv, kv_row, (1, 0), kr, pos, rt.table, a.rope / 2, n)?;
         }
         if let Some((pw, rows)) = staged.filter(|x| x.0 > ks) {
             crate::dev::memset_async(rows, 0, n * pw * 2, s)?;
         }
-        if lead > 0 {
+        if lead > 0 && !borrowed {
             let (lat, tab, ts) = self.lead_ring(a.ring);
             launch!(k.rms2, [lr, 1, 1], [256, 1, 1], s; kv, kv_row as i32, p.small[a.kv_norm].ptr, lat, ks as i32, pos, tab, ts as i64, kr as i32, a.eps)?;
             if a.rope > 0 {
                 launch!(k.scatter, [lr, 1, 1], [256, 1, 1], s; kv + (kr * 2) as u64, kv_row as i32, lat + (kr * 2) as u64, ks as i32, pos, tab, ts as i64, a.rope as i32)?;
             }
         }
-        for &(r0, m, kc, slot) in &seqs {
+        for &(r0, m, kc, slot) in seqs.iter().filter(|_| !borrowed) {
             let (xr, p0, mr) = (kv + (r0 * kv_row * 2) as u64, pos + (r0 * 4) as u64, m as u32);
             let (lat, tab, ys, at) = match staged {
                 Some((pw, rows)) => (rows + (r0 * pw * 2) as u64, 0, pw, 0),
@@ -916,7 +1058,19 @@ impl Dyn {
             let sm = |i: usize| p.small[i].ptr;
             // (a product's matrix and its block scales where it is released in FP8)
             let wt = |i: usize| (p.small[i].ptr, p.scales(i));
-            k.small_linear(s, r.qr.ptr, a.q_rank, wt(ix.q_b), r.iq.ptr, ih * id, n, ih * id, a.q_rank)?;
+            let ir = ix.ring();
+            match ix.q_in {
+                // (its queries of the layer's input: through nn.LayerNorm with its bias into the normed rows, then the queries' product)
+                Some(eps) => {
+                    launch!(k.layernorm_wide, [nr, 1, 1], [256, 1, 1], s; h, hid as i32, sm(ix.q_norm), sm(ix.q_bias), r.hn.ptr, hid as i32, hid as i32, eps)?;
+                    k.small_linear(s, r.hn.ptr, hid, wt(ix.q_b), r.iq.ptr, ih * id, n, ih * id, hid)?;
+                }
+                None => k.small_linear(s, r.qr.ptr, a.q_rank, wt(ix.q_b), r.iq.ptr, ih * id, n, ih * id, a.q_rank)?,
+            }
+            // (its queries' scale by position, before their rotary: every channel of head h times s[h] ln(pos + 1) + b[h])
+            if ix.pos_scale {
+                launch!(k.pos_scale, [nr, ih as u32, 1], [256, 1, 1], s; r.iq.ptr, (ih * id) as i32, id as i32, id as i32, pos, sm(ix.scale_s), sm(ix.scale_b))?;
+            }
             k.small_linear(s, h, hid, wt(ix.k), r.ix.ptr, id, n, id, hid)?;
             // (a rotary of the indexer's: each query head's first channels, and each key's after its norm, turned at the row's position: the keys normed in
             // place, turned, then into the cache)
@@ -935,9 +1089,9 @@ impl Dyn {
             }
             // (each token's key normed into its cache's row, as the kind's form says: a LayerNorm with its bias, or the weighted RMS norm; the rows that decode at once,
             // each through its own table, then each other sequence's rows)
-            let lead_keys = (lead > 0).then(|| self.lead_ring(a.ring + 1));
+            let lead_keys = (lead > 0).then(|| self.lead_ring(ir));
             let keyed = lead_keys.map(|(ring, tab, ts)| (0usize, lead, ring, tab, ts)).into_iter().chain(seqs.iter().map(|&(r0, m, kc, slot)| {
-                let (ring, tab) = self.ring_at(kc, slot, a.ring + 1);
+                let (ring, tab) = self.ring_at(kc, slot, ir);
                 (r0, m, ring, tab, 0)
             }));
             for (r0, m, ring, tab, ts) in keyed.clone() {
@@ -1021,7 +1175,7 @@ impl Dyn {
         };
         if lead > 0 {
             // (the rows that decode, `FEW` at a time: each row's attention cut into runs as a decode row's of its own sequence is)
-            let ((lat, tab, ts), keys) = (self.lead_ring(a.ring), if a.indexer.is_some() { self.lead_ring(a.ring + 1) } else { (0, 0, 0) });
+            let ((lat, tab, ts), keys) = (self.lead_ring(a.ring), a.indexer.as_ref().map_or((0, 0, 0), |ix| self.lead_ring(ix.ring())));
             for r0 in (0..lead).step_by(sub.min(FEW as usize)) {
                 let m = sub.min(FEW as usize).min(lead - r0);
                 block(r0, m, (lat, ks), (super::rows::tab_at(tab, ts, r0), ts), (keys.0, super::rows::tab_at(keys.1, keys.2, r0), keys.2))?;
@@ -1042,7 +1196,7 @@ impl Dyn {
                     (lat, tab, ks)
                 }
             };
-            let (keys, itab) = if a.indexer.is_some() { self.ring_at(kc, slot, a.ring + 1) } else { (0, 0) };
+            let (keys, itab) = a.indexer.as_ref().map_or((0, 0), |ix| self.ring_at(kc, slot, ix.ring()));
             let mut r0 = first;
             while r0 < first + rows {
                 let m = sub.min(first + rows - r0);
@@ -1276,18 +1430,85 @@ mod tests {
         assert!(MlaOp::of(&kind(0, true, false), MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 0, 0, false, None).is_err());
         assert!(MlaOp::of(&kinds::Mla { rope: Some(kinds::Rope::plain(1e4, 64)), ..kind(64, false, false) }, MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false, None)
             .is_err());
-        // (Mistral Large's forms, which the CPU reference computes and no kernel does: each refused by its name)
-        let on_input = |x: Indexer| Indexer { q_in: Some(Norm::rms(1e-6)), pos_scale: true, ..x };
-        for (k, why) in [
-            (kinds::Mla { pos_scale: true, ..kind(0, false, false) }, kinds::Mla::POS_SCALE_NOT_RUN),
-            (kinds::Mla { kv_from: Some(0), ..kind(0, false, false) }, kinds::Mla::KV_FROM_NOT_RUN),
-            (kinds::Mla { rope_learned: true, ..kind(64, false, false) }, kinds::Mla::ROPE_LEARNED_NOT_RUN),
-            (kinds::Mla { indexer: kind(0, false, true).indexer.map(on_input), ..kind(0, false, false) }, kinds::Mla::INDEX_INPUT_NOT_RUN),
+        assert_eq!(kind(64, true, true).plain_only(), None);
+    }
+
+    /// Mistral Large's forms land where the kernels read them. The queries' scale by position: two small tensors, the operation's last. An indexer on the
+    /// layer's input: the norm's weight and bias and the scale's two after its other small tensors. Another layer's latents: that layer's ring read, no
+    /// ring and no norm of a latent of its own, its indexer's keys the one ring it has. A rotary under YaRN turns by the description's table. What the
+    /// kind and its input do not say together is refused, and each form is named as the plain residuals' lowering's alone.
+    #[test]
+    fn mistral_larges_forms_lower_to_the_operation() {
+        let ln = Norm { kind: kinds::NormKind::Layer, rounding: kinds::Rounding::F32, ..Norm::rms(1e-6) };
+        let on_input = |x: Indexer| Indexer { q_in: Some(ln), pos_scale: true, block: 1, ..x };
+        let one = |rope: usize| kinds::Mla { q_lora: None, pos_scale: true, indexer: kind(0, false, true).indexer.map(on_input), ..kind(rope, false, false) };
+        // (a layer with no positions: q, kv_a, o; the latent's norm and kv_b at 10 and 11, the indexer's nine from 12, the queries' scale last)
+        let a = MlaOp::of(&one(0), MlaIn::Direct { kv_a: 1 }, 0, 2, 10, 4, false, None).unwrap();
+        let x = a.indexer.as_ref().unwrap();
+        assert_eq!((a.q_rank, a.rope, a.kv_norm, a.kv_b, a.ring, a.borrowed(), a.mat_count()), (0, 0, 10, 11, 4, false, 3));
+        assert_eq!((x.q_b, x.k, x.k_norm, x.k_bias, x.weights), (12, 13, 14, 15, 16));
+        assert_eq!((x.q_in, x.q_norm, x.q_bias, x.pos_scale, x.scale_s, x.scale_b, x.small_count(), x.ring()), (Some(1e-6), 17, 18, true, 19, 20, 9, 5));
+        assert_eq!((a.pos_scale, a.small_count(), a.rings().len(), a.ring_ids()), (Some((21, 22)), 13, 2, vec![4, 5]));
+        // (the same layer attending to the latents in ring 2: q and o; kv_b alone before the indexer's; its indexer's keys in the ring it is given)
+        let lent = kinds::Mla { kv_from: Some(6), ..one(0) };
+        let b = MlaOp::of(&lent, MlaIn::Borrowed { from: 2 }, 0, 1, 10, 4, false, None).unwrap();
+        let x = b.indexer.as_ref().unwrap();
+        assert_eq!((b.ring, b.borrowed(), b.mat_count(), b.kv_b, x.q_b, x.scale_b, x.ring()), (2, true, 2, 10, 11, 19, 4));
+        assert_eq!((b.pos_scale, b.small_count(), b.rings().len(), b.ring_ids()), (Some((20, 21)), 12, 1, vec![2, 4]));
+        // (placed elsewhere it reads the same ring, its own keys where it is put; a layer of its own latents moves both)
+        let (pb, pa) = (b.placed(30, 40, 9), a.placed(30, 40, 9));
+        assert_eq!((pb.ring, pb.indexer.as_ref().unwrap().ring(), pb.kv_b, pb.pos_scale, pb.o), (2, 9, 40, Some((50, 51)), 31));
+        assert_eq!((pa.ring, pa.indexer.as_ref().unwrap().ring(), pa.kv_b, pa.pos_scale, pa.o), (9, 10, 41, Some((51, 52)), 32));
+        // (its indexer shared: no tensor of an indexer, the picks of the layer before; the scale by position after kv_b)
+        let shared = kinds::Mla { indexer: one(0).indexer.map(|x| Indexer { shared: true, ..x }), ..lent.clone() };
+        let c = MlaOp::of(&shared, MlaIn::Borrowed { from: 2 }, 0, 1, 10, 4, false, None).unwrap();
+        assert_eq!(
+            (c.lent.is_some(), c.indexer.is_none(), c.pos_scale, c.small_count(), c.rings().len(), c.ring_ids()),
+            (true, true, Some((11, 12)), 3, 0, vec![2])
+        );
+        // (a rotary under YaRN, its frequencies learned: the description's table, the indexer's first channels by it too)
+        let yarn = kinds::Rope {
+            scaling: kinds::RopeScaling::Yarn {
+                factor: 4.0,
+                original_max: 8,
+                beta_fast: 32.0,
+                beta_slow: 1.0,
+                mscale: None,
+                mscale_all_dim: None,
+                attention_factor: Some(1.0),
+                truncate: true,
+            },
+            style: kinds::RopeStyle::Interleaved,
+            ..kinds::Rope::plain(1e4, 64)
+        };
+        let turning = |ix_rope: usize| kinds::Mla {
+            rope: Some(yarn.clone()),
+            rope_learned: true,
+            indexer: one(64).indexer.map(|x| Indexer { rope: ix_rope, ..x }),
+            ..one(64)
+        };
+        let t = MlaOp::of(&turning(32), MlaIn::Direct { kv_a: 1 }, 0, 2, 0, 0, false, Some(0)).unwrap();
+        assert_eq!((t.rot, t.rope), (Some(MlaRot { table: 0, index: 32 }), 64));
+        assert!(MlaOp::of(&turning(32), MlaIn::Direct { kv_a: 1 }, 0, 2, 0, 0, false, None).is_err(), "a rotary and no table");
+        // (what the kind and its input do not say together; learned frequencies of no rotary; an indexer on a query latent the layer does not have; a
+        // norm of the layer's input that is no LayerNorm)
+        let e = |k: &kinds::Mla, input: MlaIn| MlaOp::of(k, input, 0, 1, 0, 0, false, None).unwrap_err().msg;
+        assert!(e(&lent, MlaIn::Direct { kv_a: 1 }).contains("attends to block 6's latents"));
+        assert!(e(&one(0), MlaIn::Borrowed { from: 0 }).contains("makes its own latents"));
+        assert!(e(&kinds::Mla { rope_learned: true, ..one(0) }, MlaIn::Direct { kv_a: 1 }).contains("no rotary"));
+        let on_latent = kinds::Mla { indexer: kind(0, false, true).indexer, ..one(0) };
+        assert!(e(&on_latent, MlaIn::Direct { kv_a: 1 }).contains("no indexer whose queries are its product"));
+        let rms_in = kinds::Mla { indexer: one(0).indexer.map(|x| Indexer { q_in: Some(Norm::rms(1e-6)), ..x }), ..one(0) };
+        assert!(e(&rms_in, MlaIn::Direct { kv_a: 1 }).contains("nn.LayerNorm with a bias"));
+        // (each form is the plain residuals' lowering's)
+        for k in [
+            kinds::Mla { pos_scale: true, ..kind(0, false, false) },
+            kinds::Mla { kv_from: Some(0), ..kind(0, false, false) },
+            kinds::Mla { rope_learned: true, ..kind(64, false, false) },
+            kinds::Mla { indexer: kind(0, false, true).indexer.map(on_input), ..kind(0, false, false) },
         ] {
-            let Err(e) = MlaOp::of(&k, MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false, None) else { panic!("lowered: {why}") };
-            assert_eq!(e.msg, why);
-            assert!(why.ends_with("which the executor does not run yet"));
+            assert_eq!(k.plain_only(), Some(kinds::Mla::PLAIN_ONLY));
         }
-        assert_eq!(kind(64, true, true).not_run(), None);
+        assert!(kinds::Mla::PLAIN_ONLY.ends_with("which the executor does not run yet"));
     }
 }

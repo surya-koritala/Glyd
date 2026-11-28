@@ -685,6 +685,35 @@ extern "C" __global__ void mla_gate_head(bf16* o, const float* g, int H, int V, 
     o[e] = f2b(b2f(o[e]) * s);
 }
 
+// Queries scaled by their position (Mistral Large's): for row i at position pos[i] and head h, the W channels of x's row from h hs on (rows xs apart, heads hs apart) times
+// s[h] ln(pos[i] + 1) + b[h] (s, b bf16 [heads]; the logarithm, the product and the sum in fp32, each rounded to nearest and none fused, as the kind's reference takes them),
+// the product rounded once. The first token's factor is b alone (ln 1 = 0). The latent attention's query heads after their rotary, and its indexer's before theirs. Grid
+// (rows, heads), a thread W / blockDim.x channels, as mla_rope's grid; a row at a negative position (a graph's padding row) is left.
+extern "C" __global__ void mla_pos_scale(bf16* x, int xs, int hs, int W, const int* pos, const bf16* s, const bf16* b) {
+    if (pos[blockIdx.x] < 0) return;
+    bf16* p = x + (size_t)blockIdx.x * xs + (size_t)blockIdx.y * hs;
+    const float f = __fadd_rn(__fmul_rn(b2f(s[blockIdx.y]), logf((float)(pos[blockIdx.x] + 1))), b2f(b[blockIdx.y]));
+    for (int k = threadIdx.x; k < W; k += blockDim.x) p[k] = f2b(__fmul_rn(b2f(p[k]), f));
+}
+
+// nn.LayerNorm over K channels of any count (layernorm_rows takes two a thread): fp32, the mean and the biased variance of the row, (x - mean) * rsqrt(var + eps) * w + b, one
+// rounding; y's row i (rows ys apart; x rows xs apart). The norm of a layer's input that an indexer's queries read (Mistral Large's, as wide as the model). A block a row, 256
+// threads, a thread's channels t, t + 256, ... read again for each of the three passes.
+extern "C" __global__ void __launch_bounds__(256) layernorm_wide(const bf16* x, int xs, const bf16* w, const bf16* b, bf16* y, int ys, int K, float eps) {
+    const bf16* xr = x + (size_t)blockIdx.x * xs;
+    bf16* yr = y + (size_t)blockIdx.x * ys;
+    float s = 0.f;
+    for (int d = threadIdx.x; d < K; d += blockDim.x) s += b2f(xr[d]);
+    const float mu = block_sum(s) / K;
+    float q = 0.f;
+    for (int d = threadIdx.x; d < K; d += blockDim.x) {
+        const float c = b2f(xr[d]) - mu;
+        q += c * c;
+    }
+    const float r = rsqrtf(block_sum(q) / K + eps);
+    for (int d = threadIdx.x; d < K; d += blockDim.x) yr[d] = f2b((b2f(xr[d]) - mu) * r * b2f(w[d]) + b2f(b[d]));
+}
+
 // list [maxp] = the blocks of a sequence's first pos[0] / 16 + 1 pages through its table tab, -1 past them: the pages a 12-bit latent ring unpacks for rows whose last position is
 // pos[0] (glyd_gpu_kv_unpack skips a negative page), from a position read on the device (a decode step's graph holds it). A thread an entry.
 extern "C" __global__ void ml_pages(const int* tab, const int* pos, int maxp, int* list) {

@@ -181,6 +181,7 @@ pub(crate) fn latent(c: &ConfigKimi) -> MlaOp {
         indexer: None,
         rot: None,
         lent: None,
+        pos_scale: None,
     }
 }
 
@@ -211,6 +212,12 @@ pub(crate) fn latent_at(c: &ConfigKimi, l: usize) -> MlaOp {
             ape: 0,
             gate: 0,
             key: if d.layer_norm { super::KeyNorm::Layer(c.eps) } else { super::KeyNorm::Rms(c.eps) },
+            q_in: None,
+            q_norm: 0,
+            q_bias: 0,
+            pos_scale: false,
+            scale_s: 0,
+            scale_b: 0,
         };
         op.indexer = Some(ix.at(3, 1));
     }

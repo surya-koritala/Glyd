@@ -1121,14 +1121,7 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
     if let Some(part) = not_run(d) {
         return err(part);
     }
-    // (a latent attention of a form the reference has and the kernels do not, Mistral Large's: named, the first of them a layer holds)
-    if let Some(why) = blocks.iter().find_map(|b| match &b.body {
-        Body::Mixer(Mixer::Mla(m)) => m.not_run(),
-        _ => None,
-    }) {
-        return err(format!("its layers hold {why}"));
-    }
-    Ok(if mixer(&|m| matches!(m, Mixer::Compressed(_))) {
+    let low = if mixer(&|m| matches!(m, Mixer::Compressed(_))) {
         Lowering::Compressed
     } else if mixer(&|m| matches!(m, Mixer::Mamba2(_))) && plain {
         Lowering::Mamba2
@@ -1150,7 +1143,15 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
              streams or the blocks' depth mix; gated residuals; the gated residuals' streams; the gated delta rule with plain residuals; the latent attention \
              or the Kimi delta attention with plain residuals)",
         );
-    })
+    };
+    // (Mistral Large's forms of a latent attention are the plain residuals' lowering's: another lowering names none of their tensors)
+    if let Some(why) = blocks.iter().filter(|_| low != Lowering::LatentPlain).find_map(|b| match &b.body {
+        Body::Mixer(Mixer::Mla(m)) => m.plain_only(),
+        _ => None,
+    }) {
+        return err(format!("its layers hold {why}"));
+    }
+    Ok(low)
 }
 
 /// The loader of the model whose description is `d`: the one that lowers the layer kinds it holds (`lowering`), its config's layers and end tokens as that
@@ -1444,6 +1445,28 @@ mod tests {
             assert_eq!(super::not_run(&d), Some(part));
             assert_eq!(super::loader(&d).map(|_| ()).unwrap_err().msg, part);
             assert!(of(&kind).contains(part), "{part}: {}", of(&kind));
+        }
+        // (Mistral Large's forms of a latent attention are the plain residuals' lowering's: under residual streams they are refused by their name, by the
+        // choice of a loader and by the lowering itself; on GLM-5.3's plain residuals the choice takes them)
+        let flash = {
+            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/glm5_next_config.json");
+            crate::runtime::describe::describe(&serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()).unwrap()
+        };
+        let fat = flash.desc.blocks.iter().position(|b| matches!(&b.body, Body::Mixer(Mixer::Mla(_)))).unwrap();
+        for edit in [
+            &(|x: &mut Mla| x.pos_scale = true) as &dyn Fn(&mut Mla),
+            &|x: &mut Mla| x.kv_from = Some(0),
+            &|x: &mut Mla| x.rope_learned = true,
+            &|x: &mut Mla| x.indexer.as_mut().unwrap().pos_scale = true,
+        ] {
+            let mut d = flash.clone();
+            let Body::Mixer(Mixer::Mla(x)) = &mut d.desc.blocks[fat].body else { panic!("block {fat}") };
+            edit(x);
+            assert_eq!(super::loader(&d).map(|_| ()).unwrap_err().msg, format!("its layers hold {}", Mla::PLAIN_ONLY));
+            let e = crate::dynamic::lower::glm(&d, vec![2], 4096, &super::Stage::whole(d.desc.blocks.len() / 2)).map(|_| ()).unwrap_err().msg;
+            assert!(e.contains(Mla::PLAIN_ONLY), "{e}");
+            let (plain, _) = with(edit);
+            assert!(super::loader(&plain).is_ok());
         }
         // (a drafter whose targets are read after their layers)
         let mut d = base.clone();
