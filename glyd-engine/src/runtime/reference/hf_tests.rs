@@ -505,6 +505,7 @@ fn deepseek_v4_mhc() {
             rounding: Rounding::F32,
             lagged: false,
             eps_outside: false,
+            apart: None,
         }),
     };
     let p = params(

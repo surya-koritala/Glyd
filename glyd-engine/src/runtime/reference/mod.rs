@@ -685,6 +685,19 @@ pub fn collapse(s: &crate::runtime::kinds::StreamsP, w: &[f32], xt: &[f32], d: u
 pub fn hc_weights(s: &crate::runtime::kinds::StreamsP, p: &Params, x: &[f32]) -> Result<(Vec<f32>, Vec<f32>, Vec<Vec<f32>>)> {
     let n = s.streams;
     let r = s.norm_factor(x);
+    // (streams that keep apart, `StreamsP::apart`: an input and an output weight a stream, the product of the streams as they are times the norm's
+    // factor after, as the family's readers compute it (`hc_fn(x_flat) * rsqrt`); the mixing is the identity: stream k's own value and no other's)
+    if let Some(magnitude) = s.apart {
+        let (f, base, scale) = (p.vec("hc_fn")?, p.vec("hc_base")?, p.vec("hc_scale")?);
+        if f.len() != 2 * n * x.len() || base.len() != 2 * n || scale.len() != 2 {
+            return err(format!("weights of {}, {} and {} values for {n} streams of {} that do not mix", f.len(), base.len(), scale.len(), x.len() / n.max(1)));
+        }
+        let w: Vec<f32> = matvec(f, x.len(), x).into_iter().map(|v| v * r).collect();
+        let pre = (0..n).map(|i| sigmoid(w[i] * scale[0] + base[i]) + s.eps).collect();
+        let post = (0..n).map(|i| magnitude * sigmoid(w[n + i] * scale[1] + base[n + i]) + s.eps).collect();
+        let own = (0..n).map(|j| (0..n).map(|k| if j == k { 1.0 } else { 0.0 }).collect()).collect();
+        return Ok((pre, post, own));
+    }
     let xn: Vec<f32> = x.iter().map(|v| v * r).collect();
     let (f, base, scale) = (p.vec("hc_fn")?, p.vec("hc_base")?, p.vec("hc_scale")?);
     if f.len() != (2 + n) * n * x.len() || base.len() != (2 + n) * n || scale.len() != 3 {

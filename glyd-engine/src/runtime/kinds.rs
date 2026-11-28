@@ -1011,7 +1011,8 @@ pub struct GateP {
 
 /// n residual streams mixed per block: mHC (GLM-5.3, DeepSeek-V4). The block's input is a weighted sum of the streams; its output is
 /// spread back over them with the Sinkhorn-projected mixing of the streams. Roles `hc_fn` [(2 + n) n, n hidden], `hc_base` [(2 + n) n],
-/// `hc_scale` [3]. Ibis's gated residuals are the other rule of several streams (`GatedStreamsP`).
+/// `hc_scale` [3]. Ibis's gated residuals are the other rule of several streams (`GatedStreamsP`). Streams that keep apart (`apart`: Hunyuan's) are
+/// this kind without the mixing: `hc_fn` [2 n, n hidden], `hc_base` [2 n], `hc_scale` [2].
 #[derive(Clone, Copy, PartialEq)]
 pub struct StreamsP {
     pub streams: usize,
@@ -1033,9 +1034,18 @@ pub struct StreamsP {
     /// The weightless norm's epsilon outside the root: the flattened streams times 1 / (sqrt(mean x^2) + norm_eps), where the others' is
     /// 1 / sqrt(mean x^2 + norm_eps) (ERNIE's residual streams, in its blocks and in its hyper-head: `Collapse::Weighted` norms as the model's streams do).
     pub eps_outside: bool,
+    /// Streams that do not mix with each other (Hunyuan's independent hyper-connections): no mixing matrix and no Sinkhorn pass (`sinkhorn_iters` 0),
+    /// so the roles hold an input weight and an output weight a stream and two scales. With w = (`hc_fn` x) r, x the token's flattened streams and r
+    /// their weightless norm's factor (the product first, then the factor): the block's input is sum_i pre_i x_i, pre_i = sigmoid(w[i] scale[0] +
+    /// base[i]) + eps, as mHC's; stream i then adds post_i times the block's output to itself, post_i = this magnitude times sigmoid(w[n + i] scale[1]
+    /// + base[n + i]) + eps (mHC's is 2 sigmoid, no eps, beside the mix of the streams). None: mHC's.
+    pub apart: Option<f32>,
 }
 
 impl StreamsP {
+    /// The refusal of streams that do not mix: the CPU reference computes them, the executor's kernels read mHC's roles and mix.
+    pub const APART_NOT_RUN: &'static str = "residual streams that do not mix with each other, which the executor does not run yet";
+
     /// The refusal of streams whose norm has its epsilon outside the root: the CPU reference computes it, the executor's kernels the other form.
     pub const EPS_OUTSIDE_NOT_RUN: &'static str =
         "residual streams whose norm has its epsilon outside the root (1 / (rms + eps)), which the executor does not run yet";
@@ -1051,7 +1061,7 @@ impl StreamsP {
     }
 }
 
-/// The derived form, with `lagged` and `eps_outside` said only where they are set: the other blocks' descriptions read as before the fields (the digests of
+/// The derived form, with `lagged`, `eps_outside` and `apart` said only where they are set: the other blocks' descriptions read as before the fields (the digests of
 /// tests/fixtures/descriptions.json are of this text).
 impl std::fmt::Debug for StreamsP {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1066,6 +1076,9 @@ impl std::fmt::Debug for StreamsP {
         }
         if self.eps_outside {
             s.field("eps_outside", &self.eps_outside);
+        }
+        if let Some(m) = &self.apart {
+            s.field("apart", m);
         }
         s.finish()
     }
@@ -1210,7 +1223,8 @@ pub enum Collapse {
     DepthMix,
     /// DeepSeek-V4's hyper-head: a weighted sum of the streams, the weights sigmoid(`out_hc_fn` rms(streams) `out_hc_scale` +
     /// `out_hc_base`) + eps (roles [n, n hidden], [1], [n]); rms the weightless norm of the flattened streams at `norm_eps`, its epsilon where the model's
-    /// streams have theirs (`StreamsP::eps_outside`).
+    /// streams have theirs (`StreamsP::eps_outside`). Over streams that keep apart (`StreamsP::apart`) the product is of the streams as they are and the
+    /// norm's factor multiplies it after, as their blocks' weights are made.
     Weighted { eps: f32, norm_eps: f32 },
     /// Ibis's final mixer: the gated residuals' input mix (`GatedStreamsP`) with the model's roles `out_mix_down`, `out_mix_up`, each stream
     /// normed by the final norm (its weight [n hidden], a stream's each) before the mix, and no norm after it.

@@ -1023,6 +1023,9 @@ pub fn not_run(d: &crate::runtime::describe::Described) -> Option<&'static str> 
     if blocks().any(|b| matches!(b.residual, Residual::Streams(StreamsP { eps_outside: true, .. }))) {
         return Some(StreamsP::EPS_OUTSIDE_NOT_RUN);
     }
+    if blocks().any(|b| matches!(b.residual, Residual::Streams(StreamsP { apart: Some(_), .. }))) {
+        return Some(StreamsP::APART_NOT_RUN);
+    }
     let router = |f: &dyn Fn(&Router) -> bool| blocks().any(|b| matches!(&b.body, Body::Ffn(Ffn::Moe(m)) if f(&m.router)));
     if router(&|r| r.routers != 1) {
         return Some(Router::ROUTERS_NOT_RUN);
@@ -1349,6 +1352,11 @@ mod tests {
             panic!("lowered")
         };
         assert_eq!(e.msg, StreamsP::EPS_OUTSIDE_NOT_RUN);
+        // (streams that do not mix with each other: one block's is enough, and the compressed layers' lowering asks each block's)
+        let mut d = base.clone();
+        let Residual::Streams(s) = &mut d.desc.blocks[5].residual else { panic!("no streams") };
+        (s.apart, s.sinkhorn_iters) = (Some(2.0), 0);
+        refused(&d, StreamsP::APART_NOT_RUN);
         // (two routers whose scores add; a learned scale an expert: on a layer's experts, and where the experts' kind is made the executor's)
         use crate::runtime::kinds::{Body, Ffn, Router};
         let moe = |d: &mut Described, b: usize, f: &dyn Fn(&mut Router)| {

@@ -2840,6 +2840,7 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         Some(StreamsP {
             lagged: false,
             eps_outside: false,
+            apart: None,
             streams: k.opt_usize("hc_mult")?.unwrap_or(4),
             sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
             eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
@@ -4334,6 +4335,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     let streams = StreamsP {
         lagged: false,
         eps_outside: false,
+        apart: None,
         streams: k.usize("hc_mult")?,
         sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
         eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
@@ -4681,6 +4683,7 @@ fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
         rounding: Rounding::Once,
         lagged: true,
         eps_outside: false,
+        apart: None,
     };
     // (the release's RMSNorm: fp32, the weight times the normed value cast to bf16 once; Engram's gate normalises in fp32 and keeps it)
     let rn = Norm { rounding: Rounding::Once, ..Norm::rms(eps) };
@@ -5243,8 +5246,16 @@ fn ernie5_5(tc: &Map<String, Value>) -> Result<Described> {
     let cv = &names::ERNIE;
     let norm = Norm::rms(eps);
     let gate = Some(OutGate { act: Act::Sigmoid, from: GateFrom::Latent, norm: None });
-    let streams =
-        StreamsP { streams: hc, sinkhorn_iters: hc_iters, eps: hc_eps as f32, norm_eps: eps, rounding: Rounding::Once, lagged: false, eps_outside: true };
+    let streams = StreamsP {
+        streams: hc,
+        sinkhorn_iters: hc_iters,
+        eps: hc_eps as f32,
+        norm_eps: eps,
+        rounding: Rounding::Once,
+        lagged: false,
+        eps_outside: true,
+        apart: None,
+    };
     let residual = Residual::Streams(streams);
     let comp = Comp {
         heads,
@@ -5476,9 +5487,6 @@ pub const HY4_LACKS: &[&str] = &[
      channel at a time, of a gate product plus a learned position bias weighs a value product; normed again; turned at the group's first position), a query \
      keeping the tokens of its best compressed_indexer_group_topk - 1 groups and of its own open group (self_attn.compressed_indexer.token_key_projection, \
      token_key_norm, key_value_projection, key_gate_projection, intra_group_ape, key_norm, query_projection, head_weight_projection)",
-    "residual streams that do not mix with each other (independent hyper-connections): an input weight and an output weight a stream, the output's \
-     hc_magnitude times a sigmoid plus hc_eps, each stream adding its weight of the block's output (hc_attn_layer.hc_pre.hc_fn, hc_base, hc_scale and \
-     hc_mlp_layer's: 2 hc_mult rows, 2 scales)",
     "the n-gram memory's form: the compressed vocabulary a tensor of the checkpoint (engram_layer.lookup_table), each table's row normed (lookup_per_head_norms), a \
      key a stream and the value by products with a bias (key_projs, value_proj), the key and the stream normed with weights of their own (norm_key, norm_query), \
      the value normed and scaled (unified_pre_gamma), a learned scale a stream added to the gate (unified_per_hc_scales), on the streams before the layer's attention",
@@ -5546,7 +5554,8 @@ const HY4_SPARSE: &[&str] = &["deepseek_sparse_attention", "indexed_attention", 
 /// to what the readers compute; a key neither reads is held to the released value, so that a release that changes one is stopped here; a key of the
 /// training alone (an initial value, a loss's weight) is read and not held. The builder then refuses: `HY4_LACKS` are parts of its layers, and a
 /// description without them would be of another model. What the kinds do say of it: the latent attention of both sorts of layer with its sinks, its
-/// output gate and a sliding layer's window (`hy4_mla`), both feed-forwards with the norm after them, the hyper-head, the fp32 logits.
+/// output gate and a sliding layer's window (`hy4_mla`), both feed-forwards with the norm after them, the residual streams that do not mix
+/// (`StreamsP::apart`, the magnitude `hc_magnitude`: the readers' models/hy_v4/nvidia/hc.py, each result rounded once), the hyper-head, the fp32 logits.
 fn hy4_flash(c: &ModelConfig) -> Result<Described> {
     let (mt, tc) = ("hy_v4_flash", &c.text);
     let k = Keys::new(tc, mt);
