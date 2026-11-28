@@ -73,7 +73,7 @@ jobs:
           shared-key: fuzz
           save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'schedule' }}
       - name: cargo-fuzz
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         id: tool
         with:
           path: ~/.cargo/bin/cargo-fuzz

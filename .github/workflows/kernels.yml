@@ -33,7 +33,7 @@ jobs:
           persist-credentials: false
       # A compile that passed is remembered by the content of the kernels (and this file): a rerun, or a push that changed none of them, skips nvcc.
       - id: memo
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5, Node 24
         with:
           path: /tmp/kernels-compiled
           key: kernels-compiled-${{ hashFiles('glyd-engine/kernels/**', 'glyd-engine/build.rs', 'gpu/*.cu', 'gpu/*.h', '.github/workflows/kernels.yml', 'scripts/check_kernel_regs.py') }}
