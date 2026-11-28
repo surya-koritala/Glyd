@@ -3,8 +3,9 @@
   experts' packed 4-bit codes. Each such matrix is decoded on the host to the bf16 its codes and scales stand for, and then goes the way a bf16
   matrix does: packed at the plan's level (kestrel, linnet, wren), or held lossless at penguin. The 4-bit experts decode exactly; a fused FP8
   weight is the bf16 nearest its code times its block's fp32 scale. A small model in the release's stored forms loads to the same bytes as its bf16
-  twin at every level, on the host. It is a case of the logits checks and of `kindcheck` (`mimo-released`), held to the CPU reference. No GPU had
-  run that case, or loaded a release, when this was written.
+  twin at every level, on the host. It is a case of the logits checks and of `kindcheck` (`mimo-released`), held to the CPU reference on its
+  routers' choices, as the other cases with free routers are: an RTX 4080 SUPER held every layer kind of it and loaded its experts word for word,
+  and took one near-tied expert choice the other way from the reference. No GPU had loaded a release when this was written.
 - `glyd fit` sizes a MiMo release as the bf16 model its description makes, at each level's bits, not at its files' bytes: the release's files are
   172.9 GB, and the engine holds it in 174.9 GB at wren, 213.5 GB at linnet, 252.1 GB at kestrel and 416.9 GB at penguin. It plans linnet on a GPU
   of 80 GB with 200 GB of memory, its experts in the computer's memory, and holds no level on a GPU of 16 or 24 GB. A release stored quantized is
