@@ -109,14 +109,35 @@ pub fn fp8_scaled_blocks(q: &[u8], scales: &[f32], rows: usize, cols: usize, blo
     Ok(q.iter().enumerate().map(|(i, &b)| glyd_gpu::fp8::e4m3(b) * scales[(i / cols) / br * gc + (i % cols) / bc]).collect())
 }
 
-/// The block a described FP8 matrix of `rows` x `cols` has one scale of, from its scales' shape (a grid of two dimensions): the first of `given` (the
-/// description's block, the config's `weight_block_size`) whose grid is that shape, else the first of 128, 32 and 1 rows by 128, 32 and 1 columns whose
-/// grid is (a run of 32 columns of a row is [1, 32]). None where no block makes the shape.
-pub fn grid_block(rows: usize, cols: usize, shape: &[u64], given: &[[usize; 2]]) -> Option<[usize; 2]> {
+/// The block a described FP8 matrix of `rows` x `cols` has one scale of, and the shards its scales start again at, from its scales' shape (a grid of
+/// two dimensions): the first of `given` (the description's block, the config's `weight_block_size`) whose grid is that shape, else the first of 128, 32
+/// and 1 rows by 128, 32 and 1 columns whose grid is (a run of 32 columns of a row is [1, 32]). A matrix the description cuts in `shards` equal parts
+/// of its rows (1: not cut) may hold a grid a shard, one after another, [shards x ceil(rows / shards / block[0]), ceil(cols / block[1])]: that reading
+/// is taken where the shape is its shape, before one grid over the whole matrix (the two are one where a shard is whole blocks). None where no block
+/// makes the shape.
+pub fn grid_block(rows: usize, cols: usize, shape: &[u64], given: &[[usize; 2]], shards: usize) -> Option<([usize; 2], usize)> {
     let [gr, gc] = shape[..] else { return None };
-    let fits = |b: &[usize; 2]| b[0] > 0 && b[1] > 0 && [rows.div_ceil(b[0]) as u64, cols.div_ceil(b[1]) as u64] == [gr, gc];
+    let fits = |b: [usize; 2], k: usize| {
+        b[0] > 0 && b[1] > 0 && k > 0 && rows.is_multiple_of(k) && [(k * (rows / k).div_ceil(b[0])) as u64, cols.div_ceil(b[1]) as u64] == [gr, gc]
+    };
     const SIZES: [usize; 3] = [128, 32, 1];
-    given.iter().copied().chain(SIZES.iter().flat_map(|&a| SIZES.iter().map(move |&b| [a, b]))).find(fits)
+    let blocks = given.iter().copied().chain(SIZES.iter().flat_map(|&a| SIZES.iter().map(move |&b| [a, b])));
+    blocks.flat_map(|b| [(b, shards.max(1)), (b, 1)]).find(|&(b, k)| fits(b, k))
+}
+
+/// An FP8 matrix [rows, cols] cut in `shards` equal parts of its rows, each with its own grid of fp32 scales a block (`scales`: the shards' grids one
+/// after another, each [ceil(rows / shards / block[0]), ceil(cols / block[1])]): each shard decoded with its grid (`fp8_scaled_blocks`), a shard's last
+/// block of rows short where its rows do not divide, and the next shard's first block whole.
+pub fn fp8_scaled_shards(q: &[u8], scales: &[f32], rows: usize, cols: usize, block: [usize; 2], shards: usize) -> Result<Vec<f32>> {
+    if shards == 0 || !rows.is_multiple_of(shards) || q.len() != rows * cols || !scales.len().is_multiple_of(shards) {
+        return err(format!("{} bytes and {} scales for an FP8 matrix of {rows} x {cols} in {shards} shards", q.len(), scales.len()));
+    }
+    let (each, grid) = (rows / shards, scales.len() / shards);
+    let mut out = Vec::with_capacity(rows * cols);
+    for i in 0..shards {
+        out.extend(fp8_scaled_blocks(&q[i * each * cols..(i + 1) * each * cols], &scales[i * grid..(i + 1) * grid], each, cols, block)?);
+    }
+    Ok(out)
 }
 
 /// The stored formats of a checkpoint as its description says them (`describe::Described::stored`): which tensor holds a quantized matrix's scales, and
@@ -127,6 +148,9 @@ pub struct Stored {
     pub scales: BTreeMap<String, String>,
     /// The FP8 matrices' square block (`Described::fp8_block`).
     pub block: Option<usize>,
+    /// A matrix the description cuts in shards (a fused product whose roles are each a range of rows a shard, `describe::Source::RowsOf`): how many.
+    /// Its block scales may start again at each (`grid_block`).
+    pub shards: BTreeMap<String, usize>,
 }
 
 impl Stored {
@@ -140,6 +164,8 @@ impl Stored {
     ///  - FP8 (E4M3) with fp32 scales a block (`grid_block`): each value its code's value times its block's scale, one fp32 product (`fp8_scaled_blocks`);
     ///  - FP8 with a byte's power-of-two scale (U8 or E8M0: 2^(s - 127)) a block: the product, exact, as the bf16 it is (`fp8_blocks`).
     ///
+    /// A matrix the description cuts in shards whose scales are a grid a shard is decoded a shard at a time, each with its grid.
+    ///
     /// None where the description names no scales for it, or the two tensors are not one of these.
     fn described(&self, ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
         let sn = self.scales.get(name)?;
@@ -150,13 +176,19 @@ impl Stored {
         match (t.dtype.as_str(), st.dtype.as_str()) {
             ("F8_E4M3", "F32" | "U8" | "F8_E8M0") => {
                 let given: Vec<[usize; 2]> = self.block.map(|b| [b, b]).into_iter().chain(ck.fp8_block).collect();
-                let block = grid_block(rows, cols, &st.shape, &given)?;
+                let (block, shards) = grid_block(rows, cols, &st.shape, &given, self.shards.get(name).copied().unwrap_or(1))?;
                 let (q, s) = (ck.read(name).ok()?, ck.read(sn).ok()?);
                 let v = if st.dtype == "F32" {
                     let s: Vec<f32> = s.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
-                    fp8_scaled_blocks(&q, &s, rows, cols, block).ok()?
+                    fp8_scaled_shards(&q, &s, rows, cols, block, shards).ok()?
                 } else {
-                    fp8_blocks(&q, &s, rows, cols, block).ok()?.into_iter().map(bf16).collect()
+                    let (each, grid) = (rows / shards, s.len() / shards);
+                    let mut v = Vec::with_capacity(rows * cols);
+                    for i in 0..shards {
+                        let w = fp8_blocks(&q[i * each * cols..(i + 1) * each * cols], &s[i * grid..(i + 1) * grid], each, cols, block).ok()?;
+                        v.extend(w.into_iter().map(bf16));
+                    }
+                    v
                 };
                 Some((vec![rows, cols], v))
             }
@@ -466,16 +498,14 @@ mod tests {
         }
         assert_eq!(fp8_scaled(&q[..256 * 2], &[0.5, 0.3], 2, 256).unwrap(), fp8_scaled_blocks(&q[..256 * 2], &[0.5, 0.3], 2, 256, [128, 128]).unwrap());
         assert!(fp8_scaled_blocks(&q, &s[1..], rows, cols, block).is_err() && fp8_scaled_blocks(&q, &s, rows, cols, [0, 8]).is_err());
-        assert_eq!(grid_block(rows, cols, &[3, 4], &[block]), Some(block));
-        assert_eq!(grid_block(192, 320, &[2, 3], &[]), Some([128, 128]));
-        assert_eq!(grid_block(192, 320, &[2, 3], &[[8, 8]]), Some([128, 128]), "a given block of another grid is not the scales'");
-        assert_eq!(grid_block(8192, 6144, &[8192, 192], &[]), Some([1, 32]));
-        assert_eq!(grid_block(8192, 6144, &[8192, 192], &[[1, 32]]), Some([1, 32]));
-        assert_eq!(grid_block(192, 320, &[6, 10], &[]), Some([32, 32]));
-        assert_eq!(
-            (grid_block(192, 320, &[1, 3], &[]), grid_block(192, 320, &[2], &[]), grid_block(192, 320, &[2, 3], &[[0, 0]])),
-            (None, None, Some([128, 128]))
-        );
+        assert_eq!(grid_block(rows, cols, &[3, 4], &[block], 1), Some((block, 1)));
+        assert_eq!(grid_block(192, 320, &[2, 3], &[], 1), Some(([128, 128], 1)));
+        assert_eq!(grid_block(192, 320, &[2, 3], &[[8, 8]], 1), Some(([128, 128], 1)), "a given block of another grid is not the scales'");
+        assert_eq!(grid_block(8192, 6144, &[8192, 192], &[], 1), Some(([1, 32], 1)));
+        assert_eq!(grid_block(8192, 6144, &[8192, 192], &[[1, 32]], 1), Some(([1, 32], 1)));
+        assert_eq!(grid_block(192, 320, &[6, 10], &[], 1), Some(([32, 32], 1)));
+        assert_eq!((grid_block(192, 320, &[1, 3], &[], 1), grid_block(192, 320, &[2], &[], 1)), (None, None));
+        assert_eq!(grid_block(192, 320, &[2, 3], &[[0, 0]], 0), Some(([128, 128], 1)));
     }
 
     /// FP8 with a byte's power-of-two scale a run of 32 columns of a row (block [1, 32]): W = e4m3(code) x 2^(scale - 127), exactly, whatever the scale
@@ -545,6 +575,7 @@ mod tests {
                 .chain([("model.layers.0.self_attn.k_proj.weight".to_string(), "model.layers.0.self_attn.k_proj.weight_scale_inv".to_string())])
                 .collect(),
             block: Some(8),
+            shards: BTreeMap::new(),
         };
         let want_a: Vec<f32> = (0..r * c).map(|i| (e4m3_f64(qa[i]) * sa[i / c / 128 * 3 + i % c / 128] as f64) as f32).collect();
         let want_b: Vec<f32> = (0..rb * cb).map(|i| (e4m3_f64(qb[i]) * sb[i / cb / 8 * 4 + i % cb / 8] as f64) as f32).collect();
@@ -564,8 +595,87 @@ mod tests {
             "E8M0 scales as before"
         );
         // (a description whose scales are of no block's shape: not read)
-        let odd = Stored { scales: [(names[0].0.to_string(), names[3].0.to_string())].into_iter().collect(), block: None };
+        let odd = Stored { scales: [(names[0].0.to_string(), names[3].0.to_string())].into_iter().collect(), ..Stored::default() };
         assert_eq!(odd.tensor(&ck, names[0].0), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FP8 block scales that start again at each shard of a fused matrix: a matrix of 4 shards of 21 rows in blocks of 8 holds 4 grids of 3 rows of
+    /// blocks (12, where one grid over its 84 rows would be 11), a shard's last block 5 rows and the next shard's first block whole. Each value is its
+    /// code's value times the scale at (shard, row in the shard / 8, column / 8), the formula in f64 rounded once, and a shard decoded alone is the
+    /// same; the released shape of the family's matrix (4 shards of 3,392 rows in blocks of 128: 4 x 27 rows of blocks, not 106) is read as shards,
+    /// its layers whose shards are whole blocks (4 x 29 = 116) either way, and a shape neither reading makes is none.
+    #[test]
+    fn fp8_block_scales_start_again_at_each_shard() {
+        let (shards, each, cols, block) = (4usize, 21usize, 28usize, [8usize, 8usize]);
+        let rows = shards * each;
+        let (gr, gc) = (each.div_ceil(8), cols.div_ceil(8));
+        let q = codes(5, rows * cols);
+        let s: Vec<f32> = (0..shards * gr * gc).map(|i| if i % 3 == 0 { 0.0173 * (i + 1) as f32 } else { 2f32.powi(i as i32 % 11 - 8) }).collect();
+        let got = fp8_scaled_shards(&q, &s, rows, cols, block, shards).unwrap();
+        for (i, g) in got.iter().enumerate() {
+            let (r, c) = (i / cols, i % cols);
+            let want = (e4m3_f64(q[i]) * s[(r / each) * gr * gc + (r % each) / 8 * gc + c / 8] as f64) as f32;
+            assert_eq!(g.to_bits(), want.to_bits(), "row {r}, column {c}");
+        }
+        for k in 0..shards {
+            let alone = fp8_scaled_blocks(&q[k * each * cols..(k + 1) * each * cols], &s[k * gr * gc..(k + 1) * gr * gc], each, cols, block).unwrap();
+            assert_eq!(alone, got[k * each * cols..(k + 1) * each * cols], "shard {k}");
+        }
+        // (one grid over the whole matrix is another reading: row 21, the second shard's first, is in the whole matrix's third block of rows)
+        let whole = fp8_scaled_blocks(&q, &s[..rows.div_ceil(8) * gc], rows, cols, block).unwrap();
+        assert_ne!(whole[each * cols..(each + 3) * cols], got[each * cols..(each + 3) * cols]);
+        assert!(fp8_scaled_shards(&q, &s, rows, cols, block, 5).is_err() && fp8_scaled_shards(&q, &s[..s.len() - 1], rows, cols, block, shards).is_err());
+        assert_eq!(fp8_scaled_shards(&q, &s[..rows.div_ceil(8) * gc], rows, cols, block, 1).unwrap(), whole);
+        assert_eq!(grid_block(rows, cols, &[12, 4], &[block], shards), Some((block, shards)));
+        assert_eq!(grid_block(rows, cols, &[11, 4], &[block], shards), Some((block, 1)), "one grid over the whole matrix");
+        assert_eq!(grid_block(rows, cols, &[12, 4], &[block], 1), None, "a grid a shard, of a matrix the description does not cut");
+        assert_eq!(grid_block(13568, 4096, &[108, 32], &[[128, 128]], 4), Some(([128, 128], 4)));
+        assert_eq!(grid_block(13568, 4096, &[108, 32], &[], 4), Some(([128, 128], 4)), "the block from the shape alone");
+        assert_eq!(grid_block(14848, 4096, &[116, 32], &[[128, 128]], 4), Some(([128, 128], 4)), "shards of whole blocks: either reading");
+        assert_eq!(grid_block(13568, 4096, &[107, 32], &[[128, 128]], 4), None);
+        // (two shards of 100 rows in blocks of 128: two rows of blocks either way, and the description's shards decide)
+        assert_eq!((grid_block(200, 128, &[2, 1], &[], 2), grid_block(200, 128, &[2, 1], &[], 1)), (Some(([128, 128], 2)), Some(([128, 128], 1))));
+    }
+
+    /// A described matrix cut in shards is read a shard at a time where its scales are a grid a shard, under fp32 scales and under a byte's power of
+    /// two alike: the values of `fp8_scaled_shards`, and each shard's of `fp8_blocks`. Without the description's shards it is not read.
+    #[test]
+    fn a_described_matrix_in_shards_is_read_a_shard_at_a_time() {
+        let dir = std::env::temp_dir().join(format!("glyd-formats-shards-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"quantization_config": {"weight_block_size": [8, 8]}}"#).unwrap();
+        let (shards, each, cols) = (2usize, 28usize, 32usize);
+        let rows = shards * each;
+        let q = codes(9, rows * cols);
+        let s: Vec<f32> = (0..shards * 4 * 4).map(|i| 2f32.powi(i as i32 % 7 - 6)).collect();
+        let e: Vec<u8> = (0..shards * 4 * 4).map(|i| 120 + i as u8 % 9).collect();
+        let s_b: Vec<u8> = s.iter().flat_map(|x| x.to_le_bytes()).collect();
+        let (w, we) = ("model.layers.0.self_attn.qkv_proj.weight", "model.layers.1.self_attn.qkv_proj.weight");
+        let (sn, sne) = (format!("{w}_scale_inv"), format!("{we}_scale_inv"));
+        let names = [
+            (w, "F8_E4M3", vec![rows as u64, cols as u64], &q[..]),
+            (&sn[..], "F32", vec![8, 4], &s_b[..]),
+            (we, "F8_E4M3", vec![rows as u64, cols as u64], &q[..]),
+            (&sne[..], "U8", vec![8, 4], &e[..]),
+        ];
+        crate::pack::write_safetensors(&dir.join("model.safetensors"), &[("format", "pt".to_string())], &names).unwrap();
+        let ck = Checkpoint::open(&dir).unwrap();
+        assert_eq!(ck.fp8_block, Some([8, 8]));
+        let scales: BTreeMap<String, String> = [(w.to_string(), sn.clone()), (we.to_string(), sne.clone())].into_iter().collect();
+        let st = Stored { scales: scales.clone(), block: None, shards: [(w.to_string(), 2), (we.to_string(), 2)].into_iter().collect() };
+        assert_eq!(st.tensor(&ck, w), Some((vec![rows, cols], fp8_scaled_shards(&q, &s, rows, cols, [8, 8], 2).unwrap())));
+        let by_shard: Vec<f32> = (0..2)
+            .flat_map(|k| fp8_blocks(&q[k * each * cols..(k + 1) * each * cols], &e[k * 16..(k + 1) * 16], each, cols, [8, 8]).unwrap())
+            .map(|x| f32::from_bits((x as u32) << 16))
+            .collect();
+        let want: Vec<f32> = (0..rows * cols)
+            .map(|i| (e4m3_f64(q[i]) * 2f64.powi(e[(i / cols / each) * 16 + (i / cols % each) / 8 * 4 + i % cols / 8] as i32 - 127)) as f32)
+            .collect();
+        assert_eq!(by_shard, want);
+        assert_eq!(st.tensor(&ck, we), Some((vec![rows, cols], want)));
+        let uncut = Stored { scales, ..Stored::default() };
+        assert_eq!((uncut.tensor(&ck, w), uncut.tensor(&ck, we), tensor(&ck, w)), (None, None, None), "8 rows of blocks, where the whole matrix has 7");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

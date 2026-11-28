@@ -4578,3 +4578,51 @@ fn a_release_with_a_scale_a_run_is_its_weights_on_the_reference() {
     assert_eq!((held, by_description), (fp8.len(), fp8.len()));
     assert!(held >= 11 && fp8.iter().any(|n| d.shapes[n][1] % 32 != 0) && fp8.iter().any(|n| d.shapes[n][1] > 32), "{held}");
 }
+
+/// `fp8_grid` of a matrix cut in `shards` equal parts of its rows, a grid a shard, one after another: a shard's scales start at its first row.
+fn fp8_shard_grids(n: &str, scales: &str, shape: &[usize], block: usize, shards: usize, next: &mut dyn FnMut() -> u64) -> (Vec<Written>, Vec<f32>) {
+    let (each, cols) = (shape[0] / shards, shape[1]);
+    let (mut q, mut s, mut values) = (Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..shards {
+        let (t, v) = fp8_grid(n, scales, &[each, cols], block, next);
+        q.extend_from_slice(&t[0].3);
+        s.extend_from_slice(&t[1].3);
+        values.extend(v);
+    }
+    let grid = vec![(shards * each.div_ceil(block)) as u64, cols.div_ceil(block) as u64];
+    (vec![(n.to_string(), "F8_E4M3", vec![shape[0] as u64, cols as u64], q), (scales.to_string(), "F32", grid, s)], values)
+}
+
+/// MiMo V2's fused matrix as released, on the CPU reference: a random model of the small config whose products are FP8 with fp32 scales a block of 8,
+/// the fused `qkv_proj` holding a grid of scales a shard (the first layer's two shards of 28 rows: 2 x 4 rows of blocks, where one grid over its 56
+/// rows would be 7; the second's, of 40 rows, are whole blocks). The model answers to the bit as the same weights in bf16 do, the fused matrix cut
+/// into its products after it is decoded. Read with one grid over the whole matrix, as the description's shards forbid, the first layer's is not read.
+#[test]
+fn mimo_v2s_fused_matrix_as_released_in_fp8_is_its_weights_on_the_reference() {
+    let cfg = mimo_tiny(serde_json::json!({"quantization_config": {"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [8, 8],
+        "store_dtype": "mxfp4", "mxfp4_block_size": 32, "activation_scheme": "dynamic", "ignored_layers": ["model.layers.0.self_attn.o_proj"]}}));
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let st = d.stored();
+    let fused = |l: usize| format!("model.layers.{l}.self_attn.qkv_proj.weight");
+    assert_eq!((st.shards.get(&fused(0)), st.shards.get(&fused(1)), st.shards.len(), st.block), (Some(&2), Some(&2), 2, Some(8)));
+    assert_eq!((d.shapes[&fused(0)].clone(), d.shapes[&fused(1)].clone()), (vec![56, 32], vec![80, 32]));
+    let (plain, released) = twins("mimo-fused", &cfg, &d, &|n, s, shape, next| {
+        // (the experts: bf16 in both)
+        if n.contains(".experts.") {
+            return None;
+        }
+        assert!(s.ends_with(".weight_scale_inv"), "{n}: {s}");
+        Some(fp8_shard_grids(n, s, shape, 8, st.shards.get(n).copied().unwrap_or(1), next))
+    });
+    let ck = glyd_gpu::safetensors::Checkpoint::open(&released).unwrap();
+    assert_eq!(
+        (ck.get(&format!("{}_scale_inv", fused(0))).unwrap().1.shape.clone(), ck.get(&format!("{}_scale_inv", fused(1))).unwrap().1.shape.clone()),
+        (vec![8, 4], vec![10, 4])
+    );
+    let uncut = crate::formats::Stored { shards: Default::default(), ..d.stored() };
+    assert!(uncut.tensor(&ck, &fused(0)).is_none() && uncut.tensor(&ck, &fused(1)) == st.tensor(&ck, &fused(1)) && st.tensor(&ck, &fused(0)).is_some());
+    drop(ck);
+    let (held, by_description) = twins_agree(&d, &plain, &released, &[5, 9, 13, 17, 21, 25]);
+    // (two fused matrices, the second layer's `o`, the first's dense MLP: in blocks of 8, none is read by the checkpoint's names alone)
+    assert_eq!((held, by_description), (6, 6));
+}

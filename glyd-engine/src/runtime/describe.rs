@@ -149,10 +149,19 @@ impl Described {
         self.blocks.iter().chain(heads).flatten().filter(|(r, _)| r.starts_with("experts_")).flat_map(|(_, s)| s.names()).collect()
     }
 
-    /// The stored formats as the description says them, for a reader of the checkpoint (`formats::Stored::tensor`): each quantized matrix's scales and
-    /// the FP8 matrices' block.
+    /// The stored formats as the description says them, for a reader of the checkpoint (`formats::Stored::tensor`): each quantized matrix's scales, the
+    /// FP8 matrices' block, and the shards of a matrix whose roles are each cut from it a range of rows a shard (`Source::RowsOf`: as many shards as a
+    /// role has ranges, MiMo V2's fused `qkv_proj`), where its block scales may start again.
     pub fn stored(&self) -> crate::formats::Stored {
-        crate::formats::Stored { scales: self.scales.clone(), block: self.fp8_block }
+        let mut shards = BTreeMap::new();
+        let heads = self.mtp.iter().flat_map(|(blocks, own)| blocks.iter().flatten().chain(own));
+        for (_, src) in self.blocks.iter().flatten().chain(&self.extra).chain(heads) {
+            if let Source::RowsOf(n, ranges) = src {
+                let k = shards.entry(n.clone()).or_insert(0);
+                *k = ranges.len().max(*k);
+            }
+        }
+        crate::formats::Stored { scales: self.scales.clone(), block: self.fp8_block, shards }
     }
 
     /// Whether a checkpoint of the tensor names `have` is slim: it holds none of the routed experts the description reads (in any stored form, `stored`),
