@@ -631,9 +631,10 @@ pub enum RouterScore {
     SqrtSoftplus,
 }
 
-/// How a MoE layer picks a token's experts and weighs them. Roles `router` [experts, hidden]; `choice_bias` [experts] with `bias`;
-/// `hash` [vocab, top_k] (expert ids as values) with `hash`.
-#[derive(Clone, Debug, PartialEq)]
+/// How a MoE layer picks a token's experts and weighs them. Roles `router` [experts, hidden] ([routers experts, hidden] with several routers, each
+/// router's rows together); `choice_bias` [experts] with `bias`; `hash` [vocab, top_k] (expert ids as values) with `hash`; `expert_scale` [experts]
+/// with `expert_scale`.
+#[derive(Clone, PartialEq)]
 pub struct Router {
     pub score: RouterScore,
     /// The logits' factor before the score (Muse: its output multiplier).
@@ -648,6 +649,47 @@ pub struct Router {
     pub scale: f32,
     /// Hash routing (DeepSeek-V4's first layers): the token id picks the experts from the table, the scores still weigh them.
     pub hash: bool,
+    /// Routers that score the same experts, each its own product of the block's input: an expert's score is the sum of the routers' scores of it
+    /// (ERNIE's two, sigmoid(`gate.weight` x) + sigmoid(`gate.weight_1` x)); 1 elsewhere.
+    pub routers: usize,
+    /// A learned factor an expert (role `expert_scale`): each chosen expert's weight times its own, after the chosen scores are divided by their sum
+    /// (ERNIE's `gate.routed_scaling_factor_param`, where the others' weights take the one `scale`).
+    pub expert_scale: bool,
+}
+
+impl Router {
+    /// The refusal of several routers whose scores add: the CPU reference computes them, the executor's routers score an expert by one product.
+    pub const ROUTERS_NOT_RUN: &'static str = "routers whose scores of the same experts add, which the executor does not run yet";
+    /// The refusal of a learned scale an expert: the CPU reference computes it, the executor's routers weigh by one factor.
+    pub const EXPERT_SCALE_NOT_RUN: &'static str = "a router's learned scale an expert, which the executor does not run yet";
+
+    /// The router as the executor's operations take one (one product's scores, one factor), or the refusal of the form they do not run, by its name.
+    pub fn one_scored(&self) -> crate::ffi::Result<()> {
+        if self.routers != 1 {
+            return crate::ffi::err(format!("{}: {}", Router::ROUTERS_NOT_RUN, self.routers));
+        }
+        if self.expert_scale {
+            return crate::ffi::err(Router::EXPERT_SCALE_NOT_RUN);
+        }
+        Ok(())
+    }
+}
+
+/// The derived form, with `routers` said only where there are several and `expert_scale` only where it is set: the other routers' descriptions read as
+/// they did before the fields (the digests of tests/fixtures/descriptions.json are of this text).
+impl std::fmt::Debug for Router {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("Router");
+        s.field("score", &self.score).field("logit_scale", &self.logit_scale).field("bias", &self.bias).field("groups", &self.groups);
+        s.field("top_k", &self.top_k).field("renorm", &self.renorm).field("scale", &self.scale).field("hash", &self.hash);
+        if self.routers != 1 {
+            s.field("routers", &self.routers);
+        }
+        if self.expert_scale {
+            s.field("expert_scale", &self.expert_scale);
+        }
+        s.finish()
+    }
 }
 
 /// A latent MoE: experts run in a smaller space between two projections. Roles `latent_down` [dim, hidden], `latent_up` [hidden, dim],
@@ -844,6 +886,9 @@ pub struct StreamsP {
     /// projection makes go to the next block (the model's last ones to the head: `Collapse::LastPre`). Its output's weights and the streams'
     /// mixing are its own, as mHC's.
     pub lagged: bool,
+    /// The weightless norm's epsilon outside the root: the flattened streams times 1 / (sqrt(mean x^2) + norm_eps), where the others' is
+    /// 1 / sqrt(mean x^2 + norm_eps) (ERNIE's residual streams, in its blocks and in its hyper-head: `Collapse::Weighted` norms as the model's streams do).
+    pub eps_outside: bool,
 }
 
 impl StreamsP {
@@ -875,6 +920,9 @@ impl std::fmt::Debug for StreamsP {
         if self.lagged {
             s.field("lagged", &self.lagged);
         }
+        if self.eps_outside {
+            s.field("eps_outside", &self.eps_outside);
+        }
         s.finish()
     }
 }
@@ -902,9 +950,6 @@ pub struct GatedStreamsP {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Residual {
     Add,
-    /// The weightless norm's epsilon outside the root: the flattened streams times 1 / (sqrt(mean x^2) + norm_eps), where the others' is
-    /// 1 / sqrt(mean x^2 + norm_eps) (ERNIE's residual streams, in its blocks and in its hyper-head: `Collapse::Weighted` norms as the model's streams do).
-    pub eps_outside: bool,
     /// Granite's residual multiplier.
     AddScaled(f32),
     Gated(GateP),
@@ -920,9 +965,6 @@ impl Residual {
     pub fn roles(&self) -> &'static [&'static str] {
         match self {
             Residual::Add | Residual::AddScaled(_) => &[],
-        if self.eps_outside {
-            s.field("eps_outside", &self.eps_outside);
-        }
             Residual::Gated(_) => &["res_gate"],
             Residual::Streams(_) => &["hc_fn", "hc_base", "hc_scale"],
             Residual::GatedStreams(_) => &["mix_down", "mix_up", "inject"],

@@ -1021,10 +1021,17 @@ pub fn not_run(d: &crate::runtime::describe::Described) -> Option<&'static str> 
     if roles.any(|(r, s)| matches!(s, Source::Transposed(_)) || (r == "hc_scale" && matches!(s, Source::Rows(_)))) {
         return Some(STORED_FORM_NOT_RUN);
     }
-    use crate::runtime::kinds::{Residual, StreamsP};
-    let mut blocks = d.desc.blocks.iter().chain(d.desc.mtp.iter().flat_map(|h| h.blocks.iter()));
-    if blocks.any(|b| matches!(b.residual, Residual::Streams(StreamsP { eps_outside: true, .. }))) {
+    use crate::runtime::kinds::{Body, Ffn, Residual, Router, StreamsP};
+    let blocks = || d.desc.blocks.iter().chain(d.desc.mtp.iter().flat_map(|h| h.blocks.iter()));
+    if blocks().any(|b| matches!(b.residual, Residual::Streams(StreamsP { eps_outside: true, .. }))) {
         return Some(StreamsP::EPS_OUTSIDE_NOT_RUN);
+    }
+    let router = |f: &dyn Fn(&Router) -> bool| blocks().any(|b| matches!(&b.body, Body::Ffn(Ffn::Moe(m)) if f(&m.router)));
+    if router(&|r| r.routers != 1) {
+        return Some(Router::ROUTERS_NOT_RUN);
+    }
+    if router(&|r| r.expert_scale) {
+        return Some(Router::EXPERT_SCALE_NOT_RUN);
     }
     None
 }
@@ -1298,6 +1305,21 @@ mod tests {
             panic!("lowered")
         };
         assert!(e.msg.contains("block 5") && e.msg.contains(StreamsP::EPS_OUTSIDE_NOT_RUN), "{}", e.msg);
+        // (two routers whose scores add; a learned scale an expert: on a layer's experts, and where the experts' kind is made the executor's)
+        use crate::runtime::kinds::{Body, Ffn, Router};
+        let moe = |d: &mut Described, b: usize, f: &dyn Fn(&mut Router)| {
+            let Body::Ffn(Ffn::Moe(m)) = &mut d.desc.blocks[b].body else { panic!("block {b} is no experts'") };
+            f(&mut m.router);
+            m.clone()
+        };
+        let mut d = base.clone();
+        let m = moe(&mut d, 9, &|r| r.routers = 2);
+        refused(&d, Router::ROUTERS_NOT_RUN);
+        assert!(crate::dynamic::experts::cfg(&m, 4096, 2048).unwrap_err().msg.contains(Router::ROUTERS_NOT_RUN));
+        let mut d = base.clone();
+        let m = moe(&mut d, 9, &|r| r.expert_scale = true);
+        refused(&d, Router::EXPERT_SCALE_NOT_RUN);
+        assert!(crate::dynamic::experts::cfg(&m, 4096, 2048).unwrap_err().msg.contains(Router::EXPERT_SCALE_NOT_RUN));
     }
 
     /// A plan of experts in the computer's memory across GPUs opens the latent block's cache across them (src/dynamic/tp_cache.rs) by the description's

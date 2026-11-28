@@ -5716,7 +5716,18 @@ mod tests {
         use crate::dynamic::{Choice, ChoiceFrom, ChoiceKind, RowRoute};
         use crate::runtime::kinds::{Act, Mlp, Moe, Router, RouterScore};
         let m = Moe {
-            router: Router { score: RouterScore::Softmax, logit_scale: 1.0, bias: false, groups: None, top_k: 1, renorm: true, scale: 1.0, hash: false },
+            router: Router {
+                score: RouterScore::Softmax,
+                logit_scale: 1.0,
+                bias: false,
+                groups: None,
+                top_k: 1,
+                renorm: true,
+                scale: 1.0,
+                hash: false,
+                routers: 1,
+                expert_scale: false,
+            },
             experts: 2,
             expert: Mlp { act: Act::Silu, gated: true, bias: false, clamp: None },
             shared: None,

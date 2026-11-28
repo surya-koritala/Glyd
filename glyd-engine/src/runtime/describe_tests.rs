@@ -3370,11 +3370,11 @@ fn ernie_5_5s_released_config_is_read_and_refused_at_the_parts_no_kind_says() {
     let read = "ernie5_5_moe: its config is read (37 layers of compressed attention and 6 of latent attention, 1 dense feed-forward and 42 of 512 experts, \
                 4 residual streams, a drafter of 3 layers), and it is not described yet.";
     assert!(e.starts_with(read), "{e}");
-    assert_eq!(ERNIE_LACKS.len(), 5);
+    assert_eq!(ERNIE_LACKS.len(), 4);
     for part in ERNIE_LACKS {
         assert!(e.contains(part), "{part}: {e}");
     }
-    for tensor in ["gate_proj", "vha_postmix_U", "softmax_offset", "gate.weight_1", "routed_scaling_factor_param", "multimax_ranges"] {
+    for tensor in ["gate_proj", "vha_postmix_U", "softmax_offset", "multimax_ranges"] {
         assert!(e.contains(tensor), "{tensor}: {e}");
     }
     assert!(keys_named(&e).is_empty() && !e.contains("has no description builder yet"), "{e}");
