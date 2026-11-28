@@ -24,7 +24,7 @@ struct AttnArgs {
     bf16* vc;
     const int* tab;    // the sequence's block table (16-token blocks) or null: position modulo cap
     bf16* out;         // the attention's output, rows `os` apart, head h at h d
-    const bf16* gate;  // the output gate's values, head h of row t at t gs + h g_step (null: no gate)
+    const bf16* gate;  // the output gate's values, head h of row t at t gs + h g_step: a value a dim, or one for the head (g_head); null: no gate
     float* part;       // a decode step's parts [(t nq + h) S + z][d + 2]
     const int* rpos;   // each row's M-RoPE position (t, h, w) at 6 r (src/dynamic/images.rs), each angle turning by the one `rax` names; null: qpos alone
     const bf16* sink;  // a learned logit a query head [nq] that joins each row's softmax and attends to nothing (`kinds::Attn::sinks`); null: none
@@ -37,6 +37,7 @@ struct AttnArgs {
     int cap;           // the ring's places (cap < 0: row r's own place, a staging buffer of the step's rows)
     int n, nq, nk, window;
     int os, gs, g_step, gnorm;
+    int g_head;        // the gate is one value a head (every dim of head h times the sigmoid of the value at t gs + h g_step), not a value a dim
     int round, sbf16, S;
     float q_scale, eps, scale, sl2, softcap;
 };
@@ -285,10 +286,10 @@ extern "C" __global__ void __launch_bounds__(512) attn_parts512(AttnArgs a) { at
 
 // ---- the output gate --------------------------------------------------------------------------------------------------------------------------------------------------
 // The gated value of dim d of row t's head h (o: the head's output as bf16 holds it; a block of d threads holds the head): its norm without a weight where `gnorm`
-// (one rounding where `round`), times sigmoid(gate) (the sigmoid rounded first where `round`).
+// (one rounding where `round`), times sigmoid(gate) (the sigmoid rounded first where `round`); the gate's value the dim's own, or the head's one (`g_head`).
 __device__ __forceinline__ float at_gated(const AttnArgs& a, float o, int t, int h, int d) {
     if (a.gnorm) o = at_r(o * at_rs(block_sum(o * o), a.d, a.eps, a.round), a.round);
-    const float g = b2f(a.gate[(size_t)t * a.gs + (size_t)h * a.g_step + d]);
+    const float g = b2f(a.gate[(size_t)t * a.gs + (size_t)h * a.g_step + (a.g_head ? 0 : d)]);
     return a.round ? o * b2f(f2b(1.f / (1.f + expf(-g)))) : o / (1.f + expf(-g));
 }
 
