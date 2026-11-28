@@ -40,6 +40,7 @@ struct AttnArgs {
     int g_head;        // the gate is one value a head (every dim of head h times the sigmoid of the value at t gs + h g_step), not a value a dim
     int round, sbf16, S;
     float q_scale, eps, scale, sl2, softcap;
+    float v_scale;     // the values times this as the cache takes them (`kinds::Attn::v_scale`); 0 or 1: as they are
 };
 
 // A key's place: through the block table where the sequence has one (src/dynamic/pages.rs), else the ring's slot p % cap.
@@ -70,7 +71,7 @@ __device__ __forceinline__ float at_sink(const AttnArgs& a, int h, float m) { re
 // ---- the preparation --------------------------------------------------------------------------------------------------------------------------------------------------
 // Row r's head hh (a query head below nq, else key head hh - nq with its values): the norm (one block sum), the queries' scale, the rotary (value j < span with
 // its pair j +- span / 2, angle j mod span / 2 where that is below `pairs`; an M-RoPE row's angle k from the table's row of the position its section turns by),
-// the query to qo, the key and the value (normed or as it is) to the ring at the row's position. Block (row, head), d / 2 threads: thread t holds t and t + d / 2.
+// the query to qo, the key and the value (normed or as it is, then times `v_scale` where the kind has one) to the ring at the row's position. Block (row, head), d / 2 threads: thread t holds t and t + d / 2.
 // Grid y: nq + nk heads, or nq where no keys are written (a draft model's). blockIdx.z above 0: `pf`'s prefetch of the next product. A padding row (a negative
 // position: a decode step padded to its graph's rows) writes nothing.
 __device__ __forceinline__ float at_rot(const AttnArgs& a, const float* xs, int j, float v, int p, int r) {
@@ -135,6 +136,11 @@ __device__ __forceinline__ void attn_prep_t(const AttnArgs& a) {
         const float s = at_rs(block_sum(u0 * u0 + u1 * u1), D, a.eps, a.round);
         u0 *= s;
         u1 *= s;
+    }
+    // (the values' factor, on the values the cache holds: the value as bf16 holds it where `round`, times the factor, rounded once as it is written)
+    if (a.v_scale != 0.f && a.v_scale != 1.f) {
+        u0 = at_r(u0, a.round) * a.v_scale;
+        u1 = at_r(u1, a.round) * a.v_scale;
     }
     bf16* ov = a.vc + (slot * a.nk + kh) * D;
     ov[t] = f2b(u0);

@@ -165,6 +165,9 @@ pub struct AttnOp {
     /// The kind's sinks (`kinds::Attn::sinks`): the small tensor of a logit a query head that joins every row's softmax and attends to nothing. Such an attention
     /// runs on the kind's warp kernels and the parts kernel with its merge, which add the sink to a row's sum: not on the prompt kernel nor the GPU library's.
     pub sinks: Option<usize>,
+    /// The values' factor (`kinds::Attn::v_scale`; 1: none): the preparation multiplies each value by it as it writes the cache, in fp32, rounded once to the
+    /// bf16 the cache holds, where the CPU reference multiplies. Every path reads the cache, so every path takes it.
+    pub v_scale: f32,
 }
 
 impl AttnOp {
@@ -175,8 +178,8 @@ impl AttnOp {
     /// F32 (transformers in float32) runs as Flash: the executor's activations are bf16.
     pub fn of(a: &kinds::Attn, src: Slot, ring: usize, table: Option<usize>, qk: Option<(usize, usize)>) -> Result<AttnOp> {
         let (d, nq, nk) = (a.head_dim, a.heads, a.kv_heads);
-        if a.v_scale != 1.0 {
-            return err(format!("attention whose values are scaled (v_scale {}): not an operation of this executor yet", a.v_scale));
+        if !a.v_scale.is_finite() || a.v_scale == 0.0 {
+            return err(format!("attention whose values are scaled by {}: not a factor", a.v_scale));
         }
         if ![64, 128, 256, 512].contains(&d) || a.v_head_dim != d {
             return err(format!("attention heads of {d} (values {}): the kernels take 64, 128, 256 or 512, the values as wide", a.v_head_dim));
@@ -265,6 +268,7 @@ impl AttnOp {
             sbf16,
             picked: false,
             sinks: None,
+            v_scale: a.v_scale,
         })
     }
 
@@ -328,6 +332,7 @@ impl AttnOp {
             scale: self.scale,
             sl2: sl2(self.scale),
             softcap: self.softcap,
+            v_scale: self.v_scale,
             ..AttnArgs::default()
         }
     }
@@ -413,6 +418,8 @@ pub(crate) struct AttnArgs {
     pub scale: f32,
     pub sl2: f32,
     pub softcap: f32,
+    /// The values' factor as the cache takes them (`AttnOp::v_scale`); 0 or 1: none.
+    pub v_scale: f32,
 }
 
 /// kernels/attn.cu's kernels, each by its type (`crate::kt`).
@@ -1246,21 +1253,20 @@ mod tests {
         let mut wide = kind(128, None);
         (wide.heads, wide.kv_heads) = (64, 2);
         assert!(AttnOp::of(&wide, Slot::Mix, 0, Some(0), Some((2, 3))).is_err());
-        // (a factor on the values is refused by its name)
         // (a gate of one value a head, LFM's: its product's rows, one a query head, after the values'; the kernels read a head's one value for every dim)
         let head = AttnOp::of(&kind(128, Some(GateFrom::Head)), Slot::Mix, 0, Some(0), Some((2, 3))).unwrap();
         assert_eq!((head.stride, head.gate), ((8 + 2 * 2) * 128 + 8, Some(GateAt { off: 12 * 128, step: 1, norm: false, head: true })));
         let x = head.args(3, 1e-5);
         assert_eq!((x.gs, x.g_step, x.g_head, x.gnorm), (head.stride as i32, 1, 1, 0));
         assert_eq!(m.args(3, 1e-5).g_head, 0);
-        let Err(scaled) = AttnOp::of(&Attn { v_scale: 0.707, ..kind(128, None) }, Slot::Mix, 0, Some(0), Some((2, 3))) else {
-            panic!("values scaled, and taken")
-        };
-        assert!(scaled.msg.contains("v_scale 0.707"), "{}", scaled.msg);
+        // (a factor on the values, MiMo's: the preparation's, as it writes the cache; no factor is 1, and a factor of 0 or not finite is refused)
+        let scaled = AttnOp::of(&Attn { v_scale: 0.707, ..kind(128, None) }, Slot::Mix, 0, Some(0), Some((2, 3))).unwrap();
+        assert_eq!((scaled.v_scale, scaled.args(3, 1e-5).v_scale, m.v_scale, m.args(3, 1e-5).v_scale), (0.707, 0.707, 1.0, 1.0));
+        let Err(zero) = AttnOp::of(&Attn { v_scale: 0.0, ..kind(128, None) }, Slot::Mix, 0, Some(0), Some((2, 3))) else { panic!("values times 0, and taken") };
+        assert!(zero.msg.contains("values are scaled by 0"), "{}", zero.msg);
     }
 
-    /// kernels/attn.cu's AttnArgs: 16 pointers, a long long and an unsigned long long, 22 ints, 5 floats (and the four bytes that round its size up to its
-    /// alignment, in C as here).
+    /// kernels/attn.cu's AttnArgs: 16 pointers, a long long and an unsigned long long, 22 ints, 6 floats, no padding.
     #[test]
     fn the_arguments_are_the_kernels_struct() {
         assert_eq!(std::mem::size_of::<AttnArgs>(), 18 * 8 + 28 * 4);
@@ -1269,9 +1275,10 @@ mod tests {
                 std::mem::offset_of!(AttnArgs, gnorm),
                 std::mem::offset_of!(AttnArgs, g_head),
                 std::mem::offset_of!(AttnArgs, round),
-                std::mem::offset_of!(AttnArgs, softcap)
+                std::mem::offset_of!(AttnArgs, softcap),
+                std::mem::offset_of!(AttnArgs, v_scale)
             ),
-            (18 * 8 + 17 * 4, 18 * 8 + 18 * 4, 18 * 8 + 19 * 4, 18 * 8 + 26 * 4)
+            (18 * 8 + 17 * 4, 18 * 8 + 18 * 4, 18 * 8 + 19 * 4, 18 * 8 + 26 * 4, 18 * 8 + 27 * 4)
         );
         assert_eq!(
             (

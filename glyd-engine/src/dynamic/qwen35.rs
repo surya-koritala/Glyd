@@ -163,6 +163,7 @@ pub(crate) fn attention(d: usize, nq: usize, nk: usize, rotary: usize, qk: (usiz
         sbf16: false,
         picked: false,
         sinks: None,
+        v_scale: 1.0,
     }
 }
 
