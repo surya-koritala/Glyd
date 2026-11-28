@@ -922,7 +922,7 @@ Hummingbird's experts are two groups a layer, one a bit width, each with its own
   ones in the same order, and where they differ the difference is explained in the PR.
 - **R8 bench gate** (#133): `glyd bench` on the family's reference GPU at 1, 4 and 8 users (and 64 where the gate asks), decode tokens/s,
   first token and peak memory; no regression beyond the measured noise band (two standard deviations of five runs, the 3% that
-  `scripts/gpu_bar.py` uses where no band is measured yet).
+  `glyd-engine bench --bar` uses where no band is measured yet).
 - **R10 packs** (#231): every published pack of the family since v0.29 loads and matches its digest.
 - **Deletion.** The old pipeline stays selectable (`GLYD_*_DYNAMIC=0` style) only until the parity record is merged; the next PR deletes
   it, its kernels that nothing else uses, its switch and its per-path sizing (P2f). No old path survives a release.

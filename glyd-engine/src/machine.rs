@@ -150,7 +150,7 @@ pub const ANY_FAMILY: &str = "";
 ///
 /// THE SPEED BAR: a family is here on a GPU only where the engine has been measured at least as fast as vLLM at every load it would serve there, with less memory (the engine serves up to 8 users at once, so
 /// `glyd serve` is vLLM's, whatever is here), and has run on the GPU. Measurements decide it, not what the engine can run: it was EMPTY until they were made (the first line, the RTX 4080 SUPER, is of 2026-11-20), and while it is empty every model runs as
-/// it did in v0.28 (vLLM). Where vLLM is installed, every GPU not named here, and every compute capability, runs vLLM; with the Rust install alone the engine runs on every GPU it supports (`engine_chosen`). Adding a GPU, once the engine is measured on it, is one line here, e.g. `("L4", (8, 9), &["Qwen3"]),` (docs/adding-a-gpu.md: `scripts/gpu_bar.py` reads the two measurement files).
+/// it did in v0.28 (vLLM). Where vLLM is installed, every GPU not named here, and every compute capability, runs vLLM; with the Rust install alone the engine runs on every GPU it supports (`engine_chosen`). Adding a GPU, once the engine is measured on it, is one line here, e.g. `("L4", (8, 9), &["Qwen3"]),` (docs/adding-a-gpu.md: `glyd-engine bench --bar` reads the two measurement files).
 pub const GPUS: &[Entry] = &[
     // measured 2026-11-20 on glyd-pc, Qwen3-8B, 1, 4 and 8 users at once with short, 2,000 and 4,000-token prompts, 5 runs of each engine: benchmarks/gpu/rtx4080s-bar-2026-11-20
     ("RTX 4080 SUPER", (8, 9), &["Qwen3"]),
