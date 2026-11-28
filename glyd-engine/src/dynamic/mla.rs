@@ -221,6 +221,10 @@ impl MlaOp {
     /// the description's table `table` (made for the kind's rotary: `ModelDesc::ropes`). A gate takes a fused product.
     #[allow(clippy::too_many_arguments)]
     pub fn of(k: &kinds::Mla, input: MlaIn, q_b: usize, o: usize, s0: usize, ring: usize, tail: bool, table: Option<usize>) -> Result<MlaOp> {
+        // (the forms the CPU reference computes and no kernel does: refused by their names)
+        if let Some(why) = k.not_run() {
+            return err(why);
+        }
         let q_rank = k.q_lora.ok_or_else(|| Error("a latent attention whose query has no low rank: not an operation of this executor".into()))?;
         let rot = match (&k.rope, table) {
             (None, _) => None,
@@ -1041,7 +1045,12 @@ mod tests {
                 shared: false,
                 form: crate::runtime::kinds::IndexForm::LAYER_KEYS,
                 rope: 0,
+                q_in: None,
+                pos_scale: false,
             }),
+            pos_scale: false,
+            kv_from: None,
+            rope_learned: false,
         }
     }
 
@@ -1179,5 +1188,18 @@ mod tests {
         assert!(MlaOp::of(&kind(0, true, false), MlaIn::Apart { q_a: 1, kv_a: 2 }, 3, 4, 0, 0, false, None).is_err());
         assert!(MlaOp::of(&kinds::Mla { rope: Some(kinds::Rope::plain(1e4, 64)), ..kind(64, false, false) }, MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false, None)
             .is_err());
+        // (Mistral Large's forms, which the CPU reference computes and no kernel does: each refused by its name)
+        let on_input = |x: Indexer| Indexer { q_in: Some(Norm::rms(1e-6)), pos_scale: true, ..x };
+        for (k, why) in [
+            (kinds::Mla { pos_scale: true, ..kind(0, false, false) }, kinds::Mla::POS_SCALE_NOT_RUN),
+            (kinds::Mla { kv_from: Some(0), ..kind(0, false, false) }, kinds::Mla::KV_FROM_NOT_RUN),
+            (kinds::Mla { rope_learned: true, ..kind(64, false, false) }, kinds::Mla::ROPE_LEARNED_NOT_RUN),
+            (kinds::Mla { indexer: kind(0, false, true).indexer.map(on_input), ..kind(0, false, false) }, kinds::Mla::INDEX_INPUT_NOT_RUN),
+        ] {
+            let Err(e) = MlaOp::of(&k, MlaIn::Fused { w: 0 }, 1, 2, 0, 0, false, None) else { panic!("lowered: {why}") };
+            assert_eq!(e.msg, why);
+            assert!(why.ends_with("which the executor does not run yet"));
+        }
+        assert_eq!(kind(64, true, true).not_run(), None);
     }
 }

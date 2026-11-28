@@ -263,6 +263,14 @@
     "plan": "ab1b183f4358d678",
     "family": "refused: m is a MiMoV2ForCausalLM model, which this engine has no description of yet"
   },
+  "headers/Mistral-Large-4-1T-A52B.json": {
+    "blocks": 144,
+    "tensors": 56249,
+    "kinds": "a66194f41870a4c3",
+    "weights": "7c1f64d6ebce060d",
+    "plan": "b5b110dd47de47f5",
+    "family": "refused: m is a MistralLarge4ForConditionalGeneration model, which this engine has no description of yet"
+  },
   "headers/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.json": {
     "blocks": 52,
     "tensors": 6243,
