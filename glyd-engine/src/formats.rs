@@ -4,7 +4,9 @@
 //! `X.weight_scale`). A weight times a power of two is exact in f32, and in bf16 where it is in range. And a table read by rows stored at 4 bits (NF4 levels
 //! times a bf16 scale a row: `X.q4`), as v0.34.2 decoded it. Where a description names a matrix's scales (`Stored`), the scales' tensor is the one it names,
 //! whatever its suffix, and the block is the one the scales' shape and the config's `weight_block_size` give: fp32 scales a block (`X.qscale_weight` as
-//! `X.weight_scale_inv`), or a byte's power of two a run of 32 columns of a row; and MXFP4 codes under a release's own names.
+//! `X.weight_scale_inv`), or a byte's power of two a run of 32 columns of a row; and MXFP4 codes under a release's own names. NVFP4, as
+//! compressed-tensors packs it (`X.weight_packed`, E4M3 scales a run of 16 `X.weight_scale`, their own fp32 scale `X.weight_global_scale`), is its E2M1
+//! code times its run's scale over the scales' scale: fp32, not a power of two, so exact only in that product's rounding.
 
 use crate::ffi::{err, Error, Result};
 use glyd_gpu::safetensors::Checkpoint;
@@ -69,6 +71,51 @@ pub fn mxfp4(packed: &[u8], scales: &[u8], rows: usize, cols: usize) -> Result<V
             E2M1[code as usize] * 2f32.powi(scales[i / 32] as i32 - 127)
         })
         .collect())
+}
+
+/// An NVFP4 matrix [rows, cols] as compressed-tensors packs it (nvfp4-pack-quantized): two E2M1 weights a byte (the even column in the low four bits),
+/// an E4M3 scale per 16 of a row (`scales`, its bytes), and `global`, the one fp32 number the matrix's scales were multiplied by before they were
+/// rounded to E4M3: W = e2m1(code) x e4m3(scale) / global. The code's value times its run's scale is exact in fp32; that product times the fp32
+/// reciprocal of `global` is the weight (the loaders that read the format keep the reciprocal and multiply by it; one of them multiplies the scale by
+/// it first, which may differ in the last place where `global` is not a power of two). An Err where a scale is NaN or below zero (the loaders differ
+/// on a scale's sign), or `global` is zero or not finite.
+pub fn nvfp4(packed: &[u8], scales: &[u8], global: f32, rows: usize, cols: usize) -> Result<Vec<f32>> {
+    if cols % 16 != 0 || packed.len() != rows * cols / 2 || scales.len() != rows * cols / 16 {
+        return err(format!("an NVFP4 matrix of {rows} x {cols}: {} bytes and {} scales", packed.len(), scales.len()));
+    }
+    if !global.is_finite() || global == 0.0 {
+        return err(format!("an NVFP4 matrix's scales' own scale is {global}"));
+    }
+    if let Some(i) = scales.iter().position(|&b| b & 0x7F == 0x7F || (b & 0x80 != 0 && b != 0x80)) {
+        return err(format!("run {i}'s scale is {} (E4M3 {:#04x})", glyd_gpu::fp8::e4m3(scales[i]), scales[i]));
+    }
+    let inv = 1.0 / global;
+    Ok((0..rows * cols)
+        .map(|i| {
+            let b = packed[i / 2];
+            let code = if i % 2 == 0 { b & 15 } else { b >> 4 };
+            E2M1[code as usize] * glyd_gpu::fp8::e4m3(scales[i / 16]) * inv
+        })
+        .collect())
+}
+
+/// The one fp32 number tensor `name` holds (a scalar, or a tensor of one element), else None.
+fn scalar_f32(ck: &Checkpoint, name: &str) -> Option<f32> {
+    let (_, t) = ck.get(name)?;
+    let b = ck.read(name).ok()?;
+    (t.dtype == "F32" && b.len() == 4).then(|| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+/// The NVFP4 matrix whose codes are the tensor `codes` (U8 [rows, cols / 2]), its runs' scales `scales` (F8_E4M3 [rows, cols / 16]) and their own scale
+/// `global` (fp32, one number), decoded (`nvfp4`); None where the three are not so stored.
+fn nvfp4_stored(ck: &Checkpoint, codes: &str, scales: &str, global: &str) -> Option<(Vec<usize>, Vec<f32>)> {
+    let ((_, t), (_, st)) = (ck.get(codes)?, ck.get(scales)?);
+    let [rows, half] = t.shape[..] else { return None };
+    if t.dtype != "U8" || st.dtype != "F8_E4M3" || st.shape != [rows, half / 8] {
+        return None;
+    }
+    let (rows, cols) = (rows as usize, half as usize * 2);
+    Some((vec![rows, cols], nvfp4(&ck.read(codes).ok()?, &ck.read(scales).ok()?, scalar_f32(ck, global)?, rows, cols).ok()?))
 }
 
 /// The block of rows and columns a quantized matrix of `rows` x `cols` has one scale of, from its scales' shape (a block of 128, of 32, or one scale a row
@@ -167,6 +214,10 @@ impl Stored {
     ///  - 4-bit codes two a byte (U8 [rows, cols / 2]) with a byte's power-of-two scale a run of 32 of a row (U8 or E8M0 [rows, cols / 32]): the MXFP4
     ///    matrix [rows, cols] (`mxfp4`), under whatever names the release stores the two (MiMo V2's experts: `X.weight`, `X.weight_scale`).
     ///
+    ///  - 4-bit codes two a byte with an E4M3 scale a run of 16 of a row (F8_E4M3 [rows, cols / 16]) whose own scale, one fp32 number, is the tensor the
+    ///    description names as the scales' scales (the scales' name as a key of `scales`; unsaid: `X.weight_global_scale` beside `X.weight_scale`): the
+    ///    NVFP4 matrix [rows, cols] (`nvfp4`: MiniMax M3's experts).
+    ///
     /// A matrix the description cuts in shards whose scales are a grid a shard is decoded a shard at a time, each with its grid.
     ///
     /// None where the description names no scales for it, or the two tensors are not one of these.
@@ -198,6 +249,10 @@ impl Stored {
             ("U8", "U8" | "F8_E8M0") if st.shape == [rows as u64, cols as u64 / 16] => {
                 Some((vec![rows, cols * 2], mxfp4(&ck.read(name).ok()?, &ck.read(sn).ok()?, rows, cols * 2).ok()?))
             }
+            ("U8", "F8_E4M3") => {
+                let global = self.scales.get(sn).cloned().or_else(|| sn.strip_suffix(".weight_scale").map(|b| format!("{b}.weight_global_scale")))?;
+                nvfp4_stored(ck, name, sn, &global)
+            }
             _ => None,
         }
     }
@@ -206,7 +261,7 @@ impl Stored {
 /// A checkpoint's tensor as f32, by the type it is stored in: bf16 and f32 as stored, int64 (a hash table's ids) as their values; an FP8 matrix with its
 /// scales (`X.scale`, a block each, or fp32 block scales `X.weight_scale_inv`: `scales_beside`); an FP4 matrix stored as I8 with its runs' scales
 /// (`X.scale`); and where `X.weight` or its codes `X.weight_packed` are asked for and the checkpoint holds the matrix as compressed-tensors packs it, that
-/// MXFP4 matrix, or the table stored at 4 bits (`X.q4`) as the bf16 values it decodes to (`nf4_row`). Another type, or a quantized matrix without its
+/// MXFP4 or NVFP4 matrix, or the table stored at 4 bits (`X.q4`) as the bf16 values it decodes to (`nf4_row`). Another type, or a quantized matrix without its
 /// scales: none. The scales are found by these names alone: a matrix whose scales its description names otherwise is read by `Stored::tensor`.
 pub fn tensor(ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
     let Some((_, t)) = ck.get(name) else { return packed_fp4(ck, name).or_else(|| q4_table(ck, name)) };
@@ -337,10 +392,14 @@ fn q4_table(ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
     Some((vec![t.shape[0] as usize, cols], w.into_iter().map(|x| f32::from_bits((x as u32) << 16)).collect()))
 }
 
-/// The MXFP4 matrix compressed-tensors stores for `X.weight` (`X.weight_packed`, `X.weight_scale`), decoded, where `X.weight` or its codes are asked for.
+/// The MXFP4 matrix compressed-tensors stores for `X.weight` (`X.weight_packed`, `X.weight_scale`), decoded, where `X.weight` or its codes are asked for;
+/// or, where the scales are E4M3 a run of 16 with their own scale beside them (`X.weight_global_scale`), the NVFP4 matrix (`nvfp4`).
 fn packed_fp4(ck: &Checkpoint, name: &str) -> Option<(Vec<usize>, Vec<f32>)> {
     let base = name.strip_suffix(".weight_packed").or_else(|| name.strip_suffix(".weight"))?;
     let (_, t) = ck.get(&format!("{base}.weight_packed"))?;
+    if ck.get(&format!("{base}.weight_scale")).is_some_and(|(_, st)| st.dtype == "F8_E4M3") {
+        return nvfp4_stored(ck, &format!("{base}.weight_packed"), &format!("{base}.weight_scale"), &format!("{base}.weight_global_scale"));
+    }
     let (rows, cols) = (t.shape[0] as usize, t.shape[1] as usize * 2);
     let w = mxfp4(&ck.read(&format!("{base}.weight_packed")).ok()?, &ck.read(&format!("{base}.weight_scale")).ok()?, rows, cols).ok()?;
     Some((vec![rows, cols], w))
@@ -737,6 +796,111 @@ mod tests {
         assert_eq!((tensor(&ck, &names[0].0), Stored::default().tensor(&ck, &names[0].0)), (None, None), "bytes, until a description names their scales");
         assert_eq!((st.tensor(&ck, &names[2].0), tensor(&ck, &names[2].0)), (Some((vec![rows, cols], got.clone())), Some((vec![rows, cols], got))));
         assert_eq!(st.tensor(&ck, &names[4].0), None, "scales of another run's shape");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// NVFP4: two E2M1 codes a byte, the even column in the low four bits, an E4M3 scale a run of 16 of a row, and the scales' own fp32 scale, which
+    /// divides: W = e2m1(code) x e4m3(scale) / global. Under a power-of-two global every code under every scale that is a number and not below zero
+    /// is the formula in f64, to the bit; under another global it is the formula within a last place (the code times the scale, exact, times the fp32
+    /// reciprocal). A byte of codes 1 and 2 is 0.5 then 1; a global of 2 halves the weights and does not double them. Refused: a NaN scale, one below
+    /// zero, a global of zero or not finite, columns not in whole runs.
+    #[test]
+    fn nvfp4_is_its_code_times_its_runs_scale_over_the_scales_scale() {
+        let scales: Vec<u8> = (0..=255u8).filter(|b| b & 0x7F != 0x7F && (b & 0x80 == 0 || *b == 0x80)).collect();
+        let (rows, cols) = (scales.len(), 16usize);
+        // (a row a scale: its 8 bytes hold every code, in both halves of a byte)
+        let packed: Vec<u8> = (0..rows * 8).map(|i| ((i % 8) as u8 | ((15 - i % 8) as u8) << 4) ^ if i / 8 % 2 == 1 { 0x88 } else { 0 }).collect();
+        for global in [1.0f32, 0.5, 4096.0, 2f32.powi(-20), 3.0, 1873.25, 0.007_812_6] {
+            let got = nvfp4(&packed, &scales, global, rows, cols).unwrap();
+            for (i, g) in got.iter().enumerate() {
+                let code = (packed[i / 2] >> (4 * (i % 2))) & 15;
+                let want = e2m1_f64(code) * e4m3_f64(scales[i / 16]) / global as f64;
+                if global.to_bits() & 0x007F_FFFF == 0 {
+                    assert_eq!(
+                        (g.to_bits(), *g as f64),
+                        ((want as f32).to_bits(), want),
+                        "weight {i}: code {code}, scale {:#04x}, global {global}",
+                        scales[i / 16]
+                    );
+                } else {
+                    assert!((*g as f64 - want).abs() <= want.abs() * 2f64.powi(-23), "weight {i}: {g} for {want}, global {global}");
+                    assert_eq!(g.to_bits(), ((e2m1_f64(code) * e4m3_f64(scales[i / 16])) as f32 * (1.0 / global)).to_bits());
+                }
+            }
+        }
+        let one = |global: f32| nvfp4(&[0x21; 8], &[0x38], global, 1, 16).unwrap();
+        assert_eq!((one(1.0)[..2].to_vec(), one(2.0)[..2].to_vec()), (vec![0.5, 1.0], vec![0.25, 0.5]), "the even column low; the global divides");
+        assert_eq!(nvfp4(&[0x21; 8], &[0x80], 1.0, 1, 16).unwrap()[1].to_bits(), (-0.0f32).to_bits(), "a scale of -0 is zero");
+        for (s, g) in [(0x7Fu8, 1.0f32), (0xFF, 1.0), (0xB8, 1.0), (0x38, 0.0), (0x38, f32::INFINITY), (0x38, f32::NAN)] {
+            assert!(nvfp4(&[0x21; 8], &[s], g, 1, 16).is_err(), "scale {s:#04x}, global {g}");
+        }
+        assert!(nvfp4(&[0; 12], &[0x38], 1.0, 1, 24).is_err() && nvfp4(&[0; 8], &[0x38; 2], 1.0, 1, 16).is_err());
+        assert!(nvfp4(&[0; 24], &[0x38; 3], 1.0, 1, 48).is_ok(), "whole runs of 16, not of 32");
+    }
+
+    /// An NVFP4 matrix in a checkpoint: read under compressed-tensors' names by what is stored (`X.weight_packed`, E4M3 scales, `X.weight_global_scale`
+    /// a scalar), asked for as `X.weight` or by its codes' name, and by a description that names the scales and, of the scales, their own scale (a
+    /// tensor of one element under another name). The activations' scale beside them (`X.input_global_scale`) is no part of a weight. Without its
+    /// scales' scale, or with it in another type, the matrix is not read; MXFP4 under the same names is read as before.
+    #[test]
+    fn an_nvfp4_matrix_is_read_with_its_scales_and_their_scale() {
+        let dir = std::env::temp_dir().join(format!("glyd-formats-nvfp4-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (rows, cols) = (6usize, 48usize);
+        let packed: Vec<u8> = (0..rows * cols / 2).map(|i| (i * 29 % 256) as u8).collect();
+        let runs: Vec<u8> = (0..rows * cols / 16).map(|i| 0x20 + (i * 5 % 0x38) as u8).collect();
+        let e8: Vec<u8> = (0..rows * 2).map(|i| 124 + i as u8 % 3).collect();
+        let wide: Vec<u8> = (0..rows * 32).map(|i| (i * 31 % 256) as u8).collect();
+        let (g, input, half) = (1873.25f32.to_le_bytes(), 77.0f32.to_le_bytes(), [0x00u8, 0x3F]);
+        let x = |e: usize, t: &str| format!("language_model.model.layers.3.block_sparse_moe.experts.{e}.w1.{t}");
+        let names = [
+            (x(0, "weight_packed"), "U8", vec![rows as u64, cols as u64 / 2], &packed[..]),
+            (x(0, "weight_scale"), "F8_E4M3", vec![rows as u64, cols as u64 / 16], &runs[..]),
+            (x(0, "weight_global_scale"), "F32", vec![], &g[..]),
+            (x(0, "input_global_scale"), "F32", vec![], &input[..]),
+            (x(1, "codes"), "U8", vec![rows as u64, cols as u64 / 2], &packed[..]),
+            (x(1, "runs"), "F8_E4M3", vec![rows as u64, cols as u64 / 16], &runs[..]),
+            (x(1, "all"), "F32", vec![1], &g[..]),
+            (x(2, "weight_packed"), "U8", vec![rows as u64, cols as u64 / 2], &packed[..]),
+            (x(2, "weight_scale"), "F8_E4M3", vec![rows as u64, cols as u64 / 16], &runs[..]),
+            (x(3, "weight_packed"), "U8", vec![rows as u64, cols as u64 / 2], &packed[..]),
+            (x(3, "weight_scale"), "F8_E4M3", vec![rows as u64, cols as u64 / 16], &runs[..]),
+            (x(3, "weight_global_scale"), "BF16", vec![], &half[..]),
+            (x(4, "weight_packed"), "U8", vec![rows as u64, 32], &wide[..]),
+            (x(4, "weight_scale"), "U8", vec![rows as u64, 2], &e8[..]),
+        ];
+        let refs: Vec<(&str, &str, Vec<u64>, &[u8])> = names.iter().map(|(n, d, s, b)| (n.as_str(), *d, s.clone(), *b)).collect();
+        crate::pack::write_safetensors(&dir.join("model.safetensors"), &[("format", "pt".to_string())], &refs).unwrap();
+        let ck = Checkpoint::open(&dir).unwrap();
+        let want: Vec<f32> =
+            (0..rows * cols).map(|i| ((e2m1_f64((packed[i / 2] >> (4 * (i % 2))) & 15) * e4m3_f64(runs[i / 16])) as f32) * (1.0 / 1873.25f32)).collect();
+        assert!(want.iter().enumerate().all(|(i, w)| {
+            let f = e2m1_f64((packed[i / 2] >> (4 * (i % 2))) & 15) * e4m3_f64(runs[i / 16]) / 1873.25;
+            (*w as f64 - f).abs() <= f.abs() * 2f64.powi(-23)
+        }));
+        let read = Some((vec![rows, cols], want));
+        assert_eq!((tensor(&ck, &x(0, "weight_packed")), tensor(&ck, &x(0, "weight"))), (read.clone(), read.clone()));
+        let pair = |e: usize, codes: &str, scales: &str| (x(e, codes), x(e, scales));
+        let named = Stored {
+            scales: [
+                pair(0, "weight_packed", "weight_scale"),
+                pair(0, "weight_scale", "weight_global_scale"),
+                pair(1, "codes", "runs"),
+                pair(1, "runs", "all"),
+            ]
+            .into_iter()
+            .collect(),
+            ..Stored::default()
+        };
+        assert_eq!((named.tensor(&ck, &x(0, "weight_packed")), named.tensor(&ck, &x(1, "codes"))), (read.clone(), read.clone()));
+        let unchained = Stored { scales: [pair(0, "weight_packed", "weight_scale"), pair(1, "codes", "runs")].into_iter().collect(), ..Stored::default() };
+        assert_eq!(
+            (unchained.tensor(&ck, &x(0, "weight_packed")), unchained.tensor(&ck, &x(1, "codes"))),
+            (read, None),
+            "the scales' scale beside them, by its name"
+        );
+        assert_eq!((tensor(&ck, &x(2, "weight_packed")), tensor(&ck, &x(3, "weight_packed"))), (None, None), "no scale of the scales; one that is not fp32");
+        assert_eq!(tensor(&ck, &x(4, "weight_packed")), Some((vec![rows, 64], mxfp4(&wide, &e8, rows, 64).unwrap())));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
