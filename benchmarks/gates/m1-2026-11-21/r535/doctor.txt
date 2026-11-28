@@ -1,0 +1,23 @@
+glyd engine 0.33.1
+  GPU           NVIDIA GeForce RTX 3060 (compute capability 8.6), 11.7 GiB free of 11.8 GiB; the driver runs CUDA 12.2
+  driver        CUDA 12.2, the engine needs CUDA 12.2 (driver 535 or newer)
+  layout        mma12 (the default here: mma12, the faster layout, on this GPU (measured)); --layout mma for the other
+  GPU library   /root/b/libglyd_gpu_cuda12.so
+  cuBLAS        not found: long prompts use the engine's own products (a little slower)
+                fix: Optional: install the CUDA 13 cuBLAS, or set GLYD_CUBLAS to it
+  backend CUDA  detected (driver CUDA 12.2), accepted
+  backend ROCm  not in this build (a development build with GLYD_HIP=1 runs AMD GPUs: ROADMAP V1)
+  backend Metal not detected (planned: ROADMAP V3)
+  backend CPU   not built yet (ROADMAP V4): without a GPU glyd compresses files
+  GPU budget    11.7 GiB free of 11.8 GiB (0.1 GiB used by other programs and the driver); the engine keeps 0.8 GiB and its work takes 1.2 GiB (2.8 GiB on the dynamic route): 9.7 GiB for the weights and the cache
+  RAM           29.2 GiB available of 31.3 GiB; 6.0 GiB kept for the system: 23.2 GiB for experts held in memory
+  sample plan   google/gemma-4-12B-it: linnet level, 32768 tokens of context: 7.7 GiB of weights on the GPU, 1.0 GiB of cache, 1.2 GiB for the engine's work, 0.6 GiB for the draft model, 0.8 GiB kept free; 11.3 GiB of the NVIDIA GeForce RTX 3060's 11.7 GiB free
+  cache         /root/.cache/glyd (106.7 GB free)
+  models        /root/.cache/huggingface/hub (106.7 GB free)
+  cached        0 models, 0 MB in the Hub's cache, 0 models, 0 MB packed here
+  Hub token     none (public models only; glyd login for a gated one)
+                fix: Accept the model's licence on its page, then glyd login (or set HF_TOKEN)
+  Hub           https://huggingface.co reachable
+  port          11434 is free for the service (glyd service)
+  port          8000 is free for a server (glyd serve; the next free port up to 8020 where this is taken)
+Everything glyd run needs is here.

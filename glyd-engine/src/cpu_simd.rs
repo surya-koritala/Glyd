@@ -88,7 +88,7 @@ pub(crate) fn tq_state_k(words: &[u32], k: usize, t: usize) -> u32 {
     ((((hi as u64) << 32 | lo as u64) << (p % 32)) >> 50) as u32
 }
 
-/// Lane i of 16 weights of a format q row of K bits a weight whose first state starts at bit r of the words x (`tqk_group`): its value before the row's scale and TQ_K.
+/// Lane i of 16 weights of a format q row of K bits a weight whose first state starts at bit r of the words x (`tqk_words`): its value before the row's scale and TQ_K.
 #[inline(always)]
 pub(crate) fn tqk_lane<const K: usize>(x: [u32; 4], r: u32, i: usize) -> f32 {
     let p = r as usize + K * i;

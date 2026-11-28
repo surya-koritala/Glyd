@@ -1,23 +1,31 @@
 //! `ship MODEL LEVEL DIR`: one command from a Hugging Face model to its Glyd repo. The source is downloaded, packed at LEVEL into DIR/repo, its draft model put in DIR/repo/draft
 //! (Gemma 4), verified bit for bit against the sha256 recorded from the source, measured through `serve` on this computer's GPU (speed, GPU memory, and with `--evals N` the GSM8K and MMLU-Pro of
-//! tools/cards/eval_run.py), its card written from ship_card.md.j2 with what was measured, and with `--repo glyd/NAME` uploaded by the `hf` command (private unless `--public`).
+//! tools/cards/eval_run.py), a lossy level's quality card made (src/quality.rs: the suite on the pack and on the model's lossless level, `--quality-ref FILE` where that was measured on
+//! another GPU), its card written from ship_card.md.j2 with what was measured, and with `--repo glyd/NAME` uploaded by the `hf` command (private unless `--public`). A lossy pack is not
+//! uploaded without a quality card of its level that says publish (R14). The hummingbird level goes the same way: its pack step codes the experts from a corpus pass's counts
+//! (`--usage FILE`, what `glyd-engine calibrate-experts MODEL FILE` wrote; src/hb_pack.rs), and its quality card and the upload's refusal are every lossy level's.
 //!
 //! Each step that finds its output keeps it, so a run that stopped goes on where it was; `--steps measure,card` on another computer (DIR copied there) adds that GPU's numbers to the card.
 //! What was measured is kept in DIR/measured/GPU.txt, one `key=value` a line, apart from the repo.
 
 use crate::args::Args;
 use crate::ffi::{Error, Result};
+use crate::levels::draft_repo;
 use glyd_gpu::json::{self, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-const STEPS: [&str; 7] = ["fetch", "pack", "draft", "verify", "measure", "card", "upload"];
+const STEPS: [&str; 8] = ["fetch", "pack", "draft", "verify", "measure", "quality", "card", "upload"];
 const CARD: &str = include_str!("ship_card.md.j2");
 
 pub fn run(a: &Args) -> Result<()> {
     let (model, level, dir) = (a.need(1, "MODEL")?, a.need(2, "LEVEL")?, PathBuf::from(a.need(3, "DIR")?));
-    let layout = crate::levels::ship_layout(model, level).ok_or_else(|| Error(format!("{level}: ship packs penguin, kestrel, swift or wren")))?;
+    if crate::levels::by_name(level).is_none() {
+        return Err(Error(format!("{level}: ship packs {}", crate::levels::names_now().join(", "))));
+    }
+    // (None: hummingbird, whose experts are coded from a corpus pass's counts and not by a layout of every matrix)
+    let layout = crate::levels::ship_layout(model, level);
     let steps: Vec<&str> = a.flag("steps").map_or(STEPS.to_vec(), |s| s.split(',').map(str::trim).collect());
     if let Some(bad) = steps.iter().find(|s| !STEPS.contains(s)) {
         return Err(Error(format!("--steps {bad}: the steps are {}", STEPS.join(","))));
@@ -35,7 +43,18 @@ pub fn run(a: &Args) -> Result<()> {
                     }
                 }
             }
-            "pack" => crate::pack::run(model, &repo, a.num("threads", std::thread::available_parallelism().map_or(16, |n| n.get()))?, layout)?,
+            "pack" => {
+                let threads = a.num("threads", std::thread::available_parallelism().map_or(16, |n| n.get()))?;
+                match (layout, a.flag("usage")) {
+                    (Some(l), _) => crate::pack::run(model, &repo, threads, l)?,
+                    (None, Some(usage)) => crate::hb_pack::run(model, &repo, threads, Path::new(usage))?,
+                    (None, None) => {
+                        return Err(Error(format!(
+                            "ship pack: a {level} pack's experts are coded from a corpus pass's counts: glyd-engine calibrate-experts {model} usage.json, then --usage usage.json"
+                        )))
+                    }
+                }
+            }
             "draft" => {
                 // (the source's LICENSE and NOTICE go with the weights; a Gemma 4 model's draft model goes in draft/ unchanged, as the engine reads it there)
                 let src = source_dir(model)?;
@@ -62,12 +81,15 @@ pub fn run(a: &Args) -> Result<()> {
                 }
             }
             "measure" => measure(a, &repo, &dir.join("measured"))?,
+            "quality" => quality(a, model, level, &repo, &dir.join("measured"))?,
             "card" => card(a, model, level, draft.as_deref(), &repo, &dir.join("measured"))?,
             "upload" => {
                 let Some(name) = a.flag("repo") else {
                     eprintln!("ship upload: no --repo glyd/NAME, nothing uploaded");
                     continue;
                 };
+                // (a lossy pack goes out with a quality card of its level that says publish, or not at all)
+                crate::quality::publishable(level, &repo)?;
                 // (`hf upload-large-folder` resumes where an upload stopped; the token is the hf command's own login, never this program's)
                 let mut c = Command::new("hf");
                 c.args(["upload-large-folder", name, &repo.display().to_string(), "--repo-type", "model"]);
@@ -84,12 +106,6 @@ pub fn run(a: &Args) -> Result<()> {
     }
     eprintln!("== ship done ({:.0} s): {}", t0.elapsed().as_secs_f64(), repo.display());
     Ok(())
-}
-
-/// The draft model Google made for MODEL, a Gemma 4 model (google/gemma-4-12B-it: google/gemma-4-12B-it-assistant), else None.
-fn draft_repo(model: &str) -> Option<String> {
-    let name = model.rsplit('/').next().unwrap_or(model);
-    name.to_ascii_lowercase().starts_with("gemma-4-").then(|| format!("google/{name}-assistant"))
 }
 
 fn source_dir(model: &str) -> Result<PathBuf> {
@@ -198,6 +214,75 @@ fn measure(a: &Args, repo: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A lossy level's quality card (src/quality.rs): the suite on the model's lossless level (`--quality-ref FILE`: a result measured before, where this GPU does not hold the lossless
+/// level) and on the pack, each kept in DIR/measured (a step run again keeps what it finds), and the card in the pack, repo/quality.json, uploaded with it. `--n`, `--tasks`, `--long`
+/// and `--ctx` are the suite's. The lossless level needs none.
+fn quality(a: &Args, model: &str, level: &str, repo: &Path, measured: &Path) -> Result<()> {
+    if crate::levels::by_name(level).is_none_or(|l| l.lossless) {
+        eprintln!("ship quality: {level} is lossless, no card");
+        return Ok(());
+    }
+    std::fs::create_dir_all(measured).map_err(|e| Error(format!("{}: {e}", measured.display())))?;
+    let suite = |target: &str, file: &Path| -> Result<serde_json::Value> {
+        if let Ok(t) = std::fs::read_to_string(file) {
+            return serde_json::from_str(&t).map_err(|e| Error(format!("{}: {e}", file.display())));
+        }
+        let mut words = vec!["quality".to_string(), target.to_string()];
+        for f in ["n", "tasks", "long", "ctx"] {
+            if let Some(v) = a.flag(f) {
+                words.extend([format!("--{f}"), v.to_string()]);
+            }
+        }
+        let r = crate::quality::measure(&Args::from(words))?;
+        std::fs::write(file, serde_json::to_string_pretty(&r).unwrap_or_default() + "\n").map_err(|e| Error(format!("{}: {e}", file.display())))?;
+        Ok(r)
+    };
+    let reference = match a.flag("quality-ref") {
+        Some(f) => serde_json::from_str(&std::fs::read_to_string(f).map_err(|e| Error(format!("{f}: {e}")))?).map_err(|e| Error(format!("{f}: {e}")))?,
+        None => suite(&format!("{model}:penguin"), &measured.join("quality-ref.json"))?,
+    };
+    let cand = suite(&repo.display().to_string(), &measured.join("quality.json"))?;
+    let card = crate::quality::card(&reference, &cand, level, level)?;
+    let out = repo.join("quality.json");
+    std::fs::write(&out, serde_json::to_string_pretty(&card).unwrap_or_default() + "\n").map_err(|e| Error(format!("{}: {e}", out.display())))?;
+    eprintln!("ship quality: {}: {}", out.display(), crate::quality::line(&card));
+    Ok(())
+}
+
+/// The card's lines of quality from the pack's quality card, where it has one: the figures, the bar they were held to and the verdict.
+fn quality_lines(repo: &Path) -> Option<minijinja::Value> {
+    let c: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(repo.join("quality.json")).ok()?).ok()?;
+    let (kl, bar) = (&c["kl"], &c["bar"]);
+    let mut lines = vec![
+        format!(
+            "{:<34}{:>10}   (at most {})",
+            format!("next-token KL ({} prefixes)", kl["prefixes"]),
+            kl["mean"].as_f64().map_or("-".into(), |m| format!("{m:.4}")),
+            bar["kl_mean"]
+        ),
+        format!(
+            "{:<34}{:>9.1}%   (at least {:.0}%)",
+            "best token the same",
+            kl["top1"].as_f64().unwrap_or(0.0) * 100.0,
+            bar["top1"].as_f64().unwrap_or(0.0) * 100.0
+        ),
+    ];
+    for (name, t) in c["tasks"].as_object().into_iter().flatten() {
+        let n = t["n"].as_f64().unwrap_or(0.0);
+        lines.push(format!(
+            "{:<34}{:>10}   (lossless {:.0})",
+            name,
+            format!("{:.0} / {n:.0}", t["candidate"].as_f64().unwrap_or(0.0) * n),
+            t["reference"].as_f64().unwrap_or(0.0) * n
+        ));
+    }
+    lines.push(format!("{:<34}{:>10}", "verdict", c["verdict"].as_str().unwrap_or("?")));
+    Some(minijinja::Value::from_iter([
+        ("gpu", minijinja::Value::from(c["measured"]["gpu"].as_str().unwrap_or("?").to_string())),
+        ("lines", minijinja::Value::from(lines)),
+    ]))
+}
+
 /// The bytes of the files in `dir` and below, decimal GB; `skip`: a folder left out.
 fn gb(dir: &Path, skip: Option<&str>) -> f64 {
     let mut n = 0u64;
@@ -293,6 +378,7 @@ fn card(a: &Args, model: &str, level: &str, draft: Option<&str>, repo: &Path, me
         ("draft", minijinja::Value::from(draft.map(str::to_string))),
         ("draft_disk", minijinja::Value::from(format!("{:.2} GB", gb(&repo.join("draft"), None)))),
         ("machines", minijinja::Value::from(machines)),
+        ("quality", quality_lines(repo).unwrap_or(minijinja::Value::from(()))),
     ]);
     let mut env = minijinja::Environment::new();
     env.set_syntax(minijinja::syntax::SyntaxConfig::builder().trim_blocks(true).build().map_err(|e| Error(e.to_string()))?);
@@ -331,8 +417,22 @@ mod tests {
         let mut env = minijinja::Environment::new();
         env.set_syntax(minijinja::syntax::SyntaxConfig::builder().trim_blocks(true).build().unwrap());
         env.add_template("card", CARD).unwrap();
-        let t = env.get_template("card").unwrap().render(ctx).unwrap();
+        let t = env.get_template("card").unwrap().render(&ctx).unwrap();
         assert!(t.starts_with("---\nlicense: apache-2.0\n"), "{t}");
+        // (a lossy pack's card has the quality section of its quality.json)
+        let dir = std::env::temp_dir().join(format!("glyd-ship-quality-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let card = serde_json::json!({"schema": crate::quality::CARD_SCHEMA, "level": "wren", "verdict": "publish", "measured": {"gpu": "NVIDIA H100 80GB HBM3"},
+            "kl": {"mean": 0.0123, "top1": 0.964, "prefixes": 192}, "bar": {"kl_mean": 0.08, "top1": 0.86},
+            "tasks": {"reasoning": {"n": 40, "candidate": 0.95, "reference": 0.975}}});
+        std::fs::write(dir.join("quality.json"), card.to_string()).unwrap();
+        let q = env.get_template("card").unwrap().render(minijinja::context! { quality => quality_lines(&dir).unwrap(), ..ctx });
+        std::fs::remove_dir_all(&dir).ok();
+        let q = q.unwrap_or_else(|e| panic!("{e:#}"));
+        for want in ["## Quality", "NVIDIA H100 80GB HBM3", "0.0123", "96.4%", "38 / 40", "(lossless 39)", "publish"] {
+            assert!(q.contains(want), "{want} not in:\n{q}");
+        }
+        assert!(!t.contains("## Quality"), "a card without quality.json has no quality section");
         for want in [
             "# Gemma 4 12B · Glyd Penguin",
             "glyd run glyd/gemma-4-12B-penguin",
@@ -344,5 +444,36 @@ mod tests {
         ] {
             assert!(t.contains(want), "{want} not in:\n{t}");
         }
+    }
+
+    /// The hummingbird level is shipped as every lossy level is: its pack step asks for the corpus pass's counts, and its upload is refused without a quality card of
+    /// its level that says publish (before any `hf` command runs). What is no level is refused by name.
+    #[test]
+    fn a_hummingbird_pack_goes_through_the_quality_gate() {
+        let dir = std::env::temp_dir().join(format!("glyd-ship-hb-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("repo")).unwrap();
+        let ship = |level: &str, more: &[&str]| {
+            let words = ["ship", "org/model", level, &dir.to_string_lossy()].iter().chain(more).map(|w| w.to_string()).collect::<Vec<_>>();
+            run(&Args::from(words)).map_err(|e| e.msg)
+        };
+        let e = ship("hummingbird", &["--steps", "pack"]).unwrap_err();
+        assert!(e.contains("calibrate-experts org/model usage.json") && e.contains("--usage"), "{e}");
+        let e = ship("hummingbird", &["--steps", "upload", "--repo", "glyd/model-hummingbird"]).unwrap_err();
+        assert!(e.contains("a hummingbird pack is published with its quality card"), "{e}");
+        // (a card of another level, then one under the bar: still refused; one that says publish passes the gate, and the lossless level needs none)
+        let card = |level: &str, verdict: &str| {
+            let c =
+                serde_json::json!({"schema": crate::quality::CARD_SCHEMA, "level": level, "verdict": verdict, "reasons": ["KL 0.2000 is past the bar's 0.12"]});
+            std::fs::write(dir.join("repo/quality.json"), c.to_string()).unwrap();
+        };
+        card("wren", "publish");
+        assert!(ship("hummingbird", &["--steps", "upload", "--repo", "glyd/x"]).unwrap_err().contains("the card is of"));
+        card("hummingbird", "refuse");
+        assert!(ship("hummingbird", &["--steps", "upload", "--repo", "glyd/x"]).unwrap_err().contains("under its quality bar: KL 0.2000"));
+        card("hummingbird", "publish");
+        assert!(crate::quality::publishable("hummingbird", &dir.join("repo")).is_ok());
+        assert!(ship("hummingbird", &["--steps", "upload"]).is_ok(), "no --repo: nothing uploaded");
+        assert!(ship("sparrow", &["--steps", "upload"]).unwrap_err().contains("sparrow: ship packs penguin, kestrel, linnet, wren, hummingbird"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

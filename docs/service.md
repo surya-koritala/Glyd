@@ -15,7 +15,7 @@ glyd service install | uninstall | status | stop
 ```
 
 The service is a supervisor: each model is a `glyd serve` of its own on a loopback port, so a model has the server's behaviour as it is (constrained decoding, tools, the
-lossless KV cache) and leaves the GPU by its program ending, which frees all of its memory. The service passes the request through and streams the answer back.
+kept KV cache) and leaves the GPU by its program ending, which frees all of its memory. The service passes the request through and streams the answer back.
 
 | | |
 |---|---|

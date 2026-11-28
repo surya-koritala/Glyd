@@ -60,7 +60,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
         python: ["3.8", "3.14"]
+        exclude:
+          - {os: ubuntu-latest, python: "3.8"}  # (ubuntu-latest is Ubuntu 26.04, which setup-python has no 3.8 for: 3.8 on x86_64 Linux runs on 24.04, below)
         include:
+          - {os: ubuntu-24.04, python: "3.8", name: linux-x86_64}
           - os: ubuntu-latest
             name: linux-x86_64
           - os: ubuntu-24.04-arm
@@ -72,7 +75,7 @@ jobs:
     env:
       V: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - name: "pip install glyd==V (retry: PyPI can lag the release)"
@@ -120,19 +123,19 @@ jobs:
           assert libs == ["libglyd_gpu_cuda12.so", "libglyd_gpu_cuda13.so"], libs
           print("glyd-gpu", v, "came with glyd[gpu]:", libs)
           EOF
-          python -m glyd_gpu fit Qwen/Qwen3-0.6B --gpu 16GB
+          python -m glyd_gpu fit Qwen/Qwen3.5-0.8B --gpu 16GB
 
   # glyd[vllm]==V as a user installs it (no GPU on the runner): vLLM registers the plugin's quantization method from the
   # entry point of the glyd-gpu wheel it brings, of this version. The plugin's tests run in glyd-gpu's own repository, against
   # its wheels, before they are published.
   vllm:
-    needs: version
+    needs: [version, release-assets]  # (the release's files and wheels take over an hour after the release is published; release-assets waits for them)
     runs-on: ubuntu-latest
     timeout-minutes: 55
     env:
       V: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: "pip install glyd[vllm]==V (retry: PyPI can lag the release)"
@@ -164,7 +167,7 @@ jobs:
   # needs. Then the program itself: its version, a file through it and back, and the answer of glyd run. The GPU path of the script
   # (uv, glyd[vllm], the compiler stand-in) is run by gpu/vllm/acceptance.sh on a machine with a GPU.
   installer:
-    needs: version
+    needs: [version, release-assets]  # (as vllm: after the release's files are up)
     strategy:
       fail-fast: false
       matrix:
@@ -174,7 +177,7 @@ jobs:
     env:
       V: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.tag }}
       - name: "sh scripts/install.sh (retry: the release's assets can lag the release)"
@@ -201,7 +204,7 @@ jobs:
           glyd --max a.txt -o a.glyd
           glyd -d a.glyd -o b.txt
           cmp a.txt b.txt
-          out=$(glyd run Qwen/Qwen3-8B 2>&1) && { echo "glyd run succeeded with no GPU"; exit 1; } || true
+          out=$(glyd run Qwen/Qwen3.8-27B 2>&1) && { echo "glyd run succeeded with no GPU"; exit 1; } || true
           echo "$out" | head -4
           echo "$out" | grep -qE 'needs Linux with an NVIDIA GPU|not installed here' || { echo "glyd run did not say what it needs"; exit 1; }
           echo "installer: glyd $V, round trip ok, glyd run says what it needs"
@@ -213,7 +216,7 @@ jobs:
   # machine's state, not the release's.
   installer-gpu:
     name: installer on the GPU runner (Rust only, first token)
-    needs: version
+    needs: [version, release-assets]
     if: vars.GPU_RUNNER != ''
     runs-on: ${{ fromJSON(vars.GPU_RUNNER) }}
     timeout-minutes: 90
@@ -231,7 +234,7 @@ jobs:
         run: |
           apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates git > /dev/null
           nvidia-smi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.tag }}
           persist-credentials: false
@@ -277,7 +280,7 @@ jobs:
     env:
       V: ${{ needs.version.outputs.version }}
     steps:
-      - uses: Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c # 2026.07.10.1
+      - uses: Homebrew/actions/setup-homebrew@ceec4e8419bb3c97ce96e9dda7738499ed5f869d # 2026.11.14.1
       - name: "brew tap and install (retry: the formula PR can follow the release by minutes)"
         run: |
           set -e
@@ -307,13 +310,13 @@ jobs:
   release-assets:
     needs: version
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 130
     env:
       V: ${{ needs.version.outputs.version }}
       TAG: ${{ needs.version.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -336,12 +339,12 @@ jobs:
           )
           ok=0
           have=""
-          for i in $(seq 1 100); do
+          for i in $(seq 1 240); do
             have=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
             missing=0
             for f in "${expected[@]}"; do echo "$have" | grep -qxF "$f" || missing=1; done
             [ "$missing" = 0 ] && { ok=1; break; }
-            echo "release ${TAG}: still missing assets (attempt $i/100); retrying in 30s"
+            echo "release ${TAG}: still missing assets (attempt $i/240); retrying in 30s"
             sleep 30
           done
           [ "$ok" = 1 ] || { echo "release $TAG never got all expected assets. It has:"; echo "$have"; exit 1; }

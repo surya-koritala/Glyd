@@ -231,7 +231,7 @@ Suggested order: (1) 12B (no PLE, no MoE, no sharing) with sliding + hd 512 + so
 
 Method: parameter counts are summed from the real tensor shapes of every `model.language_model.*` tensor (E2B/E4B: excluding the checkpoint's unused k_proj/v_proj/k_norm of KV-shared layers; vision/audio excluded). Weight bytes = params x bits-per-weight / 8 with every text parameter (embedding and, for the E models, the PLE table) at the stated bits. Norms/scalars are negligible. GB = 1e9 bytes. "PLE bf16" column keeps the PLE table in bf16 and quantises the rest.
 
-| Model | text params | embedding params | extra | bf16 GB | Swift 5.53 GB | Kestrel 6.53 GB | Swift with PLE kept bf16 |
+| Model | text params | embedding params | extra | bf16 GB | Linnet 5.53 GB | Kestrel 6.53 GB | Linnet with PLE kept bf16 |
 |---|---|---|---|---|---|---|---|
 | 31B | 30.70B | 1.41B | - | 61.39 | **21.22** | **25.06** | - |
 | 12B | 11.91B | 1.01B | - | 23.81 | **8.23** | **9.72** | - |
@@ -259,7 +259,7 @@ Add KV cache and activations. KV bytes at bf16 (K and V stored separately; upper
 - The chat template was read, not rendered with the engine's minijinja; the macro-heavy tool-call section is untested. The `<|channel>thought\n<channel|>` empty-thought generation prefix differs between the two template variants.
 - Licence: no LICENSE file in any repo; Apache-2.0 per metadata and the linked ai.google.dev page head (read the top of the page only, not the whole text, and did not look for an attached use policy).
 - E-model "effective parameter" accounting (and Google's own 2.3B/4.5B figures) not cross-checked against the card.
-- Memory numbers assume the Swift/Kestrel bits-per-weight apply uniformly to all matrices including embedding/PLE; the real packers may keep some tensors at higher precision (embeddings, router, first/last layers).
+- Memory numbers assume the Linnet/Kestrel bits-per-weight apply uniformly to all matrices including embedding/PLE; the real packers may keep some tensors at higher precision (embeddings, router, first/last layers).
 - Whether the existing Int5/Int6 packers handle the new K dimensions (704, 2112, 256, 16384) was not checked.
 - Vision/audio paths (including 12B's encoder-free vision embedder) not covered, as requested.
 - Gemma4 assistant/MTP drafter models (`gemma4_assistant`, `gemma4_unified_assistant` in transformers 5.18.0) exist but were not part of this task.

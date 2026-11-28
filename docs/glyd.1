@@ -15,7 +15,7 @@ With a command, glyd runs, serves and manages language models on Glyd's own engi
 .B glyd run MODEL[:LEVEL]
 Chat with a model in the terminal and at one URL.
 .br
-MODEL is a short name (gemma4, qwen3.8:27b), a Hub id (ORG/NAME), a directory or a GGUF file. LEVEL is penguin (lossless, the default), kestrel, swift, wren or hummingbird. \-\-prompt TEXT answers once and exits. Where the service is running the chat goes through it.
+MODEL is a short name (gemma4, qwen3.8:27b), a Hub id (ORG/NAME), a directory or a GGUF file. LEVEL is penguin (lossless, the default), kestrel, linnet, wren or hummingbird. \-\-prompt TEXT answers once and exits. Where the service is running the chat goes through it.
 .br
 Flags: \-\-context N, \-\-users N, \-\-devices LIST, \-\-port N, \-\-host ADDRESS
 .TP
@@ -107,7 +107,7 @@ Flags: \-\-context N, \-\-users N, \-\-json
 .B glyd prepare MODEL[:LEVEL]
 Download a model and pack it for this GPU.
 .br
-The KV cache's tables are left for the first run.
+Any model the engine runs, at the level glyd run would load it at (the one given, else the one that fits this computer).
 .br
 Flags: \-\-context N
 .TP
@@ -146,7 +146,7 @@ A model's weights for Glyd's GPU layouts, packed on the CPU.
 glyd\-gpu's command.
 .TP
 .B glyd cluster
-One model across computers (not yet: ROADMAP.md, M5).
+One model across computers (not yet: ROADMAP.md, M4).
 .br
 Today that is the starlings program.
 .SH SHARED FLAGS

@@ -1,9 +1,9 @@
-// Qwen3.8-Flash-Next's own kernels (included by engine.cu after qwen35.cu and glm.cu; src/model_qwen4x.rs runs them): the Gated Residual of the four streams (the per-stream norm, the mixing weights' activation,
+// Qwen3.8-Flash-Next's own kernels (included by engine.cu after qwen35.cu and glm.cu; the description executor runs them through src/kern/qwen4x.rs's table): the Gated Residual of the four streams (the per-stream norm, the mixing weights' activation,
 // the mix into a block's input, the update of the streams from its output), the GDN's gated norm with a sigmoid gate, the n-gram embedding's gate and dilated convolution (PLE), the QSA indexer's query and block keys,
 // and the attention over the tokens the indexer picked. bf16 in memory, fp32 inside; the rounding points are transformers 5.19.0's (modeling_qwen4_exp.py), which rounds every elementwise op of a bf16 tensor.
 // Reference: tools/qwen4x_ref.py (transformers' own modules).
 
-#define QX_HC 4  // residual streams
+#define QX_HC 4  // residual streams of Ibis's own kernels (the release's); the kernels the description executor runs take the count, 1 to 4 (`hc`)
 
 __device__ __forceinline__ float qx_r(float x) { return b2f(f2b(x)); }  // a bf16 tensor op's rounding
 __device__ __forceinline__ float qx_sig(float x) { return 1.f / (1.f + expf(-x)); }
@@ -22,13 +22,13 @@ __device__ __forceinline__ float qx_quarter_sum(float v, float* sh) {
 }
 
 // ---- the Gated Residual ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
-// xn [n, 4 D] = each stream of x [n, 4, D] normed (rms over its D values; `whole`: over the row's 4 D, as the MTP head's pre_fc_norm_hidden) times (1 + w [4 D]), one rounding; a block of 1024 threads a row, a quarter
-// of them a stream (D at most 256 * 16).
-extern "C" __global__ void __launch_bounds__(1024) qx_hc_norm(const bf16* x, const bf16* w, bf16* xn, int D, float eps, int whole) {
+// xn [n, hc D] = each stream of x [n, hc, D] normed (rms over its D values; `whole`: over the row's hc D, as the MTP head's pre_fc_norm_hidden) times (1 + w [hc D]), one rounding; a block of 256 hc threads a
+// row, 256 of them a stream (D at most 256 * 16, hc 1 to 4).
+extern "C" __global__ void __launch_bounds__(1024) qx_hc_norm(const bf16* x, const bf16* w, bf16* xn, int D, float eps, int whole, int hc) {
     __shared__ float sh[32];
-    __shared__ float tot[QX_HC];
+    __shared__ float tot[4];
     const int q = threadIdx.x >> 8, j = threadIdx.x & 255;
-    const size_t row = (size_t)blockIdx.x * QX_HC * D + (size_t)q * D;
+    const size_t row = (size_t)blockIdx.x * hc * D + (size_t)q * D;
     float v[16], acc = 0.f;
 #pragma unroll
     for (int k = 0; k < 16; k++) {
@@ -40,9 +40,11 @@ extern "C" __global__ void __launch_bounds__(1024) qx_hc_norm(const bf16* x, con
     if (whole) {
         if (j == 0) tot[q] = sum;
         __syncthreads();
-        sum = (tot[0] + tot[1]) + (tot[2] + tot[3]);
+        // (in pairs, as four streams' sums were added)
+        const float a = hc > 1 ? tot[0] + tot[1] : tot[0];
+        sum = hc > 3 ? a + (tot[2] + tot[3]) : hc > 2 ? a + tot[2] : a;
     }
-    const float s = rsqrtf(sum / (whole ? QX_HC * D : D) + eps);
+    const float s = rsqrtf(sum / (whole ? hc * D : D) + eps);
 #pragma unroll
     for (int k = 0; k < 16; k++) {
         const int c = j + k * 256;
@@ -50,36 +52,36 @@ extern "C" __global__ void __launch_bounds__(1024) qx_hc_norm(const bf16* x, con
     }
 }
 
-// y = silu(y / 4) in place (the mixing weights' bottleneck; y bf16 [count], a division by 4 that bf16 holds exactly, then the activation rounded).
-extern "C" __global__ void qx_silu4(bf16* y, int count) {
+// y = silu(y / hc) in place (the mixing weights' bottleneck over hc streams; y bf16 [count]): the quotient rounded, as the reference's bf16 tensor is (exact for 4
+// streams), then the activation rounded.
+extern "C" __global__ void qx_silu4(bf16* y, int count, int hc) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) return;
-    const float v = b2f(y[i]) * 0.25f;
+    const float v = qx_r(b2f(y[i]) / (float)hc);
     y[i] = f2b(v * qx_sig(v));
 }
 
-// The mix of a row's streams into the block's input: h [n, D] = mean over the streams s of bf16(bf16(sigmoid(gw[s])) * xn[s]) (gw [n, 4 D] the up product, xn [n, 4 D]), the sum in fp32, one rounding;
-// where injl (bf16 [n, 4], the inject product) is given, inj [n, 4] = 2 bf16(sigmoid(bf16(injl / 4))) as fp32. Block (row, 256 columns).
-extern "C" __global__ void qx_hc_mix(const bf16* gw, const bf16* xn, const bf16* injl, bf16* h, float* inj, int D) {
+// The mix of a row's hc streams into the block's input: h [n, D] = mean over the streams s of bf16(bf16(sigmoid(gw[s])) * xn[s]) (gw [n, hc D] the up product, xn [n, hc D]), the sum in fp32, one
+// rounding; where injl (bf16 [n, hc], the inject product) is given, inj [n, hc] = 2 bf16(sigmoid(bf16(injl / hc))) as fp32 (the quotient rounded: exact for 4). Block
+// (row, 256 columns).
+extern "C" __global__ void qx_hc_mix(const bf16* gw, const bf16* xn, const bf16* injl, bf16* h, float* inj, int D, int hc) {
     const int t = blockIdx.x, c = blockIdx.y * blockDim.x + threadIdx.x;
-    if (injl && blockIdx.y == 0 && threadIdx.x < QX_HC) inj[t * QX_HC + threadIdx.x] = 2.f * qx_r(qx_sig(b2f(injl[t * QX_HC + threadIdx.x]) * 0.25f));
+    if (injl && blockIdx.y == 0 && threadIdx.x < hc) inj[t * hc + threadIdx.x] = 2.f * qx_r(qx_sig(qx_r(b2f(injl[t * hc + threadIdx.x]) / (float)hc)));
     if (c >= D) return;
-    const size_t r = (size_t)t * QX_HC * D + c;
+    const size_t r = (size_t)t * hc * D + c;
     float s = 0.f;
-#pragma unroll
-    for (int k = 0; k < QX_HC; k++) s += qx_r(qx_r(qx_sig(b2f(gw[r + k * D]))) * b2f(xn[r + k * D]));
-    h[(size_t)t * D + c] = f2b(s * 0.25f);
+    for (int k = 0; k < hc; k++) s += qx_r(qx_r(qx_sig(b2f(gw[r + k * D]))) * b2f(xn[r + k * D]));
+    h[(size_t)t * D + c] = f2b(s / (float)hc);
 }
 
-// The streams after a block: x[s] = bf16(x[s] + bf16(o * inj[s])) for o [n, D] the block's output, inj [n, 4] fp32. Block (row, 256 columns).
-extern "C" __global__ void qx_hc_post(bf16* x, const bf16* o, const float* inj, int D) {
+// The hc streams after a block: x[s] = bf16(x[s] + bf16(o * inj[s])) for o [n, D] the block's output, inj [n, hc] fp32. Block (row, 256 columns).
+extern "C" __global__ void qx_hc_post(bf16* x, const bf16* o, const float* inj, int D, int hc) {
     const int t = blockIdx.x, c = blockIdx.y * blockDim.x + threadIdx.x;
     if (c >= D) return;
     const float ov = b2f(o[(size_t)t * D + c]);
-#pragma unroll
-    for (int k = 0; k < QX_HC; k++) {
-        const size_t i = ((size_t)t * QX_HC + k) * D + c;
-        x[i] = f2b(b2f(x[i]) + qx_r(ov * inj[t * QX_HC + k]));
+    for (int k = 0; k < hc; k++) {
+        const size_t i = ((size_t)t * hc + k) * D + c;
+        x[i] = f2b(b2f(x[i]) + qx_r(ov * inj[t * hc + k]));
     }
 }
 
@@ -237,16 +239,19 @@ extern "C" __global__ void __launch_bounds__(128, 1) qx_gdn_rec_gn(const bf16* x
 }
 
 // ---- PLE (the n-gram embedding's injection) -----------------------------------------------------------------------------------------------------------------------------------------------
-// For a row: kv [n, 5 D] the products of its n-gram embedding (key: 4 D, value: D), x [n, 4 D] the streams. key_s = bf16(norm(key_s) (1 + wk_s)), q_s = bf16(norm(x_s) (1 + wq_s)), g_s = bf16(bf16(sum bf16(key_s q_s))
-// / sqrt(D)), g_s = bf16(sign(g) sqrt(max(|g|, 1e-6))) (each op rounded as the reference's), gv_s = bf16(bf16(sigmoid(g_s)) value) into gv [n, 4 D], and its norm per stream bf16(norm(gv_s) (1 + wc_s)) into gvn
-// [n, 4 D]. A block of 1024 threads a row, a quarter a stream (D at most 256 * 16).
-extern "C" __global__ void __launch_bounds__(1024) qx_ple_gate(const bf16* kv, const bf16* x, const bf16* wk, const bf16* wq, const bf16* wc, bf16* gv, bf16* gvn, int D, float eps) {
+// For a row: kv [n, 5 D] the products of its n-gram embedding (key: 4 D, value: D), x [n, 4 D] the streams. Ibis's form (`engram` 0): key_s = bf16(norm(key_s) (1 + wk_s)), q_s = bf16(norm(x_s)
+// (1 + wq_s)), g_s = bf16(bf16(sum bf16(key_s q_s)) / sqrt(D)), g_s = bf16(sign(g) sqrt(max(|g|, 1e-6))) (each op rounded as the reference's), gv_s = bf16(bf16(sigmoid(g_s)) value) into gv [n, 4 D], and
+// its norm per stream bf16(norm(gv_s) (1 + wc_s)) into gvn [n, 4 D] for qx_ple_conv. Engram's (`engram` 1, `kinds::NgramForm::Engram`): the weights fp32 and plain (key_s = norm(key_s) wk_s, q_s = norm(x_s)
+// wq_s), the gate in fp32 (a dot of 0 gives sqrt(1e-6)), and x_s = bf16(x_s + sigmoid(g_s) value) in one store: no convolution. A block of 1024 threads a row, a quarter a stream (D at most 256 *
+// QX_PLE_COLS: DeepSeek-V4.1-Flash's 5,120 too; a thread's columns past D are zeros, which leave its sums as they were).
+#define QX_PLE_COLS 32
+extern "C" __global__ void __launch_bounds__(1024) qx_ple_gate(const bf16* kv, bf16* x, const bf16* wk, const bf16* wq, const bf16* wc, bf16* gv, bf16* gvn, int D, float eps, int engram) {
     __shared__ float sh[32];
     const int q = threadIdx.x >> 8, j = threadIdx.x & 255;
     const size_t t = blockIdx.x, krow = t * 5 * D + (size_t)q * D, vrow = t * 5 * D + 4 * (size_t)D, xrow = t * QX_HC * D + (size_t)q * D;
-    float kk[16], xx[16], ak = 0.f, ax = 0.f;
+    float kk[QX_PLE_COLS], xx[QX_PLE_COLS], ak = 0.f, ax = 0.f;
 #pragma unroll
-    for (int k = 0; k < 16; k++) {
+    for (int k = 0; k < QX_PLE_COLS; k++) {
         const int c = j + k * 256;
         kk[k] = c < D ? b2f(kv[krow + c]) : 0.f;
         xx[k] = c < D ? b2f(x[xrow + c]) : 0.f;
@@ -255,8 +260,26 @@ extern "C" __global__ void __launch_bounds__(1024) qx_ple_gate(const bf16* kv, c
     }
     const float sk = rsqrtf(qx_quarter_sum(ak, sh) / D + eps), sx = rsqrtf(qx_quarter_sum(ax, sh) / D + eps);
     float dot = 0.f;
+    if (engram) {
+        const float *wk32 = reinterpret_cast<const float*>(wk), *wq32 = reinterpret_cast<const float*>(wq);
 #pragma unroll
-    for (int k = 0; k < 16; k++) {
+        for (int k = 0; k < QX_PLE_COLS; k++) {
+            const int c = j + k * 256;
+            if (c < D) dot += (kk[k] * sk * wk32[q * D + c]) * (xx[k] * sx * wq32[q * D + c]);
+        }
+        float g = qx_quarter_sum(dot, sh) / sqrtf((float)D);
+        g = copysignf(sqrtf(fmaxf(fabsf(g), 1e-6f)), g);
+        const float sg = qx_sig(g);
+        __syncthreads();  // (every quarter has read its stream before any writes it)
+#pragma unroll
+        for (int k = 0; k < QX_PLE_COLS; k++) {
+            const int c = j + k * 256;
+            if (c < D) x[xrow + c] = f2b(xx[k] + sg * b2f(kv[vrow + c]));
+        }
+        return;
+    }
+#pragma unroll
+    for (int k = 0; k < QX_PLE_COLS; k++) {
         const int c = j + k * 256;
         if (c < D) dot += qx_r(qx_r(kk[k] * sk * (1.f + b2f(wk[q * D + c]))) * qx_r(xx[k] * sx * (1.f + b2f(wq[q * D + c]))));
     }
@@ -266,14 +289,14 @@ extern "C" __global__ void __launch_bounds__(1024) qx_ple_gate(const bf16* kv, c
     const float sg = qx_r(qx_sig(g));
     float a2 = 0.f;
 #pragma unroll
-    for (int k = 0; k < 16; k++) {
+    for (int k = 0; k < QX_PLE_COLS; k++) {
         const int c = j + k * 256;
         kk[k] = c < D ? qx_r(sg * b2f(kv[vrow + c])) : 0.f;  // (gv, kept in kk)
         a2 += kk[k] * kk[k];
     }
     const float sc = rsqrtf(qx_quarter_sum(a2, sh) / D + eps);
 #pragma unroll
-    for (int k = 0; k < 16; k++) {
+    for (int k = 0; k < QX_PLE_COLS; k++) {
         const int c = j + k * 256;
         if (c < D) {
             gv[xrow + c] = f2b(kk[k]);
@@ -282,75 +305,197 @@ extern "C" __global__ void __launch_bounds__(1024) qx_ple_gate(const bf16* kv, c
     }
 }
 
-// The dilated causal convolution of PLE and the injection: for each channel c of C (= 4 D) and row t, y = bf16(silu(bf16(sum_k w[c][k] gvn[t - 3 (3 - k)]))) (kernel 4, dilation 3; rows before the call's from
-// the state st [9, C], oldest first, which is left holding the call's last 9 rows of gvn), then x = bf16(x + bf16(gv + y)). A thread a channel.
-extern "C" __global__ void qx_ple_conv(const bf16* gvn, const bf16* gv, const bf16* w, bf16* st, bf16* x, int n, int C) {
+// The dilated causal convolution of PLE and the injection: for each channel c of C (= streams D) and row t, y = bf16(silu(bf16(sum_k w[c][k] gvn[t - dil (K - 1 - k)]))) (K taps `dil` rows apart, the
+// kind's `conv` and `dilation`; their products summed oldest first, each rounded as one fp32 op; rows before the call's from the state st [(K - 1) dil, C], oldest first, which is left holding the call's
+// last (K - 1) dil rows of gvn), then x = bf16(x + bf16(gv + y)). A thread a channel; (K - 1) dil at most QX_CONV_HIST.
+#define QX_CONV_HIST 32
+extern "C" __global__ void qx_ple_conv(const bf16* gvn, const bf16* gv, const bf16* w, bf16* st, bf16* x, int n, int C, int K, int dil) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= C) return;
-    const float w0 = b2f(w[c * 4]), w1 = b2f(w[c * 4 + 1]), w2 = b2f(w[c * 4 + 2]), w3 = b2f(w[c * 4 + 3]);
-    float h[9];
-#pragma unroll
-    for (int i = 0; i < 9; i++) h[i] = b2f(st[i * C + c]);  // h[i]: the input 9 - i rows back
+    const int H = (K - 1) * dil;
+    float h[QX_CONV_HIST];
+    for (int i = 0; i < H; i++) h[i] = b2f(st[(size_t)i * C + c]);  // h[i]: the input H - i rows back
     for (int t = 0; t < n; t++) {
         const float in = b2f(gvn[(size_t)t * C + c]);
-        // (taps oldest first: the inputs 9, 6, 3 and 0 rows back)
-        float acc = __fmul_rn(w0, h[0]);
-        acc = __fadd_rn(acc, __fmul_rn(w1, h[3]));
-        acc = __fadd_rn(acc, __fmul_rn(w2, h[6]));
-        acc = __fadd_rn(acc, __fmul_rn(w3, in));
+        // (taps oldest first: tap k reads the input dil (K - 1 - k) rows back, the last this row's)
+        float acc = __fmul_rn(b2f(w[(size_t)c * K]), H > 0 ? h[0] : in);
+        for (int k = 1; k < K; k++) acc = __fadd_rn(acc, __fmul_rn(b2f(w[(size_t)c * K + k]), k == K - 1 ? in : h[k * dil]));
         const float a = qx_r(acc);
         const float y = qx_r(a * qx_sig(a));
         const size_t i = (size_t)t * C + c;
         x[i] = f2b(b2f(x[i]) + qx_r(b2f(gv[i]) + y));
-#pragma unroll
-        for (int k = 0; k < 8; k++) h[k] = h[k + 1];
-        h[8] = in;
+        if (H > 0) {
+            for (int k = 0; k + 1 < H; k++) h[k] = h[k + 1];
+            h[H - 1] = in;
+        }
     }
-#pragma unroll
-    for (int i = 0; i < 9; i++) st[i * C + c] = f2b(h[i]);
+    for (int i = 0; i < H; i++) st[(size_t)i * C + c] = f2b(h[i]);
+}
+
+// qx_ple_conv of a step's rows that decode, a token of a sequence each (grid ceil(C / 256) by rows): row r's state at sts[r ss] (a table of addresses: src/dynamic/rows.rs `RowTabs`; 0: a padding row,
+// which reads and writes no state and leaves its row of x), its rows of gvn, gv and x at r C. Each row's arithmetic is qx_ple_conv's on that sequence's one token.
+extern "C" __global__ void qx_ple_conv_rows(const bf16* gvn, const bf16* gv, const bf16* w, const unsigned long long* sts, int ss, bf16* x, int C, int K, int dil) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x, r = blockIdx.y;
+    bf16* st = reinterpret_cast<bf16*>(sts[(size_t)r * ss]);
+    if (c >= C || !st) return;
+    const int H = (K - 1) * dil;
+    float h[QX_CONV_HIST];
+    for (int i = 0; i < H; i++) h[i] = b2f(st[(size_t)i * C + c]);
+    const size_t i = (size_t)r * C + c;
+    const float in = b2f(gvn[i]);
+    float acc = __fmul_rn(b2f(w[(size_t)c * K]), H > 0 ? h[0] : in);
+    for (int k = 1; k < K; k++) acc = __fadd_rn(acc, __fmul_rn(b2f(w[(size_t)c * K + k]), k == K - 1 ? in : h[k * dil]));
+    const float a = qx_r(acc);
+    const float y = qx_r(a * qx_sig(a));
+    x[i] = f2b(b2f(x[i]) + qx_r(b2f(gv[i]) + y));
+    if (H > 0) {
+        for (int k = 0; k + 1 < H; k++) h[k] = h[k + 1];
+        h[H - 1] = in;
+    }
+    for (int j = 0; j < H; j++) st[(size_t)j * C + c] = f2b(h[j]);
+}
+
+// The n-gram embedding's rows of a call's n rows of one sequence (the description executor's `Op::NgramRows`, `kinds::Ngram`): row t's token and the `order` - 1 before it (the call's earlier rows, else the
+// sequence's state hist [order - 1], oldest first, each id + 1 and 0 before the sequence, which reads as `eos`); each token first mapped to its compressed vocabulary's id where `map` (int32 [vocabulary]:
+// Engram's, whose pad `eos` is mapped too). With `segments` (Ibis's), a token past an `eos` reads as `eos` too. Order o's hash (2 <= o <= order <= 4) mixed_o = XOR over p < o of (token p back) mult[p] (unsigned 64-bit: each product is
+// below 2^63, so as the reference's int64); table h of H (`per` an order, the bigrams' first) the row mixed_o mod sizes[h] + offsets[h]; e [n, H row] = those rows of the table [rows, row] bf16. mult [order],
+// sizes [H], offsets [H]: int64 words. Block a row.
+extern "C" __global__ void qx_ngram_rows(const int* tok, const int* hist, const unsigned long long* mult, const unsigned long long* sizes, const unsigned long long* offsets, const bf16* table, bf16* e, int H,
+                                         int per, int row, int eos, int order, const int* map, int segments) {
+    const int t = blockIdx.x;
+    const int pad = map ? map[eos] : eos;
+    unsigned long long mixed[4];
+    bool cut = false;
+    unsigned long long m = 0;
+    for (int p = 0; p < order; p++) {
+        int v;
+        if (cut) v = eos;
+        else if (t - p >= 0) v = map ? map[tok[t - p]] : tok[t - p];
+        else {
+            const int k = order - 1 - (p - t);  // (hist[order - 2] is one back from the call's first row)
+            v = k >= 0 && hist[k] > 0 ? hist[k] - 1 : pad;
+        }
+        cut |= p > 0 && segments && v == eos;
+        m ^= (unsigned long long)(unsigned)v * mult[p];
+        if (p > 0) mixed[p] = m;  // (order p + 1's hash)
+    }
+    for (int i = threadIdx.x; i < H * row; i += blockDim.x) {
+        const int h = i / row;
+        const unsigned long long id = mixed[h / per + 1] % sizes[h] + offsets[h];
+        e[(size_t)t * H * row + i] = table[id * row + i % row];
+    }
+}
+
+// The sequence's state after a call's n rows: its last `order` - 1 ids (each mapped where `map`, + 1), oldest first. One thread.
+extern "C" __global__ void qx_ngram_hist(const int* tok, int* hist, int n, int order, const int* map) {
+    int nh[3];
+    const int k = order - 1;
+    for (int i = 0; i < k; i++) {
+        const int r = n - (k - i);
+        nh[i] = r >= 0 ? (map ? map[tok[r]] : tok[r]) + 1 : hist[i + n];
+    }
+    for (int i = 0; i < k; i++) hist[i] = nh[i];
+}
+
+// qx_ngram_rows and then qx_ngram_hist of a step's rows that decode, a token of a sequence each (block t a row): row t's token tok[t] and its sequence's state at sts[t ss] (a table of addresses:
+// src/dynamic/rows.rs `RowTabs`; 0: a padding row, whose rows of e are zeroed and which reads and writes no state). Each row's hashes, rows and state are those of qx_ngram_rows and qx_ngram_hist on
+// that sequence's one token: every thread reads the state before the first thread moves it on. A null table: the table is the host's, whose rows of these ids are in e already (copied in before,
+// src/dynamic/tables.rs); each row's state alone is moved on (a padding row's rows zeroed).
+extern "C" __global__ void qx_ngram_rows_lead(const int* tok, const unsigned long long* sts, int ss, const unsigned long long* mult, const unsigned long long* sizes, const unsigned long long* offsets,
+                                              const bf16* table, bf16* e, int H, int per, int row, int eos, int order, const int* map, int segments) {
+    const int t = blockIdx.x;
+    int* hist = reinterpret_cast<int*>(sts[(size_t)t * ss]);
+    if (!hist) {
+        for (int i = threadIdx.x; i < H * row; i += blockDim.x) e[(size_t)t * H * row + i] = f2b(0.f);
+        return;
+    }
+    if (table) {
+        const int pad = map ? map[eos] : eos;
+        unsigned long long mixed[4];
+        bool cut = false;
+        unsigned long long m = 0;
+        for (int p = 0; p < order; p++) {
+            int v;
+            if (cut) v = eos;
+            else if (p == 0) v = map ? map[tok[t]] : tok[t];
+            else {
+                const int k = order - 1 - p;  // (hist[order - 2] is one back from the row)
+                v = hist[k] > 0 ? hist[k] - 1 : pad;
+            }
+            cut |= p > 0 && segments && v == eos;
+            m ^= (unsigned long long)(unsigned)v * mult[p];
+            if (p > 0) mixed[p] = m;
+        }
+        for (int i = threadIdx.x; i < H * row; i += blockDim.x) {
+            const int h = i / row;
+            const unsigned long long id = mixed[h / per + 1] % sizes[h] + offsets[h];
+            e[(size_t)t * H * row + i] = table[id * row + i % row];
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        const int k = order - 1;
+        for (int i = 0; i + 1 < k; i++) hist[i] = hist[i + 1];
+        hist[k - 1] = (map ? map[tok[t]] : tok[t]) + 1;
+    }
 }
 
 // ---- the QSA indexer and attention --------------------------------------------------------------------------------------------------------------------------------------------------------
-// The indexer's rows [n, (IH + 1) 128] (IH query heads, then the token's key): each query head normed (1 + wq) and turned (the rotary on its first 2 half dims, cos and sin bf16 [max_pos, half]) into iq [n, IH 128];
-// the key, raw, into the key cache ik [positions, 128] at the row's position. The norm rounded, the rotary's products and sum each rounded (the reference's bf16 ops). Block (row, head), 128 threads.
-extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* iq, bf16* ik, int IH, float eps) {
+// The indexer's rows [n, (IH + 1) ID] (IH query heads of ID, then the token's key): each query head normed (1 + wq) and turned (the rotary on its first 2 half dims, cos and sin bf16 [max_pos, half]) into
+// iq [n, IH ID]; the key, raw, into the key cache ik [positions, ID] at the row's position (through its block table ktab where it has one: kernels/mla.cu's ml_place). The norm rounded, the rotary's products
+// and sum each rounded (the reference's bf16 ops). Block (row, head), ID threads (a multiple of 32, at most 1,024).
+// Row t's key through its table (ml_row_tab: a step's rows that decode each through its own sequence's); a row at a negative position (a graph's padding row) writes no key and turns no query.
+extern "C" __global__ void qx_ix_prep(const bf16* qk, const bf16* wq, const bf16* cs, const bf16* sn, int half, const int* pos, const int* rpos, unsigned long long rax, bf16* iq, bf16* ik,
+                                      const int* ktab, long long ts, int IH, float eps, int ID) {
     const int t = blockIdx.x, hh = blockIdx.y, i = threadIdx.x, p = pos[t];
-    const bf16* x = qk + (size_t)t * (IH + 1) * 128 + hh * 128;
+    const bf16* x = qk + (size_t)t * (IH + 1) * ID + (size_t)hh * ID;
     if (hh == IH) {
-        ik[(size_t)p * 128 + i] = x[i];
+        if (p >= 0) ik[ml_place(ml_row_tab(ktab, ts, t), p) * ID + i] = x[i];
         return;
     }
-    __shared__ float nrm[128];
+    __shared__ float nrm[1024];
     const float a = b2f(x[i]);
-    const float s = rsqrtf(block_sum(a * a) / 128.f + eps);
+    const float s = rsqrtf(block_sum(a * a) / (float)ID + eps);
     nrm[i] = qx_r(a * s * (1.f + b2f(wq[i])));
     __syncthreads();
     float o = nrm[i];
-    if (i < 2 * half) {
-        const int k = i < half ? i : i - half;
-        const float c = b2f(cs[(size_t)p * half + k]), sv = b2f(sn[(size_t)p * half + k]);
+    if (i < 2 * half && p >= 0) {
+        const int k = i < half ? i : i - half, pk = rpos ? rpos[6 * t + (int)((rax >> (2 * k)) & 3)] : p;
+        const float c = b2f(cs[(size_t)pk * half + k]), sv = b2f(sn[(size_t)pk * half + k]);
         o = i < half ? qx_r(qx_r(nrm[i] * c) - qx_r(nrm[i + half] * sv)) : qx_r(qx_r(nrm[i] * c) + qx_r(nrm[i - half] * sv));
     }
-    iq[(size_t)t * IH * 128 + hh * 128 + i] = f2b(o);
+    iq[(size_t)t * IH * ID + (size_t)hh * ID + i] = f2b(o);
 }
 
-// The keys of the blocks of 4 tokens that the call's rows (at pos[0] .. pos[n-1], consecutive) complete: pk[b] = rotary(bf16(norm(bf16(mean of ik[4b .. 4b+3])) (1 + wk)), position 4b), the mean in fp32. A block a
-// key block from pos[0] / 4 on (grid ceil(n / 4) + 1); one whose last token is past the call's last row is left to the call that completes it. 128 threads.
-extern "C" __global__ void qx_ix_cmp(const bf16* ik, const bf16* wk, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* pk, int n, float eps) {
-    const int b = pos[0] / 4 + blockIdx.x, i = threadIdx.x;
-    if (4 * b + 3 > pos[n - 1]) return;
-    const float m = qx_r((((b2f(ik[(size_t)(4 * b) * 128 + i]) + b2f(ik[(size_t)(4 * b + 1) * 128 + i])) + b2f(ik[(size_t)(4 * b + 2) * 128 + i])) + b2f(ik[(size_t)(4 * b + 3) * 128 + i])) * 0.25f);
-    const float s = rsqrtf(block_sum(m * m) / 128.f + eps);
-    __shared__ float nrm[128];
+// The keys of the pools of B tokens that the call's rows (at pos[0] .. pos[n-1], consecutive) complete: pk[b] = rotary(bf16(norm(bf16(mean of ik[B b .. B b + B - 1])) (1 + wk)), position B b), the mean
+// in fp32 (summed in order). A block a pool from pos[0] / B on (grid ceil(n / B) + 1); one whose last token is past the call's last row is left to the call that completes it. ik's rows through ktab, pk's (a
+// pool a row) through ptab, where the sequence has block tables. ID threads. M-RoPE (rpos): the position of the pool's first token, which the row of its last token holds at 6 r + 3. Grid y: a step's
+// rows that decode, a sequence's each (n 1): row y's position at pos + y, its M-RoPE positions at rpos + 6 y, its tables ml_row_tab's (kts, pts; gridDim.y 1: one sequence's rows); a negative
+// position (a graph's padding row) makes none.
+extern "C" __global__ void qx_ix_cmp(const bf16* ik, const int* ktab, long long kts, const bf16* wk, const bf16* cs, const bf16* sn, int half, const int* pos, const int* rpos, unsigned long long rax, bf16* pk,
+                                     const int* ptab, long long pts, int n, float eps, int ID, int B) {
+    pos += blockIdx.y;
+    if (rpos) rpos += 6 * blockIdx.y;
+    ktab = ml_row_tab(ktab, kts, blockIdx.y);
+    ptab = ml_row_tab(ptab, pts, blockIdx.y);
+    if (pos[0] < 0) return;
+    const int b = pos[0] / B + blockIdx.x, i = threadIdx.x;
+    if (B * b + B - 1 > pos[n - 1]) return;
+    const auto k = [&](int p) { return b2f(ik[ml_place(ktab, p) * ID + i]); };
+    float sum = k(B * b);
+    for (int j = 1; j < B; j++) sum += k(B * b + j);
+    const float m = qx_r(sum / (float)B);
+    const float s = rsqrtf(block_sum(m * m) / (float)ID + eps);
+    __shared__ float nrm[1024];
     nrm[i] = qx_r(m * s * (1.f + b2f(wk[i])));
     __syncthreads();
     float o = nrm[i];
     if (i < 2 * half) {
-        const int k = i < half ? i : i - half, p = 4 * b;
+        const int k = i < half ? i : i - half, p = rpos ? rpos[6 * (B * b + B - 1 - pos[0]) + 3 + (int)((rax >> (2 * k)) & 3)] : B * b;
         const float c = b2f(cs[(size_t)p * half + k]), sv = b2f(sn[(size_t)p * half + k]);
         o = i < half ? qx_r(qx_r(nrm[i] * c) - qx_r(nrm[i + half] * sv)) : qx_r(qx_r(nrm[i] * c) + qx_r(nrm[i - half] * sv));
     }
-    pk[(size_t)b * 128 + i] = f2b(o);
+    pk[ml_place(ptab, b) * ID + i] = f2b(o);
 }
 
 // conv_silu (qwen35.cu) for a prompt chunk with a thread a channel and QX_CT of the rows (grid (ceil(C / 256), ceil(n / QX_CT))), the same arithmetic for each output: conv_silu's single pass over the rows with a
@@ -982,7 +1127,7 @@ extern "C" __global__ void __launch_bounds__(128) qx_attn_tc(const bf16* __restr
 
 // The attention of a decode step's few rows over their picked tokens, split for the memory's sake: W warps a block, each one 16-token step of qx_attn_tc's warp (a row's 12 query heads of a key-value head on the
 // tensor cores, the cache straight into the fragments): block b takes the row's tokens 16 W b .. 16 W (b + 1) - 1, its warps' outputs combined in shared memory (each rescaled to the block's maximum, added in
-// pairs), the block's unnormalized outputs, maximum (log2 units) and sum into part [(t nq + h) S + b][258] for attn256_merge, S = gridDim.x. Grid (ceil(tmax / (16 W)), nk, n); nk == 2. Dynamic shared memory
+// pairs), the block's unnormalized outputs, maximum (log2 units) and sum into part [(t nq + h) S + b][258] for attn_merge (kernels/attn.cu), S = gridDim.x. Grid (ceil(tmax / (16 W)), nk, n); nk == 2. Dynamic shared memory
 // (W / 2) 16 KB (the pairs' adds) + W 128 floats (the maxima and sums).
 template <int W>
 __device__ __forceinline__ void qx_attn_dec_t(const bf16* __restrict__ q, int qs, const bf16* __restrict__ kc, const bf16* __restrict__ vc, const int* __restrict__ sel, const int* __restrict__ cnt, int tmax,
@@ -1153,14 +1298,17 @@ extern "C" __global__ void __launch_bounds__(256) qx_attn_dec8(const bf16* q, in
 #define QX_KB 32   // tokens a tile of the attention over picked tokens
 #define QX_KS 129  // a key's row in shared memory: 128 words and one more
 
-// The attention of each row t of q [n, qs] (query head h at h * 256) over the tokens sel[t][0 .. cnt[t]) (the indexer's picks, ascending) of the cache kc, vc [positions, nk, 256], nq / nk query heads to a key-value
-// head, as attn256 computes it (fp32 scores and sums, the probabilities rounded to bf16 for the values; sl2 = 256^-0.5 log2(e)); then out = bf16(bf16(attention) sigmoid(gate)), the gate at gate[t gs + h 512 + 256 ..].
-// Grid (n, nk, S): with S > 1, block z takes the z-th part of the row's tokens and writes its unnormalized outputs, maximum and sum to part [(t nq + h) S + z][258] for attn256_merge. A block the G query heads of a
-// key-value head (a warp each). Dynamic shared memory (QX_KB (QX_KS + 128) + 128 G) * 4 bytes.
-extern "C" __global__ void __launch_bounds__(512) qx_attn_sel(const bf16* q, int qs, const bf16* gate, int gs, const bf16* kc, const bf16* vc, const int* sel, const int* cnt, int tmax, bf16* out, int os, int nq, int nk,
-                                                             float sl2, float* part, int S) {
-    extern __shared__ uint32_t sm[];
-    uint32_t* Ks = sm;
+// The attention of each row t of q [n, qs] (query head h at h * 256) over the tokens sel[t][0 .. cnt[t]) (the indexer's picks, ascending) of the cache kc, vc [positions, nk, 256] (a position's row through tab
+// where the sequence has a block table), nq / nk query heads to a key-value
+// head, as the attention kind's warp kernel computes it (fp32 scores and sums, the probabilities rounded to bf16 for the values; sl2 = 256^-0.5 log2(e)); then out = bf16(bf16(attention) sigmoid(gate)), the gate at gate[t gs + h 512 + 256 ..].
+// Grid (n, nk, S): with S > 1, block z takes the z-th part of the row's tokens and writes its unnormalized outputs, maximum and sum to part [(t nq + h) S + z][258] for attn_merge. A block the G query heads of a
+// key-value head (a warp each). Dynamic shared memory (QX_KB (QX_KS + 128) + 128 G) * 4 bytes. Row t's positions through its table (ml_row_tab: a step's rows that decode each through its own
+// sequence's); a row of no picks (a graph's padding row) gives zeros.
+extern "C" __global__ void __launch_bounds__(512) qx_attn_sel(const bf16* q, int qs, const bf16* gate, int gs, const bf16* kc, const bf16* vc, const int* tab, long long ts, const int* sel, const int* cnt, int tmax,
+                                                             bf16* out, int os, int nq, int nk, float sl2, float* part, int S) {
+    tab = ml_row_tab(tab, ts, blockIdx.x);
+    extern __shared__ uint32_t qx_sm[];
+    uint32_t* Ks = qx_sm;
     uint32_t* Vs = Ks + QX_KB * QX_KS;
     uint32_t* Qs = Vs + QX_KB * 128;
     const int G = nq / nk, w = threadIdx.x >> 5, lane = threadIdx.x & 31;
@@ -1179,7 +1327,7 @@ extern "C" __global__ void __launch_bounds__(512) qx_attn_sel(const bf16* q, int
             const bool isv = c >= QX_KB * 32;
             const int cc = isv ? c - QX_KB * 32 : c, j = cc >> 5, pp = cc & 31;
             uint4 v = make_uint4(0, 0, 0, 0);
-            if (k0 + j < j1) v = reinterpret_cast<const uint4*>((isv ? vc : kc) + ((size_t)tok[k0 + j] * nk + kvh) * 256)[pp];
+            if (k0 + j < j1) v = reinterpret_cast<const uint4*>((isv ? vc : kc) + (ml_place(tab, tok[k0 + j]) * nk + kvh) * 256)[pp];
             if (isv) {
                 *reinterpret_cast<uint4*>(Vs + j * 128 + pp * 4) = v;
             } else {
@@ -1237,7 +1385,7 @@ extern "C" __global__ void __launch_bounds__(512) qx_attn_sel(const bf16* q, int
     bf16* o = out + (size_t)t * os + h * 256 + lane * 8;
 #pragma unroll
     for (int e = 0; e < 8; e++) {
-        const float a = b2f(f2b(acc[e] / l_run)), g = b2f(gr[e]);
+        const float a = l_run > 0.f ? b2f(f2b(acc[e] / l_run)) : 0.f, g = b2f(gr[e]);
         o[e] = f2b(a / (1.f + expf(-g)));
     }
 }
@@ -1352,7 +1500,7 @@ extern "C" __global__ void __launch_bounds__(1024) qx_select(const float* scores
     if (tid == 0) cnt[i] = ksel * kp + tl;
 }
 
-// ---- the routed experts as codebook rows (glyd-hbr-codes/2 at 2560 x 640: the expert cache's places; src/model_qwen4x.rs `QxMoeCb`) -----------------------------------------------------------------------------
+// ---- the routed experts as codebook rows (glyd-hbr-codes/2 at 2560 x 640: the expert cache's places; src/moe_cb.rs `CbMoe`) -----------------------------------------------------------------------------
 // A layer's experts are held in the basis of one rotation of the hidden axis, R x = 512^-0.5 (I_5 (x) H_512) (s x): five natural-order Walsh-Hadamard transforms of 512 values each, s the layer's 2,560 signs. An expert
 // is two matrices of rows of 2,560 codes in that basis, each row its codes and its own codebook (bf16 entries, absolute): `downT` (640 rows: down transposed, row n the weights of neuron n over the outputs) then `up`
 // (1,280 rows: gate's 640 and up's 640). A row's codes by format f (0 cb2: 4 entries, 2 bits, byte b codes 4b..4b+3 low bits first; 1 cb3: 8 entries, codes 8g..8g+7 the 24-bit little-endian integer of bytes
@@ -1772,7 +1920,7 @@ __device__ __forceinline__ void qx_cb_down_b(const unsigned char* codes, unsigne
 // A call's pairs of one place are the rows that chose its expert, one a row at most: at most 8. The block of a place's first pair (qc_group) takes them all and the other pairs' blocks leave; the place's downT
 // codes are made fp16 tiles in shared memory once for all of them (format q: the integers, exact, the row's scale on the activations; two-bit: the row's four entries) and multiplied on the tensor cores (mma
 // m16n8k16, fp16 in, fp32 sums; the place's pairs its 8 columns, those past R zero) by the pairs' activations made from qx_cb_up's sums as qx_cb_down makes them, rounded to fp16 with the scales: not
-// qx_cb_down's sums bit for bit. All 640 neurons a block: one sum a pair. A format's tiles: qt_store_q / c2_store. Two-bit and format q places (QxMoeCb's tc_ok). (The first product's place-major form on the
+// qx_cb_down's sums bit for bit. All 640 neurons a block: one sum a pair. A format's tiles: qt_store_q / c2_store. Two-bit and format q places (CbMoe's tc_ok). (The first product's place-major form on the
 // tensor cores was measured no faster than qx_cb_up's at a verification's sharing of places: qx_cb_up serves it.)
 #define QX_GR 8
 

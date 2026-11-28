@@ -15,18 +15,11 @@
 //! The CPU kernel (src/cpu_experts.rs) computes the pairs of experts that are not in the cache's places from these bytes: the host tier's own second matrices, and for a pair a first product in full (the first matrices in the
 //! row layout too, a copy the store holds), then the rows of the neurons that are not zero; its 1,024-wide fp32 sums of a token's pairs are `moe_rows_sum`'s `extra`, added before the one rounding to bf16.
 
-use crate::dev::{Buf, Dev, Kernel};
+use crate::dev::{Buf, Dev};
 use crate::ffi::{err, Result, Stream};
 use crate::launch;
-use crate::moe::{Act, ExpertStack, MoeCfg};
+use crate::moe::{Act, ExpertStack, Joined, MoeCfg};
 use glyd_gpu::pack::{rows_bits, rows_stride, Tiered};
-
-// The kernels' names: those the .cu sources give them, in every build (kname!).
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
 
 /// Outputs a block of `moe_down_rows` takes, the neurons it lists at most, and the blocks it asks for at most beyond one a pair (kernels/moe_rows.cu defines the first two: a test holds them equal).
 pub const ROWS_OUT: usize = 1024;
@@ -199,6 +192,54 @@ impl Down {
     }
 }
 
+/// A layer's second matrices on the host, every expert's pack joined, in the layout they are held in.
+pub enum DownHost {
+    Block(Joined),
+    Rows(RowsJoined),
+}
+
+impl DownHost {
+    /// The second matrices of the experts' packs, one each: in a row layout where the first is, else a block layout.
+    pub fn of(packs: &[Tiered]) -> Result<DownHost> {
+        let all: Vec<&Tiered> = packs.iter().collect();
+        if packs.first().is_some_and(|p| rows_bits(p.tiers[0] >> 24).is_some()) {
+            RowsJoined::of(&all).map(DownHost::Rows)
+        } else {
+            Joined::of(&all).map(DownHost::Block)
+        }
+    }
+
+    pub fn upload(&self) -> Result<Down> {
+        Ok(match self {
+            DownHost::Block(j) => Down::Block(ExpertStack::upload(j)?),
+            DownHost::Rows(j) => Down::Rows(RowStack::upload(j)?),
+        })
+    }
+
+    /// Room for `slots` of the layer's experts' second matrices, in the layout they are held in (the expert cache's places).
+    pub fn pooled(&self, slots: usize) -> Result<Down> {
+        Ok(match self {
+            DownHost::Block(j) => Down::Block(ExpertStack::pooled(j.tag, j.tiers, j.experts, slots, j.rows, j.cols)?),
+            DownHost::Rows(j) => Down::Rows(RowStack::pooled(j.tag, j.experts, slots, j.rows, j.cols)?),
+        })
+    }
+
+    /// The bytes of every expert's codes and of its scales, end to end.
+    pub fn bytes(&self) -> [&[u8]; 2] {
+        match self {
+            DownHost::Block(j) => [&j.data, &j.scales],
+            DownHost::Rows(j) => [&j.data, &j.scales],
+        }
+    }
+
+    pub fn experts(&self) -> usize {
+        match self {
+            DownHost::Block(j) => j.experts,
+            DownHost::Rows(j) => j.experts,
+        }
+    }
+}
+
 /// Whether `experts` experts' matrices of `rows` neurons of `cols` outputs in a row layout are the second matrix of a layer of `cfg`: relu squared experts (their activations are mostly zero), the layer's number of
 /// experts, neurons and outputs, a neuron list that fits the kernels' (at most `ROWS_MAX_INTER`), outputs in runs of 32.
 pub fn rows_fit(experts: usize, rows: usize, cols: usize, cfg: &MoeCfg) -> Result<()> {
@@ -213,16 +254,16 @@ pub fn rows_fit(experts: usize, rows: usize, cols: usize, cfg: &MoeCfg) -> Resul
 
 /// The sparse product's kernels (kernels/moe_rows.cu) with typed launches.
 pub struct RowsKern {
-    down: [Kernel; 3],
-    sum: Kernel,
+    down: [crate::dev::ByArgs<crate::dev::ArgsOf<crate::kt::moe_down_rows4>>; 3],
+    sum: crate::kt::moe_rows_sum,
     sms: usize,
 }
 
 impl RowsKern {
     pub fn load(dev: &Dev) -> Result<RowsKern> {
         Ok(RowsKern {
-            down: [dev.kernel(kname!("moe_down_rows4"))?, dev.kernel(kname!("moe_down_rows5"))?, dev.kernel(kname!("moe_down_rows6"))?],
-            sum: dev.kernel(kname!("moe_rows_sum"))?,
+            down: [dev.by_args::<crate::kt::moe_down_rows4>()?, dev.by_args::<crate::kt::moe_down_rows5>()?, dev.by_args::<crate::kt::moe_down_rows6>()?],
+            sum: dev.typed()?,
             sms: dev.sms.max(1) as usize,
         })
     }
@@ -504,7 +545,7 @@ mod tests {
         let cfg = MoeCfg { experts: 512, router_hidden: 4096, hidden: 1024, inter: 2688, router: Router::sigmoid(22, 5.0), act: Act::Relu2 };
         rows_fit(512, 2688, 1024, &cfg).unwrap();
         let says = |r: Result<()>, what: &str| {
-            let e = r.unwrap_err().0;
+            let e = r.unwrap_err().msg;
             assert!(e.contains(what), "{e:?} does not say {what:?}");
         };
         says(rows_fit(512, 2688, 1024, &MoeCfg { act: Act::GeGlu, ..cfg }), "it is for relu squared");

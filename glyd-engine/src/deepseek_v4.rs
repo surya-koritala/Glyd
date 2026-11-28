@@ -7,6 +7,7 @@
 //! the release's inference/model.py and kernel.py (the arithmetic, and where it rounds; src/dsv4_ref.rs is ours).
 
 use crate::ffi::{err, Error, Result};
+use crate::runtime::config::ModelConfig;
 use crate::weights::{eos_ids, num};
 use glyd_gpu::json::{self, Value};
 use std::path::Path;
@@ -71,14 +72,17 @@ pub fn is_v4(text: &str) -> bool {
 
 impl ConfigV4 {
     pub fn load(dir: &Path) -> Result<ConfigV4> {
-        let p = dir.join("config.json");
-        let text = std::fs::read_to_string(&p).map_err(|e| Error(format!("{}: {e}", p.display())))?;
-        let generation = std::fs::read_to_string(dir.join("generation_config.json")).ok();
-        ConfigV4::parse(&text, &p.display().to_string(), generation.as_deref())
+        ModelConfig::read(dir, ConfigV4::of)
     }
 
     pub fn parse(text: &str, label: &str, generation: Option<&str>) -> Result<ConfigV4> {
-        let v = json::parse(text).map_err(|e| Error(format!("{label}: {e}")))?;
+        ConfigV4::of(&ModelConfig::parse(text).map_err(|e| e.context(label))?, label, generation)
+    }
+
+    /// `parse` of a config.json parsed once (`ModelConfig`).
+    pub fn of(c: &ModelConfig, label: &str, generation: Option<&str>) -> Result<ConfigV4> {
+        use serde_json::Value;
+        let v = &c.top;
         let arch = v.get("architectures").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("");
         if arch != "DeepseekV4ForCausalLM" {
             return err(format!("{label}: {arch}: not a DeepSeek-V4 model"));
@@ -127,7 +131,7 @@ impl ConfigV4 {
         if layers > crate::plan::MAX_LAYERS {
             return err(format!("{label}: num_hidden_layers {layers}, where no model has more than {}", crate::plan::MAX_LAYERS));
         }
-        let ratios: Vec<usize> = match v.get("compress_ratios").and_then(Value::as_u64s) {
+        let ratios: Vec<usize> = match v.get("compress_ratios").and_then(crate::runtime::config::u64s) {
             Some(r) => r.iter().map(|&x| x as usize).collect(),
             None => return err(format!("{label}: no compress_ratios")),
         };
@@ -144,7 +148,7 @@ impl ConfigV4 {
             let method = q.get("quant_method").and_then(Value::as_str).unwrap_or("");
             let fmt = q.get("fmt").and_then(Value::as_str).unwrap_or("e4m3");
             let sfmt = q.get("scale_fmt").and_then(Value::as_str).unwrap_or("");
-            let block = q.get("weight_block_size").and_then(Value::as_u64s);
+            let block = q.get("weight_block_size").and_then(crate::runtime::config::u64s);
             if method != "fp8" || fmt != "e4m3" || sfmt != "ue8m0" || block.as_deref() != Some(&[128, 128]) {
                 return refuse(&format!(
                     "a quantization of {method} {fmt}, scales {sfmt:?}, blocks {block:?} (the release's is fp8 e4m3, ue8m0 scales of 128 x 128 blocks)"
@@ -170,7 +174,7 @@ impl ConfigV4 {
         if heads % o_groups != 0 || rope_dim % 2 != 0 || rope_dim > head_dim || rope_dim > idx_dim || head_dim % 64 != 0 || !idx_dim.is_power_of_two() {
             return err(format!("{label}: {heads} heads in {o_groups} groups, heads of {head_dim} with {rope_dim} rotary, indexer heads of {idx_dim}"));
         }
-        let mut eos = eos_ids(&v, generation);
+        let mut eos = eos_ids(v, generation);
         eos.dedup();
         Ok(ConfigV4 {
             hidden: u("hidden_size")?,
@@ -194,9 +198,10 @@ impl ConfigV4 {
             experts: u("n_routed_experts")?,
             top_k: u("num_experts_per_tok")?,
             inter: u("moe_intermediate_size")?,
-            hash_layers: u_or("num_hash_layers", 0)?,
-            route_scale: f_or("routed_scaling_factor", 1.0)? as f32,
-            swiglu_limit: f_or("swiglu_limit", 0.0)? as f32,
+            // (a key the config leaves out: transformers' DeepseekV4Config default, as the description takes it (runtime/describe.rs))
+            hash_layers: u_or("num_hash_layers", 3)?,
+            route_scale: f_or("routed_scaling_factor", 1.5)? as f32,
+            swiglu_limit: f_or("swiglu_limit", 10.0)? as f32,
             hc_mult: u("hc_mult")?,
             hc_iters: u_or("hc_sinkhorn_iters", 20)?,
             hc_eps: f_or("hc_eps", 1e-6)? as f32,
@@ -233,65 +238,12 @@ pub fn freqs(dim: usize, base: f64, yarn: Option<Yarn>) -> Vec<f32> {
     f
 }
 
-/// An E8M0 scale's value: 2^(b - 127); 255 is NaN.
-pub fn e8m0(b: u8) -> f32 {
-    match b {
-        255 => f32::NAN,
-        // (2^-127 is an f32 subnormal)
-        0 => f32::from_bits(0x0040_0000),
-        _ => f32::from_bits((b as u32) << 23),
-    }
-}
-
-/// E2M1's values, the low three bits the magnitude and the fourth the sign.
-pub const E2M1: [f32; 16] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0];
-
-/// An FP4 matrix [rows, cols] (two weights a byte, the first in the low four bits; `bytes` rows x cols / 2) with its E8M0 scales (one per 32 weights of a row) as five-bit runs: each weight's code (twice its
-/// E2M1 value, -12 to 12) and each run's bf16 scale (half its E8M0 scale), so that code x scale is the weight exactly. An Err where a scale is NaN or past bf16.
-pub fn fp4_runs(bytes: &[u8], scales: &[u8], rows: usize, cols: usize) -> Result<(Vec<i8>, Vec<u16>)> {
-    if cols % 32 != 0 || bytes.len() * 2 != rows * cols || scales.len() * 32 != rows * cols {
-        return err(format!("{} bytes and {} scales for a {rows} x {cols} FP4 matrix", bytes.len(), scales.len()));
-    }
-    const CODE: [i8; 16] = [0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12];
-    let code: Vec<i8> = bytes.iter().flat_map(|&b| [CODE[(b & 15) as usize], CODE[(b >> 4) as usize]]).collect();
-    let scale = scales
-        .iter()
-        .enumerate()
-        .map(|(i, &e)| match e {
-            255 => err(format!("run {i}'s scale is NaN")),
-            // 2^(e - 128): bf16's exponent e - 1, or below its normal range a subnormal (2^-133 times 2^(e + 5))
-            2.. => Ok(((e - 1) as u16) << 7),
-            _ => Ok(1u16 << (e + 5)),
-        })
-        .collect::<Result<_>>()?;
-    Ok((code, scale))
-}
-
-/// An FP8 matrix [rows, cols] with its E8M0 block scales (128 x 128 blocks) as bf16 words, exactly (`glyd_gpu::fp8::dequant`).
-pub fn fp8_bf16(q: &[u8], scales: &[u8], rows: usize, cols: usize) -> Result<Vec<u16>> {
-    let s: Vec<f32> = scales.iter().map(|&b| e8m0(b)).collect();
-    let mut out = vec![0u16; rows * cols];
-    glyd_gpu::fp8::dequant(q, &s, rows, cols, [128, 128], &mut out).map_err(Error)?;
-    Ok(out)
-}
+// (the release's formats decoded: src/formats.rs, the one decoder of each format)
+pub use crate::formats::{e8m0, fp4_runs, fp8_bf16, E2M1};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fp4_runs_are_the_weights_exactly() {
-        for e in [0u8, 1, 2, 100, 120, 127, 128, 200, 254] {
-            let bytes: Vec<u8> = (0..16u8).map(|i| i | (15 - i) << 4).collect();
-            let (code, scale) = fp4_runs(&bytes, &[e], 1, 32).unwrap();
-            let s = f32::from_bits((scale[0] as u32) << 16);
-            for (k, &c) in code.iter().enumerate() {
-                let nib = if k % 2 == 0 { bytes[k / 2] & 15 } else { bytes[k / 2] >> 4 };
-                assert_eq!(c as f32 * s, E2M1[nib as usize] * e8m0(e), "scale {e}, weight {k}");
-            }
-        }
-        assert!(fp4_runs(&[0; 16], &[255], 1, 32).is_err());
-    }
 
     #[test]
     fn freqs_are_yarns() {

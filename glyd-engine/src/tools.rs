@@ -467,14 +467,9 @@ fn typed(v: &str, schema: Option<&Value>) -> String {
         return "null".to_string();
     }
     let Some(schema) = schema else { return text() };
-    let ty = match (schema.get("type"), schema.get("anyOf")) {
-        (Some(Value::String(t)), _) => t.trim().to_lowercase(),
-        (Some(other), _) => py_dumps(other).to_lowercase(),
-        (None, Some(_)) => "object".to_string(),
-        (None, None) => "string".to_string(),
-    };
+    let ty = type_word(schema);
     let starts = |words: &[&str]| words.iter().any(|w| ty.starts_with(w));
-    if ["string", "str", "text", "varchar", "char", "enum"].contains(&ty.as_str()) {
+    if is_text(schema) {
         text()
     } else if starts(&["int", "uint", "long", "short", "unsigned"]) {
         v.trim().parse::<i128>().map_or_else(|_| text(), |n| n.to_string())
@@ -489,6 +484,22 @@ fn typed(v: &str, schema: Option<&Value>) -> String {
     } else {
         json::parse(v).map_or_else(|_| text(), |j| py_dumps(&j))
     }
+}
+
+/// The type a parameter's schema gives, as `typed` reads it: its `type` (lowercased), `object` for an `anyOf`, and `string` for a schema with neither (an `enum` alone).
+fn type_word(schema: &Value) -> String {
+    match (schema.get("type"), schema.get("anyOf")) {
+        (Some(Value::String(t)), _) => t.trim().to_lowercase(),
+        (Some(other), _) => py_dumps(other).to_lowercase(),
+        (None, Some(_)) => "object".to_string(),
+        (None, None) => "string".to_string(),
+    }
+}
+
+/// Whether the formats that type a value by its schema (XML and GLM: `typed`) take a parameter's value as text, not JSON: the one rule the reader and the forced-call grammar
+/// (constrain.rs `call_grammar`) share, so a value the grammar lets a model write is the value the reader reads.
+pub fn is_text(schema: &Value) -> bool {
+    ["string", "str", "text", "varchar", "char", "enum"].contains(&type_word(schema).as_str())
 }
 
 /// A parameter as an item of its call's arguments: `"KEY": VALUE`, the value typed by the schema `props` (the function's `properties`) gives its key.

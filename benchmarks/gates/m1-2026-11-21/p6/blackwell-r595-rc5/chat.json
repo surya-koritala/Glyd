@@ -1,0 +1,1 @@
+{"id":"chatcmpl-2","object":"chat.completion","created":1795298371,"model":"glyd/gemma-4-12B-wren","choices":[{"index":0,"message":{"role":"assistant","content":"Hello, I hope you're well."},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":19,"completion_tokens":10,"total_tokens":29}}

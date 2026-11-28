@@ -2,7 +2,7 @@
 
 GLY-188 in the daemons. Three `starlings daemon` processes (a coordinator and two enrolled workers) on one PC.
 A chat request goes to the coordinator over HTTP; the first worker's `glyd-engine rangeworker` tokenizes it and runs
-layers 0..16 of Qwen3.5-9B (glyd swift), the second runs 16..32 and samples, the token goes back to the first worker
+layers 0..16 of Qwen3.5-9B (glyd linnet), the second runs 16..32 and samples, the token goes back to the first worker
 over the data channel, and text streams back as SSE. Then the test stops the daemons and runs the same prompt on
 the whole model (one rangeworker, 0..32) with the same chunking and settings.
 
@@ -40,7 +40,7 @@ only ones that log the token digests the comparison needs):
 
     export GLYD_GPU_LIB=~/glyd-scratch/starlings/lib-pr/libglyd_gpu_cuda13.so
     export STARLINGS_RANGE_ENGINE=~/glyd-scratch/starlings/bin/glyd-engine-66e6bdbe
-    export STARLINGS_RANGE_MODEL=~/glyd-baseline/hf/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d
+    export STARLINGS_RANGE_MODEL=~/glyd-baseline/hf/hub/models--glyd--Qwen3.5-9B-linnet/snapshots/073a2132abeaa41c119678b9687092871521eb4d
     export STARLINGS_RANGE_NEW=48 STARLINGS_RANGE_RECORD=record.json
     # optional: STARLINGS_RANGE_TEXT="..." STARLINGS_RANGE_TEMPERATURE=0.7
     cargo test --release -p starlings-cli --features test-backend --test daemon --no-run

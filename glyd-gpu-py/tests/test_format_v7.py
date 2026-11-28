@@ -12,7 +12,7 @@ from glyd_gpu import format as fmt
 
 
 def test_manifest_and_read():
-    for layout, level in (("i6", "kestrel"), ("i5", "swift")):
+    for layout, level in (("i6", "kestrel"), ("i5", "linnet")):
         e = fmt.entry([64, 32], [(4 if layout == "i6" else 5) << 24, 0, 0], [("m.weight", [64, 32], "00")], layout=layout)
         assert e["layout"] == layout and e["tiers"][0] >> 24 in (4, 5)
         m = fmt.manifest({"repo": None, "revision": None}, {"m": e}, "0.30.0", layout, {})

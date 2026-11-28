@@ -1149,7 +1149,7 @@ machines with an NVIDIA GPU before each release.
 `glyd` crate and CLI, the C ABI, the Python and Go bindings, the store
 (`glyd-store`), the GPU library and its kernels (`gpu/`), the packer
 (`glyd-gpu`), the Python GPU package (`glyd-gpu-py`), the inference engine
-(`glyd-engine`), Condor (`condor/`) and Starlings (`starlings/`). Any use,
+(`glyd-engine`), Ibis (`ibis/`) and Starlings (`starlings/`). Any use,
 commercial included, with no license to ask for.
 
 Releases v0.29.0 to v0.32.1 shipped under the Business Source License 1.1.

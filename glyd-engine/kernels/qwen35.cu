@@ -1,4 +1,4 @@
-// Qwen3.5's own kernels (included by engine.cu in a development build; src/model35.rs runs them): the zero-centered norms, the gated attention at head 256
+// Qwen3.5's own kernels (included by engine.cu in a development build; the description executor runs them through src/kern35.rs's table): the zero-centered norms, the gated attention at head 256
 // with its partial rotary, and the linear-attention layer (the causal convolution, the gated delta rule as a recurrence and in chunks, the gated norm).
 // bf16 in memory, fp32 inside; the rounding points are vLLM 0.30's (glyd-engine/docs/design/specs/2026-10-06-engine-qwen35-design.md).
 
@@ -49,194 +49,13 @@ extern "C" __global__ void rmsnorm1p_add(bf16* x, const bf16* y, const bf16* w, 
     }
 }
 
-// ---- gated attention at head 256 -------------------------------------------------------------------------------------------------------
-// A full-attention layer's qkv row [n, stride]: each query head's 256 query values then its 256 gate values (nq heads), then nk key heads, then nk value heads (256 each).
-// Query and key heads: the norm with (1 + w) over the head, then the rotary on its first 2 half dims (pairs i, i + half; cos and sin bf16 [max_pos, half]), the rest as normed,
-// one rounding; query heads to qo [n, nq 256], key heads to the cache kc [positions, nk, 256] at the row's position; value heads copied to vc. Block (row, head), 128 threads.
-// A key's place in the cache: through the sequence's block table where it has one (16-token blocks of a pool: src/dynamic/pages.rs), else its position.
-__device__ __forceinline__ size_t q35_place(const int* tab, int p) { return tab ? (size_t)tab[p >> 4] * 16 + (p & 15) : (size_t)p; }
-
-extern "C" __global__ void q35_prep(const bf16* qkv, int stride, const bf16* qw, const bf16* kw, const bf16* cs, const bf16* sn, int half, const int* pos, bf16* qo, bf16* kc, bf16* vc, int nq, int nk,
-                                    float eps, const int* tab) {
-    const int t = blockIdx.x, hh = blockIdx.y, i = threadIdx.x;
-    const bf16* row = qkv + (size_t)t * stride;
-    const int p = pos[t];
-    if (hh >= nq + nk) {
-        const int j = hh - nq - nk;
-        const bf16* x = row + nq * 512 + nk * 256 + j * 256;
-        bf16* o = vc + (q35_place(tab, p) * nk + j) * 256;
-        o[i] = x[i];
-        o[i + 128] = x[i + 128];
-        return;
-    }
-    const bool isq = hh < nq;
-    const bf16* x = isq ? row + hh * 512 : row + nq * 512 + (hh - nq) * 256;
-    const bf16* w = isq ? qw : kw;
-    float a = b2f(x[i]), b = b2f(x[i + 128]);
-    const float s = rsqrtf(block_sum(a * a + b * b) / 256.f + eps);
-    a = a * s * (1.f + b2f(w[i]));
-    b = b * s * (1.f + b2f(w[i + 128]));
-    __shared__ float nrm[128];
-    nrm[i] = a;
-    __syncthreads();
-    if (i < 2 * half) {
-        const int k = i < half ? i : i - half;
-        const float c = b2f(cs[(size_t)p * half + k]), sv = b2f(sn[(size_t)p * half + k]);
-        a = i < half ? nrm[i] * c - nrm[i + half] * sv : nrm[i] * c + nrm[i - half] * sv;
-    }
-    bf16* o = isq ? qo + (size_t)t * nq * 256 + hh * 256 : kc + (q35_place(tab, p) * nk + (hh - nq)) * 256;
-    o[i] = f2b(a);
-    o[i + 128] = f2b(b);
-}
-
+// ---- helpers the other families' kernels share ---------------------------------------------------------------------------------------------
 __device__ __forceinline__ float2 bf2(uint32_t u) { return make_float2(__uint_as_float(u << 16), __uint_as_float(u & 0xffff0000u)); }
 
 __device__ __forceinline__ float warp_max(float v) {
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, o));
     return v;
-}
-
-#define AT_KB 32   // keys a tile
-#define AT_KS 129  // a key's row in shared memory: 128 words and one more, so that 32 lanes reading 32 rows meet no bank twice
-
-// Causal attention of the n rows of q [n, qs] (query head h at h * 256; row t's keys are 0 .. pos[t]) over the bf16 cache kc, vc [positions, nk, 256], nq / nk query heads to a
-// key-value head; then out = bf16(bf16(attention) * sigmoid(gate)), the gate at gate[t * gs + h * 512 + 256 ..]. fp32 scores and sums, the probabilities rounded to bf16 for the
-// values (as FlashAttention). A block takes R rows and the G = nq / nk query heads of one key-value head (a warp each), the keys AT_KB at a time through shared memory: lane j
-// scores key j, then each lane sums 8 of the 256 output dims. sl2 = 256^-0.5 * log2(e). Dynamic shared memory: (AT_KB (AT_KS + 128) + 128 R G) * 4 bytes.
-// SPLIT (a decode step, R = 1): block z takes the S-th part z of each row's keys (a whole number of tiles) and writes its maximum, sum and unnormalized outputs to
-// part [(t nq + h) S + z][258] (outputs, then the maximum in log2 units, then the sum); attn256_merge combines the parts.
-template <bool SPLIT>
-__device__ __forceinline__ void attn256_t(const bf16* q, int qs, const bf16* gate, int gs, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int os, int n, int nq, int nk, int R,
-                                          float sl2, float* part, int S, const int* tab) {
-    extern __shared__ uint32_t sm[];
-    uint32_t* Ks = sm;
-    uint32_t* Vs = Ks + AT_KB * AT_KS;
-    uint32_t* Qs = Vs + AT_KB * 128;
-    __shared__ int s_k0, s_k1;
-    const int G = nq / nk, w = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    const int kvh = blockIdx.y, r = w / G, h = kvh * G + w % G, t = blockIdx.x * R + r;
-    const bool live = t < n;
-    if (live)
-        for (int c = lane; c < 128; c += 32) Qs[w * 128 + c] = reinterpret_cast<const uint32_t*>(q + (size_t)t * qs + h * 256)[c];
-    if (threadIdx.x == 0) {
-        int m = 0;
-        for (int i = 0; i < R; i++) {
-            const int tt = blockIdx.x * R + i;
-            if (tt < n) m = max(m, pos[tt] + 1);
-        }
-        if (SPLIT) {
-            const int span = ((m + S - 1) / S + AT_KB - 1) / AT_KB * AT_KB;
-            s_k0 = min(m, blockIdx.z * span);
-            s_k1 = min(m, s_k0 + span);
-        } else {
-            s_k0 = 0;
-            s_k1 = m;
-        }
-    }
-    __syncthreads();
-    const int k_lo = s_k0, kmax = s_k1, len = live ? min(pos[t] + 1, kmax) : 0;
-    float m_run = -INFINITY, l_run = 0.f, acc[8];
-#pragma unroll
-    for (int e = 0; e < 8; e++) acc[e] = 0.f;
-    for (int k0 = k_lo; k0 < kmax; k0 += AT_KB) {
-        __syncthreads();  // (the tile before is read)
-        for (int c = threadIdx.x; c < AT_KB * 64; c += blockDim.x) {
-            const bool isv = c >= AT_KB * 32;
-            const int cc = isv ? c - AT_KB * 32 : c, j = cc >> 5, part_ = cc & 31;
-            uint4 v = make_uint4(0, 0, 0, 0);
-            if (k0 + j < kmax) v = reinterpret_cast<const uint4*>((isv ? vc : kc) + (q35_place(tab, k0 + j) * nk + kvh) * 256)[part_];
-            if (isv) {
-                *reinterpret_cast<uint4*>(Vs + j * 128 + part_ * 4) = v;
-            } else {
-                uint32_t* d = Ks + j * AT_KS + part_ * 4;
-                d[0] = v.x;
-                d[1] = v.y;
-                d[2] = v.z;
-                d[3] = v.w;
-            }
-        }
-        __syncthreads();
-        if (!live) continue;
-        const uint32_t* kr = Ks + lane * AT_KS;
-        const uint32_t* qr = Qs + w * 128;
-        float s0 = 0.f, s1 = 0.f;
-#pragma unroll 8
-        for (int c = 0; c < 128; c++) {
-            const float2 a = bf2(qr[c]), b = bf2(kr[c]);
-            s0 = fmaf(a.x, b.x, s0);
-            s1 = fmaf(a.y, b.y, s1);
-        }
-        const float s = k0 + lane < len ? (s0 + s1) * sl2 : -INFINITY;
-        const float m_new = fmaxf(m_run, warp_max(s));  // (finite: a part's first key is in each row's keys)
-        const float p = exp2f(s - m_new), corr = exp2f(m_run - m_new);
-        l_run = l_run * corr + warp_sum(p);
-        const float pb = b2f(f2b(p));
-#pragma unroll
-        for (int e = 0; e < 8; e++) acc[e] *= corr;
-#pragma unroll 4
-        for (int j = 0; j < AT_KB; j++) {
-            const float pj = __shfl_sync(0xffffffffu, pb, j);
-            const uint4 v = *reinterpret_cast<const uint4*>(Vs + j * 128 + lane * 4);
-            const float2 v0 = bf2(v.x), v1 = bf2(v.y), v2 = bf2(v.z), v3 = bf2(v.w);
-            acc[0] = fmaf(pj, v0.x, acc[0]);
-            acc[1] = fmaf(pj, v0.y, acc[1]);
-            acc[2] = fmaf(pj, v1.x, acc[2]);
-            acc[3] = fmaf(pj, v1.y, acc[3]);
-            acc[4] = fmaf(pj, v2.x, acc[4]);
-            acc[5] = fmaf(pj, v2.y, acc[5]);
-            acc[6] = fmaf(pj, v3.x, acc[6]);
-            acc[7] = fmaf(pj, v3.y, acc[7]);
-        }
-        m_run = m_new;
-    }
-    if (!live) return;
-    if (SPLIT) {
-        float* pp = part + ((size_t)(t * nq + h) * S + blockIdx.z) * 258;
-#pragma unroll
-        for (int e = 0; e < 8; e++) pp[lane * 8 + e] = acc[e];
-        if (lane == 0) {
-            pp[256] = m_run;
-            pp[257] = l_run;
-        }
-        return;
-    }
-    const bf16* gr = gate + (size_t)t * gs + h * 512 + 256 + lane * 8;
-    bf16* o = out + (size_t)t * os + h * 256 + lane * 8;
-#pragma unroll
-    for (int e = 0; e < 8; e++) {
-        const float a = b2f(f2b(acc[e] / l_run)), g = b2f(gr[e]);
-        o[e] = f2b(a / (1.f + expf(-g)));
-    }
-}
-
-extern "C" __global__ void __launch_bounds__(512) attn256(const bf16* q, int qs, const bf16* gate, int gs, const bf16* kc, const bf16* vc, const int* pos, bf16* out, int os, int n, int nq, int nk,
-                                                         int R, float sl2, const int* tab) {
-    attn256_t<false>(q, qs, gate, gs, kc, vc, pos, out, os, n, nq, nk, R, sl2, nullptr, 1, tab);
-}
-
-// A decode step's attention in S parts of the keys (grid n, nk, S; R = 1): see attn256_t.
-extern "C" __global__ void __launch_bounds__(512) attn256_parts(const bf16* q, int qs, const bf16* kc, const bf16* vc, const int* pos, int n, int nq, int nk, float sl2, float* part, int S, const int* tab) {
-    attn256_t<true>(q, qs, nullptr, 0, kc, vc, pos, nullptr, 0, n, nq, nk, 1, sl2, part, S, tab);
-}
-
-// The S parts of attn256_split combined: out = bf16(bf16(sum of the parts' outputs, each times 2^(its maximum - the largest) / the sum likewise) * sigmoid(gate)). Block (row, query
-// head), 256 threads (a dim each).
-extern "C" __global__ void attn256_merge(const float* part, int S, const bf16* gate, int gs, bf16* out, int os, int nq) {
-    const int t = blockIdx.x, h = blockIdx.y, d = threadIdx.x;
-    const float* pp = part + (size_t)(t * nq + h) * S * 258;
-    float mx = -INFINITY;
-    for (int z = 0; z < S; z++) mx = fmaxf(mx, pp[z * 258 + 256]);
-    float l = 0.f, a = 0.f;
-    for (int z = 0; z < S; z++) {
-        const float m = pp[z * 258 + 256];
-        if (m == -INFINITY) continue;  // (a part with no keys)
-        const float wz = exp2f(m - mx);
-        l = fmaf(pp[z * 258 + 257], wz, l);
-        a = fmaf(pp[z * 258 + d], wz, a);
-    }
-    const float o = b2f(f2b(a / l)), g = b2f(gate[(size_t)t * gs + h * 512 + 256 + d]);
-    out[(size_t)t * os + h * 256 + d] = f2b(o / (1.f + expf(-g)));
 }
 
 // ---- the linear-attention layer (Gated DeltaNet) ---------------------------------------------------------------------------------------
@@ -273,15 +92,35 @@ extern "C" __global__ void conv_silu(const bf16* x, int xs, const bf16* w, bf16*
 // conv_silu with fp32 weights (Kimi-K3 releases them so; each tap as it is).
 extern "C" __global__ void conv_silu_w32(const bf16* x, int xs, const float* w, bf16* st, bf16* y, int n, int C) { conv_silu_of(x, xs, w, st, y, n, C); }
 
+// conv_silu of a step's rows that decode, a token of a sequence each (grid C / 256 by rows): row r's state at sts[r ss] (a table of addresses, as vLLM's conv_state_indices
+// pick a request's slot; 0: a padding row, whose output is zeroed and which reads and writes no state), its input row r of x, its output row r of y. Each row's arithmetic
+// is conv_silu's on that sequence's one token.
+template <typename W>
+__device__ __forceinline__ void conv_silu_rows_of(const bf16* x, int xs, const W* w, const unsigned long long* sts, int ss, bf16* y, int C) {
+    const int r = blockIdx.y;
+    bf16* st = reinterpret_cast<bf16*>(sts[(size_t)r * ss]);
+    if (!st) {
+        const int c = blockIdx.x * blockDim.x + threadIdx.x;
+        if (c < C) y[(size_t)r * C + c] = f2b(0.f);
+        return;
+    }
+    conv_silu_of(x + (size_t)r * xs, xs, w, st, y + (size_t)r * C, 1, C);
+}
+
+extern "C" __global__ void conv_silu_rows(const bf16* x, int xs, const bf16* w, const unsigned long long* sts, int ss, bf16* y, int C) { conv_silu_rows_of(x, xs, w, sts, ss, y, C); }
+
+// conv_silu_rows with fp32 weights (conv_silu_w32's: Kimi delta attention's convolution).
+extern "C" __global__ void conv_silu_w32_rows(const bf16* x, int xs, const float* w, const unsigned long long* sts, int ss, bf16* y, int C) { conv_silu_rows_of(x, xs, w, sts, ss, y, C); }
+
 __device__ __forceinline__ float softplus_f(float x) { return x > 20.f ? x : log1pf(expf(x)); }
 
 // The gated delta rule, one token after another, for the n rows of a sequence: xc [n, C] the convolution's output (queries: nk heads of 128, keys: nk heads of 128, values: nv heads
 // of 128; value head h reads key head h / (nv / nk)), ba [n, sba] (b: nv values, then a: nv values), A_log fp32 [nv], dt_bias bf16 [nv]; state fp32 [nv, 128, 128] (S[i][j]: i over
 // the key's dims, j over the value's), read and written back; core [n, nv 128] the outputs (bf16, before the gated norm). Per token: q and k l2-normed (q times 128^-0.5),
 // beta = sigmoid(b), g = -exp(A_log) softplus(a + dt_bias); S = exp(g) S; S += k (beta (v - S^T k))^T; o = S^T q. A block a value head, a thread a column of S (in registers).
-extern "C" __global__ void __launch_bounds__(128, 1) gdn_recurrent(const bf16* xc, int C, const bf16* ba, int sba, const float* A_log, const bf16* dt_bias, float* state, bf16* core, int n, int nk,
-                                                                   int nv) {
-    const int h = blockIdx.x, j = threadIdx.x, lane = j & 31, w = j >> 5;
+__device__ __forceinline__ void gdn_recurrent_of(int h, const bf16* xc, int C, const bf16* ba, int sba, const float* A_log, const bf16* dt_bias, float* state, bf16* core, int n,
+                                                 int nk, int nv) {
+    const int j = threadIdx.x, lane = j & 31, w = j >> 5;
     const int kh = h / (nv / nk), kd = nk * 128, vd = nv * 128;
     __shared__ __align__(16) float qk[2][128];
     __shared__ float red[2][4];
@@ -339,6 +178,25 @@ extern "C" __global__ void __launch_bounds__(128, 1) gdn_recurrent(const bf16* x
     }
 #pragma unroll
     for (int i = 0; i < 128; i++) st[i * 128 + j] = S[i];
+}
+
+extern "C" __global__ void __launch_bounds__(128, 1) gdn_recurrent(const bf16* xc, int C, const bf16* ba, int sba, const float* A_log, const bf16* dt_bias, float* state, bf16* core, int n, int nk,
+                                                                   int nv) {
+    gdn_recurrent_of(blockIdx.x, xc, C, ba, sba, A_log, dt_bias, state, core, n, nk, nv);
+}
+
+// gdn_recurrent of a step's rows that decode, a token of a sequence each (grid nv by rows): row r's state at sts[r ss] (0: a padding row, whose output is zeroed and which
+// reads and writes no state), its rows of xc, ba and core at r C, r sba and r nv 128. Each row's arithmetic is gdn_recurrent's on that sequence's one token.
+extern "C" __global__ void __launch_bounds__(128, 1) gdn_recurrent_rows(const bf16* xc, int C, const bf16* ba, int sba, const float* A_log, const bf16* dt_bias,
+                                                                        const unsigned long long* sts, int ss, bf16* core, int nk, int nv) {
+    const int r = blockIdx.y;
+    float* st = reinterpret_cast<float*>(sts[(size_t)r * ss]);
+    bf16* out = core + (size_t)r * nv * 128;
+    if (!st) {
+        out[blockIdx.x * 128 + threadIdx.x] = f2b(0.f);
+        return;
+    }
+    gdn_recurrent_of(blockIdx.x, xc + (size_t)r * C, C, ba + (size_t)r * sba, sba, A_log, dt_bias, st, out, 1, nk, nv);
 }
 
 #define GC 64   // tokens a chunk

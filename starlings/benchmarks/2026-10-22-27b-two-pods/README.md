@@ -1,6 +1,6 @@
 # Qwen3.8-27B across two consumer GPUs (2026-10-22)
 
-GLY-365: `glyd/Qwen3.8-27B-swift` (18.7 GB, 64 layers) split over two Runpod pods, each with one
+GLY-365: `glyd/Qwen3.8-27B-linnet` (18.7 GB, 64 layers) split over two Runpod pods, each with one
 RTX 4090 (24 GB), in EU-RO-1 on Runpod's private network (0.4-0.6 ms ping). It was set up with the
 two commands from PR #151: `starlings up --machines 2` on pod A and `starlings join CODE` on pod B.
 The split `up` picked from free memory was 0..32 on A and 32..64 on B, about 9.1 GiB each.

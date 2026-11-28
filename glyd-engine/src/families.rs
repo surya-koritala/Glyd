@@ -293,7 +293,7 @@ struct Seen {
 /// `reply` (the text a family's model writes, from where its generation prompt ends) as tokens of `n` characters, through the choice the server makes (its reader, its reasoning split, its tool parser, streaming).
 fn seen(kind: Option<crate::reader::ReaderKind>, format: Format, in_thinking: bool, reply: &str, n: usize) -> Seen {
     use crate::choice::{Cfg, Choice, ToolsCfg};
-    use crate::model::Finish;
+    use crate::sched::Finish;
     use crate::tools::ToolChoice;
     let chars: Vec<char> = reply.chars().collect();
     let pieces: Vec<String> = chars.chunks(n).map(|c| c.iter().collect()).collect();

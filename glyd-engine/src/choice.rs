@@ -3,8 +3,8 @@
 
 use crate::conv::{Part, Splitter, Stops, Stream};
 use crate::ffi::Result;
-use crate::model::Finish;
 use crate::sampler::Lp;
+use crate::sched::Finish;
 use crate::tok::Tok;
 use crate::tools::{self, Call, Format, ToolChoice, ToolEv, ToolStream};
 use glyd_gpu::json::Value;

@@ -19,7 +19,6 @@ def main():
         mock.mkdir()
         shutil.copy2(scripts / "install.sh", bundle / "install.sh")
         (bundle / "glyd-engine").write_text("synthetic engine; never executed\n")
-        (bundle / "libglyd_gpu_cuda13.so").write_bytes(b"synthetic library")
         (bundle / "LICENSE-glyd-engine").write_text("synthetic notice\n")
         (mock / "nvidia-smi").write_text("#!/bin/sh\nexit 99\n")
         (mock / "nvidia-smi").chmod(0o755)
@@ -35,7 +34,7 @@ def main():
             (bundle / "starlings").chmod(0o755)
 
         def sums():
-            names = ("starlings", "glyd-engine", "libglyd_gpu_cuda13.so", "LICENSE-glyd-engine", "install.sh")
+            names = ("starlings", "glyd-engine", "LICENSE-glyd-engine", "install.sh")
             (bundle / "SHA256SUMS").write_text("".join(
                 hashlib.sha256((bundle / name).read_bytes()).hexdigest() + "  " + name + "\n"
                 for name in names))
@@ -98,8 +97,9 @@ def main():
         if sys.platform.startswith("linux"):
             engine = root / "engine"
             engine.mkdir()
-            for name in ("glyd-engine", "libglyd_gpu_cuda13.so"):
-                shutil.copy2(bundle / name, engine / name)
+            # as an unpacked engine bundle of release-gpu.yml: glyd, glyd-engine a link to it, LICENSE; no GPU library
+            shutil.copy2(bundle / "glyd-engine", engine / "glyd")
+            (engine / "glyd-engine").symlink_to("glyd")
             shutil.copy2(bundle / "LICENSE-glyd-engine", engine / "LICENSE")
             output = root / "output"
             result = subprocess.run(["bash", str(scripts / "package-beta.sh"),
@@ -111,8 +111,9 @@ def main():
             assert hashlib.sha256(archive.read_bytes()).hexdigest() == checksum
             with tarfile.open(archive) as packed:
                 names = {Path(name).name for name in packed.getnames()}
-                assert {"starlings", "glyd-engine", "libglyd_gpu_cuda13.so",
-                        "LICENSE-glyd-engine", "SHA256SUMS", "install.sh"} <= names
+                assert {"starlings", "glyd-engine", "LICENSE-glyd-engine", "SHA256SUMS", "install.sh"} <= names
+                assert not any("libglyd_gpu" in name for name in names)
+                assert all(member.isfile() for member in packed.getmembers() if member.name.endswith("/glyd-engine"))
     print("beta installer checks passed")
 
 

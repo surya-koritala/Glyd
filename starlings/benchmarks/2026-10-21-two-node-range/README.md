@@ -1,6 +1,6 @@
 # Two Starlings nodes, real engine stages (2026-10-21)
 
-Qwen3.5-9B (glyd swift) split at layer 16 across two `glyd-engine rangeworker` processes, each driven by
+Qwen3.5-9B (glyd linnet) split at layer 16 across two `glyd-engine rangeworker` processes, each driven by
 Starlings' Glyd adapter. Each step's boundary (residual + MLP output, bf16) crossed Starlings' enrolled TLS data
 channel between two enrolled nodes with live admission. 64 prompt tokens, 32 greedy tokens, chunks of 32.
 

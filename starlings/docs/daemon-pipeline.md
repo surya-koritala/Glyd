@@ -9,7 +9,7 @@ between the stages over enrolled TLS. Measured on the PC in
 ## One command per machine (GLY-362, GLY-363)
 
 Install (Linux x86_64, an NVIDIA driver for CUDA 13, no root): unpack the download and run its
-`install.sh`. It checks `SHA256SUMS` and puts starlings, glyd-engine and the GPU library in
+`install.sh`. It checks `SHA256SUMS` and puts starlings and glyd-engine in
 `~/.local/lib/starlings`, with the license, checksums and uninstall script retained there,
 and the command in `~/.local/bin`. It validates the staged executable and restores the
 previous installation if activation fails.
@@ -17,22 +17,26 @@ previous installation if activation fails.
 (state and models stay); an upgrade is a new download's `install.sh`.
 `scripts/build-starlings-linux.sh OUT_DIR` builds starlings against glibc 2.28 in a Rocky Linux 8
 container, as the engine release is built. `scripts/package-beta.sh STARLINGS ENGINE_DIR OUT_DIR`
-builds the download from that and the engine release
-(release.yml's glyd-engine, GPU library and LICENSE; never a hand build).
+builds the download from that and the engine release: ENGINE_DIR is an unpacked
+`glyd-engine-vX.Y.Z-linux-x86_64` bundle of release-gpu.yml, of which it takes `glyd-engine` and
+`LICENSE` (never a hand build). The engine loads no GPU library in a CUDA build, so the download
+holds none.
 
 One machine, both stages (on GPU 0 and 1, or both on GPU 0):
 
-    starlings up --model glyd/Qwen3.8-27B-swift [--ctx 4096] [--sessions 1|2] [--drafts 7]
+    starlings up --model glyd/Qwen3.8-27B-linnet [--ctx 4096] [--sessions 1|2] [--drafts 7]
 
 `--model` is a directory (absolute, or starting with `./` or `../`) or a Hub name. A name is fetched
 by the engine into the Hugging Face cache, after the operator agrees to the download.
 An existing cached revision is reused without fetching a newer `main`.
-`--engine` and `--gpu-lib` default to the ones installed beside starlings.
+`--engine` defaults to the one installed beside starlings. `--gpu-lib` is optional and has no
+default in the download: without it the stage's engine runs its own kernels. A library named with
+it (or found beside starlings) is passed on as the engine's `GLYD_GPU_LIB`.
 
 Two machines on one LAN:
 
-    first:   starlings up --model glyd/Qwen3.8-27B-swift --machines 2 [--host LAN_IP]
-    second:  starlings join --model glyd/Qwen3.8-27B-swift [--host LAN_IP]   (then paste the join code)
+    first:   starlings up --model glyd/Qwen3.8-27B-linnet --machines 2 [--host LAN_IP]
+    second:  starlings join --model glyd/Qwen3.8-27B-linnet [--host LAN_IP]   (then paste the join code)
 
 `up` enrolls a coordinator, its stage worker(s) and a client with the steps below, run as this
 binary's own commands. It prints the web UI link and the API address. Both machines need the
@@ -59,7 +63,7 @@ Two checks guard the hand-carried codes:
 The invitation files are deleted once the machine has joined. The first stage's control listener
 is on loopback, and every stage drops a control connection that does not come from the
 coordinator's address (or loopback) before its handshake, which gets 2 s. Every run prints the
-engine and GPU library with their digest prefixes, and the model, before it asks.
+engine (and the GPU library, if one is named) with their digest prefixes, and the model, before it asks.
 
 From the same numbers both machines compute the same split (`split::cut`: it fits both GPUs with
 1 GiB to spare and leaves the two equally full). The second machine shows its layers and asks
@@ -239,8 +243,9 @@ machine reaches neither the listener nor the token, and the client listener stil
 - A bare stage daemon needs an operator restart after engine failure. `up` supervises local
   stages and permits at most three restarts in ten minutes.
 - The engine runs as a memfd, so it finds nothing beside its own path: it looks there only
-  for the GPU library (given by `GLYD_GPU_LIB`) and an optional cuBLAS. A host that ships
-  cuBLAS beside the engine sets `GLYD_CUBLAS` in the stage environment (not checked).
+  for an optional cuBLAS (a CUDA build loads no GPU library unless `GLYD_GPU_LIB` names
+  one). A host that ships cuBLAS beside the engine sets `GLYD_CUBLAS` in the stage
+  environment (not checked).
 - Web UI: samples carry no GPU or machine names, so nodes show their ID, address and device
   ID. Worker heartbeats send no link samples yet, so a link shows "no link sample" and, after a
   request, its time outside both engines per step. Requests lists answered requests only; a

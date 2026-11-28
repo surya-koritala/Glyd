@@ -4,7 +4,7 @@ Lossless AI compression: 33% less GPU memory, bit for bit.
 
     curl -LsSf https://getglyd.com/install.sh | sh   # a model on your GPU in two commands: Linux, an NVIDIA GPU, driver 580 or newer
     glyd run Qwen/Qwen3.5-9B                         # downloads it, starts it packed, and chats (glyd serve, glyd doctor)
-    glyd run Qwen/Qwen3.8-27B:swift                  # fewer bits, not lossless: :kestrel 6.5 bits per weight, :swift 5.5
+    glyd run Qwen/Qwen3.8-27B:linnet                  # fewer bits, not lossless: :kestrel 6.5 bits per weight, :linnet 5.5
 
     pip install "glyd[gpu]"   # models on the GPU: Linux x86_64 / aarch64, an NVIDIA GPU (Ampere or later)
     pip install "glyd[vllm]"  # and serving them: vllm serve MODEL --quantization glyd (vLLM 0.30)
@@ -53,7 +53,7 @@ safetensors, huggingface_hub). The `glyd-gpu` Linux wheels it brings (x86_64, aa
 carry the kernels, `libglyd_gpu_cuda12.so` and `libglyd_gpu_cuda13.so`
 (CUDA 12.8 and 13.0, their runtime linked in), and the one for PyTorch's
 CUDA is taken; `GLYD_GPU_LIB` names another. `fit` needs none of it. The
-libraries are a C library too, with their header, `glyd_gpu.h` (8 functions), in the
+libraries are a C library too, with their header, `glyd_gpu.h`, in the
 wheel's `glyd_gpu` directory, for engines in C, C++, Rust or any language with
 a C FFI.
 
@@ -196,7 +196,8 @@ repo id, from the files for a directory.
 ### Serving with vLLM
 
 `glyd run MODEL` and `glyd serve MODEL` (installed by the script above, or by
-`pip install "glyd[vllm]"` in a virtual environment) start vLLM with the
+`pip install "glyd[vllm]"` in a virtual environment) start Glyd's own engine where it runs the model
+([glyd-gpu-py/README.md](https://github.com/surya-koritala/Glyd/blob/main/glyd-gpu-py/README.md)), else vLLM with the
 plugin and the settings worked out from the GPU: memory share, context,
 the tool-call and reasoning parsers, compiled wherever the chat keeps 8,192 tokens of context
 (eager only where that gives a longer chat); `glyd doctor` checks

@@ -51,15 +51,22 @@ _ARGS = {  # each function's arguments before its stream
     "mma_moe_unpack": _PACK + [_I64, _I64, _I64, _I64, _P, _P],
     "mma12_moe_unpack": _PACK + [_I64, _I64, _I64, _I64, _P, _P],
     "mma_moe": _PACK + [_I64, _I64, _I64, _P, _I64, _I64, _I64, _P, _I64, _P, _P, _I64, _P, _P, _P, _SZ, _P],
+    "mma_moe_placed": _PACK + [_I64, _I64, _I64, _I64, _P, _I64, _I64, _I64, _P, _I64, _P, _P, _I64, _P, _P, _P, _SZ, _P],
     "mma12_moe": _PACK + [_I64, _I64, _I64, _P, _I64, _I64, _I64, _P, _I64, _P, _P, _I64, _P, _P, _P, _SZ, _P],
     "mma_linear": _PACK + [_I64, _I64, _P, _I64, _P, _P, _I64, _P, _SZ, _P],
     "mma12_linear": _PACK + [_I64, _I64, _P, _I64, _P, _P, _I64, _P, _SZ, _P],
     "kv_write": [_P, _I64, _P, _I64, _P, _I64, _P, _I64, _P, _P, _I64, _I64, _I64, _P, _I64, _P, _I64, _I64, _P, _P, _I64, _I64],  # key, value, slots, pool, bases, H, D, A, escape pool, nchunks, raw pool, nslabs, layer, status, lost bitmap, its bits, the rings' places
     "kv_release": [_P, _I64, _I64, _P, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, _I64, _P, _P, _I64],  # pool, blocks, H, D, A, escape pool, nchunks, raw pool, nslabs, layer, status, lost bitmap, its bits
     "kv_unpack": [_P, _I64, _P, _I64, _P, _P, _I64, _I64, _I64, _P, _I64, _P, _I64, _P, _P],
+    "kv_save": [_P, _I64, _I64, _P, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, _I64, _P, _P],  # pool, nblocks, pages, H, D, A, escape pool, nchunks, raw pool, nslabs, layer, the images, their bytes
+    "kv_load": [_P, _P, _I64, _P, _I64, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, _I64, _P, _I64],  # the images, their blocks, pool, nblocks, H, D, A, escape pool, nchunks, raw pool, nslabs, layer, status, the rings' places
     "kv_gather": [_P, _I64, _P, _P, _I64, _P, _P, _I64, _I64, _I64, _P, _I64, _P, _I64, _P],
     "kv_work_put": [_P, _I64, _P, _I64, _P, _I64, _I64, _I64, _P, _I64],
     "kv_decode": [_P, _I64, _P, _I64, _P, _P, _P, _I64, _P, _I64, _I64, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, ctypes.c_double, _P, _I64, _P, _SZ],
+    "kv_decode_from": [_P, _I64, _P, _I64, _P, _P, _P, _I64, _P, _P, _I64, _I64, _I64, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, ctypes.c_double, _P, _I64, _P, _SZ],
+    "kv_decode_bf16": [_P, _I64, _P, _P, _P, _I64, _I64, _P, _P, _I64, _I64, _I64, _I64, _I64, _I64, ctypes.c_double, _P, _I64, _P, _SZ],  # q, kc, vc, table, its stride, cap, lens, first, round, B, splits, H, G, D, scale, out, workspace
+    "kv_prefill_bf16": [_P, _I64, _P, _P, _P, _I64, _I64, _I64, _I64, _I64, _I64, _I64, ctypes.c_double, _I64, ctypes.c_double, _P, _P, _I64],  # q, kc, vc, table, cap, n, start, window, H, G, D, scale, round, softcap, sinks, out
+    "kv_prefill": [_P, _I64, _P, _I64, _P, _I64, _I64, _I64, _I64, _P, _I64, _P, _P, _P, _I64, _I64, _I64, _I64, _P, _I64, _P, _I64, ctypes.c_double, _I64, ctypes.c_double, _P, _P, _I64],  # q, key, value (and strides), n, start, window, pool, bases, table, H, G, D, A, escape pool, raw pool, scale, round, softcap, sinks, out
     "f8_size": [_P, _I64, _I64, _I64, _P, _P, _SZ, _P],  # w, ld, O, K, heads, workspace and its bytes, the words var needs (host)
     "f8_pack": [_P, _I64, _I64, _I64, _P, _P, _P, _I64],  # w, ld, O, K, heads, core, var and its words
     "f8_unpack": [_P, _P, _P, _I64, _I64, _P, _I64],  # core, heads, var, O, K, out, ld
@@ -72,8 +79,8 @@ _ARGS = {  # each function's arguments before its stream
     "f8h_linear": [_P, _P, _P, _I64, _I64, _I64, _P, _I64, _P, _I64, _I64, _P, _I64, _P, _SZ, _P],  # layout H: as f8_'s
     "f8h_moe": [_P, _P, _P, _I64, _I64, _I64, _P, _I64, _P, _I64, _P, _I64, _I64, _I64, _I64, _P, _I64, _P, _SZ, _P],  # layout H: as f8_'s
 }
-_SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_gemm_x1": 4, "mma12_gemm_x1": 4, "mma12_gemm_x2": 3, "mma12_gemm_x3": 3, "attn_decode": 4, "mma_moe": 7, "mma12_moe": 7, "mma_linear": 4, "mma12_linear": 4, "kv_decode": 5, "f8_size": 2, "f8_linear": 3, "f8_moe": 4}  # their workspace queries' sizes
-_PLAIN = {"gpu": [_P], "mma_way": [_I64] * 4 + [_P, _P], "mma12_way": [_I64] * 4 + [_P, _P], "mma12_part_cus": [_I64] * 4 + [_P], "kv_leaf_bytes": [_I64] * 3 + [_P], "kv_extra_bytes": [_I64, _P], "kv_second_bytes": [_I64, _I64, _P], "kv_decode_shares": [_I64] * 3 + [_P], "kv_floor_set": [ctypes.c_int], "f8h_plain": [ctypes.c_int]}  # the calls with no stream
+_SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_gemm_x1": 4, "mma12_gemm_x1": 4, "mma12_gemm_x2": 3, "mma12_gemm_x3": 3, "attn_decode": 4, "mma_moe": 7, "mma12_moe": 7, "mma_linear": 4, "mma12_linear": 4, "kv_decode": 5, "f8_size": 2, "f8_linear": 3, "f8_moe": 4, "mma_moe_as": 9, "mma12_moe_as": 9}  # their workspace queries' sizes
+_PLAIN = {"gpu": [_P], "mma_way": [_I64] * 4 + [_P, _P], "mma12_way": [_I64] * 4 + [_P, _P], "mma12_part_cus": [_I64] * 4 + [_P], "kv_leaf_bytes": [_I64] * 3 + [_P], "kv_image_bytes": [_I64] * 3 + [_P], "kv_extra_bytes": [_I64, _P], "kv_second_bytes": [_I64, _I64, _P], "kv_decode_shares": [_I64] * 3 + [_P], "kv_floor_set": [ctypes.c_int], "f8h_plain": [ctypes.c_int]}  # the calls with no stream
 _AUX = {  # the route SPLIT's ring (glyd_gpu.h), each call's arguments whole (a stream last where it takes one)
     "aux_create": [_P, _SZ, _SZ, _P],
     "aux_destroy": [_P],
@@ -81,10 +88,14 @@ _AUX = {  # the route SPLIT's ring (glyd_gpu.h), each call's arguments whole (a 
     "aux_reset": [_P, _P],
     "mma12_aux_queue": [_P, _I64] + _PACK + [_I64, _I64],
     "mma12_aux_linear": [_P, _I64] + _PACK + [_I64, _I64, _P, _I64, _P, _P, _P, _P],
+    # the experts' products of a part of a layer (the engine's calls: the stream, then the whole layer's rows an expert and its experts)
+    "mma_moe_as": _ARGS["mma_moe"] + [_P, _I64, _I64],
+    "mma_moe_placed_as": _ARGS["mma_moe_placed"] + [_P, _I64, _I64],
+    "mma12_moe_as": _ARGS["mma12_moe"] + [_P, _I64, _I64],
 }
 
 
-API_VERSION = 16  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
+API_VERSION = 26  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
 KV_AUX = 2040  # places of each of the status's two rings, where a caller does not size them
 KV_AUX_AT = 16  # the void ring's first place in the status
 KV_STATUS_WORDS = KV_AUX_AT + 2 * KV_AUX  # a lossless KV cache's status words (glyd_gpu.h) at KV_RING: counters, then the ring of lost blocks and the ring of blocks with a raw page

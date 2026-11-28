@@ -1,0 +1,3 @@
+glyd 0.33.1
+engine: linked (glyd run, serve, pull, fit and doctor are this program's own)
+SIMD: AVX2

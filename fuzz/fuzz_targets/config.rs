@@ -1,7 +1,7 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 
-use glyd_engine::{deepseek_v4, glm, kimi, model_gemma4, muse, nemotron, plan, qwen35, qwen4x, weights};
+use glyd_engine::{deepseek_v4, gemma4, glm, kimi, muse, nemotron, plan, qwen35, qwen4x, weights};
 
 // A model's config.json (and its generation_config.json after a line holding a NUL) as the Hub serves it, read by every family's parser and by the planner that sizes a model from it.
 fuzz_target!(|data: &[u8]| {
@@ -16,8 +16,8 @@ fuzz_target!(|data: &[u8]| {
     let _ = muse::ConfigMuse::parse(text, "config.json", gen);
     let _ = qwen4x::ConfigQx::parse(text, "config.json", gen);
     let _ = deepseek_v4::ConfigV4::parse(text, "config.json", gen);
-    let _ = model_gemma4::ConfigG4::parse(text, gen, false);
-    let _ = model_gemma4::ConfigG4::parse(text, gen, true);
+    let _ = gemma4::ConfigG4::parse(text, gen, false);
+    let _ = gemma4::ConfigG4::parse(text, gen, true);
     if let Ok(shape) = plan::Shape::from_config(text) {
         let _ = shape.params();
         let _ = shape.is_moe();

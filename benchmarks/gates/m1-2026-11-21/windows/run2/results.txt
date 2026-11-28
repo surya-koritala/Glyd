@@ -1,0 +1,35 @@
+PASS  machine                            NVIDIA A10G, 23028 MiB, 596.86; tier 24gb; 32 GiB RAM; Microsoft Windows Server 2022 Datacenter
+FAIL  install                            failed: see C:\out\install.log
+PASS  plan:google/gemma-4-12B-it         run: Plan: penguin (10.8 bits) · GPU 0 (NVIDIA A10G) · 32768 tokens of context · ~26 tokens/s
+FAIL  first-token:google/gemma-4-12B-it  137 s after the download (limit 120), 137 s in all; token: yes
+PASS  plan-is-load:google/gemma-4-12B-it level penguin, weights 15.26 GiB against the plan's 15 GiB
+PASS  json-schema:google/gemma-4-12B-it  {"city":"Tokyo","population":13929286,"coastal":true}
+PASS  plan:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 run: Plan: wren (4.5 bits) · GPU 0 (NVIDIA A10G) · 32768 tokens of context · ~515 tokens/s
+FAIL  first-token:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 166 s after the download (limit 120), 166 s in all; token: yes
+PASS  plan-is-load:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 level wren, weights 17.07 GiB against the plan's 17.2 GiB
+PASS  json-schema:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 {"city": "Barcelona", "population": 1620343, "coastal": true}
+PASS  plan:Qwen/Qwen3.8-27B              run: Plan: linnet (5.4 bits) · GPU 0 (NVIDIA A10G) · 26713 tokens of context · ~45 tokens/s
+FAIL  first-token:Qwen/Qwen3.8-27B       the server did not come up
+PASS  plan:Qwen/Qwen3.8-Flash-Next       refuse: glyd: Qwen3.8-Flash-Next (Qwen3.8-Flash-Next) does not run with glyd run yet.
+PASS  refusal:Qwen/Qwen3.8-Flash-Next    exit 3, 2 lines: glyd: Qwen3.8-Flash-Next (Qwen3.8-Flash-Next) does not run with glyd run yet.
+PASS  plan:Qwen/Qwen-AgentWorld-35B-A3B  refuse: glyd: Qwen-AgentWorld-35B-A3B is a Qwen3_5MoeForConditionalGeneration model, and this engine runs Qwen3 models so far.
+PASS  refusal:Qwen/Qwen-AgentWorld-35B-A3B exit 3, 2 lines: glyd: Qwen-AgentWorld-35B-A3B is a Qwen3_5MoeForConditionalGeneration model, and this engine runs Qwen3 models so far.
+PASS  plan:zai-org/GLM-5.3-Flash         refuse: glyd: GLM-5.3-Flash does not fit this machine at any level GLM-5.3-Flash runs.
+PASS  refusal:zai-org/GLM-5.3-Flash      exit 1, 2 lines: Downloading GLM-5.3-Flash: 60% (198.4 GB of 328.4 GB)
+PASS  plan:meta-models/Muse-Glimmer-30B  refuse: glyd: Muse-Glimmer-30B is a MuseGlimmerForConditionalGeneration model, and this engine runs Qwen3 models so far.
+PASS  refusal:meta-models/Muse-Glimmer-30B exit 3, 2 lines: glyd: Muse-Glimmer-30B is a MuseGlimmerForConditionalGeneration model, and this engine runs Qwen3 models so far.
+PASS  plan:deepseek-ai/DeepSeek-V4-Flash-DSpark refuse: Plan: none fits
+PASS  refusal:deepseek-ai/DeepSeek-V4-Flash-DSpark exit 1, 1 lines: glyd: There is not enough space on the disk. (os error 112).
+PASS  plan:moonshotai/Kimi-K3            refuse: Plan: none fits
+PASS  refusal:moonshotai/Kimi-K3         exit 1, 1 lines: glyd: There is not enough space on the disk. (os error 112).
+PASS  no-python                          no call to python or pip during the run
+PASS  ext:driver-r535                    NVIDIA_GeForce_RTX_3060 12288MiB 535.154.05; PASS 1 driver: NVIDIA_GeForce_RTX_3060 12288MiB, driver 535.154.05 (CUDA 12.2); PASS 2 --version: glyd 0.33.1; PASS 3 doctor:   GPU library   /root/b/libglyd_gpu_cuda12.so; PASS 4 run: Hello, I hope you're well. ; SKIP 5 cuda12 = unforced: driver 535.154.05 is below 580: the unforced run is the CUDA 12 one; PASS 6 serve: HTTP 200: {"id":"chatcmpl-2","object":"chat.completion","created":1795288421,"model":"glyd/gemma-4-1; SKIP 7 too old: no driver below R535 here; 
+SKIP  ext:driver-r550                    not run: the oldest supported driver passed (driver-r535, RTX 3060, 2026-11-21) and the 8 GB and 16 GB machines ran R595 or newer
+SKIP  ext:driver-r570                    not run: the oldest supported driver passed (driver-r535, RTX 3060, 2026-11-21) and the 8 GB and 16 GB machines ran R595 or newer
+SKIP  ext:p2a-no-oom                     measured by this gate's plan-is-load steps (the planned level and weights loaded, no OOM) on the 8 GB and 16 GB machines
+SKIP  ext:r5a-schema-real-weights        measured by this gate's json-schema steps on the real weights of every model that runs
+SKIP  ext:r8-reference-gpu-results       glyd bench results are added from the 16 GB machine's run
+SKIP  ext:p17-open-webui                 not run here (no Docker in a Vast container); Open WebUI in a container with default settings was checked on Linux by hand in #325
+SKIP  ext:p17-continue                   not run here (an editor extension); Continue speaks the OpenAI chat and completions API that the client matrix checks
+PASS  ext:p17-openai-sdk                 the client matrix (OpenAI SDK chat, stream, usage, JSON schema, forced tools, Responses) passed against google/gemma-4-12B-it:kestrel served on the RTX 4080 SUPER: https://github.com/surya-koritala/Glyd/actions/runs/44936778841
+23 passed, 4 failed, 0 rows blocked on packs (a blocked row keeps the gate red); results in C:\out\results.tsv

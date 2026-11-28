@@ -1,0 +1,33 @@
+PASS	machine	NVIDIA GeForce RTX 3060 Ti, 8192 MiB, 595.91.07; tier 8gb; 503 GiB RAM; Ubuntu 24.04.5 LTS
+PASS	install	11 s: GLYD_VERSION=0.33.1 GLYD_ENGINE_TARBALL=/root/glyd-engine-v0.33.1-linux-x86_64.tar.gz sh /root/install.sh
+PASS	glyd-version	glyd 0.33.1 (/root/.local/bin/glyd)
+PASS	plan:google/gemma-4-12B-it	refuse: Plan: none fits
+PASS	refusal:google/gemma-4-12B-it	exit 3, 2 lines: glyd: gemma-4-12B-it at the penguin level takes about 18.1 GiB of GPU memory at 4096 tokens of context, and the NVIDIA GeForce RTX 3060 Ti h
+PASS	plan:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	run: Plan: kestrel (6.3 bits) · experts in RAM, a 3.5 GiB cache on the GPU (~65% of expert reads), the CPU computes the rest · 32768 tokens of context · ~76 tokens/s
+PASS	first-token:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	43 s after the download (limit 120); 130 s in all, 87 s of it downloading
+FAIL	plan-is-load:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	weights 5538372360 bytes against the plan's  GiB
+PASS	json-schema:nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	{"city": "Tokyo", "population": 37400068, "coastal": true}
+PASS	plan:Qwen/Qwen3.8-27B	refuse: Plan: none fits
+PASS	refusal:Qwen/Qwen3.8-27B	exit 3, 2 lines: glyd: Qwen3.8-27B (Qwen3.5) runs at the kestrel, linnet and wren levels in this engine, not penguin.
+PASS	plan:Qwen/Qwen3.8-Flash-Next	refuse: glyd: Qwen3.8-Flash-Next (Qwen3.8-Flash-Next) does not run with glyd run yet.
+PASS	refusal:Qwen/Qwen3.8-Flash-Next	exit 3, 2 lines: glyd: Qwen3.8-Flash-Next (Qwen3.8-Flash-Next) does not run with glyd run yet.
+PASS	plan:Qwen/Qwen-AgentWorld-35B-A3B	refuse: glyd: Qwen-AgentWorld-35B-A3B is a Qwen3_5MoeForConditionalGeneration model, and this engine runs Qwen3 models so far.
+PASS	refusal:Qwen/Qwen-AgentWorld-35B-A3B	exit 3, 2 lines: glyd: Qwen-AgentWorld-35B-A3B is a Qwen3_5MoeForConditionalGeneration model, and this engine runs Qwen3 models so far.
+PASS	plan:zai-org/GLM-5.3-Flash	refuse: Plan: none fits
+PASS	refusal:zai-org/GLM-5.3-Flash	exit 1, 2 lines: glyd: the disk holding /root/.cache/huggingface/hub has 134.6 GB left, and 328.4 GB are to be downloaded.
+PASS	plan:meta-models/Muse-Glimmer-30B	refuse: glyd: Muse-Glimmer-30B is a MuseGlimmerForConditionalGeneration model, and this engine runs Qwen3 models so far.
+PASS	refusal:meta-models/Muse-Glimmer-30B	exit 3, 2 lines: glyd: Muse-Glimmer-30B is a MuseGlimmerForConditionalGeneration model, and this engine runs Qwen3 models so far.
+PASS	plan:deepseek-ai/DeepSeek-V4-Flash-DSpark	refuse: Plan: none fits
+PASS	refusal:deepseek-ai/DeepSeek-V4-Flash-DSpark	exit 1, 2 lines: glyd: the disk holding /root/.cache/huggingface/hub has 134.6 GB left, and 166.9 GB are to be downloaded.
+PASS	plan:moonshotai/Kimi-K3	refuse: Plan: none fits
+PASS	refusal:moonshotai/Kimi-K3	exit 1, 2 lines: glyd: the disk holding /root/.cache/huggingface/hub has 134.6 GB left, and 1561.0 GB are to be downloaded.
+PASS	no-python	no call to python or pip during the run
+PASS	ext:driver-r535	NVIDIA_GeForce_RTX_3060 12288MiB 535.154.05; PASS 1 driver: NVIDIA_GeForce_RTX_3060 12288MiB, driver 535.154.05 (CUDA 12.2); PASS 2 --version: glyd 0.33.1; PASS 3 doctor:   GPU library   /root/b/libglyd_gpu_cuda12.so; PASS 4 run: Hello, I hope you're well. ; SKIP 5 cuda12 = unforced: driver 535.154.05 is below 580: the unforced run is the CUDA 12 one; PASS 6 serve: HTTP 200: {"id":"chatcmpl-2","object":"chat.completion","created":1795288421,"model":"glyd/gemma-4-1; SKIP 7 too old: no driver below R535 here; 
+SKIP	ext:driver-r550	not run: the oldest supported driver passed (driver-r535, RTX 3060, 2026-11-21) and the 8 GB and 16 GB machines ran R595 or newer
+SKIP	ext:driver-r570	not run: the oldest supported driver passed (driver-r535, RTX 3060, 2026-11-21) and the 8 GB and 16 GB machines ran R595 or newer
+SKIP	ext:p2a-no-oom	measured by this gate's plan-is-load steps (the planned level and weights loaded, no OOM) on the 8 GB and 16 GB machines
+SKIP	ext:r5a-schema-real-weights	measured by this gate's json-schema steps on the real weights of every model that runs
+SKIP	ext:r8-reference-gpu-results	glyd bench results are added from the 16 GB machine's run
+SKIP	ext:p17-open-webui	not run here (no Docker in a Vast container); Open WebUI in a container with default settings was checked on Linux by hand in #325
+SKIP	ext:p17-continue	not run here (an editor extension); Continue speaks the OpenAI chat and completions API that the client matrix checks
+PASS	ext:p17-openai-sdk	the client matrix (OpenAI SDK chat, stream, usage, JSON schema, forced tools, Responses) passed against google/gemma-4-12B-it:kestrel served on the RTX 4080 SUPER: https://github.com/surya-koritala/Glyd/actions/runs/44936778841

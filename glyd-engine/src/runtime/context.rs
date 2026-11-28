@@ -1,0 +1,103 @@
+//! The runtime context (ROADMAP R16; docs/design/runtime.md section 4): what one served model owns of the state that was the process's, so that a process can serve more than one. A
+//! scheduler writes its figures here, its sequences' tokens and ends are counted here, the first failure of its engine is kept here, and what `/v1/glyd/info` says of it is here; the listener
+//! that answers for the model reads them from the same context (`server::listen_in`, `sched::Sched::in_context`).
+//!
+//! A program that serves one model names none: everything uses the process's own (`Context::process`), as it did when these were statics. What is one a process by its nature stays so: the
+//! driver, the kernels' code, the CPU's kernels and cores, the settings read from the environment, the signals.
+
+use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::{Arc, Mutex, OnceLock};
+
+pub struct Context {
+    /// The scheduler's figures as its last round left them (`sched::Sched::gauges`' order; `sched::stats_json_of`).
+    pub sched: [AtomicU64; crate::sched::FIGURES],
+    /// The requests, tokens and ends counted for `/metrics` (src/ops.rs).
+    pub figures: crate::ops::Figures,
+    /// The engine's first failure (when, and what): nothing is sure of the GPU after one, so `/v1/glyd/info` says the server has failed from then on.
+    pub failed: Mutex<Option<(f64, String)>>,
+    /// What `/v1/glyd/info` says that does not change while the server runs (`serve` sets it once the model is loaded).
+    pub info: OnceLock<crate::server::Info>,
+    /// Whether a request with no cache scope of its own (`cache_salt`) is told, in its usage, how many of its prompt's tokens were found in the cache. Off unless the server's
+    /// operator says so (GLYD_ENGINE_CACHED_USAGE=1: every caller is one user): the cache is one for all such requests, and a count would let one caller learn how another's
+    /// prompt begins. Not decided by the listener's address: a server on a loopback address may answer callers from anywhere, behind `glyd service` or another proxy.
+    pub tell_cached: AtomicBool,
+    /// The cache's events (blocks stored and removed by name, with their tokens: src/kv_events.rs), for `/v1/glyd/kv/events`. Off unless the server's operator turns them on
+    /// (GLYD_ENGINE_KV_EVENTS=1): they carry every caller's prompts.
+    pub kv_events: Option<crate::kv_events::Log>,
+    /// The requests that run on the model, and the last that ended, by id (`/v1/glyd/requests/ID`): each model's, so that one model's server neither finds nor
+    /// cancels another's.
+    pub(crate) tracks: Mutex<std::collections::VecDeque<crate::server::Track>>,
+}
+
+thread_local! {
+    /// The context `Context::serve_here` gave this thread.
+    static HERE: std::cell::RefCell<Option<Arc<Context>>> = const { std::cell::RefCell::new(None) };
+}
+
+impl Context {
+    /// A context of its own: a second model of the process, or a test's server.
+    pub fn new() -> Arc<Context> {
+        Arc::new(Context {
+            sched: [const { AtomicU64::new(0) }; crate::sched::FIGURES],
+            figures: crate::ops::Figures::new(),
+            failed: Mutex::new(None),
+            info: OnceLock::new(),
+            tell_cached: AtomicBool::new(std::env::var_os("GLYD_ENGINE_CACHED_USAGE").is_some_and(|v| v == "1")),
+            kv_events: std::env::var_os("GLYD_ENGINE_KV_EVENTS").is_some_and(|v| v == "1").then(crate::kv_events::Log::new),
+            tracks: Mutex::new(std::collections::VecDeque::new()),
+        })
+    }
+
+    /// A context of its own whose cache's events are kept (`kv_events`), whatever the environment says: a test's, or a program that reads them itself.
+    pub fn with_kv_events() -> Arc<Context> {
+        let mut c = Context::new();
+        Arc::get_mut(&mut c).expect("a new context").kv_events = Some(crate::kv_events::Log::new());
+        c
+    }
+
+    /// The process's own: what a program that serves one model uses, and every caller that names no other.
+    pub fn process() -> &'static Arc<Context> {
+        static P: OnceLock<Arc<Context>> = OnceLock::new();
+        P.get_or_init(Context::new)
+    }
+
+    /// The context of the model this thread serves: the one `serve_here` gave it (the second model of `serve --with`), else the process's.
+    pub fn current() -> Arc<Context> {
+        HERE.with(|h| h.borrow().clone()).unwrap_or_else(|| Context::process().clone())
+    }
+
+    /// This thread serves the model of `c` from now on: its server, scheduler and figures are `c`'s (`current`).
+    pub fn serve_here(c: Arc<Context>) {
+        HERE.with(|h| *h.borrow_mut() = Some(c));
+    }
+
+    /// The engine failed (`what`): kept if it is the first.
+    pub fn fail(&self, what: &str) {
+        let mut f = self.failed.lock().unwrap_or_else(|e| e.into_inner());
+        if f.is_none() {
+            *f = Some((crate::monitor::clock(), what.to_string()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A thread that serves a model of its own (`serve_here`) reads that model's context as its current one; another thread reads the process's.
+    #[test]
+    fn the_current_context_is_the_threads_own_or_the_processs() {
+        let own = Context::new();
+        let mine = own.clone();
+        let seen = std::thread::spawn(move || {
+            Context::serve_here(mine.clone());
+            Arc::ptr_eq(&Context::current(), &mine)
+        })
+        .join()
+        .unwrap();
+        assert!(seen, "a thread given a context serves in it");
+        let other = std::thread::spawn(|| Arc::ptr_eq(&Context::current(), Context::process())).join().unwrap();
+        assert!(other, "a thread given none serves in the process's");
+        assert!(!Arc::ptr_eq(&own, Context::process()));
+    }
+}

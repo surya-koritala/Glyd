@@ -195,7 +195,7 @@ impl Rows {
             INT6_TAG => (6, INT6_STEP_BYTES),
             INT5_TAG => (5, INT5_STEP_BYTES),
             INT4_TAG => (4, INT4_STEP_BYTES),
-            t => return err(format!("a pack of layout {t}: the kestrel, swift and wren layouts are read")),
+            t => return err(format!("a pack of layout {t}: the kestrel, linnet and wren layouts are read")),
         };
         let (rbs, ks, runs) = (rows / 64, cols / 16, cols / RUN);
         if rows == 0
@@ -206,7 +206,7 @@ impl Rows {
             || blocks.len() != rbs * ks / 2 * 128
         {
             return err(format!(
-                "a block pack of {rows} x {cols} with {} + {} bytes is not one of the kestrel, swift and wren layouts",
+                "a block pack of {rows} x {cols} with {} + {} bytes is not one of the kestrel, linnet and wren layouts",
                 data.len(),
                 blocks.len()
             ));

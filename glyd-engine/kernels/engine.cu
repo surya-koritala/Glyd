@@ -1,6 +1,7 @@
-// glyd-engine's own small kernels: the pieces of a Qwen3 layer that are not a packed matrix product or the KV
-// cache's attention (those are the library's). bf16 in memory, fp32 inside, one rounding where vLLM's native path
-// rounds once. Built by build.rs into a fatbin and loaded with the driver.
+// glyd-engine's shared kernels: the small pieces of a layer of any family that are not a packed matrix product or the KV
+// cache's attention (those are fold.cu's and attn.cu's; each family's own pieces are in its file: qwen35.cu, gemma4.cu, ...): row copies, the norms
+// and the rotary, the gated activation, the logits' top-k and sums, the KV pages' tools, and dense bf16 products and a prompt's attention of their own.
+// bf16 in memory, fp32 inside, one rounding where vLLM's native path rounds once. Built by build.rs into a fatbin and loaded with the driver.
 #if defined(__HIPCC__)
 #include "../../gpu/hip.h"  // AMD GPUs through HIP (build.rs, GLYD_HIP=1): the CUDA names the kernels use
 #else
@@ -51,6 +52,14 @@ extern "C" __global__ void copy_rows(const bf16* src, const int2* pairs, int K, 
     const uint4* s = reinterpret_cast<const uint4*>(src + (size_t)p.y * K);
     uint4* d = reinterpret_cast<uint4*>(dst + (size_t)p.x * K);
     for (int i = threadIdx.x; i < K / 8; i += blockDim.x) d[i] = s[i];
+}
+
+// dst [n, w] (rows ds apart) = n rows of w values of src (rows ss apart), a value a thread: a prompt's part of a fused product's rows copied out (Op::Parts; one token's are read in place).
+extern "C" __global__ void parts_rows(const bf16* src, long long ss, bf16* dst, long long ds, int w, int n) {
+    const long long e = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (e >= (long long)n * w) return;
+    const long long r = e / w, c = e % w;
+    dst[r * ds + c] = src[r * ss + c];
 }
 
 #define RN_PER_THREAD 8  // elements a thread holds: the norms take K up to RN_PER_THREAD * blockDim.x (8192 with 1024 threads)
@@ -209,24 +218,12 @@ __device__ __forceinline__ unsigned bf16_key(unsigned short b) {
     return (b & 0x8000u) ? (~b & 0xFFFFu) : (b | 0x8000u);
 }
 
-// Eight logits of row at chunk c (16 bytes), those the row's mask `mrow` (V bits, a token's in word token / 32, bit token % 32; null: no mask) does not allow put at 0xFFFF, the bits whose key is the least (a grammar's mask, as the host puts -inf on them): they
-// are chosen last, and only where the row allows fewer than TOPK tokens, in the index order; the host drops what its mask does not allow.
-__device__ __forceinline__ uint4 load_chunk(const unsigned short* row, int c, const unsigned* mrow) {
-    uint4 q = *reinterpret_cast<const uint4*>(row + (size_t)c * 8);
-    if (mrow) {
-        const unsigned mb = (mrow[c >> 2] >> ((c & 3) * 8)) & 0xFFu;
-        if (mb != 0xFFu) {
-            unsigned short* p = reinterpret_cast<unsigned short*>(&q);
-#pragma unroll
-            for (int k = 0; k < 8; k++)
-                if (!((mb >> k) & 1u)) p[k] = 0xFFFFu;
-        }
-    }
-    return q;
+// Eight logits of row at chunk c (16 bytes).
+__device__ __forceinline__ uint4 load_chunk(const unsigned short* row, int c) {
+    return *reinterpret_cast<const uint4*>(row + (size_t)c * 8);
 }
 
-// `mask` (or null): per row `words` words, the first nonzero where the row is held to a mask (else the row is as if there were none), then the mask's bits (V / 32 rounded up words).
-__device__ __forceinline__ void topk64_impl(const bf16* logits, int V, int* tok, float* val, const unsigned* mask, int words) {
+__device__ __forceinline__ void topk64_impl(const bf16* logits, int V, int* tok, float* val) {
     __shared__ unsigned hist[256];
     __shared__ unsigned hist32[256 * 32];  // a lane's counters apart from the other lanes' (the values of a row crowd into a few bins: counters shared by a warp's lanes would be updated one lane at a time)
     __shared__ unsigned sel[5];  // the high byte, the numbers above its bin, then the low byte, how many equal ones to take, the numbers above the threshold
@@ -236,13 +233,12 @@ __device__ __forceinline__ void topk64_impl(const bf16* logits, int V, int* tok,
     __shared__ unsigned run[2];
     const unsigned short* row = reinterpret_cast<const unsigned short*>(logits) + (size_t)blockIdx.x * V;
     const int nch = V / 8;  // 16-byte loads
-    const unsigned* mrow = (mask && mask[(size_t)blockIdx.x * words] != 0u) ? mask + (size_t)blockIdx.x * words + 1 : nullptr;
     // pass 1: the high bytes
     const int lane0 = threadIdx.x & 31;
     for (int i = threadIdx.x; i < 256 * 32; i += blockDim.x) hist32[i] = 0;
     __syncthreads();
     for (int c = threadIdx.x; c < nch; c += blockDim.x) {
-        const uint4 q = load_chunk(row, c, mrow);
+        const uint4 q = load_chunk(row, c);
         const unsigned short* p = reinterpret_cast<const unsigned short*>(&q);
 #pragma unroll
         for (int k = 0; k < 8; k++) atomicAdd(&hist32[(bf16_key(p[k]) >> 8) * 32 + lane0], 1u);
@@ -270,7 +266,7 @@ __device__ __forceinline__ void topk64_impl(const bf16* logits, int V, int* tok,
     for (int i = threadIdx.x; i < 256 * 32; i += blockDim.x) hist32[i] = 0;
     __syncthreads();
     for (int c = threadIdx.x; c < nch; c += blockDim.x) {
-        const uint4 q = load_chunk(row, c, mrow);
+        const uint4 q = load_chunk(row, c);
         const unsigned short* p = reinterpret_cast<const unsigned short*>(&q);
 #pragma unroll
         for (int k = 0; k < 8; k++) {
@@ -308,7 +304,7 @@ __device__ __forceinline__ void topk64_impl(const bf16* logits, int V, int* tok,
         unsigned short bits[8];
         unsigned gm = 0, em = 0;  // bit k: element k is above the threshold, equal to it
         if (c < nch) {
-            const uint4 q = load_chunk(row, c, mrow);
+            const uint4 q = load_chunk(row, c);
             const unsigned short* p = reinterpret_cast<const unsigned short*>(&q);
 #pragma unroll
             for (int k = 0; k < 8; k++) {
@@ -383,12 +379,73 @@ __device__ __forceinline__ void topk64_impl(const bf16* logits, int V, int* tok,
 }
 
 extern "C" __global__ void __launch_bounds__(1024) topk64_bf16(const bf16* logits, int V, int* tok, float* val) {
-    topk64_impl(logits, V, tok, val, nullptr, 0);
+    topk64_impl(logits, V, tok, val);
 }
 
-// `topk64_bf16` with a mask per row (see `topk64_impl`): `words` is the row's words in `mask`, 1 + (V + 31) / 32.
-extern "C" __global__ void __launch_bounds__(1024) topk64_bf16_masked(const bf16* logits, int V, int* tok, float* val, const unsigned* mask, int words) {
-    topk64_impl(logits, V, tok, val, mask, words);
+// A row's logits at n tokens, as f32 (exact: a bf16 widened): out[i] = row[idx[i]], each idx below the row's length (the host checks). A log-probability's token
+// where it is not among the row's largest (src/sched.rs `pick`): that token's own logit, not the row.
+extern "C" __global__ void __launch_bounds__(256) gather_bf16(const bf16* row, const int* idx, int n, float* out) {
+    const int i = blockIdx.x * 256 + threadIdx.x;
+    if (i < n) out[i] = __bfloat162float(row[idx[i]]);
+}
+
+// The 12-bit KV pages' arguments of n rows from their positions (src/dynamic/kvpages.rs): row r's slot, its block's page (tab[p / 16], or p / 16 where there is no table) times 16 plus p % 16;
+// its length p + 1 and its window's first token (p + 1 - window, at least 0; window 0: 0) for each of its S parts of query heads (entries r S .. r S + S - 1: the decode attention's
+// sequences). A padding row (a negative position) has slot -1 (not written) and length 0 (a zero output), and so has a row whose table names block 0 there: block 0 is no
+// sequence's (a graph's capture runs a step at position 0 of a sequence that holds nothing; a pass's rows past the blocks their sequence holds), and rows of several tokens
+// written to it at once would be runs of one page in one write (src/dynamic/kvpages.rs `clash`). A null output is not made. Row r's table is at tab + r tstride (the decode
+// rows of several sequences, each its own: `row_tables`; 0: one table for every row).
+extern "C" __global__ void __launch_bounds__(256) kv12_rows(const int* pos, int n, const int* tab, long long tstride, int window, int S, long long* slots, int* lens, int* first) {
+    const int r = blockIdx.x * 256 + threadIdx.x;
+    if (r >= n) return;
+    const int p = pos[r];
+    if (slots) {
+        const int b = p < 0 ? 0 : tab ? tab[(size_t)r * tstride + (p >> 4)] : p >> 4;
+        slots[r] = p < 0 || (tab && b == 0) ? -1 : (long long)b * 16 + (p & 15);
+    }
+    if (!lens) return;
+    for (int s = 0; s < S; s++) {
+        lens[r * S + s] = p < 0 ? 0 : p + 1;
+        first[r * S + s] = p < 0 || window <= 0 ? 0 : max(0, p + 1 - window);
+    }
+}
+
+// The block tables of a pass's decode rows (src/dynamic/rows.rs `RowTabs`), one row of a sequence each: row r's sequence's table (row slot[r] of `tabs`, T entries a row) copied
+// to rows r dup .. r dup + dup - 1 of `out` (a call of the library's decode takes a row's query heads as `dup` / its parts' sequences: each finds its row's table at a stride),
+// the entries the row's position reads and writes (its window's first block, or the first, to its own). A padding row (slot or position negative) none: it reads and writes
+// no key. Grid (x, n): x blocks of 256 entries at a time a row.
+extern "C" __global__ void __launch_bounds__(256) row_tables(const int* tabs, long long T, const int* slot, const int* pos, int n, int window, int dup, int* out) {
+    const int r = blockIdx.y, s = r < n ? slot[r] : -1, p = r < n ? pos[r] : -1;
+    if (s < 0 || p < 0) return;
+    const int lo = window > 0 ? max(0, p + 1 - window) >> 4 : 0, hi = p >> 4;
+    for (int b = lo + blockIdx.x * 256 + threadIdx.x; b <= hi; b += gridDim.x * 256) {
+        const int v = tabs[(size_t)s * T + b];
+        for (int j = 0; j < dup; j++) out[((size_t)r * dup + j) * T + b] = v;
+    }
+}
+
+// A swap's copies (src/dynamic/swap.rs, R4d): item i is three words at items + 3 i, (source, destination, bytes), the bytes a multiple of 16 and both addresses 16-byte aligned;
+// either side may be pinned host memory mapped into the device's addresses (the swap area), which the kernel then reads or writes over the link itself. A block an item at a time,
+// its threads 16 bytes each: one launch moves a sequence's blocks of every layer, however scattered in their pools.
+extern "C" __global__ void __launch_bounds__(256) swap_copy(const unsigned long long* items, int n) {
+    for (int i = blockIdx.x; i < n; i += gridDim.x) {
+        const uint4* src = reinterpret_cast<const uint4*>(items[3 * i]);
+        uint4* dst = reinterpret_cast<uint4*>(items[3 * i + 1]);
+        const unsigned long long words = items[3 * i + 2] >> 4;
+        for (unsigned long long w = threadIdx.x; w < words; w += 256) dst[w] = src[w];
+    }
+}
+
+// A step's token ids for the embedding's lookup (src/dynamic/rows.rs: a step launched before the step before it has been read): row i's id is src[i] where that is a token
+// (0 or more), else the token the step before chose in its head row -1 - src[i] (tok: the head's argmax, an int a row); and, where ids32 is not null, the same as ints for
+// the operations that read the tokens (an n-gram embedding, routing by token).
+extern "C" __global__ void __launch_bounds__(256) step_ids(const int* src, const int* tok, long long* ids, int* ids32, int n) {
+    const int i = blockIdx.x * 256 + threadIdx.x;
+    if (i >= n) return;
+    const int s = src[i];
+    const int t = s >= 0 ? s : tok[-1 - s];
+    ids[i] = (long long)t;
+    if (ids32) ids32[i] = t;
 }
 
 // The sum over each row of V bf16 logits [rows, V] of exp((x - max) / temp): the normalizer of the host's top-p cut over a row's largest logits (src/sampler.rs). The difference and the quotient in fp32 as the host forms them (the same
@@ -415,6 +472,366 @@ extern "C" __global__ void expsum_bf16(const bf16* logits, int V, const float* m
         for (int o = 16; o > 0; o >>= 1) t += __shfl_xor_sync(0xffffffffu, t, o);
         if (threadIdx.x == 0) out[blockIdx.x] = t;
     }
+}
+
+// ---- The row a request's draw sees, made on the GPU (src/sampler.rs `Proc`, `Resolved`; src/kern/mod.rs `ProcGpu`): the penalties, a bias and the tokens taken out (an allowed list,
+// a grammar's mask, a least length) put on the model's row before its candidates, sums and buckets are made, so that the host draws from those of the row it would have made and
+// never reads the row. Row r of W (floats, V a row) is made from row src[r] of the step's bf16 logits; mask: `words` words a row (1 + (V + 31) / 32), the first nonzero where the row
+// has a mask, then token t's bit in word 1 + t / 32, bit t % 32.
+
+// Each token's logit where the row's mask allows it, -inf where it does not (as the host's sampler takes a token out). V a multiple of 8; grid (x, rows), 256 threads, eight tokens a thread
+// at a time.
+extern "C" __global__ void __launch_bounds__(256) proc_fill(const bf16* logits, int V, const int* src, const unsigned* mask, int words, float* W) {
+    const int r = blockIdx.y;
+    const bf16* row = logits + (size_t)src[r] * V;
+    const unsigned* m = mask + (size_t)r * words;
+    const bool held = m[0] != 0u;
+    float* out = W + (size_t)r * V;
+    for (int c = blockIdx.x * 256 + threadIdx.x; c * 8 < V; c += gridDim.x * 256) {
+        const uint4 q = *reinterpret_cast<const uint4*>(row + (size_t)c * 8);
+        const bf16* p = reinterpret_cast<const bf16*>(&q);
+        const unsigned mb = held ? (m[1 + (c >> 2)] >> ((c & 3) * 8)) & 0xFFu : 0xFFu;
+        float o[8];
+#pragma unroll
+        for (int k = 0; k < 8; k++) o[k] = ((mb >> k) & 1u) ? b2f(p[k]) : -INFINITY;
+        float4* d = reinterpret_cast<float4*>(out + (size_t)c * 8);
+        d[0] = make_float4(o[0], o[1], o[2], o[3]);
+        d[1] = make_float4(o[4], o[5], o[6], o[7]);
+    }
+}
+
+// The changed tokens' logits, after proc_fill on the same stream: entry i is (token, W's row, flags, said) at ent[i] and its bias at bias[i]; flags 1: a bias, 2: the repetition penalty,
+// 4: an end token put back at 0; said: the times the answer has said it (the presence and frequency penalties; 0: none); scal[row]: (repetition, presence, frequency, unused). Each made
+// from the model's logit as the host's sampler makes it, in its order and each operation rounded alone (no fused multiply-add): the bias added, -inf where the mask does not allow the
+// token, 0 where it is put back, divided by the repetition penalty where above 0 (else multiplied by it), the presence penalty plus the frequency penalty times said taken off. A token
+// is in a row's entries once.
+extern "C" __global__ void __launch_bounds__(256) proc_entries(const bf16* logits, int V, const int* src, const unsigned* mask, int words, const int4* ent, const float* bias, int n, const float4* scal, float* W) {
+    const int i = blockIdx.x * 256 + threadIdx.x;
+    if (i >= n) return;
+    const int4 e = ent[i];
+    const int t = e.x, r = e.y, flags = e.z;
+    const unsigned said = (unsigned)e.w;
+    const unsigned* m = mask + (size_t)r * words;
+    const bool ok = m[0] == 0u || ((m[1 + (t >> 5)] >> (t & 31)) & 1u) != 0u;
+    const float4 s = scal[r];
+    float x = b2f(logits[(size_t)src[r] * V + t]);
+    if (flags & 1) x = __fadd_rn(x, bias[i]);
+    if (!ok) x = -INFINITY;
+    if (flags & 4) x = 0.f;
+    if (flags & 2) x = x > 0.f ? __fdiv_rn(x, s.x) : __fmul_rn(x, s.x);
+    if (said) x = __fsub_rn(x, __fadd_rn(s.y, __fmul_rn(s.z, __uint2float_rn(said))));
+    W[(size_t)r * V + t] = x;
+}
+
+// A float's bits as an unsigned number that grows with the value (-0 and +0 the same).
+__device__ __forceinline__ unsigned f32_key(unsigned b) {
+    if (b == 0x80000000u) b = 0;
+    return (b & 0x80000000u) ? ~b : (b | 0x80000000u);
+}
+
+// `topk64_bf16` of rows of floats (W, V a row, a multiple of 8 and at least TOPK): row r's TOPK largest, largest first, equal values by the smaller index (-0 and +0 equal), into tok
+// and val at row dst[r] (null: r). Four histograms of 8 bits each find the TOPK-th largest key (the high byte over the row, each next byte over the values whose higher bytes are those
+// found); one pass in index order takes every value above it and the first of those equal to it, by block-wide counts; a last step ranks the TOPK. One block of 1024 threads a row.
+extern "C" __global__ void __launch_bounds__(1024) topk64_f32(const float* W, int V, const int* dst, int* tok, float* val) {
+    __shared__ unsigned hist[256];
+    __shared__ unsigned hist32[256 * 32];  // a lane's counters apart from the other lanes' (as topk64_impl's)
+    __shared__ unsigned sel[3];            // the key's bytes found so far, the values above them, how many equal ones to take
+    __shared__ int s_idx[TOPK];
+    __shared__ unsigned s_bits[TOPK];
+    __shared__ unsigned wg[32], we[32];
+    __shared__ unsigned run[2];
+    const uint4* row = reinterpret_cast<const uint4*>(W + (size_t)blockIdx.x * V);
+    const int nch = V / 8;  // eight floats: two 16-byte loads
+    const int lane0 = threadIdx.x & 31;
+    if (threadIdx.x == 0) {
+        sel[0] = 0;
+        sel[1] = 0;
+    }
+    for (int d = 0; d < 4; d++) {
+        const int shift = 24 - 8 * d;
+        for (int i = threadIdx.x; i < 256 * 32; i += blockDim.x) hist32[i] = 0;
+        __syncthreads();
+        const unsigned prefix = sel[0];
+        for (int c = threadIdx.x; c < nch; c += blockDim.x) {
+            const uint4 a = row[2 * c], b = row[2 * c + 1];
+            const unsigned u[8] = {a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w};
+#pragma unroll
+            for (int k = 0; k < 8; k++) {
+                const unsigned key = f32_key(u[k]);
+                if (d == 0 || (key >> (shift + 8)) == prefix) atomicAdd(&hist32[((key >> shift) & 0xFFu) * 32 + lane0], 1u);
+            }
+        }
+        __syncthreads();
+        for (int b = threadIdx.x; b < 256; b += blockDim.x) {
+            unsigned t = 0;
+            for (int l = 0; l < 32; l++) t += hist32[b * 32 + l];
+            hist[b] = t;
+        }
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            const unsigned want = TOPK - sel[1];
+            unsigned acc = 0;
+            int b = 255;
+            for (; b > 0; b--) {
+                if (acc + hist[b] >= want) break;
+                acc += hist[b];
+            }
+            sel[0] = (prefix << 8) | (unsigned)b;
+            sel[1] += acc;
+            sel[2] = want - acc;
+        }
+        __syncthreads();
+    }
+    const unsigned thr = sel[0], n_above = sel[1], need_eq = sel[2];
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, nwarps = blockDim.x >> 5;
+    if (threadIdx.x == 0) {
+        run[0] = 0;
+        run[1] = 0;
+    }
+    __syncthreads();
+    // the values above the threshold, and the first `need_eq` equal to it, in index order
+    for (int base = 0; base < nch; base += blockDim.x) {
+        const int c = base + threadIdx.x;
+        unsigned bits[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        unsigned gm = 0, em = 0;  // bit k: element k is above the threshold, equal to it
+        if (c < nch) {
+            const uint4 a = row[2 * c], b = row[2 * c + 1];
+            bits[0] = a.x;
+            bits[1] = a.y;
+            bits[2] = a.z;
+            bits[3] = a.w;
+            bits[4] = b.x;
+            bits[5] = b.y;
+            bits[6] = b.z;
+            bits[7] = b.w;
+#pragma unroll
+            for (int k = 0; k < 8; k++) {
+                const unsigned key = f32_key(bits[k]);
+                gm |= (key > thr ? 1u : 0u) << k;
+                em |= (key == thr ? 1u : 0u) << k;
+            }
+        }
+        const unsigned g = __popc(gm), e = __popc(em);
+        unsigned ig = g, ie = e;
+#pragma unroll
+        for (int o = 1; o < 32; o <<= 1) {
+            const unsigned tg = __shfl_up_sync(0xffffffffu, ig, o), te = __shfl_up_sync(0xffffffffu, ie, o);
+            if (lane >= o) {
+                ig += tg;
+                ie += te;
+            }
+        }
+        if (lane == 31) {
+            wg[warp] = ig;
+            we[warp] = ie;
+        }
+        __syncthreads();
+        unsigned wog = 0, woe = 0;
+        for (int w = 0; w < warp; w++) {
+            wog += wg[w];
+            woe += we[w];
+        }
+        unsigned tot_g = 0, tot_e = 0;
+        for (int w = 0; w < nwarps; w++) {
+            tot_g += wg[w];
+            tot_e += we[w];
+        }
+        unsigned og = run[0] + wog + ig - g, oe = run[1] + woe + ie - e;
+#pragma unroll
+        for (int k = 0; k < 8; k++) {
+            if ((gm >> k) & 1u) {
+                s_idx[og] = c * 8 + k;
+                s_bits[og] = bits[k];
+                og++;
+            }
+            if ((em >> k) & 1u) {
+                if (oe < need_eq) {
+                    s_idx[n_above + oe] = c * 8 + k;
+                    s_bits[n_above + oe] = bits[k];
+                }
+                oe++;
+            }
+        }
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            run[0] += tot_g;
+            run[1] += tot_e;
+        }
+        __syncthreads();
+    }
+    // the ranks: by key, largest first, the smaller index first among equal keys
+    if (threadIdx.x < TOPK) {
+        const int j = threadIdx.x;
+        const unsigned kj = f32_key(s_bits[j]);
+        const int ij = s_idx[j];
+        int rank = 0;
+        for (int m = 0; m < TOPK; m++) {
+            const unsigned km = f32_key(s_bits[m]);
+            rank += (km > kj || (km == kj && s_idx[m] < ij)) ? 1 : 0;
+        }
+        const size_t o = (size_t)(dst ? dst[blockIdx.x] : (int)blockIdx.x) * TOPK + rank;
+        tok[o] = ij;
+        val[o] = __uint_as_float(s_bits[j]);
+    }
+}
+
+// ---- A draw's weights (src/sampler.rs `weight`, `key`, `Query`, `View`): a token's weight is exp(q) for q = (x - max) / temp as a whole number of 2^-40, made by the host's float
+// operations in the host's order, each rounded alone, so that every sum of weights a draw takes is the host's to the bit, in any order (whole numbers); a token's key falls along the
+// draw's order (the larger logit first, the smaller token of equal ones). Rows of bf16 logits (the model's) or of floats (W, the rows the draws see); a token of -inf is in no sum.
+
+__device__ __forceinline__ unsigned long long draw_weight(float q) {
+    if (!(q > -32.f)) return 0ull;
+    if (q >= 0.f) return 1ull << 40;
+    const float k = rintf(__fmul_rn(q, __uint_as_float(0x3FB8AA3Bu)));
+    const float r = __fsub_rn(__fsub_rn(q, __fmul_rn(k, __uint_as_float(0x3F318000u))), __fmul_rn(k, __uint_as_float(0xB95E8083u)));
+    const unsigned c[6] = {0x3F000000u, 0x3E2AAAABu, 0x3D2AAAABu, 0x3C088889u, 0x3AB60B61u, 0x39500D01u};
+    float p = __uint_as_float(c[5]);
+#pragma unroll
+    for (int i = 4; i >= 0; i--) p = __fadd_rn(__fmul_rn(p, r), __uint_as_float(c[i]));
+    p = __fadd_rn(__fmul_rn(p, r), 1.f);
+    p = __fadd_rn(__fmul_rn(p, r), 1.f);
+    const unsigned b = __float_as_uint(p);
+    const unsigned long long m = (b & 0x7FFFFFu) | 0x800000u;
+    const int sh = (int)((b >> 23) & 0xFFu) - 127 - 23 + (int)k + 40;
+    return sh >= 0 ? (m << sh) : (sh > -64 ? (m >> -sh) : 0ull);
+}
+
+__device__ __forceinline__ unsigned long long draw_key(float x, int t) {
+    return ((unsigned long long)f32_key(__float_as_uint(x)) << 32) | (unsigned long long)(0xFFFFFFFFu - (unsigned)t);
+}
+
+__device__ __forceinline__ float draw_x(const bf16* row, int i) { return b2f(row[i]); }
+__device__ __forceinline__ float draw_x(const float* row, int i) { return row[i]; }
+
+// The sum over row blockIdx.x of the weights of its tokens (not -inf) about maxv[row] (its largest) at temp, into out[row]: a draw's total (src/sampler.rs `View::total`), made with a
+// step's candidates. One block of 1024 threads a row.
+template <typename T>
+__device__ void draw_total_impl(const T* rows, int V, const float* maxv, float temp, unsigned long long* out) {
+    const T* row = rows + (size_t)blockIdx.x * V;
+    const float mx = maxv[blockIdx.x];
+    unsigned long long acc = 0;
+    for (int i = threadIdx.x; i < V; i += blockDim.x) {
+        const float x = draw_x(row, i);
+        if (x > -INFINITY) acc += draw_weight(__fdiv_rn(__fsub_rn(x, mx), temp));
+    }
+    for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, o);
+    __shared__ unsigned long long sh[32];
+    if ((threadIdx.x & 31) == 0) sh[threadIdx.x >> 5] = acc;
+    __syncthreads();
+    if (threadIdx.x < 32) {
+        unsigned long long t = threadIdx.x < (blockDim.x >> 5) ? sh[threadIdx.x] : 0ull;
+        for (int o = 16; o > 0; o >>= 1) t += __shfl_xor_sync(0xffffffffu, t, o);
+        if (threadIdx.x == 0) out[blockIdx.x] = t;
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(1024) draw_total_bf16(const bf16* rows, int V, const float* maxv, float temp, unsigned long long* out) {
+    draw_total_impl(rows, V, maxv, temp, out);
+}
+extern "C" __global__ void __launch_bounds__(1024) draw_total_f32(const float* rows, int V, const float* maxv, float temp, unsigned long long* out) {
+    draw_total_impl(rows, V, maxv, temp, out);
+}
+
+// A query of a row (src/sampler.rs `Query`): its tokens (not -inf) whose keys lie in [lo, hi] and whose quotients (x - mx) / temp are qmin or more, in 256 bins by bits shift ..
+// shift + 8 of their keys: each bin's count, weight, least and greatest key, into out (count: 256 u32, then weight, least, most: 256 u64 each). A thread takes a run of the row and
+// adds to the bins once a run of tokens of one bin ends (a flat row's tokens are mostly of a few bins). One block of 1024 threads.
+template <typename T>
+__device__ void draw_bins_impl(const T* row, int V, float mx, float temp, unsigned long long lo, unsigned long long hi, float qmin, int shift, unsigned* out) {
+    __shared__ unsigned cnt[256];
+    __shared__ unsigned long long wsum[256], least[256], most[256];
+    for (int i = threadIdx.x; i < 256; i += blockDim.x) {
+        cnt[i] = 0;
+        wsum[i] = 0;
+        least[i] = ~0ull;
+        most[i] = 0;
+    }
+    __syncthreads();
+    const int per = (V + blockDim.x - 1) / blockDim.x, a = threadIdx.x * per, e = min(V, a + per);
+    int bin = -1;
+    unsigned c = 0;
+    unsigned long long w = 0, kl = ~0ull, kh = 0;
+    for (int i = a; i < e; i++) {
+        const float x = draw_x(row, i);
+        if (!(x > -INFINITY)) continue;
+        const unsigned long long k = draw_key(x, i);
+        const float q = __fdiv_rn(__fsub_rn(x, mx), temp);
+        if (k < lo || k > hi || !(q >= qmin)) continue;
+        const int b = (int)((k >> shift) & 0xFFull);
+        if (b != bin) {
+            if (bin >= 0) {
+                atomicAdd(&cnt[bin], c);
+                atomicAdd(&wsum[bin], w);
+                atomicMin(&least[bin], kl);
+                atomicMax(&most[bin], kh);
+            }
+            bin = b;
+            c = 0;
+            w = 0;
+            kl = ~0ull;
+            kh = 0;
+        }
+        c++;
+        w += draw_weight(q);
+        kl = min(kl, k);
+        kh = max(kh, k);
+    }
+    if (bin >= 0) {
+        atomicAdd(&cnt[bin], c);
+        atomicAdd(&wsum[bin], w);
+        atomicMin(&least[bin], kl);
+        atomicMax(&most[bin], kh);
+    }
+    __syncthreads();
+    unsigned long long* o64 = reinterpret_cast<unsigned long long*>(out + 256);
+    for (int i = threadIdx.x; i < 256; i += blockDim.x) {
+        out[i] = cnt[i];
+        o64[i] = wsum[i];
+        o64[256 + i] = least[i];
+        o64[512 + i] = most[i];
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(1024) draw_bins_bf16(const bf16* row, int V, float mx, float temp, unsigned long long lo, unsigned long long hi, float qmin, int shift, unsigned* out) {
+    draw_bins_impl(row, V, mx, temp, lo, hi, qmin, shift, out);
+}
+extern "C" __global__ void __launch_bounds__(1024) draw_bins_f32(const float* row, int V, float mx, float temp, unsigned long long lo, unsigned long long hi, float qmin, int shift, unsigned* out) {
+    draw_bins_impl(row, V, mx, temp, lo, hi, qmin, shift, out);
+}
+
+// The tokens of a query (as `draw_bins`', without the bins): token and logit into tok and val, cap at most, how many there are into n[0] (zeroed before; more than cap: some left out).
+template <typename T>
+__device__ void draw_tokens_impl(const T* row, int V, float mx, float temp, unsigned long long lo, unsigned long long hi, float qmin, int cap, unsigned* n, int* tok, float* val) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < V; i += gridDim.x * blockDim.x) {
+        const float x = draw_x(row, i);
+        if (!(x > -INFINITY)) continue;
+        const unsigned long long k = draw_key(x, i);
+        if (k < lo || k > hi || !(__fdiv_rn(__fsub_rn(x, mx), temp) >= qmin)) continue;
+        const unsigned j = atomicAdd(n, 1u);
+        if (j < (unsigned)cap) {
+            tok[j] = i;
+            val[j] = x;
+        }
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(256) draw_tokens_bf16(const bf16* row, int V, float mx, float temp, unsigned long long lo, unsigned long long hi, float qmin, int cap, unsigned* n, int* tok, float* val) {
+    draw_tokens_impl(row, V, mx, temp, lo, hi, qmin, cap, n, tok, val);
+}
+extern "C" __global__ void __launch_bounds__(256) draw_tokens_f32(const float* row, int V, float mx, float temp, unsigned long long lo, unsigned long long hi, float qmin, int cap, unsigned* n, int* tok, float* val) {
+    draw_tokens_impl(row, V, mx, temp, lo, hi, qmin, cap, n, tok, val);
+}
+
+// Every float q from -0 down to -32 (bits 0x80000001 .. 0xC2000000) weighed (`draw_weight`): the sum of the weights and the sum of each weight times its q's bits, mod 2^64, into
+// out[0], out[1] (zeroed before), against the host's (`weightcheck`). Grid-stride.
+extern "C" __global__ void __launch_bounds__(256) draw_weight_sums(unsigned long long* out) {
+    unsigned long long s = 0, h = 0;
+    for (unsigned long long b = 0x80000001ull + blockIdx.x * 256ull + threadIdx.x; b <= 0xC2000000ull; b += (unsigned long long)gridDim.x * 256ull) {
+        const unsigned long long w = draw_weight(__uint_as_float((unsigned)b));
+        s += w;
+        h += w * b;
+    }
+    atomicAdd(&out[0], s);
+    atomicAdd(&out[1], h);
 }
 
 // The 16-bit values of a [n] (a page's [16, H, 2 D]) that are not b's: added to count[0] (all of them) and, by head and by key or value, to count[1 + 2 h + half] (the KV cache's check against a bf16 copy).
@@ -602,7 +1019,7 @@ __device__ __forceinline__ int swz(int r, int c) { return r * HD + ((c ^ (r & 7)
 
 template <int WARPS, int BN>
 __device__ __forceinline__ void prefill_attn_t(const bf16* __restrict__ q, int q_stride, const bf16* __restrict__ kv, bf16* __restrict__ out, int out_stride, int n, int start,
-                                               int heads, int kv_heads, float scale_log2) {
+                                               int heads, int kv_heads, float scale_log2, const int* __restrict__ table) {
     constexpr int BM = WARPS * 16;
     constexpr int NT = WARPS * 32;
     constexpr int NJ = BN / 8;  // 8-key tiles of the score tile
@@ -632,7 +1049,9 @@ __device__ __forceinline__ void prefill_attn_t(const bf16* __restrict__ q, int q
             int r = i >> 4, c = i & 15;
             int kt = kb * BN + r;
             bool ok = kt < kv_len;
-            const bf16* src = kv + ((size_t)(ok ? kt : 0) * kv_heads + hk) * 256 + c * 8;
+            // (a position's row: through the block table where the keys are paged, `table[p / 16] * 16 + p % 16`; else the position)
+            const int row = !ok ? 0 : table ? (table[kt >> 4] << 4) + (kt & 15) : kt;
+            const bf16* src = kv + ((size_t)row * kv_heads + hk) * 256 + c * 8;
             cp16(s_addr(dk + swz(r, c)), src, ok);
             cp16(s_addr(dv + swz(r, c)), src + HD, ok);
         }
@@ -753,10 +1172,10 @@ __device__ __forceinline__ void prefill_attn_t(const bf16* __restrict__ q, int q
 }
 
 // dynamic shared memory: (16 WARPS + 4 BN) * 256 bytes
-extern "C" __global__ void __launch_bounds__(128, 1) prefill_attn_w4_b64(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2) { prefill_attn_t<4, 64>(q, qs, kv, out, os, n, start, heads, kvh, sl2); }
-extern "C" __global__ void __launch_bounds__(256, 1) prefill_attn_w8_b64(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2) { prefill_attn_t<8, 64>(q, qs, kv, out, os, n, start, heads, kvh, sl2); }
-extern "C" __global__ void __launch_bounds__(128, 2) prefill_attn_w4_b32(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2) { prefill_attn_t<4, 32>(q, qs, kv, out, os, n, start, heads, kvh, sl2); }
-extern "C" __global__ void __launch_bounds__(256, 1) prefill_attn_w8_b32(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2) { prefill_attn_t<8, 32>(q, qs, kv, out, os, n, start, heads, kvh, sl2); }
+extern "C" __global__ void __launch_bounds__(128, 1) prefill_attn_w4_b64(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2, const int* table) { prefill_attn_t<4, 64>(q, qs, kv, out, os, n, start, heads, kvh, sl2, table); }
+extern "C" __global__ void __launch_bounds__(256, 1) prefill_attn_w8_b64(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2, const int* table) { prefill_attn_t<8, 64>(q, qs, kv, out, os, n, start, heads, kvh, sl2, table); }
+extern "C" __global__ void __launch_bounds__(128, 2) prefill_attn_w4_b32(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2, const int* table) { prefill_attn_t<4, 32>(q, qs, kv, out, os, n, start, heads, kvh, sl2, table); }
+extern "C" __global__ void __launch_bounds__(256, 1) prefill_attn_w8_b32(const bf16* q, int qs, const bf16* kv, bf16* out, int os, int n, int start, int heads, int kvh, float sl2, const int* table) { prefill_attn_t<8, 32>(q, qs, kv, out, os, n, start, heads, kvh, sl2, table); }
 
 // ---- KV calibration (src/calib.rs; the plugin's kvcal rule) ---------------------------------------------------------------------------
 // The keys or values of tokens are bf16 bits x [T, C] (C = kv heads * 128 channels, rows `stride` elements apart). A value's exponent >> 1 is bits 8 to 14: 128 bins; a channel's window is 8
@@ -873,7 +1292,6 @@ __device__ __forceinline__ void gemm3_nt_t(const bf16* __restrict__ X, const bf1
     const int n_tile = (pid % in_group) / gsz;
     const int m0 = m_tile * BM, n0 = n_tile * BN;
     const int nk = K / BK;
-    const int mi = lane >> 3, r8 = lane & 7;
 
     // the loads: this thread's chunk of each pass, as byte offsets from the start of the operand's k-tile
     const int lr = F::row(tid), lc = F::chunk(tid);
@@ -1030,13 +1448,43 @@ extern "C" __global__ void __launch_bounds__(256, 1) gemm3f_256x128_s3(const bf1
 extern "C" __global__ void __launch_bounds__(256, 1) gemm3f_128x256_b64_s2(const bf16* X, const bf16* W, bf16* Y, int M, int N, int K) { gemm3_nt_t<128, 256, 64, 2, 4, 2, 8, true>(X, W, Y, M, N, K); }
 extern "C" __global__ void __launch_bounds__(256, 1) gemm3f_128x256_s3(const bf16* X, const bf16* W, bf16* Y, int M, int N, int K) { gemm3_nt_t<128, 256, 32, 2, 4, 3, 8, true>(X, W, Y, M, N, K); }
 
+// ---- the next product's bytes into L2 (every kind's small kernels: a norm, the attention's preparation, an activation) -----------------------------------------------------------------------------------------
+// The memory is idle while a small kernel (a norm, the q/k/v preparation and the attention after it, gelu) runs; its spare blocks (blockIdx.y or .z above 0) ask L2 for
+// the start of each first-wave block of the skinny product that comes next (kernels/skinny.cu: block r's steps at data + r dstride, its scales at scales + r sstride),
+// dhead and shead bytes of them (multiples of 128), a prefetch every 2^shift bytes, so that the product starts on L2's copies. data null: nothing.
+struct NextPf {
+    const unsigned char* data;
+    const unsigned char* scales;
+    long long dstride, sstride;
+    int dhead, shead, regions, shift;
+};
+
+__device__ __forceinline__ void next_pf(const NextPf& p, int b, int nb) {
+    if (!p.data) return;
+    const int dl = p.dhead >> p.shift, per = dl + (p.shead >> p.shift);
+    for (int i = b * blockDim.x + threadIdx.x; i < p.regions * per; i += nb * blockDim.x) {
+        const int r = i / per, j = i - r * per;
+        const unsigned char* a = j < dl ? p.data + r * p.dstride + ((size_t)j << p.shift) : p.scales + r * p.sstride + ((size_t)(j - dl) << p.shift);
+#if defined(__HIP_PLATFORM_AMD__)
+        (void)a;  // (RDNA has no prefetch into L2)
+#else
+        asm volatile("prefetch.global.L2::evict_last [%0];" ::"l"(a));
+#endif
+    }
+}
+
 #include "qwen35.cu"  // Qwen3.5's kernels
 #include "moe.cu"     // the mixture-of-experts layer's (the router, the activations between the experts' products)
+#include "residual.cu"  // the residual rules' and the input-scaled norm's, every family's (after qwen35.cu: its helpers)
 #include "moe_rows.cu"  // the sparse experts' (the second product for the neurons that are not zero)
 #include "moe_hb.cu"    // the Hummingbird experts' (codebook rows: the rotation, the two products, the weighted sum and the rotation back)
+#include "moe_hbg.cu"   // the Hummingbird experts' for every mixture of experts (any width, gated or not, a block of 32 to 1,024; after moe_hb.cu: its helpers)
 #include "nemotron.cu"  // Nemotron 3 Super's kernels (after qwen35.cu: they use its helpers)
+#include "short_conv.cu"  // the gated short convolution's (LFM's conv layers)
 #include "gemma4.cu"   // Gemma 4's kernels (after qwen35.cu: they use its helpers)
+#include "attn.cu"     // the attention layer kind's, every family's (after gemma4.cu and qwen35.cu: they use their helpers)
 #include "glm.cu"  // GLM-5.3-Flash's kernels (after qwen35.cu and moe.cu: they use their helpers)
+#include "mla.cu"  // the latent attention layer kind's and the indexer's (after glm.cu and qwen35.cu: they use their helpers)
 #include "glm_cb.cu"  // GLM-5.3-Flash's routed experts as codebook rows (after glm.cu)
 #include "kimi.cu"  // Kimi-K3's kernels (after glm.cu and moe.cu)
 #include "dsv4.cu"  // DeepSeek-V4's kernels (after glm.cu and moe.cu: they use their helpers)
@@ -1046,3 +1494,4 @@ extern "C" __global__ void __launch_bounds__(256, 1) gemm3f_128x256_s3(const bf1
 #include "vision.cu"  // its vision tower's (after the prompt attention's helpers)
 #include "skinny.cu"  // the four-, five- and six-bit block layouts' products for a few rows (a decode step's and a verification's)
 #include "tp.cu"  // a model's layers across the GPUs of one machine: the gather of the slices of a product's rows
+#include "fold.cu"  // R17: the GPU library's kernels the engine runs from its own fatbin (gpu/glyd_gpu_kernels.h, the library's own source)

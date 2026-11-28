@@ -1,6 +1,7 @@
 //! Rotary position embedding, as transformers computes it: inverse frequencies in f32, angles pos x inv_freq in f32, cos and sin times
 //! the scaling's attention factor.
 
+use super::Libm;
 use crate::runtime::kinds::{Rope, RopeScaling, RopeStyle};
 
 /// The `dim / 2` inverse frequencies (the angles past `freqs` are 0) and the attention factor that multiplies cos and sin, for a
@@ -8,23 +9,23 @@ use crate::runtime::kinds::{Rope, RopeScaling, RopeStyle};
 /// transformers' `ROPE_INIT_FUNCTIONS`, in f64 where it uses Python floats.
 pub fn inv_freq_at(r: &Rope, seq_len: u32) -> (Vec<f32>, f32) {
     let (dim, fd) = (r.dim, r.freq_dim as f64);
-    let pos_freq = |i: usize, base: f64| base.powf((2 * i) as f64 / fd);
+    let pos_freq = |i: usize, base: f64| base.lpowf((2 * i) as f64 / fd);
     let plain = |base: f64| -> Vec<f64> { (0..dim / 2).map(|i| if i < r.freqs { 1.0 / pos_freq(i, base) } else { 0.0 }).collect() };
     let (f, af): (Vec<f64>, f64) = match &r.scaling {
         RopeScaling::None => (plain(r.theta), 1.0),
         RopeScaling::Linear { factor } => (plain(r.theta).into_iter().map(|v| v / factor).collect(), 1.0),
         RopeScaling::DynamicNtk { factor, max_positions } => {
             let (seq, max) = (seq_len.max(*max_positions) as f64, *max_positions as f64);
-            let base = r.theta * ((factor * seq / max) - (factor - 1.0)).powf(fd / (fd - 2.0));
+            let base = r.theta * ((factor * seq / max) - (factor - 1.0)).lpowf(fd / (fd - 2.0));
             (plain(base), 1.0)
         }
         RopeScaling::Yarn { factor, original_max, beta_fast, beta_slow, mscale, mscale_all_dim, attention_factor, truncate } => {
-            let get = |s: f64, m: f64| if s <= 1.0 { 1.0 } else { 0.1 * m * s.ln() + 1.0 };
+            let get = |s: f64, m: f64| if s <= 1.0 { 1.0 } else { 0.1 * m * s.lln() + 1.0 };
             let af = attention_factor.unwrap_or(match (mscale, mscale_all_dim) {
                 (Some(m), Some(a)) if *m != 0.0 && *a != 0.0 => get(*factor, *m) / get(*factor, *a),
                 _ => get(*factor, 1.0),
             });
-            let corr = |rot: f64| (fd * (*original_max as f64 / (rot * 2.0 * std::f64::consts::PI)).ln()) / (2.0 * r.theta.ln());
+            let corr = |rot: f64| (fd * (*original_max as f64 / (rot * 2.0 * std::f64::consts::PI)).lln()) / (2.0 * r.theta.lln());
             let (mut lo, mut hi) = (corr(*beta_fast), corr(*beta_slow));
             if *truncate {
                 (lo, hi) = (lo.floor(), hi.ceil());
@@ -63,7 +64,7 @@ pub fn inv_freq_at(r: &Rope, seq_len: u32) -> (Vec<f32>, f32) {
         }
         RopeScaling::LongRope { short, long, original_max, max_positions, attention_factor } => {
             let factor = *max_positions as f64 / *original_max as f64;
-            let af = attention_factor.unwrap_or(if factor <= 1.0 { 1.0 } else { (1.0 + factor.ln() / (*original_max as f64).ln()).sqrt() });
+            let af = attention_factor.unwrap_or(if factor <= 1.0 { 1.0 } else { (1.0 + factor.lln() / (*original_max as f64).lln()).sqrt() });
             let ext = if seq_len > *original_max { long } else { short };
             ((0..dim / 2).map(|i| 1.0 / (ext[i] * pos_freq(i, r.theta))).collect(), af)
         }
@@ -78,31 +79,35 @@ pub fn inv_freq(r: &Rope) -> (Vec<f32>, f32) {
 
 /// Rotates one head `x` (its first `r.dim` values) to position `pos`.
 pub fn apply(r: &Rope, inv: &[f32], af: f32, x: &mut [f32], pos: u32) {
+    turn(r, inv, af, x, pos, |v| v)
+}
+
+/// `apply` in bf16 arithmetic, as transformers' eager rope of bf16 tensors: cos and sin rounded to bf16, each product rounded and their
+/// sum rounded.
+pub fn apply_bf16(r: &Rope, inv: &[f32], af: f32, x: &mut [f32], pos: u32) {
+    turn(r, inv, af, x, pos, super::bf16)
+}
+
+fn turn(r: &Rope, inv: &[f32], af: f32, x: &mut [f32], pos: u32, rd: impl Fn(f32) -> f32) {
     let half = r.dim / 2;
     let cs: Vec<(f32, f32)> = inv
         .iter()
         .map(|&f| {
             let a = pos as f32 * f;
-            (((a as f64).cos() as f32) * af, ((a as f64).sin() as f32) * af)
+            (rd(((a as f64).lcos() as f32) * af), rd(((a as f64).lsin() as f32) * af))
         })
         .collect();
-    match r.style {
-        RopeStyle::Half => {
-            for i in 0..half {
-                let (c, s) = cs[i];
-                let (a, b) = (x[i], x[i + half]);
-                x[i] = a * c - b * s;
-                x[i + half] = b * c + a * s;
-            }
+    let pair = |i: usize, j: usize| -> (usize, usize) {
+        match r.style {
+            RopeStyle::Half => (i, i + j),
+            RopeStyle::Interleaved => (2 * i, 2 * i + 1),
         }
-        RopeStyle::Interleaved => {
-            for i in 0..half {
-                let (c, s) = cs[i];
-                let (a, b) = (x[2 * i], x[2 * i + 1]);
-                x[2 * i] = a * c - b * s;
-                x[2 * i + 1] = b * c + a * s;
-            }
-        }
+    };
+    for (i, &(c, s)) in cs.iter().enumerate().take(half) {
+        let (ia, ib) = pair(i, half);
+        let (a, b) = (x[ia], x[ib]);
+        x[ia] = rd(rd(a * c) - rd(b * s));
+        x[ib] = rd(rd(b * c) + rd(a * s));
     }
 }
 
@@ -116,7 +121,7 @@ mod tests {
     fn rotations() {
         for r in [Rope::plain(10_000.0, 8), Rope::proportional(1e6, 8, 0.5), Rope { style: RopeStyle::Interleaved, ..Rope::plain(100.0, 8) }] {
             let (inv, af) = inv_freq(&r);
-            let x: Vec<f32> = (0..10).map(|i| (i as f32 * 0.7).sin()).collect();
+            let x: Vec<f32> = (0..10).map(|i| (i as f32 * 0.7).lsin()).collect();
             let mut y = x.clone();
             apply(&r, &inv, af, &mut y, 0);
             assert_eq!(x, y);
@@ -136,6 +141,26 @@ mod tests {
         let r = Rope::proportional(1e6, 16, 0.25);
         let (inv, _) = inv_freq(&r);
         assert_eq!((inv.len(), inv.iter().filter(|&&f| f != 0.0).count()), (8, 2));
-        assert_eq!(inv[1], 1.0 / 1e6f32.powf(2.0 / 16.0));
+        assert_eq!(inv[1], 1.0 / 1e6f32.lpowf(2.0 / 16.0));
+    }
+
+    /// The bf16 form: each pair as bf16(bf16(a c) - bf16(b s)) and bf16(bf16(b c) + bf16(a s)) with bf16 cos and sin, by hand; and not the
+    /// f32 rotation rounded once, on some pair.
+    #[test]
+    fn the_bf16_rotation() {
+        use crate::runtime::reference::bf16;
+        let r = Rope::plain(10_000.0, 8);
+        let (inv, af) = inv_freq(&r);
+        let x: Vec<f32> = (0..8).map(|i| bf16((i as f32 * 0.7).lsin() * 3.0)).collect();
+        let (mut y, mut z) = (x.clone(), x.clone());
+        apply_bf16(&r, &inv, af, &mut y, 1234);
+        apply(&r, &inv, af, &mut z, 1234);
+        for i in 0..4 {
+            let a = 1234f32 * inv[i];
+            let (c, s) = (bf16((a as f64).lcos() as f32), bf16((a as f64).lsin() as f32));
+            assert_eq!(y[i], bf16(bf16(x[i] * c) - bf16(x[i + 4] * s)));
+            assert_eq!(y[i + 4], bf16(bf16(x[i + 4] * c) + bf16(x[i] * s)));
+        }
+        assert!(y.iter().zip(&z).any(|(a, b)| *a != bf16(*b)));
     }
 }

@@ -4,7 +4,7 @@
 use crate::args::Args;
 use crate::ffi::{err, Result};
 
-pub const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | connect [TOOL] | doctor [--json | --bundle [FILE]] [--no-logs] | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | fit MODEL[:LEVEL] [--machine NAME|FILE] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5), wren (about 4.5) or hummingbird (Nemotron 3 Super's experts at about 3)";
+pub const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | connect [TOOL] | doctor [--json | --bundle [FILE]] [--no-logs] | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | fit MODEL[:LEVEL] [--machine NAME|FILE] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), linnet (about 5.5), wren (about 4.5) or hummingbird (a mixture of experts' routed experts at about 3)";
 
 /// The commands of the engine that `glyd` takes as its own where the engine is linked (the same words as `glyd-engine`'s): what a model is run, served, fetched, packed-for-this-GPU, checked or costed with.
 pub const COMMANDS: &[&str] = &[
@@ -125,6 +125,8 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
         Some("verify") => std::process::exit(crate::cli::verify(&a)),
         // one benchmark harness over HTTP, its regression gate and the speed bar (docs/bench.md)
         Some("bench") => std::process::exit(crate::bench::cmd(&a)),
+        // the quality suite of a server, a lossy pack's card against the lossless level, the cards side by side (src/quality.rs, docs/quality.md)
+        Some("quality") => std::process::exit(crate::quality::cmd(&a)),
         Some("prepare") => std::process::exit(crate::cli::prepare_cmd(&a)),
         // the cost profile of a model at a level, and this machine's memory tiers (docs/cost-profile.md)
         Some("costs") => crate::costs::costs_cmd(&a),
@@ -133,16 +135,24 @@ pub fn run(prog: &str, mut a: Args, dev: Dev) -> Result<()> {
         Some("fit") => std::process::exit(crate::plan::fit_cmd(&a)),
         // a range of a model's layers as a process: glyd-range/1 on the standard input and output (docs/range-worker.md)
         Some("rangeworker") => crate::dynamic::range::worker(&a),
-        // Qwen3.8-Flash-Next behind glyd-hummingbird's tools/qwen_shim.py: one JSON request a line on stdin, one answer a line on stdout
-        // (with --port or --host: the HTTP server, the chat page and the OpenAI and Anthropic APIs; else the JSON-lines protocol on the standard input)
+        // Qwen3.8-Flash-Next with its packs of codebook experts: the HTTP server (the chat page, the OpenAI and Anthropic APIs) on the description executor
         Some("qwenbench") => crate::qwen_tools::bench(&a),
         Some("qwenmcp") => crate::qwen_tools::mcp(&a),
-        Some("qwenget") => crate::qwen4x_serve::get(a.need(1, "REPO")?, std::path::Path::new(a.need(2, "DIR")?), &a),
+        Some("qwenget") => crate::dynamic::qwen4x::get(a.need(1, "REPO")?, std::path::Path::new(a.need(2, "DIR")?), &a),
         Some("qwenserve") if a.has("port") || a.has("host") => {
-            crate::qwen4x_serve::http(std::path::Path::new(a.need(1, "CKPT")?), std::path::Path::new(a.need(2, "PACK")?), &a)
+            crate::dynamic::qwen4x::http(std::path::Path::new(a.need(1, "CKPT")?), std::path::Path::new(a.need(2, "PACK")?), &a)
         }
-        Some("qwenserve") => crate::qwen4x_serve::serve(std::path::Path::new(a.need(1, "CKPT")?), std::path::Path::new(a.need(2, "PACK")?), &a),
-        Some(c) if dev.is_some() => (dev.unwrap())(c, &a),
+        // (the JSON-lines protocol on the standard input was the family's own engine's; only development scripts spoke it: tools/oneshot, tools/runpod/jobs,
+        // research/qwen-kld)
+        Some("qwenserve") => err(
+            "qwenserve serves over HTTP: qwenserve CKPT PACK --port PORT, then POST /v1/completions (a prompt of token ids, max_tokens, logprobs) in place of a \
+             JSON line on the standard input, a protocol of the model's own engine, which is gone",
+        ),
+        // (a development command: an engine no plan sized takes the GPU's free memory, and says so here: src/dynamic/rows.rs `free_sized`)
+        Some(c) if dev.is_some() => {
+            crate::dynamic::size_by_free_memory();
+            (dev.unwrap())(c, &a)
+        }
         _ => err(USAGE),
     }
 }

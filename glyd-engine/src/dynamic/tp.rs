@@ -8,20 +8,14 @@
 //! carry it.
 
 use super::{Opts, Stage};
-use crate::dev::{Buf, Dev, Kernel};
-use crate::ffi::{cu, driver, err, Error, Result, Stream};
+use crate::dev::{Buf, Dev};
+use crate::ffi::{err, Error, Result, Stream};
 use crate::launch;
-use crate::model::Sample;
+use crate::sched::Sample;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
-
-macro_rules! kname {
-    ($n:literal) => {
-        $n
-    };
-}
 
 /// kernels/tp.cu's blocks a gather.
 const BLOCKS: usize = 16;
@@ -127,8 +121,8 @@ pub struct Comm {
     pub rank: usize,
     pub n: usize,
     group: Arc<Group>,
-    gather: Kernel,
-    gather_ll: Option<Kernel>,
+    gather: crate::kt::tp_gather,
+    gather_ll: Option<crate::kt::tp_gather_ll>,
     ch: Vec<Chan>,
     streams: RefCell<Vec<Stream>>,
     min_bytes: usize,
@@ -146,14 +140,7 @@ pub static GATHERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Whether every GPU of `devices` can write to every other directly (peer access), as the layers across GPUs need.
 pub fn reach(devices: &[i32]) -> bool {
-    let Ok(d) = driver() else { return false };
-    devices.iter().all(|&a| {
-        devices.iter().filter(|&&b| b != a).all(|&b| {
-            let mut can = 0;
-            // SAFETY: a host out-pointer.
-            unsafe { (d.cuDeviceCanAccessPeer)(&mut can, a, b) == 0 && can != 0 }
-        })
-    })
+    devices.iter().all(|&a| devices.iter().filter(|&&b| b != a).all(|&b| crate::dev::can_reach(a, b)))
 }
 
 /// The group this thread's GPU is in (None: a GPU on its own).
@@ -165,22 +152,9 @@ impl Comm {
     /// This thread's GPU (`dev`, current) joins the group as `rank`: it can reach every other GPU of the group (peer access; two places on one GPU share its
     /// memory), makes its staging and flags, and waits for the others' to make its table of them. Every GPU of the group calls it at once.
     pub fn join(g: &Arc<Group>, rank: usize, dev: &Dev) -> Result<Rc<Comm>> {
-        let (n, d) = (g.devices.len(), driver()?);
+        let n = g.devices.len();
         for &peer in g.devices.iter().filter(|&&p| p != dev.ordinal) {
-            let (mut can, mut ctx, mut pd) = (0, std::ptr::null_mut(), 0);
-            // SAFETY: host out-pointers; the peer's primary context is retained for the process, as `Dev::new` does; 704: access already on.
-            unsafe {
-                cu("cuDeviceCanAccessPeer", (d.cuDeviceCanAccessPeer)(&mut can, dev.ordinal, peer))?;
-                if can == 0 {
-                    return err(format!("GPU {} cannot reach GPU {peer} directly (no peer access): the layers across GPUs need it", dev.ordinal));
-                }
-                cu("cuDeviceGet", (d.cuDeviceGet)(&mut pd, peer))?;
-                cu("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, pd))?;
-                let r = (d.cuCtxEnablePeerAccess)(ctx, 0);
-                if r != 0 && r != 704 {
-                    cu("cuCtxEnablePeerAccess", r)?;
-                }
-            }
+            dev.reach_peer(peer).map_err(|e| Error(format!("{}: the layers across GPUs need it", e.msg)))?;
         }
         dev.make_current()?;
         let mut ch = Vec::new();
@@ -209,12 +183,12 @@ impl Comm {
         let min_bytes = crate::tune!("GLYD_TP_MIN_MB").and_then(|v| v.parse::<usize>().ok()).map_or(MIN_BYTES, |m| m << 20);
         // (GLYD_TP_LL=0 in a development build: every gather the regular kind, to compare)
         let ll = crate::tune!("GLYD_TP_LL").is_none_or(|v| v != "0");
-        let gather_ll = if ll { Some(dev.kernel(kname!("tp_gather_ll"))?) } else { None };
+        let gather_ll = if ll { Some(dev.typed::<crate::kt::tp_gather_ll>()?) } else { None };
         let c = Rc::new(Comm {
             rank,
             n,
             group: g.clone(),
-            gather: dev.kernel(kname!("tp_gather"))?,
+            gather: dev.typed()?,
             gather_ll,
             ch,
             streams: RefCell::new(Vec::new()),
@@ -395,6 +369,8 @@ enum Cmd {
     Logits,
     Logprob(f32),
     Describe,
+    /// A question of the last pass's head rows, answered on the first GPU's engine as one GPU's step answers it (`split::RowAsk`).
+    Row(super::split::RowAsk),
 }
 
 enum Out {
@@ -403,6 +379,7 @@ enum Out {
     Logits(Result<Vec<f32>>),
     Logprob(Result<f32>),
     Text(String),
+    Row(super::split::RowGot),
 }
 
 struct Worker {
@@ -462,6 +439,7 @@ impl Tp {
                             Cmd::Logits => Out::Logits(e.logits()),
                             Cmd::Logprob(l) => Out::Logprob(e.logprob(l)),
                             Cmd::Describe => Out::Text(e.describe()),
+                            Cmd::Row(a) => Out::Row(super::split::row_ask(&mut e, a)),
                         };
                         if otx.send(out).is_err() {
                             break;
@@ -484,7 +462,7 @@ impl Tp {
             }
         }
         if !errs.is_empty() {
-            let pick = errs.iter().position(|e| !e.0.contains("another GPU's thread")).unwrap_or(0);
+            let pick = errs.iter().position(|e| !e.msg.contains("another GPU's thread")).unwrap_or(0);
             return Err(errs.swap_remove(pick));
         }
         Ok(Tp { w, n: 0, ctx: o.ctx.div_ceil(16) * 16, eos })
@@ -500,10 +478,10 @@ impl Tp {
         for wk in &self.w {
             let o = wk.rx.recv().map_err(|_| gone())?;
             let failed = match &o {
-                Out::Done(Err(e)) => Some(e.0.clone()),
-                Out::Sample(Err(e)) => Some(e.0.clone()),
-                Out::Logits(Err(e)) => Some(e.0.clone()),
-                Out::Logprob(Err(e)) => Some(e.0.clone()),
+                Out::Done(Err(e)) => Some(e.msg.clone()),
+                Out::Sample(Err(e)) => Some(e.msg.clone()),
+                Out::Logits(Err(e)) => Some(e.msg.clone()),
+                Out::Logprob(Err(e)) => Some(e.msg.clone()),
                 _ => None,
             };
             bad = bad.or(failed);
@@ -573,19 +551,31 @@ impl Tp {
         self.ctx
     }
 
+    /// Tokens in the cache.
+    pub fn held(&self) -> usize {
+        self.n
+    }
+
+    pub fn eos(&self) -> &[i64] {
+        &self.eos
+    }
+
     /// A reply as `Split::reply` gives one.
-    pub fn reply(&mut self, prompt: &[u32], o: &crate::model::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::model::Finish)> {
-        use crate::model::Finish;
+    pub fn reply(&mut self, prompt: &[u32], o: &crate::sched::Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, crate::sched::Finish)> {
+        use crate::sched::Finish;
         if prompt.is_empty() || prompt.len() + 1 > self.ctx {
             return err(format!("{} prompt tokens, where the context holds {}", prompt.len(), self.ctx));
         }
         self.reset()?;
         let greedy = o.params.greedy();
         let mut sampler = crate::sampler::Sampler::new(o.params.clone(), prompt);
+        use super::split::{AsksRows, Last, RowAsk};
+        // (a drawn token: from what the first GPU makes of the pass's head row, the request's changes put on it first, as one GPU's: `sched::draw_row`)
+        self.ask_rows(RowAsk::Procs(vec![sampler.proc()]));
         let mut s = self.prefill(prompt)?;
         let mut out = Vec::new();
         loop {
-            let tok = if greedy { s.token } else { sampler.sample_with(None, || self.logits())? };
+            let tok = if greedy { s.token } else { crate::sched::draw_row(&mut Last(&*self), 0, &mut sampler)?.0 };
             if !o.ignore_eos && (self.eos.contains(&(tok as i64)) || o.stop_ids.contains(&tok)) {
                 return Ok((out, Finish::Stop));
             }
@@ -596,7 +586,18 @@ impl Tp {
             if out.len() >= o.max_new || self.n + 1 > self.ctx {
                 return Ok((out, Finish::Length));
             }
+            self.ask_rows(RowAsk::Procs(vec![sampler.proc()]));
             s = self.step(tok)?;
+        }
+    }
+}
+
+/// The first GPU's engine answers a question of the last pass's head rows: every GPU has the logits whole.
+impl super::split::AsksRows for Tp {
+    fn ask_rows(&self, a: super::split::RowAsk) -> Option<super::split::RowGot> {
+        match self.one(Cmd::Row(a)) {
+            Ok(Out::Row(g)) => Some(g),
+            _ => None,
         }
     }
 }
@@ -614,9 +615,9 @@ impl Drop for Tp {
     }
 }
 
-/// `tpcheck DIR [--tp 0,0] [--tokens 24] [--chunk 64] [--ctx 1024]` (development): the model of `dir` on the first GPU of `--tp` alone and then with every
-/// layer across the GPUs of `--tp`, the same tokens through both (a decode step a token, then the whole list as a prompt in chunks): their logits compared
-/// value for value.
+/// `tpcheck DIR [--tp 0,0] [--split CUT] [--tokens 24] [--chunk 64] [--ctx 1024]` (development): the model of `dir` on the first GPU of `--tp` alone and then with every
+/// layer across the GPUs of `--tp` (with `--split`: its layers cut at CUT into two stages on the first two GPUs of `--tp`, the slots a cut hands over between them),
+/// the same tokens through both (a decode step a token, then the whole list as a prompt in chunks): their logits compared value for value.
 #[cfg(feature = "dev")]
 pub fn check(a: &crate::args::Args) -> Result<()> {
     use super::split::{config_num, open, open_tp, tp_args, Run};
@@ -647,7 +648,10 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         println!("one GPU: {}", one.describe());
         run(&mut one)?
     };
-    let mut tp = open_tp(dir, &o, &gpus)?;
+    let mut tp = match a.flag("split") {
+        Some(c) => open(dir, &o, &[c.parse().map_err(|_| Error(format!("--split {c}: a layer")))?], &[gpus[0], *gpus.get(1).unwrap_or(&gpus[0])])?,
+        None => open_tp(dir, &o, &gpus)?,
+    };
     println!("{}", tp.describe());
     let got = run(&mut tp)?;
     let mut same = 0;
@@ -660,6 +664,15 @@ pub fn check(a: &crate::args::Args) -> Result<()> {
         }
     }
     println!("{same} of {} passes the same to the bit", want.len());
+    // (#138: the model across the GPUs served by the scheduler as a step of one slot: a greedy reply through it against the reply alone)
+    let (alone, via) = super::split::sched_reply(&mut tp, &toks[..toks.len().min(8)], 16)?;
+    println!("{} the layers across the GPUs through the scheduler: {via:?}, alone {alone:?}", if alone == via { "PASS" } else { "FAIL" });
+    if same < want.len() {
+        return err(format!("{} of {} passes differ from the model on one GPU", want.len() - same, want.len()));
+    }
+    if alone != via {
+        return err("the reply through the scheduler is not the reply alone");
+    }
     Ok(())
 }
 

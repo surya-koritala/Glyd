@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # The release matrix (GLY-33): a fresh install of release VERSION (the tag's install.sh) on each GPU class, `glyd run MODEL:LEVEL --no-think` at a 4k and a 32k context
 # for every model x level, into benchmarks/matrix/VERSION/README.md (a table by GPU class and model:level) with the raw logs. One pod a class, all its cells in it, in parallel.
-#   bash tools/matrix/run.sh VERSION [--models "Qwen/Qwen3.5-9B Qwen/Qwen3.8-27B"] [--levels "penguin kestrel swift"] [--classes "4090 3090 16gb l4"] [--dry-run]
+#   bash tools/matrix/run.sh VERSION [--models "Qwen/Qwen3.5-9B Qwen/Qwen3.8-27B"] [--levels "penguin kestrel linnet"] [--classes "4090 3090 16gb l4"] [--dry-run]
 # The tag v<VERSION> must be public (install.sh is fetched from it). --dry-run starts nothing (no runpodctl) and prints the plan with its cost.
 set -u
 [ $# -ge 1 ] || { sed -n 2,6p "$0"; exit 2; }
 VERSION=$1; shift
-MODELS="Qwen/Qwen3.5-9B Qwen/Qwen3.8-27B"; LEVELS="penguin kestrel swift"; CLASSES="4090 3090 16gb l4"; DRY=0
+MODELS="Qwen/Qwen3.5-9B Qwen/Qwen3.8-27B"; LEVELS="penguin kestrel linnet"; CLASSES="4090 3090 16gb l4"; DRY=0
 while [ "${1:-}" ]; do case $1 in
   --models) MODELS=$2; shift 2;; --levels) LEVELS=$2; shift 2;; --classes) CLASSES=$2; shift 2;; --dry-run) DRY=1; shift;; *) echo "unknown $1"; exit 2;; esac; done
 ROOT=$(git -C "$(dirname "$0")" rev-parse --show-toplevel); cd "$ROOT" || exit 1

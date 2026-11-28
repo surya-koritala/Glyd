@@ -2,7 +2,7 @@
 //! a causal prompt of a few tokens, the same generated weights on both sides.
 
 use super::testing::{assert_close, Fixture};
-use super::{attention, ffn, linear, mla, Params, HF_TOL};
+use super::{attention, ffn, linear, mla, Libm, Params, HF_TOL};
 use crate::runtime::kinds::*;
 
 /// The fixture's tensors under their roles.
@@ -40,9 +40,12 @@ fn attn(heads: usize, kv_heads: usize, head_dim: usize, rope: Option<Rope>) -> A
         gate: None,
         softcap: None,
         bias: false,
-        scale: (head_dim as f32).powf(-0.5),
+        scale: (head_dim as f32).lpowf(-0.5),
         k_eq_v: false,
         indexer: None,
+        rounding: AttnRounding::F32,
+        kv_from: None,
+        v_scale: 1.0,
     }
 }
 
@@ -189,9 +192,15 @@ fn glm53_latent_attention() {
         q_norm: Norm::rms(1e-6),
         kv_norm: Norm::rms(1e-6),
         gate: None,
-        scale: 16f32.powf(-0.5),
+        scale: 16f32.lpowf(-0.5),
         absorbed: false,
         indexer: None,
+        head_mix: 0,
+        sinks: false,
+        window: None,
+        pos_scale: false,
+        kv_from: None,
+        rope_learned: false,
     };
     let p = params(
         &f,
@@ -233,14 +242,25 @@ fn moe_params(f: &Fixture, shared: &str, more: &[(&str, &str)]) -> Params {
 }
 
 fn silu_mlp(clamp: Option<f32>) -> Mlp {
-    Mlp { act: Act::Silu, gated: true, bias: false, clamp }
+    Mlp { act: Act::Silu, gated: true, bias: false, clamp: clamp.map(crate::runtime::kinds::Clamp::Gate) }
 }
 
 #[test]
 fn glm53_moe() {
     let f = Fixture::load("glm53_moe");
     let m = Moe {
-        router: Router { score: RouterScore::Sigmoid, logit_scale: 1.0, bias: true, groups: Some((4, 2)), top_k: 2, renorm: true, scale: 2.5, hash: false },
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias: true,
+            groups: Some((4, 2)),
+            top_k: 2,
+            renorm: true,
+            scale: 2.5,
+            hash: false,
+            routers: 1,
+            expert_scale: false,
+        },
         experts: 8,
         expert: silu_mlp(None),
         shared: Some(silu_mlp(None)),
@@ -261,7 +281,18 @@ fn deepseek_v4_moe() {
     for (case, hash) in [("dsv4_hash_moe", true), ("dsv4_moe", false)] {
         let f = Fixture::load(case);
         let m = Moe {
-            router: Router { score: RouterScore::SqrtSoftplus, logit_scale: 1.0, bias: !hash, groups: None, top_k: 2, renorm: true, scale: 1.5, hash },
+            router: Router {
+                score: RouterScore::SqrtSoftplus,
+                logit_scale: 1.0,
+                bias: !hash,
+                groups: None,
+                top_k: 2,
+                renorm: true,
+                scale: 1.5,
+                hash,
+                routers: 1,
+                expert_scale: false,
+            },
             experts: 8,
             expert: silu_mlp(Some(1.0)),
             shared: Some(silu_mlp(Some(1.0))),
@@ -283,7 +314,18 @@ fn deepseek_v4_moe() {
 fn qwen38_moe() {
     let f = Fixture::load("qwen38_moe");
     let m = Moe {
-        router: Router { score: RouterScore::Softmax, logit_scale: 1.0, bias: false, groups: None, top_k: 3, renorm: true, scale: 1.0, hash: false },
+        router: Router {
+            score: RouterScore::Softmax,
+            logit_scale: 1.0,
+            bias: false,
+            groups: None,
+            top_k: 3,
+            renorm: true,
+            scale: 1.0,
+            hash: false,
+            routers: 1,
+            expert_scale: false,
+        },
         experts: 8,
         expert: silu_mlp(None),
         shared: Some(silu_mlp(None)),
@@ -366,12 +408,29 @@ fn glm53_mtp_head() {
         q_norm: Norm::rms(1e-6),
         kv_norm: Norm::rms(1e-6),
         gate: None,
-        scale: 16f32.powf(-0.5),
+        scale: 16f32.lpowf(-0.5),
         absorbed: false,
         indexer: None,
+        head_mix: 0,
+        sinks: false,
+        window: None,
+        pos_scale: false,
+        kv_from: None,
+        rope_learned: false,
     };
     let moe_kind = Moe {
-        router: Router { score: RouterScore::Sigmoid, logit_scale: 1.0, bias: true, groups: Some((4, 2)), top_k: 2, renorm: true, scale: 2.5, hash: false },
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias: true,
+            groups: Some((4, 2)),
+            top_k: 2,
+            renorm: true,
+            scale: 2.5,
+            hash: false,
+            routers: 1,
+            expert_scale: false,
+        },
         experts: 8,
         expert: silu_mlp(None),
         shared: Some(silu_mlp(None)),
@@ -385,6 +444,8 @@ fn glm53_mtp_head() {
         norm_embed: twice,
         norm_hidden: twice,
         final_norm: Norm::rms(1e-5),
+        dspark: None,
+        input: MtpInput::Joined,
     };
     let pa = params(
         &f,
@@ -421,12 +482,13 @@ fn glm53_mtp_head() {
     let got: Vec<f32> = prev
         .chunks(64)
         .enumerate()
-        .flat_map(|(j, h)| m.step(0, j as u32, &embed[toks[j] * 64..][..64].iter().map(|&v| super::bf16(v)).collect::<Vec<_>>(), h).unwrap())
+        .flat_map(|(j, h)| m.step(0, j as u32, toks[j] as u32, &embed[toks[j] * 64..][..64].iter().map(|&v| super::bf16(v)).collect::<Vec<_>>(), h).unwrap())
         .collect();
     assert_close(&got, &f.f32s("output"), BF16_TOL, "GLM-5.3 MTP head against glm_ref.py");
 }
 
-/// DeepSeek-V4's mHC residual rule around a block (an MLP body), through the reference's block: the streams in, the streams out.
+/// DeepSeek-V4's mHC residual rule around a block (an MLP body), through the reference's block: the streams in, the streams out. The fixture is transformers'
+/// in float32 (as every fixture here), so the streams' rounding point (the release's `Once`) is f32's here.
 #[test]
 fn deepseek_v4_mhc() {
     use super::RefLayer;
@@ -435,7 +497,16 @@ fn deepseek_v4_mhc() {
         norm_in: Norm::rms(1e-6),
         body: Body::Ffn(Ffn::Mlp(silu_mlp(Some(10.0)))),
         norm_out: None,
-        residual: Residual::Streams(StreamsP { streams: 4, sinkhorn_iters: 20, eps: 1e-6, norm_eps: 1e-6 }),
+        residual: Residual::Streams(StreamsP {
+            streams: 4,
+            sinkhorn_iters: 20,
+            eps: 1e-6,
+            norm_eps: 1e-6,
+            rounding: Rounding::F32,
+            lagged: false,
+            eps_outside: false,
+            apart: None,
+        }),
     };
     let p = params(
         &f,

@@ -2,7 +2,7 @@
 //! Those round to bf16 where vLLM or transformers hold bf16, so the tolerance is `BF16_TOL`.
 
 use super::testing::{assert_close, fill};
-use super::{attention, bf16, linear, mla, Params, BF16_TOL};
+use super::{attention, bf16, linear, mla, Libm, Params, BF16_TOL};
 use crate::runtime::kinds::*;
 use glyd_gpu::safetensors::Checkpoint;
 
@@ -95,9 +95,15 @@ fn kimi_k3_mixers_against_kimi_ref() {
         q_norm: twice,
         kv_norm: twice,
         gate: Some(OutGate { act: Act::Sigmoid, from: GateFrom::Own, norm: None }),
-        scale: 192f32.powf(-0.5),
+        scale: 192f32.lpowf(-0.5),
         absorbed: false,
         indexer: None,
+        head_mix: 0,
+        sinks: false,
+        window: None,
+        pos_scale: false,
+        kv_from: None,
+        rope_learned: false,
     };
     for l in [0usize, 3] {
         let a = format!("language_model.model.layers.{l}.self_attn");
@@ -191,6 +197,9 @@ fn muse_attention_against_muse_ref() {
             scale: c.qk_scale / (hd as f32).sqrt(),
             k_eq_v: false,
             indexer: None,
+            rounding: AttnRounding::Sdpa,
+            kv_from: None,
+            v_scale: 1.0,
         };
         let mut p = Params::new();
         for (i, (role, shape)) in
@@ -265,6 +274,8 @@ fn kimi_k3_ffns_against_kimi_ref() {
             renorm: e.renorm,
             scale: e.scale,
             hash: false,
+            routers: 1,
+            expert_scale: false,
         },
         experts: e.experts,
         expert: situ,
@@ -340,6 +351,8 @@ fn muse_moe_against_muse_ref() {
             renorm: true,
             scale: c.route_scale,
             hash: false,
+            routers: 1,
+            expert_scale: false,
         },
         experts: ne,
         expert: Mlp { act: Act::Silu, gated: true, bias: false, clamp: None },
@@ -361,7 +374,9 @@ fn muse_moe_against_muse_ref() {
     assert_close(&got, &want, BF16_TOL, "Muse latent MoE against muse_ref");
 }
 
-/// Kimi-K3's depth mix against `kimi_ref`'s, over one to five sources.
+/// Kimi-K3's depth mix against `kimi_ref`'s, over one to five sources, at Kimi-K3's eps and another; the scores' norm takes the model's eps (vLLM's score
+/// norm's `variance_epsilon`, the config's rms_norm_eps), not a constant: on sources of a small RMS, an eps of 1e-2 gives another mix than 1e-5 in both, each
+/// the softmax over the sources of u . v / sqrt(mean v^2 + eps) weighing their sum.
 #[test]
 fn depth_mix_against_kimi_ref() {
     use crate::kimi_ref::RefKimi;
@@ -371,34 +386,34 @@ fn depth_mix_against_kimi_ref() {
     let src: Vec<Vec<f32>> = (0..5).map(|i| bfv(fill(&format!("src{i}"), d, -2.0, 2.0))).collect();
     for n in 1..=5 {
         let s: Vec<&[f32]> = src[..n].iter().map(|v| &v[..]).collect();
-        assert_close(&super::depth_mix(&s, &wn, &wp), &RefKimi::mix_of(&s, &wn, &wp), BF16_TOL, &format!("depth mix of {n}"));
+        for eps in [1e-5, 1e-2] {
+            assert_close(&super::depth_mix(&s, &wn, &wp, eps), &RefKimi::mix_of(&s, &wn, &wp, eps), BF16_TOL, &format!("depth mix of {n} at {eps}"));
+        }
     }
+    let small: Vec<Vec<f32>> = src.iter().enumerate().map(|(i, v)| bfv(v.iter().map(|x| x * 0.02 * (i + 1) as f32).collect())).collect();
+    let s: Vec<&[f32]> = small.iter().map(|v| &v[..]).collect();
+    let by_hand = |eps: f64| -> Vec<f32> {
+        let sc: Vec<f64> = s
+            .iter()
+            .map(|v| {
+                let ms = v.iter().map(|&x| x as f64 * x as f64).sum::<f64>() / d as f64;
+                (0..d).map(|i| wn[i] as f64 * wp[i] as f64 * v[i] as f64).sum::<f64>() / (ms + eps).sqrt()
+            })
+            .collect();
+        let m = sc.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let z: f64 = sc.iter().map(|x| (x - m).exp()).sum();
+        (0..d).map(|i| s.iter().zip(&sc).map(|(v, x)| (x - m).exp() / z * v[i] as f64).sum::<f64>() as f32).collect()
+    };
+    let (lo, hi) = (super::depth_mix(&s, &wn, &wp, 1e-5), super::depth_mix(&s, &wn, &wp, 1e-2));
+    assert_close(&lo, &by_hand(1e-5), 1e-5, "depth mix at 1e-5 by hand");
+    assert_close(&hi, &by_hand(1e-2), 1e-5, "depth mix at 1e-2 by hand");
+    assert_close(&RefKimi::mix_of(&s, &wn, &wp, 1e-2), &by_hand(1e-2), BF16_TOL, "kimi_ref's depth mix at 1e-2 by hand");
+    assert!(super::testing::rel(&lo, &hi) > 1e-2, "the eps moves the mix of small sources: {:.3e}", super::testing::rel(&lo, &hi));
 }
 
-/// A checkpoint as the reference model's tensor source: bf16 and f32 tensors as f32; an MXFP4 matrix (`.weight_packed`, `.weight_scale`)
-/// decoded where its `.weight` is asked for.
+/// A checkpoint as the reference model's tensor source (`model::checkpoint_tensor`).
 fn checkpoint_source(ck: &Checkpoint) -> impl Fn(&str) -> Option<(Vec<usize>, Vec<f32>)> + '_ {
-    move |name: &str| {
-        if let Some((_, t)) = ck.get(name) {
-            return Some(match t.dtype.as_str() {
-                // (a hash table's expert ids; DeepSeek-V4's FP8 matrices and FP4 experts, decoded with their scales)
-                "I64" => (
-                    t.shape.iter().map(|&d| d as usize).collect(),
-                    ck.read(name).ok()?.chunks(8).map(|c| i64::from_le_bytes(c.try_into().unwrap()) as f32).collect(),
-                ),
-                "F8_E4M3" | "I8" => {
-                    let (sh, v) = crate::dsv4_ref::tensor_of(ck, name).ok()?;
-                    (sh.iter().map(|&d| d as usize).collect(), v)
-                }
-                _ => tensor(ck, name),
-            });
-        }
-        let base = name.strip_suffix(".weight")?;
-        let (_, t) = ck.get(&format!("{base}.weight_packed"))?;
-        let (rows, cols) = (t.shape[0] as usize, t.shape[1] as usize * 2);
-        let w = crate::kimi_ref::mxfp4(&ck.read(&format!("{base}.weight_packed")).ok()?, &ck.read(&format!("{base}.weight_scale")).ok()?, rows, cols).ok()?;
-        Some((vec![rows, cols], w))
-    }
+    move |name: &str| super::model::checkpoint_tensor(ck, name)
 }
 
 /// A whole model from its config.json through the description builder against the per-family reference's logits. Those references
@@ -417,7 +432,7 @@ const MARGIN: f32 = 0.02;
 fn whole_model(dir: &std::path::Path, theirs: &mut dyn FnMut() -> Box<dyn FnMut(u32) -> (Vec<f32>, f32)>, vocab: usize, first: u32, tol: f32, what: &str) {
     use crate::runtime::{describe::describe, reference::model::RefModel};
     let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
-    let d = describe(&cfg).unwrap_or_else(|e| panic!("{what}: {}", e.0));
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{what}: {}", e.msg));
     let ck = Checkpoint::open(dir).unwrap();
     let src = checkpoint_source(&ck);
     for c in first..first + 64 {
@@ -427,7 +442,7 @@ fn whole_model(dir: &std::path::Path, theirs: &mut dyn FnMut() -> Box<dyn FnMut(
         if steps.iter().any(|s| s.1 < MARGIN) {
             continue;
         }
-        let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{what}: {}", e.0));
+        let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{what}: {}", e.msg));
         let ours = m.forward(&toks, 0).unwrap();
         for (i, (want, _)) in steps.iter().enumerate() {
             assert_close(&ours[i], want, tol, &format!("{what}: prompt {toks:?}, position {i}"));
@@ -461,27 +476,29 @@ fn kimi_k3_model_described() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Muse Spark's whole random model, as `whole_model` holds Kimi-K3's, but on the same expert choices: the description's, taken by the per-family
+/// reference (`RefMuse::take`) in the place of its routers' own, so no prompt need route clear of rounding (the case's model has routers whose
+/// near ties the two references' roundings take either way).
 #[test]
 fn muse_spark_model_described() {
     use crate::muse_ref::{random, RefMuse};
+    use crate::runtime::kinds::{Body, Ffn};
+    use crate::runtime::{describe::describe, reference::model::RefModel};
     let dir = std::env::temp_dir().join(format!("glyd-runtime-muse-model-{}", std::process::id()));
     random(&dir).unwrap();
-    let vocab = RefMuse::load(&dir).unwrap().c.vocab;
-    whole_model(
-        &dir,
-        &mut || {
-            let d2 = dir.clone();
-            let mut r = RefMuse::load(&d2).unwrap();
-            Box::new(move |t| {
-                let l = r.step(t);
-                (l, r.margin.get())
-            })
-        },
-        vocab,
-        10,
-        WHOLE_TOL,
-        "Muse Spark",
-    );
+    let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let ck = Checkpoint::open(&dir).unwrap();
+    let mut m = RefModel::load(&d, &checkpoint_source(&ck)).unwrap_or_else(|e| panic!("{}", e.msg));
+    let moe: Vec<usize> = (0..m.layers.len()).filter(|&b| matches!(m.layers[b].block.body, Body::Ffn(Ffn::Moe(_)))).collect();
+    moe.iter().for_each(|&b| m.layers[b].routed = Some(Vec::new()));
+    let toks = [7u32, 1108, 2209];
+    let ours = m.forward(&toks, 0).unwrap();
+    let mut r = RefMuse::load(&dir).unwrap();
+    *r.take.borrow_mut() = moe.iter().map(|&b| m.layers[b].routed.take().unwrap().into_iter().map(|c| c.ids).collect()).collect();
+    for (i, &t) in toks.iter().enumerate() {
+        assert_close(&ours[i], &r.step(t), WHOLE_TOL, &format!("Muse Spark: prompt {toks:?}, position {i}, on the same expert choices"));
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -496,7 +513,7 @@ fn deepseek_v4_release_described() {
     let dir = std::env::temp_dir().join(format!("glyd-runtime-dsv4-model-{}", std::process::id()));
     random(&dir, None).unwrap();
     let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
-    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.0));
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
     let ck = Checkpoint::open(&dir).unwrap();
     let names: BTreeSet<String> = ck.names().map(String::from).collect();
     assert_eq!(d.names(), names, "the weight map");
@@ -518,4 +535,102 @@ fn deepseek_v4_release_described() {
         "DeepSeek-V4",
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Nemotron 3's description on the reference (Mamba-2, attention with no position embedding, the mixture of experts with a shared expert on the full vector, a layer a block)
+/// against the logits the engine recorded for the same random model on an RTX 4080 SUPER at the lossless level (tests/logits/nemotron-h.sm89-geforce-80sm.json.gz; no other implementation
+/// made them). The weight map names the checkpoint's tensors but the draft head's, and every row (the prompt's, each decode step's, the long prompt's) is the engine's within
+/// what its bf16 values explain: the same best token wherever it has a clear lead.
+///
+/// Not in the default run: 186 tokens of a model 2,688 wide take minutes on an unoptimized build (`cargo test --release -- --ignored nemotron_model`, 30 s). What runs
+/// everywhere is the fixture this reference recorded (tests/logits/nemotron-h.json.gz), which the GPU job holds the engine to.
+#[test]
+#[ignore = "minutes on an unoptimized build: cargo test --release -- --ignored nemotron_model"]
+fn nemotron_model_described_against_the_engines_logits() {
+    use crate::logits::{compare, Bound, Fixture};
+    use crate::runtime::{describe::describe, reference::model::RefModel};
+    use std::collections::BTreeSet;
+    let dir = std::env::temp_dir().join(format!("glyd-runtime-nemotron-model-{}", std::process::id()));
+    crate::kcheck_nh::random(&dir, 0, 16).unwrap();
+    let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    let d = describe(&cfg).unwrap_or_else(|e| panic!("{}", e.msg));
+    let ck = Checkpoint::open(&dir).unwrap();
+    let names: BTreeSet<String> = ck.names().filter(|n| !n.starts_with("mtp.")).map(String::from).collect();
+    assert_eq!(d.names(), names, "the weight map");
+    let fx = Fixture::read(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/logits/nemotron-h.sm89-geforce-80sm.json.gz")).unwrap();
+    let src = checkpoint_source(&ck);
+    let t0 = std::time::Instant::now();
+    let mut m = RefModel::load(&d, &src).unwrap_or_else(|e| panic!("{}", e.msg));
+    let mut got = vec![m.forward(&fx.prompt, 0).unwrap().pop().unwrap()];
+    for (i, &t) in fx.decode.iter().enumerate() {
+        got.push(m.forward(&[t], (fx.prompt.len() + i) as u32).unwrap().pop().unwrap());
+    }
+    let mut m = RefModel::load(&d, &src).unwrap();
+    got.push(m.forward(&fx.long, 0).unwrap().pop().unwrap());
+    let v = compare(&fx, &Bound::Kl { mean: 1e-4, max: 5e-4, top1: 1.0 }, &got);
+    eprintln!(
+        "nemotron on the reference: {} rows in {:.1} s, KL mean {:.3e} max {:.3e}, best token {}/{}, largest logit difference {:.4}",
+        v.rows,
+        t0.elapsed().as_secs_f64(),
+        v.mean_kl,
+        v.max_kl,
+        v.top1.0,
+        v.top1.1,
+        v.max_dlogit
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(v.ok, "{:?}", v.notes);
+}
+
+/// The Gated DeltaNet bodies of the `qwen4x-s2` case's draw against themselves with the values the GPU stores in bf16 rounded (the products q, k, v, the
+/// gates', and the core's output into `o`), on 32 sequences of a prompt of 8 rows at random (normed) then 2 decode steps, measured as `kindcheck` measures
+/// a body (the prompt's rows together, a step's row alone): each at most half the kind's bound (`kindcheck::bound`), so that the kernels have the other
+/// half. Drawn with dt_bias about N(0, 1) the state forgot a token in about a step, a step's output was a few query-key products near 0 for random
+/// queries and keys, and a last place of q or k moved a step's row by up to 4.3e-2, past the bound of 3e-2 itself (`kindcheck qwen4x-s2 --prompt 8 --steps 2`
+/// on an A10: 3.04e-2); drawn about N(-4.6, 1), as the family initializes it, at most 7.6e-3 (the prompt's rows 5.3e-3 to 7.1e-3 on both draws).
+#[test]
+fn qwen4x_s2_deltanet_floor() {
+    use crate::dynamic::kindcheck::{bound, Class};
+    use crate::runtime::reference::model::{checkpoint_tensor, RefModel};
+    let dir = std::env::temp_dir().join(format!("glyd-deltanet-floor-{}", std::process::id()));
+    crate::logits::qwen4x_s2_random(&dir).unwrap();
+    let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    let d = crate::runtime::describe::describe(&cfg).unwrap();
+    let ck = Checkpoint::open(&dir).unwrap();
+    let m = RefModel::load(&d, &|n: &str| checkpoint_tensor(&ck, n)).unwrap();
+    let rel = |a: f32, b: f32| a / b.max(1e-30);
+    let mut bodies = 0;
+    for (bi, b) in m.layers.iter().enumerate() {
+        let Body::Mixer(Mixer::Linear(l)) = &b.block.body else { continue };
+        let p = &b.p;
+        let (mut prompt, mut steps) = (0f32, 0f32);
+        for seq in 0..32 {
+            let (mut s0, mut s1) = (linear::LinearState::new(l), linear::LinearState::new(l));
+            let (mut pd, mut pm) = (0f32, 0f32);
+            for t in 0..10 {
+                let mut h = fill(&format!("deltanet floor {seq} {t}"), b.hidden, -1.0, 1.0);
+                let rms = (h.iter().map(|x| x * x).sum::<f32>() / b.hidden as f32).sqrt();
+                h.iter_mut().for_each(|x| *x = bf16(*x / rms));
+                let want = linear::step(l, p, &mut s0, &h).unwrap();
+                let prod = |r: &str| -> Vec<f32> { p.prod(r, &h).unwrap().into_iter().map(bf16).collect() };
+                let qkv = if p.has_prod("qkv") { prod("qkv") } else { [prod("q"), prod("k"), prod("v")].concat() };
+                let o = linear::core(l, p, &mut s1, &qkv, &prod("beta"), &prod("decay"), &prod("gate")).unwrap();
+                let got = p.prod("o", &o.into_iter().map(bf16).collect::<Vec<_>>()).unwrap();
+                let diff = got.iter().zip(&want).fold(0f32, |m, (x, y)| m.max((x - y).abs()));
+                let most = want.iter().fold(0f32, |m, y| m.max(y.abs()));
+                if t < 8 {
+                    (pd, pm) = (pd.max(diff), pm.max(most));
+                } else {
+                    steps = steps.max(rel(diff, most));
+                }
+            }
+            prompt = prompt.max(rel(pd, pm));
+        }
+        println!("qwen4x-s2 block {bi}, Gated DeltaNet: the prompt's rows {prompt:.2e}, a step's row {steps:.2e}");
+        let half = bound(Class::DeltaNet) / 2.0;
+        assert!(prompt <= half && steps <= half, "block {bi}: the draw's floor (prompt {prompt:e}, steps {steps:e}) past half the kind's bound");
+        bodies += 1;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(bodies > 0, "no Gated DeltaNet body in the qwen4x-s2 draw");
 }

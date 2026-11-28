@@ -3,6 +3,9 @@
 //! A tensor's values are xorshift64 from the FNV-1a hash of its name (or'd with 1), each lo + (hi - lo) u with u = (r >> 40) / 2^24, in
 //! f32 arithmetic; the recorder does the same in numpy float32, so a fixture holds only each tensor's name, shape and range.
 
+// (a development build reads the generator and `rel` alone: the spikes' check, runtime::seam)
+#![cfg_attr(not(test), allow(dead_code))]
+
 use std::path::PathBuf;
 
 pub fn seed(name: &str) -> u64 {

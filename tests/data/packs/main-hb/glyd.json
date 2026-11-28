@@ -1,0 +1,160 @@
+{
+ "format": "glyd-v7",
+ "glyd": "0.33.1",
+ "source": {
+  "repo": "tmp",
+  "revision": null
+ },
+ "layout": "hb",
+ "packs": {
+  "m.fc": {
+   "layout": "i6",
+   "shape": [
+    64,
+    128
+   ],
+   "tiers": [
+    67108864,
+    0,
+    0
+   ],
+   "tensors": [
+    {
+     "name": "m.fc.weight",
+     "shape": [
+      64,
+      128
+     ],
+     "sha256": "6d5bc44710a5ede855c4538f794cda4c7ce63e8b2eab7918fadd1633f200e2ab"
+    }
+   ]
+  },
+  "m.layers.1.mixer.experts.0.up_proj": {
+   "layout": "c3r",
+   "shape": [
+    64,
+    128
+   ],
+   "tiers": [
+    184549376,
+    0,
+    0
+   ],
+   "tensors": [
+    {
+     "name": "m.layers.1.mixer.experts.0.up_proj.weight",
+     "shape": [
+      64,
+      128
+     ],
+     "sha256": "a2c7642ad19b80703087d62b794c1832dd031bd3c58617e8859b82600ce65655"
+    }
+   ],
+   "transposed": false
+  },
+  "m.layers.1.mixer.experts.0.down_proj": {
+   "layout": "c3r",
+   "shape": [
+    64,
+    128
+   ],
+   "tiers": [
+    184549376,
+    0,
+    0
+   ],
+   "tensors": [
+    {
+     "name": "m.layers.1.mixer.experts.0.down_proj.weight",
+     "shape": [
+      128,
+      64
+     ],
+     "sha256": "6e69fe1701b444b78a4709160a7d15f95005a19079e9e0c53ee382cf418221be"
+    }
+   ],
+   "transposed": true
+  },
+  "m.layers.1.mixer.experts.1.up_proj": {
+   "layout": "c2r",
+   "shape": [
+    64,
+    128
+   ],
+   "tiers": [
+    201326592,
+    0,
+    0
+   ],
+   "tensors": [
+    {
+     "name": "m.layers.1.mixer.experts.1.up_proj.weight",
+     "shape": [
+      64,
+      128
+     ],
+     "sha256": "7b91c0b6c5a6fbe31db9a1eca95c994ab1538067a6cbc8c4d9f1ed21e1d63f4d"
+    }
+   ],
+   "transposed": false
+  },
+  "m.layers.1.mixer.experts.1.down_proj": {
+   "layout": "c2r",
+   "shape": [
+    64,
+    128
+   ],
+   "tiers": [
+    201326592,
+    0,
+    0
+   ],
+   "tensors": [
+    {
+     "name": "m.layers.1.mixer.experts.1.down_proj.weight",
+     "shape": [
+      128,
+      64
+     ],
+     "sha256": "19a56f13912beb122bdb66aec00670ee8e5c27b819478b48074607b89f8b3f40"
+    }
+   ],
+   "transposed": true
+  }
+ },
+ "tensors": {
+  "m.layers.1.mixer.glyd_rot_signs": "7c74ccde76da13a98c2d5adbca991bfad7e33e81b2fd7ef59989f9673adc268b",
+  "m.norm.weight": "921498e2fe6859dd3bdcb1460f0b85e63337fd473e0a11e8b915a0bf2e6f4bdd"
+ },
+ "level": "hummingbird",
+ "calibration": {
+  "method": "hummingbird",
+  "recipe": "hbr40",
+  "experts_at_2_bits": 1,
+  "experts_at_3_bits": 1,
+  "export": {
+   "format": "glyd-hbr-codes/1",
+   "recipe": "hbr40",
+   "complete": true,
+   "model": {
+    "repo": null,
+    "revision": null
+   },
+   "rows": 64,
+   "row_length": 128,
+   "block": 32,
+   "experts": 2,
+   "moe_layers": 1,
+   "layers": [
+    {
+     "moe_layer": 0,
+     "block": 1,
+     "seed": 2,
+     "file": "layer-000.safetensors",
+     "bytes": 16344,
+     "sha256": "00"
+    }
+   ]
+  }
+ }
+}

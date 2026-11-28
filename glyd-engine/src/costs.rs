@@ -5,6 +5,7 @@
 //! prints the profile; `glyd serve` puts it in /v1/glyd/info as `costs`.
 
 use crate::ffi::{err, Error, Result};
+use crate::gpu_ops::GpuOps;
 use crate::nemotron::{ConfigNemotronH, NhKind};
 use crate::qwen35::{Config35, Kind, Pack35, Tensor35};
 use crate::tools::obj;
@@ -131,15 +132,15 @@ enum Family {
 }
 
 impl Family {
-    fn parse(text: &str, generation: Option<&str>, saved_causal: bool) -> Result<Family> {
-        if crate::nemotron::is_nemotron_h(text) {
-            return Ok(Family::Nemotron(ConfigNemotronH::parse(text, "config.json", generation)?));
+    /// The family of the config.json `m` (parsed once).
+    fn of(m: &crate::runtime::config::ModelConfig, generation: Option<&str>, saved_causal: bool) -> Result<Family> {
+        match m.family() {
+            Some(crate::support::Family::NemotronH) => return Ok(Family::Nemotron(ConfigNemotronH::of(m, "config.json", generation)?)),
+            Some(crate::support::Family::Gemma4) => return err("a Gemma 4 model: `costs` describes Qwen3.5-family and Nemotron-H models alone"),
+            _ => {}
         }
-        if crate::model_gemma4::is_gemma4(text) {
-            return err("a Gemma 4 model: its cost profile is not described yet (Qwen3.5-family and Nemotron-H models are)");
-        }
-        let mut c = Config35::parse(text, "config.json", generation)
-            .map_err(|e| Error(format!("costs: {} (Qwen3.5-family and Nemotron-H models are described)", e.0)))?;
+        let mut c =
+            Config35::of(m, "config.json", generation).map_err(|e| Error(format!("costs: {} (Qwen3.5-family and Nemotron-H models are described)", e.msg)))?;
         if saved_causal {
             // (a glyd-v7 save holds the text model under the causal LM's names, whatever its config.json says of the checkpoint it came from, and no vision tower)
             (c.prefix, c.vision) = ("model.", false);
@@ -207,13 +208,15 @@ impl Family {
         }
     }
 
-    /// The bytes a pack takes at `level` where the files do not say (packed as the loader would pack it: fit::bits a weight in its layout).
+    /// The bytes a pack takes at `level` where the files do not say (packed as the loader would pack it: plan.rs `sizing::bits` a weight in its layout).
     fn estimate(&self, level: Layout, p: &Pack35) -> Result<u64> {
         let weights = (p.rows() * p.cols) as u64;
         match self {
-            Family::Nemotron(c) if level == Layout::Hummingbird && p.key.contains(".mixer.experts.") => Ok(crate::moe_hb::expert_bytes_mean(c)? / 2),
-            Family::Nemotron(_) => Ok((weights as f64 * crate::fit::bits(crate::nemotron::pack_layout(level, &p.key)) / 8.0) as u64),
-            Family::Qwen(_) => Ok((weights as f64 * crate::fit::bits(level) / 8.0) as u64),
+            Family::Nemotron(c) if level == Layout::Hummingbird && p.key.contains(".mixer.experts.") => {
+                Ok(crate::moe_hb::expert_bytes_mean(c.moe.experts, c.moe.inter, c.moe.latent)? / 2)
+            }
+            Family::Nemotron(_) => Ok((weights as f64 * crate::plan::sizing::bits(crate::nemotron::pack_layout(level, &p.key)) / 8.0) as u64),
+            Family::Qwen(_) => Ok((weights as f64 * crate::plan::sizing::bits(level) / 8.0) as u64),
         }
     }
 
@@ -413,11 +416,17 @@ impl Profile {
     /// The profile of MODEL (a directory, a Hub name with a level tag, a pre-packed repo's name): its files where they are, else the Hub's by ranges.
     pub fn of(model: &str) -> Result<Profile> {
         let f = find(model)?;
-        Profile::from_found(&f)
+        Profile::from_found(&f, None)
     }
 
-    fn from_found(f: &Found) -> Result<Profile> {
-        let config = f.text("config.json").ok_or_else(|| Error(format!("{}: no config.json", f.id)))?;
+    /// The profile of the model `f` found, its config.json `parsed` where the caller has it parsed already (else read and parsed here, once).
+    fn from_found(f: &Found, parsed: Option<&crate::runtime::config::ModelConfig>) -> Result<Profile> {
+        let config = match parsed {
+            Some(c) => std::borrow::Cow::Borrowed(c),
+            None => std::borrow::Cow::Owned(crate::runtime::config::ModelConfig::parse(
+                &f.text("config.json").ok_or_else(|| Error(format!("{}: no config.json", f.id)))?,
+            )?),
+        };
         let generation = f.text("generation_config.json");
         let manifest = f.text("glyd.json").and_then(|t| json::parse(&t).ok());
         let m_str = |k: &str| manifest.as_ref().and_then(|m| m.get(k)).and_then(Value::as_str).map(str::to_string);
@@ -425,7 +434,7 @@ impl Profile {
             manifest.as_ref().and_then(|m| m.get(k)).and_then(Value::as_object).is_some_and(|o| o.iter().any(|(n, _)| n.starts_with("model.layers.")))
         };
         let saved = m_str("format").as_deref().is_some_and(|x| x.starts_with("glyd-v")) && (causal("packs") || causal("tensors"));
-        let fam = Family::parse(&config, generation.as_deref(), saved)?;
+        let fam = Family::of(&config, generation.as_deref(), saved)?;
         // the level: the save's, else the tag's, else lossless
         let layout = match (m_str("layout").as_deref().and_then(layout_of), f.tag.as_deref().and_then(layout_of)) {
             (Some(l), _) => l,
@@ -613,8 +622,8 @@ impl Profile {
     }
 
     /// The whole profile as JSON. `work`: the workload the numbers that depend on one are given at; `alloc`: what a loaded engine holds (measured), where one is loaded;
-    /// `predictions`: the predictor's rows and the tiers they used, where asked.
-    pub fn json(&self, work: &Workload, alloc: Option<&Allocated>, predictions: Option<(Value, Value)>) -> Value {
+    /// `predictions`: the predictor's rows and the tiers they used, where asked; `gpu`: the GPU the `device` field says (a served model's own).
+    pub fn json(&self, work: &Workload, alloc: Option<&Allocated>, predictions: Option<(Value, Value)>, gpu: i32) -> Value {
         let s = |t: &str| Value::from(t);
         let opt = |t: &Option<String>| t.as_deref().map_or(Value::Null, Value::from);
         let (kv_at_ctx, state) = (self.kv_per_token() * work.ctx as u64, self.state());
@@ -678,7 +687,7 @@ impl Profile {
                     ("state", s(self.state_type)),
                 ]),
             ),
-            ("device", device_json()),
+            ("device", device_json(gpu)),
             ("host", host_json()),
             ("workload", work.json()),
             ("observed_at", numf(crate::monitor::clock(), 3)),
@@ -801,12 +810,13 @@ fn numf(x: f64, places: usize) -> Value {
     Value::Number(format!("{x:.places$}"))
 }
 
-fn device_json() -> Value {
+/// GPU `ordinal` as the driver reports it now (a look: the thread's context stays as it was, `Dev::probe`), or null with `--no-gpu`.
+fn device_json(ordinal: i32) -> Value {
     if NO_GPU.load(std::sync::atomic::Ordering::Relaxed) {
         return Value::Null;
     }
-    let Ok(g) = crate::dev::Dev::probe(0) else { return Value::Null };
-    crate::dev::Dev::release(0);
+    let Ok(g) = crate::dev::Dev::probe(ordinal) else { return Value::Null };
+    crate::dev::Dev::release(ordinal);
     obj(vec![
         ("ordinal", num(g.ordinal.max(0) as u64)),
         ("name", Value::from(g.name.as_str())),
@@ -999,7 +1009,7 @@ pub fn tiers_cmd(a: &crate::args::Args) -> Result<()> {
     let v = obj(vec![
         ("object", Value::from("glyd.tiers")),
         ("schema", Value::from(SCHEMA)),
-        ("device", device_json()),
+        ("device", device_json(0)),
         ("host", host_json()),
         ("directory", dir.as_ref().map_or(Value::Null, |d| Value::from(d.to_string_lossy().as_ref()))),
         ("buffer_bytes", num(bytes as u64)),
@@ -1267,16 +1277,33 @@ pub fn costs_json(model: &str, a: &crate::args::Args) -> Result<Value> {
     } else {
         None
     };
-    Ok(p.json(&w, alloc.as_ref(), predictions))
+    Ok(p.json(&w, alloc.as_ref(), predictions, 0))
 }
 
 /// The GPU's memory, its link and the computer's memory measured now, briefly (256 MiB, 5 passes), for a prediction without a tiers file.
 fn quick_rates() -> Result<Rates> {
-    use crate::dev::{copy_h2d_async, Buf, Dev, Pinned};
+    probe_rates(0)
+}
+
+/// GPU `ordinal`'s memory as a kernel streams it, its link from pinned host memory and the computer's memory as all its threads read it, measured now (256 MiB,
+/// 5 passes each after one more): the planner's rate probe (src/plan.rs `rates_in`, on a GPU's first use).
+pub fn probe_rates(ordinal: i32) -> Result<Rates> {
+    // (in a context of its own, destroyed after: the GPU's memory as it was, so a plan made after a rate is measured reads the free memory one made before
+    // it reads (a kernel run in the primary context leaves it 28 MiB more on an RTX A6000); the thread's context as it was too)
+    crate::dev::keeping_context(|| {
+        let dev = crate::dev::Dev::new_own(ordinal)?;
+        let r = rates_on(&dev);
+        dev.let_go()?;
+        r
+    })
+}
+
+/// `probe_rates` on `dev`: what it makes there is dropped by its end.
+fn rates_on(dev: &crate::dev::Dev) -> Result<Rates> {
+    use crate::dev::{copy_h2d_async, Buf, Pinned};
     let bytes = 256usize << 20;
     let reps = 5;
-    let dev = Dev::new(0)?;
-    let k = crate::kern::Kern::load(&dev)?;
+    let k = crate::kern::Kern::load(dev)?;
     let (buf, out) = (Buf::zeroed(bytes)?, Buf::zeroed(4)?);
     let blocks = (dev.sms as u32) * 16;
     let timed = |f: &dyn Fn() -> Result<()>| -> Result<f64> {
@@ -1314,16 +1341,27 @@ fn quick_rates() -> Result<Rates> {
     Ok(Rates { vram, link, ram, ssd: 0.0 })
 }
 
-/// The costs object of /v1/glyd/info for the model served from `dir` (never an error: what went wrong, where it did).
-pub fn served(dir: &Path, id: &str, requested: Option<&str>, ctx: usize, chunk: usize, held: Option<crate::dev::Held>) -> Value {
+/// The costs object of /v1/glyd/info for the model served from `dir`, its config.json `c` (parsed once, the load's), on GPU `gpu` (its first, where it is
+/// cut over several) (never an error: what went wrong, where it did).
+#[allow(clippy::too_many_arguments)]
+pub fn served(
+    dir: &Path,
+    c: &crate::runtime::config::ModelConfig,
+    id: &str,
+    requested: Option<&str>,
+    ctx: usize,
+    chunk: usize,
+    held: Option<crate::dev::Held>,
+    gpu: i32,
+) -> Value {
     let f = Found { id: id.to_string(), tag: requested.map(str::to_string), dir: Some(dir.to_path_buf()), repo: None, revision: None, remote: None };
     let f = match find(&dir.to_string_lossy()) {
         Ok(found) => Found { id: f.id, tag: f.tag, ..found },
         Err(_) => f,
     };
-    match Profile::from_found(&f) {
-        Ok(p) => p.json(&Workload { ctx, prompt: 0, output: 0, chunk }, held.map(|h| Allocated::now(h, ctx)).as_ref(), None),
-        Err(e) => obj(vec![("object", Value::from("glyd.costs")), ("status", Value::from("unavailable")), ("error", Value::from(e.0.as_str()))]),
+    match Profile::from_found(&f, Some(c)) {
+        Ok(p) => p.json(&Workload { ctx, prompt: 0, output: 0, chunk }, held.map(|h| Allocated::now(h, ctx)).as_ref(), None, gpu),
+        Err(e) => obj(vec![("object", Value::from("glyd.costs")), ("status", Value::from("unavailable")), ("error", Value::from(e.msg.as_str()))]),
     }
 }
 
@@ -1343,7 +1381,7 @@ mod tests {
             made_by: None,
             family: "test",
             requested: None,
-            level: "swift",
+            level: "linnet",
             layout: Layout::Int5,
             hidden: 8,
             vocab: 100,
@@ -1506,15 +1544,15 @@ mod tests {
     fn levels_tags_and_rates() {
         assert_eq!(
             (level_of(Layout::Int5), level_of(Layout::Int6), level_of(Layout::Int4H), level_of(Layout::Hummingbird), level_of(Layout::Tiered)),
-            ("swift", "kestrel", "wren", "hummingbird", "penguin")
+            ("linnet", "kestrel", "wren", "hummingbird", "penguin")
         );
         assert_eq!(
-            (layout_of("swift"), layout_of("i6"), layout_of("hb"), layout_of("mma"), layout_of("x")),
+            (layout_of("linnet"), layout_of("i6"), layout_of("hb"), layout_of("mma"), layout_of("x")),
             (Some(Layout::Int5), Some(Layout::Int6), Some(Layout::Hummingbird), Some(Layout::Tiered), None)
         );
-        assert_eq!(split_tag("Qwen/Qwen3.5-9B:swift"), ("Qwen/Qwen3.5-9B", Some("swift".to_string())));
+        assert_eq!(split_tag("Qwen/Qwen3.5-9B:linnet"), ("Qwen/Qwen3.5-9B", Some("linnet".to_string())));
         assert_eq!(split_tag("/a/b:c/d"), ("/a/b:c/d", None));
-        assert_eq!(split_tag("glyd/Qwen3.5-9B-swift"), ("glyd/Qwen3.5-9B-swift", None));
+        assert_eq!(split_tag("glyd/Qwen3.5-9B-linnet"), ("glyd/Qwen3.5-9B-linnet", None));
         let v = json::parse(r#"{"rates":{"vram_read":{"gbs":700.5},"vram_product":{"gbs":600},"link_h2d_pinned":{"gbs":25.0},"ram_read":{"gbs":40},"ssd_read_16":{"gbs":6.5}}}"#).unwrap();
         assert_eq!(Rates::from_json(&v), Rates { vram: 600e9, link: 25e9, ram: 40e9, ssd: 6.5e9 });
         let v = json::parse(r#"{"rates":{"vram_read":{"gbs":700.5}}}"#).unwrap();
@@ -1524,7 +1562,7 @@ mod tests {
     #[test]
     fn the_json_has_the_three_fields_and_nulls_where_nothing_is_measured() {
         let p = tiny();
-        let v = p.json(&Workload { ctx: 64, prompt: 32, output: 16, chunk: 8 }, None, None);
+        let v = p.json(&Workload { ctx: 64, prompt: 32, output: 16, chunk: 8 }, None, None, 0);
         let at = |path: &[&str]| path.iter().try_fold(&v, |x, k| x.get(k)).cloned();
         assert_eq!(at(&["totals", "resident_bytes"]).and_then(|x| x.as_u64()), Some(p.resident()));
         assert_eq!(at(&["totals", "active_bytes_per_token"]).and_then(|x| x.as_u64()), Some(p.active()));
@@ -1543,7 +1581,7 @@ mod tests {
         );
         // with an allocation: the working memory is measured and the engine's bytes at the context include it
         let a = Allocated { weights: 4607, kv: 1024, state: 1000, working: 500, engine: 7131, ctx: 64 };
-        let v = p.json(&Workload { ctx: 64, prompt: 32, output: 16, chunk: 8 }, Some(&a), None);
+        let v = p.json(&Workload { ctx: 64, prompt: 32, output: 16, chunk: 8 }, Some(&a), None, 0);
         assert_eq!(v.get("totals").and_then(|t| t.get("working_bytes")).and_then(Value::as_u64), Some(500));
         assert_eq!(v.get("allocated").and_then(|t| t.get("kv_bytes_per_token")).and_then(Value::as_u64), Some(16));
     }

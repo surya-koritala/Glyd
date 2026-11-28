@@ -1,32 +1,46 @@
 //! Model descriptions from `config.json` (R3a, #136): a `ModelDesc` of layer kinds and the weight map that names each block role's
-//! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), gemma-4 text, GLM-5.3 and
-//! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, and the Llama-style standard
-//! architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors; a format detail such as Kimi-K3's MXFP4
-//! experts (`.weight_packed` for `.weight`) is the loader's.
+//! checkpoint tensors, with no per-model code. Families: Qwen3.8 dense and MoE (the Qwen3.5 architecture), Qwen3.8-Flash-Next (Ibis's
+//! model: gated residuals, the indexer on GQA, the hashed n-gram embedding), gemma-4 text, GLM-5.3 and
+//! GLM-5.3-Flash (transformers' keys or the release's, FP8 block-scaled matrices), Kimi-K3, Muse Spark, DeepSeek-V4, Nemotron 3
+//! (`nemotron_h`), LFM3 (`lfm3`), Ling 3 (`bailing_hybrid`: described, not run yet), ERNIE 5.5 (`ernie5_5_moe`: described, not run yet), Hy4 Flash
+//! (`hy_v4_flash`: described, not run yet), Mistral Large (`mistral_large4_text`: described, not run yet), MiniMax M3 (`minimax_m3_vl`:
+//! described, not run yet), and the Llama-style standard architectures (Llama, Mistral, Qwen2, Qwen3). Weight maps name the released tensors,
+//! through the tables of their naming convention (`names`); a format detail such as Kimi-K3's MXFP4 experts (`.weight_packed` for
+//! `.weight`) is the loader's. The config comes parsed once (`config::ModelConfig`).
 //!
 //! A config key the builder does not know fails with the key named; keys that cannot change the math (ids, dtypes, training settings)
-//! are listed in `INERT`. A decoder layer is two blocks: the mixer's, then the feed-forward's.
+//! are listed in `INERT`. A decoder layer is two blocks: the mixer's, then the feed-forward's (a Nemotron layer is one block: its
+//! pattern names a mixer or a feed-forward per layer).
 
+use super::config::ModelConfig;
 use super::kinds::*;
+use super::names::{self, all, part, Convention};
 use crate::ffi::{err, Error, Result};
 use serde_json::{Map, Value};
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Where a role's tensor comes from in the checkpoint.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Source {
     Tensor(String),
-    /// Matrices stacked along their rows (a gate and an up projection as one `gate_up`).
+    /// Matrices stacked along their rows (a gate and an up projection as one `gate_up`); vectors joined end to end (three stored scalars as the one vector
+    /// of a role: ERNIE's `alpha_pre`, `alpha_post`, `alpha_res` as `hc_scale`).
     Rows(Vec<String>),
     /// One entry per expert (each its rows stacked), as [experts, rows, cols].
     Experts(Vec<Vec<String>>),
+    /// Ranges of one matrix's rows [from, to), joined in order (a query, key or value product of a checkpoint that holds the three as one matrix).
+    RowsOf(String, Vec<(usize, usize)>),
+    /// A matrix the checkpoint stores transposed: the role's [rows, cols] is the tensor's [cols, rows] turned (ERNIE's hyper-connections' `mapping_proj.weight`,
+    /// its hyper-head's `hc_head_fn`, its drafter's `markov_w1`).
+    Transposed(String),
 }
 
 impl Source {
-    fn names(&self) -> Vec<String> {
+    /// The checkpoint's tensors the source reads.
+    pub fn names(&self) -> Vec<String> {
         match self {
-            Source::Tensor(n) => vec![n.clone()],
+            Source::Tensor(n) | Source::RowsOf(n, _) | Source::Transposed(n) => vec![n.clone()],
             Source::Rows(v) => v.clone(),
             Source::Experts(v) => v.iter().flatten().cloned().collect(),
         }
@@ -50,6 +64,42 @@ pub struct Described {
     /// Matrices stored quantized (FP8 blocks as released, FP4 experts), each with the tensor of its scales. The weight map names them;
     /// decoding a stored format is the tensor source's job.
     pub scales: std::collections::BTreeMap<String, String>,
+    /// The FP8 matrices' blocks (the quantization_config's weight_block_size, square), where the config says the release's matrices are FP8 and the
+    /// builder reads it: the format a release's inference quantizes its activations to as well (DeepSeek-V4's 128, V4.1's 32).
+    pub fp8_block: Option<usize>,
+    /// Each tensor's shape as the config makes it, where the builder says it (Gemma 4's: its matrices, norms and scalars; empty for the builders that do not yet):
+    /// what a lowering to the executor sizes its matrices by, for a packed directory too, whose tensors are not stored at their shapes.
+    pub shapes: std::collections::BTreeMap<String, Vec<usize>>,
+    /// The naming convention the weight map is in (`names::Convention::name`).
+    pub convention: &'static str,
+    /// Parts of the checkpoint the description does not read: the towers and the draft layers, as prefixes of their tensors' names.
+    pub unread: Vec<String>,
+    /// Per draft head of `desc.mtp` whose tensors are mapped: its blocks' roles' sources, and its own roles' (DSpark's `main_proj`, `markov_embed`, ...).
+    pub mtp: Vec<(Vec<Vec<(String, Source)>>, Vec<(String, Source)>)>,
+    /// The vision tower's roles (`desc.vision`), where the description reads one.
+    pub vision: Option<VisionRoles>,
+}
+
+/// A vision tower's roles (`kinds::VisionDesc`): its own (`names::part::VISION`: the patch product, the position table, the merger), then each block's
+/// (`VISION_BLOCK`).
+#[derive(Clone, Debug, Default)]
+pub struct VisionRoles {
+    pub own: Vec<(String, Source)>,
+    pub blocks: Vec<Vec<(String, Source)>>,
+}
+
+impl VisionRoles {
+    /// Role `r`'s tensor: the tower's own (`block` None) or block `b`'s.
+    pub fn tensor(&self, block: Option<usize>, r: &str) -> Result<&str> {
+        let roles = match block {
+            None => &self.own,
+            Some(b) => self.blocks.get(b).ok_or_else(|| Error(format!("the vision tower has no block {b}")))?,
+        };
+        match roles.iter().find(|(x, _)| x == r) {
+            Some((_, Source::Tensor(n))) => Ok(n),
+            _ => err(format!("the vision tower has no tensor for its role {r}")),
+        }
+    }
 }
 
 impl Described {
@@ -65,8 +115,113 @@ impl Described {
                 s.extend(src.names());
             }
         }
+        for (blocks, own) in &self.mtp {
+            for (_, src) in blocks.iter().flatten().chain(own) {
+                s.extend(src.names());
+            }
+        }
+        if let Some(v) = &self.vision {
+            for (_, src) in v.own.iter().chain(v.blocks.iter().flatten()) {
+                s.extend(src.names());
+            }
+        }
         s
     }
+
+    /// The tensors of its attention blocks' own matrices (a block whose mixer attends over the context: `Mixer::Attention`, `Mla`, `Compressed`), its residual's
+    /// and its norms' roles aside, and the LM head where it is not the embedding: the matrices a second layout holds (Ibis's server's `--hi`, v0.34.2's
+    /// engine's: the long context's precision kept where the rest is at fewer bits).
+    pub fn attention_and_head(&self) -> BTreeSet<String> {
+        let mut s: BTreeSet<String> = self.head.iter().cloned().collect();
+        for (b, roles) in self.desc.blocks.iter().zip(&self.blocks) {
+            if !matches!(b.body, Body::Mixer(Mixer::Attention(_) | Mixer::Mla(_) | Mixer::Compressed(_))) {
+                continue;
+            }
+            let aside = |r: &str| r == "norm_in" || r == "norm_out" || b.residual.roles().contains(&r);
+            s.extend(roles.iter().filter(|(r, _)| !aside(r)).flat_map(|(_, src)| src.names()));
+        }
+        s
+    }
+
+    /// The routed experts' tensors it reads (the Moe kind's `experts_*` roles, the draft heads' too).
+    pub fn routed_experts(&self) -> BTreeSet<String> {
+        let heads = self.mtp.iter().flat_map(|(blocks, _)| blocks.iter());
+        self.blocks.iter().chain(heads).flatten().filter(|(r, _)| r.starts_with("experts_")).flat_map(|(_, s)| s.names()).collect()
+    }
+
+    /// The stored formats as the description says them, for a reader of the checkpoint (`formats::Stored::tensor`): each quantized matrix's scales, the
+    /// FP8 matrices' block, and the shards of a matrix whose roles are each cut from it a range of rows a shard (`Source::RowsOf`: as many shards as a
+    /// role has ranges, MiMo V2's fused `qkv_proj`), where its block scales may start again.
+    pub fn stored(&self) -> crate::formats::Stored {
+        let mut shards = BTreeMap::new();
+        let heads = self.mtp.iter().flat_map(|(blocks, own)| blocks.iter().flatten().chain(own));
+        for (_, src) in self.blocks.iter().flatten().chain(&self.extra).chain(heads) {
+            if let Source::RowsOf(n, ranges) = src {
+                let k = shards.entry(n.clone()).or_insert(0);
+                *k = ranges.len().max(*k);
+            }
+        }
+        crate::formats::Stored { scales: self.scales.clone(), block: self.fp8_block, shards }
+    }
+
+    /// Whether a checkpoint of the tensor names `have` is slim: it holds none of the routed experts the description reads (in any stored form, `stored`),
+    /// where it reads some; a codes pack holds them (Glyd's release of Qwen3.8-Flash-Next: `model/` beside its packs).
+    pub fn slim(&self, have: &BTreeSet<String>) -> bool {
+        let routed = self.routed_experts();
+        !routed.is_empty() && !routed.iter().any(|n| stored(have, n, false))
+    }
+
+    /// The weight map against a checkpoint's safetensors index (`have`): every tensor it reads is there; with `all`, as the config says it (a quantized
+    /// matrix with its scales), and every tensor there is read but the parts the description leaves (`unread`). Without `all`, which a loader asks, a
+    /// matrix is there in any stored form (`stored`), its scales are not asked (the format is the loader's to read from the checkpoint), and a checkpoint
+    /// may hold none of the routed experts (`slim`: a codes pack holds them, which its loader is given; a loader that reads them from the checkpoint names
+    /// them missing). An error names the convention, how many differ and the first of them.
+    pub fn check(&self, have: &BTreeSet<String>, all: bool) -> Result<()> {
+        let few = |v: &[String]| {
+            let (n, first) = (v.len(), v.iter().take(4).cloned().collect::<Vec<_>>().join(", "));
+            format!("{n} tensor{}: {first}{}", if n == 1 { "" } else { "s" }, if n > 4 { ", ..." } else { "" })
+        };
+        let scales: BTreeSet<&String> = self.scales.values().collect();
+        let routed = if !all && self.slim(have) { self.routed_experts() } else { BTreeSet::new() };
+        let missing: Vec<String> = self.names().into_iter().filter(|n| !stored(have, n, all) && (all || !scales.contains(n)) && !routed.contains(n)).collect();
+        if !missing.is_empty() {
+            return err(format!("the description reads tensors that are not in the checkpoint ({} names), {}", self.convention, few(&missing)));
+        }
+        let names = self.names();
+        let unread = |n: &str| self.unread.iter().any(|p| p.strip_prefix('*').map_or(n.starts_with(p.as_str()), |sfx| n.ends_with(sfx)));
+        let left: Vec<String> = have.iter().filter(|n| !names.contains(*n) && !unread(n)).cloned().collect();
+        if all && !left.is_empty() {
+            return err(format!("the checkpoint holds tensors not read by its description ({} names), {}", self.convention, few(&left)));
+        }
+        Ok(())
+    }
+}
+
+/// Whether `have` holds the tensor `n` a description reads: as named, or (`!all`, a loader's check) in another stored form of a matrix: `.weight`,
+/// compressed-tensors' `.weight_packed`, or a table read by rows at 4 bits (`X.q4`, `formats::q4_name`).
+fn stored(have: &BTreeSet<String>, n: &str, all: bool) -> bool {
+    let base = n.strip_suffix(".weight_packed").or(n.strip_suffix(".weight"));
+    have.contains(n)
+        || (!all
+            && base.is_some_and(|b| have.contains(&format!("{b}.weight")) || have.contains(&format!("{b}.weight_packed")) || have.contains(&format!("{b}.q4"))))
+}
+
+/// The description of the model in `dir`, from its config.json alone, and the file's path for the words of an error. A directory in the Hub's format (its
+/// safetensors, no glyd.json) is held to its index: a tensor the description reads and the checkpoint lacks is named here, with all of its kind.
+pub fn describe_dir(dir: &std::path::Path) -> Result<(Described, String)> {
+    describe_dir_of(dir, &ModelConfig::load(dir)?)
+}
+
+/// `describe_dir` of a config.json parsed once.
+pub fn describe_dir_of(dir: &std::path::Path, c: &ModelConfig) -> Result<(Described, String)> {
+    let label = dir.join("config.json").display().to_string();
+    let hub = !dir.join("glyd.json").exists() && (dir.join("model.safetensors.index.json").exists() || dir.join("model.safetensors").exists());
+    let have = if hub { Some(names::index_names(dir)?) } else { None };
+    let d = describe_config_in(c, have.as_ref())?;
+    if let Some(have) = &have {
+        d.check(have, false).map_err(|e| e.context(&label))?;
+    }
+    Ok((d, label))
 }
 
 /// Keys that cannot change what a step computes.
@@ -98,7 +253,51 @@ const INERT: &[&str] = &[
     "tie_encoder_decoder",
     "vocab_size_per_layer_input",
     "max_position_embeddings",
+    "auto_map",
+    "hidden_dropout",
+    // (transformers' PretrainedConfig writes its generation and training defaults into some releases' configs: Kimi-K3's text config has them all; none is the model's shape)
+    "add_cross_attention",
+    "bad_words_ids",
+    "begin_suppress_tokens",
+    "cross_attention_hidden_size",
+    "diversity_penalty",
+    "do_sample",
+    "early_stopping",
+    "encoder_no_repeat_ngram_size",
+    "exponential_decay_length_penalty",
+    "finetuning_task",
+    "is_decoder",
+    "length_penalty",
+    "max_length",
+    "min_length",
+    "no_repeat_ngram_size",
+    "num_beam_groups",
+    "num_beams",
+    "num_return_sequences",
+    "output_scores",
+    "prefix",
+    "pruned_heads",
+    "remove_invalid_values",
+    "repetition_penalty",
+    "return_dict_in_generate",
+    "suppress_tokens",
+    "task_specific_params",
+    "temperature",
+    "tf_legacy_loss",
+    "top_k",
+    "top_p",
+    "torchscript",
+    "typical_p",
+    "use_bfloat16",
+    // (the loss's ignored label, and the text a prompt marks an image with: the training's and the processor's, not the language model's)
+    "ignore_index",
+    "image_placeholder",
 ];
+
+/// A key that says nothing of the model's shape: one of INERT, or a special token's number (`decoder_start_token_id`, `image_token_index`).
+fn inert(k: &str) -> bool {
+    INERT.contains(&k) || k.ends_with("_token_id") || k.ends_with("_token_index")
+}
 
 /// A config's keys, each read at most through these getters; `finish` names a key nobody read.
 struct Keys<'a> {
@@ -142,11 +341,32 @@ impl<'a> Keys<'a> {
     }
     fn finish(&self) -> Result<()> {
         let used = self.used.borrow();
-        match self.m.keys().find(|k| !used.contains(*k) && !INERT.contains(&k.as_str())) {
-            Some(k) => err(format!("{}: config key {k} is not understood by the description builder", self.what)),
-            None => Ok(()),
-        }
+        not_understood(&self.what, self.m.keys().filter(|k| !used.contains(*k) && !inert(k)))
     }
+}
+
+/// The refusal of a config whose keys `keys` no builder read: every one of them named, so that a new release is read once and not a key a run
+/// (`keys_named` reads them back out of the words).
+fn not_understood<'k>(what: &str, keys: impl Iterator<Item = &'k String>) -> Result<()> {
+    let keys: Vec<&str> = keys.map(String::as_str).collect();
+    match keys[..] {
+        [] => Ok(()),
+        [k] => err(format!("{what}: config key {k} is not understood by the description builder")),
+        _ => err(format!("{what}: config keys {} are not understood by the description builder", keys.join(", "))),
+    }
+}
+
+/// The keys a refusal of `not_understood` names (none where the words are another refusal's).
+pub fn keys_named(refusal: &str) -> Vec<String> {
+    let Some(rest) = refusal.split_once(": config key").map(|(_, r)| r.strip_prefix('s').unwrap_or(r)) else { return Vec::new() };
+    let Some((keys, _)) = rest.split_once(" not understood by the description builder") else { return Vec::new() };
+    let keys = keys.trim().trim_end_matches(" is").trim_end_matches(" are");
+    keys.split(", ").map(str::to_string).filter(|k| !k.is_empty()).collect()
+}
+
+/// Whether a config key says nothing of the model's shape (`inert`), for a reader of a config no builder takes.
+pub fn is_inert(k: &str) -> bool {
+    inert(k)
 }
 
 fn act(name: &str) -> Result<Act> {
@@ -242,65 +462,167 @@ fn legacy_rope(k: &Keys, head_dim: usize, max_pos: Option<usize>) -> Result<Rope
     rope(&m, head_dim, max_pos, &format!("{} rope", k.what))
 }
 
+/// The rope parameters of a text config as transformers' config classes make them (`modeling_rope_utils.py`, `convert_rope_params_to_dict`): the older
+/// `rope_scaling` where it is given, else `rope_parameters`; a `rope_theta` those lack from the config's own key, else 10,000 (`default_theta`); a
+/// `partial_rotary_factor` they lack from the config's own key, else `default_partial` (the Qwen3.5 classes' `setdefault("partial_rotary_factor", 0.25)`; None where
+/// the class has no default, which leaves the whole head rotated).
+pub(crate) fn standard_rope(t: &Map<String, Value>, default_partial: Option<f64>) -> Map<String, Value> {
+    let given = |k: &str| t.get(k).filter(|v| !v.is_null());
+    let object = |k: &str| t.get(k).and_then(Value::as_object).filter(|o| !o.is_empty());
+    let mut m = object("rope_scaling").or_else(|| object("rope_parameters")).cloned().unwrap_or_default();
+    m.entry("rope_theta").or_insert_with(|| given("rope_theta").cloned().unwrap_or_else(|| Value::from(10_000.0)));
+    if let Some(p) = given("partial_rotary_factor").cloned().or_else(|| default_partial.map(Value::from)) {
+        m.entry("partial_rotary_factor").or_insert(p);
+    }
+    m
+}
+
+/// The rope of a Qwen3.5-layout text config (`qwen35`'s and `qwen4x`'s), by `standard_rope`: every key it reads is marked read.
+fn standard_rope_of(k: &Keys, head_dim: usize, max_pos: Option<usize>, default_partial: Option<f64>) -> Result<Rope> {
+    for key in ["rope_scaling", "rope_parameters", "rope_theta", "partial_rotary_factor"] {
+        k.raw(key);
+    }
+    rope(&standard_rope(k.m, default_partial), head_dim, max_pos, &format!("{} rope_parameters", k.what))
+}
+
 fn gated(act: Act) -> Mlp {
     Mlp { act, gated: true, bias: false, clamp: None }
 }
 
-fn t(n: String) -> Source {
-    Source::Tensor(n)
+/// The roles of `table` but those in `drop`'s list, under `at` (`experts` of them where a role is each expert's).
+fn but(table: names::Roles, at: &str, experts: usize, drop: &[&str]) -> Vec<(String, Source)> {
+    names::roles(table, at, experts, |r| !drop.contains(&r))
 }
 
-/// The roles of a Llama-style attention and its gated MLP at `p` (`model.layers.N`).
-fn attn_roles(p: &str, bias: bool, qk_norm: bool) -> Vec<(String, Source)> {
-    let mut r = vec![("norm_in".to_string(), t(format!("{p}.input_layernorm.weight")))];
-    for x in ["q", "k", "v", "o"] {
-        r.push((x.to_string(), t(format!("{p}.self_attn.{x}_proj.weight"))));
-        if bias && x != "o" {
-            r.push((format!("{x}_bias"), t(format!("{p}.self_attn.{x}_proj.bias"))));
+/// Shapes by role: each of `want`'s roles that `r` names as one tensor, that tensor's shape.
+fn shape_roles(shapes: &mut std::collections::BTreeMap<String, Vec<usize>>, r: &[(String, Source)], want: &[(&str, Vec<usize>)]) {
+    for (role, s) in want {
+        match r.iter().find(|(x, _)| x == role) {
+            Some((_, Source::Tensor(n))) => {
+                shapes.insert(n.clone(), s.clone());
+            }
+            // (an expert's matrices, each its own tensor of the shape given: a gate and an up projection alike)
+            Some((_, Source::Experts(e))) => shapes.extend(e.iter().flatten().map(|n| (n.clone(), s.clone()))),
+            _ => {}
         }
     }
-    if qk_norm {
-        r.push(("q_norm".into(), t(format!("{p}.self_attn.q_norm.weight"))));
-        r.push(("k_norm".into(), t(format!("{p}.self_attn.k_norm.weight"))));
-    }
-    r
 }
 
-fn mlp_roles(p: &str, norm: &str) -> Vec<(String, Source)> {
-    let mut r = vec![("norm_in".to_string(), t(format!("{p}.{norm}.weight")))];
-    for x in ["gate", "up", "down"] {
-        r.push((x.to_string(), t(format!("{p}.mlp.{x}_proj.weight"))));
-    }
-    r
-}
+/// The model types the `llama` builder reads: the pre-norm dense decoders of one attention and one gated MLP a layer.
+pub const LLAMA: &[&str] = &["llama", "mistral", "qwen2", "qwen3"];
 
-/// The text config (`text_config` of a multimodal one) and the prefix of its layers' tensor names.
-fn text(cfg: &Value) -> Result<(&Map<String, Value>, &'static str)> {
-    let top = cfg.as_object().ok_or_else(|| Error("config.json is not an object".into()))?;
-    match top.get("text_config") {
-        Some(Value::Object(t)) => Ok((t, "model.language_model.")),
-        Some(_) => err("text_config is not an object"),
-        None => Ok((top, "model.")),
-    }
-}
+/// The model types of the families whose description is the whole of them (`support::Family::Layers`): each has a builder here whose blocks the dense
+/// lowering takes, and nothing else of its own in the engine. A new family of that kind adds its builder and its model type to this list.
+pub const LAYERS: &[&str] = &["domynedge", "granite_swa", "mellum", "aion_instruct", "lfm3", "mimo_v2"];
 
 /// The description of the model whose `config.json` is `cfg`.
 pub fn describe(cfg: &Value) -> Result<Described> {
-    let (tc, prefix) = text(cfg)?;
-    match cfg.get("model_type").and_then(|v| v.as_str()) {
-        Some("kimi_k3") => return kimi(cfg, tc),
-        Some("muse_spark") => return muse(tc, prefix),
-        Some("deepseek_v4") => return deepseek_v4(tc),
+    describe_config(&ModelConfig::from_value(cfg)?)
+}
+
+/// The description of the model whose `config.json` is `cfg`, for a checkpoint whose tensor names are `have` (`describe_config_in`).
+pub fn describe_held(cfg: &Value, have: &BTreeSet<String>) -> Result<Described> {
+    describe_config_in(&ModelConfig::from_value(cfg)?, Some(have))
+}
+
+/// Where a checkpoint holds a role's experts as one tensor of them all, [experts, rows, cols] (`held`: its description held to its index, `describe_held`),
+/// and `named` (the same model's description from its config alone) names each expert's matrix a tensor (or its rows stacked: an expert's gate and up):
+/// each such tensor's name, with the stacked tensor and its rows there (the stacked tensor seen as [experts rows, cols]), expert e's members its rows
+/// `e rows..(e + 1) rows` in order, each as many as its own shape says. Every other role, and a checkpoint that holds a tensor an expert's matrix, adds
+/// nothing. A shape the two descriptions do not agree on is refused.
+pub fn stacked_rows(named: &Described, held: &Described) -> Result<BTreeMap<String, (String, usize, usize)>> {
+    if named.blocks.len() != held.blocks.len() {
+        return err(format!("{} blocks from the config, {} as the checkpoint holds them", named.blocks.len(), held.blocks.len()));
+    }
+    let shape = |d: &Described, n: &str| d.shapes.get(n).cloned().ok_or_else(|| Error(format!("the description has no shape for {n}")));
+    let mut out = BTreeMap::new();
+    for (b, (nr, hr)) in named.blocks.iter().zip(&held.blocks).enumerate() {
+        for (role, hs) in hr {
+            let (Source::Tensor(t), Some((_, Source::Experts(each)))) = (hs, nr.iter().find(|(r, _)| r == role)) else { continue };
+            let [n, rows, cols] = shape(held, t)?[..] else {
+                return err(format!("block {b}: {t}: {:?}, where experts stacked are three-dimensional", shape(held, t)?));
+            };
+            if n != each.len() {
+                return err(format!("block {b}: {t} holds {n} experts, where the config has {}", each.len()));
+            }
+            for (e, members) in each.iter().enumerate() {
+                let mut at = e * rows;
+                for m in members {
+                    match shape(named, m)?[..] {
+                        [r, c] if c == cols => {
+                            out.insert(m.clone(), (t.clone(), at, at + r));
+                            at += r;
+                        }
+                        ref s => return err(format!("block {b}: {m}: {s:?}, where rows of {t}'s {cols} columns are")),
+                    }
+                }
+                if at != (e + 1) * rows {
+                    return err(format!("block {b}: {t}: expert {e}'s matrices take {} of its {rows} rows", at - e * rows));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The description of a config.json parsed once.
+pub fn describe_config(c: &ModelConfig) -> Result<Described> {
+    describe_config_in(c, None)
+}
+
+/// The description of a config.json parsed once as a checkpoint that stacks each layer's experts holds it, where the layout has that form besides a tensor
+/// an expert's matrix (the Qwen3.5 layout's: transformers' form, the one Qwen3.8-2.4T-A95B is released in); else the config's own.
+pub fn describe_stacked(c: &ModelConfig) -> Result<Described> {
+    let first = names::HF.layer(c.prefix(), 0);
+    let have: BTreeSet<String> = names::roles(part::QWEN_MOE_STACKED, &first, 0, |r| r == "experts_gate_up").iter().flat_map(|(_, s)| s.names()).collect();
+    describe_config_in(c, Some(&have))
+}
+
+/// The description of a config.json parsed once, in the stored form of the checkpoint whose tensor names are `have` where its config does not say how it
+/// stores them: the Qwen3.5 layout's routed experts are one tensor an expert's matrix (as its earlier releases are saved) unless the checkpoint holds each
+/// layer's experts as two stacked tensors (`mlp.experts.gate_up_proj`, `mlp.experts.down_proj`: the form transformers keeps them in, and the one
+/// Qwen3.8-2.4T-A95B is released in). With no `have`, the form the config alone gives.
+pub fn describe_config_in(c: &ModelConfig, have: Option<&BTreeSet<String>>) -> Result<Described> {
+    let (tc, prefix) = (&c.text, c.prefix());
+    // (the Kimi-K3 layout by its text model's, not the wrapper's release name: Kimi-K3's wrapper is `kimi_k3`, Kimi-K3.1's `kimi_k31`)
+    if c.nested && c.text_type == "kimi_linear" {
+        return kimi(c);
+    }
+    // (Ling by its text model's type, in the vision-language wrapper `bailing_moe_v3_vl` or alone)
+    if c.text_type == "bailing_hybrid" {
+        return ling(c);
+    }
+    // (Mistral Large by its text model's type, in the vision-language wrapper `mistral_large4` or alone)
+    if c.text_type == "mistral_large4_text" {
+        return mistral_large4(c);
+    }
+    match c.model_type.as_str() {
+        "muse_spark" => return muse(c),
+        "deepseek_v4" => return deepseek_v4(tc),
+        "deepseek_v41" => return deepseek_v41(c),
+        "nemotron_h" => return nemotron_h(tc),
+        "ernie5_5_moe" => return ernie5_5(tc),
+        "hy_v4_flash" => return hy4_flash(c),
         _ => {}
     }
-    let mt = tc.get("model_type").and_then(|v| v.as_str()).unwrap_or("");
+    let mt = c.text_type.as_str();
     // (a multimodal config's tie flag can sit at the top)
-    let tied_top = cfg.get("tie_word_embeddings").and_then(|v| v.as_bool());
+    let tied_top = c.top.get("tie_word_embeddings").and_then(|v| v.as_bool());
     match mt {
-        "llama" | "mistral" | "qwen2" | "qwen3" => llama(tc, prefix, mt, tied_top),
-        "qwen3_5_text" | "qwen3_5_moe_text" | "qwen3_5" | "qwen3_5_moe" => qwen35(tc, prefix, mt, tied_top),
+        t if LLAMA.contains(&t) => llama(tc, prefix, mt, tied_top),
+        "qwen3_5_text" | "qwen3_5_moe_text" | "qwen3_5" | "qwen3_5_moe" => qwen35(tc, prefix, mt, tied_top, have),
+        "qwen4_exp_text" => qwen4x(tc, prefix, mt, tied_top).and_then(|d| with_tower(d, c)),
         "gemma4_text" | "gemma4_unified_text" => gemma4(tc, prefix, mt, tied_top),
-        "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, cfg.get("quantization_config").or(tc.get("quantization_config"))),
+        "domynedge" => domyn_edge(tc, prefix, mt, tied_top),
+        "granite_swa" => granite_swa(tc, prefix, mt, tied_top),
+        "mellum" => layer_typed(tc, prefix, mt, tied_top, &MELLUM),
+        "aion_instruct" => layer_typed(tc, prefix, mt, tied_top, &AION),
+        "lfm3" => lfm3(tc, prefix, mt, tied_top),
+        "mimo_v2" => mimo_v2(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
+        "glm_moe_dsa" | "glm5_next_text" | "glm5_next" => glm(tc, prefix, mt, tied_top, c.top.get("quantization_config").or(tc.get("quantization_config"))),
+        // (a wrapper whose text model has no type of its own: the family is the wrapper's. MiniMax M3's is one)
+        "" if c.nested && c.model_type == "minimax_m3_vl" => minimax_m3(c),
+        "" if c.nested && !c.model_type.is_empty() => err(format!("model_type {} has no description builder yet", c.model_type)),
         "" => err("config.json names no model_type"),
         m => err(format!("model_type {m} has no description builder yet")),
     }
@@ -313,18 +635,25 @@ fn common(k: &Keys, tied_top: Option<bool>) -> Result<(usize, usize, usize, f32,
     Ok((d, layers, vocab, eps, tied))
 }
 
-fn finish(k: &Keys, desc: ModelDesc, prefix: &str, blocks: Vec<Vec<(String, Source)>>, mtp_layers: usize) -> Result<Described> {
+/// The description, its blocks' roles and its own tensors named by `cv` (the text model's under `prefix`), once every key of `k` is read.
+fn finish(k: &Keys, desc: ModelDesc, cv: &Convention, prefix: &str, blocks: Vec<Vec<(String, Source)>>, mtp_layers: usize) -> Result<Described> {
     k.finish()?;
     let tied = desc.head.tied;
     Ok(Described {
         desc,
-        embed: format!("{prefix}embed_tokens.weight"),
-        final_norm: format!("{prefix}norm.weight"),
-        head: (!tied).then(|| "lm_head.weight".to_string()),
+        embed: cv.embed(prefix),
+        final_norm: cv.final_norm(prefix),
+        head: (!tied).then(|| cv.head(prefix)),
         blocks,
-        extra: Vec::new(),
+        extra: cv.extra(prefix),
         mtp_layers,
         scales: Default::default(),
+        fp8_block: None,
+        shapes: Default::default(),
+        convention: cv.name,
+        unread: cv.unread(),
+        mtp: Vec::new(),
+        vision: None,
     })
 }
 
@@ -341,7 +670,7 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
     let bias = k.bool("attention_bias", mt == "qwen2")?;
     k.expect("mlp_bias", &Value::Bool(false))?;
     let act = act(k.str("hidden_act")?.unwrap_or("silu"))?;
-    k.usize("intermediate_size")?;
+    let inter = k.usize("intermediate_size")?;
     // sliding windows: Mistral's `sliding_window` for every layer; Qwen2's past `max_window_layers` when `use_sliding_window`
     let window = k.opt_usize("sliding_window")?;
     let qwen_sliding = k.bool("use_sliding_window", mt == "mistral")?;
@@ -349,8 +678,7 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
     let layer_types: Option<Vec<String>> =
         k.raw("layer_types").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect());
     let qk_norm = mt == "qwen3";
-    let mut blocks = Vec::new();
-    let mut roles = Vec::new();
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
     for l in 0..layers {
         let sliding = match &layer_types {
             Some(lt) => lt.get(l).map(|s| s == "sliding_attention").unwrap_or(false),
@@ -373,50 +701,1478 @@ fn llama(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>
             scale: (hd as f32).powf(-0.5),
             k_eq_v: false,
             indexer: None,
+            rounding: AttnRounding::F32,
+            kv_from: None,
+            v_scale: 1.0,
         };
-        let p = format!("{prefix}layers.{l}");
+        let p = names::HF.layer(prefix, l);
+        let (ar, fr) = (
+            names::roles(part::ATTN, &p, 0, |r| (bias || !r.ends_with("_bias")) && (qk_norm || !matches!(r, "q_norm" | "k_norm"))),
+            names::roles(part::MLP, &p, 0, all),
+        );
+        // (the shapes: each matrix [rows, columns] as the heads and widths make it, each norm and bias its width)
+        let (q, kvw) = (heads * hd, kv * hd);
+        shape_roles(
+            &mut shapes,
+            &ar,
+            &[
+                ("norm_in", vec![d]),
+                ("q", vec![q, d]),
+                ("q_bias", vec![q]),
+                ("k", vec![kvw, d]),
+                ("k_bias", vec![kvw]),
+                ("v", vec![kvw, d]),
+                ("v_bias", vec![kvw]),
+                ("o", vec![d, q]),
+                ("q_norm", vec![hd]),
+                ("k_norm", vec![hd]),
+            ],
+        );
+        shape_roles(&mut shapes, &fr, &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Attention(a)), norm_out: None, residual: Residual::Add });
-        roles.push(attn_roles(&p, bias, qk_norm));
+        roles.push(ar);
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: None, residual: Residual::Add });
-        roles.push(mlp_roles(&p, "post_attention_layernorm"));
+        roles.push(fr);
     }
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: 1 },
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: Norm::rms(eps),
-        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None },
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32, correction: false },
         mtp: Vec::new(),
         vision: None,
         rope: Some(rp),
     };
-    finish(&k, desc, prefix, roles, 0)
+    let mut out = finish(&k, desc, &names::HF, prefix, roles, 0)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    out.shapes = shapes;
+    Ok(out)
 }
 
-fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
+/// A list a config gives a value a layer in (`key`), as long as the model has layers.
+fn per_layer<'a>(k: &Keys<'a>, key: &str, layers: usize) -> Result<&'a Vec<Value>> {
+    let v = k.raw(key).and_then(Value::as_array).ok_or_else(|| Error(format!("{}: no list {key}", k.what)))?;
+    if v.len() != layers {
+        return err(format!("{}: {key} has {} entries for {layers} layers", k.what, v.len()));
+    }
+    Ok(v)
+}
+
+/// Domyn Edge (`domynedge`, DomynEdgeForCausalLM): a dense decoder of Llama-style parts where each part has a norm before it and a norm after it (the
+/// part's output is normed, then added), and where the layers are of two sorts, said a layer in the config's lists:
+///  - `position_layers`: "rope" (rotary positions, `rope_parameters`) or "nope" (none);
+///  - `window_sizes`: [left, right] keys a query sees besides its own; left -1 is the whole context, left w a window of w + 1 with itself (the release's
+///    `sliding_window`, which counts the query's own position, is that w + 1); right is 0 (a decoder sees nothing after itself);
+///  - `head_sizes`: the head width, with which a layer's q, k, v and o matrices and its k norm change size (`num_attention_heads` and
+///    `num_key_value_heads` are every layer's): Domyn-Edge-Base has 256 on its 12 whole-context layers and 64 on its 24 windowed ones;
+///  - `layer_types`: "full_attention" or "sliding_attention", which must say what `window_sizes` says.
+/// The queries are normed a head with no weight and the keys with one, both before the rotation; the scores are scaled by 1 / sqrt(head width).
+/// The MLP is the gated one (`hidden_act`), with no biases anywhere. The embedding is tied to the head and not scaled.
+fn domyn_edge(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
     let k = Keys::new(tc, mt);
     let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
-    let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.usize("head_dim")?);
+    let (heads, kv) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?);
     let max_pos = k.opt_usize("max_position_embeddings")?;
-    k.opt_f64("partial_rotary_factor")?;
-    let rp = match k.raw("rope_parameters") {
-        Some(Value::Object(o)) => rope(o, hd, max_pos, &format!("{mt} rope_parameters"))?,
-        _ => legacy_rope(&k, hd, max_pos)?,
+    let act = act(k.str("hidden_act")?.unwrap_or("silu"))?;
+    let inter = k.usize("intermediate_size")?;
+    let Some(Value::Object(rp)) = k.raw("rope_parameters") else { return err(format!("{mt}: no rope_parameters")) };
+    let (positions, windows, head_sizes, types) = (
+        per_layer(&k, "position_layers", layers)?,
+        per_layer(&k, "window_sizes", layers)?,
+        per_layer(&k, "head_sizes", layers)?,
+        per_layer(&k, "layer_types", layers)?,
+    );
+    let sliding_window = k.opt_usize("sliding_window")?;
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
+    let mut first_rope = None;
+    for l in 0..layers {
+        let hd = head_sizes[l].as_u64().filter(|&h| h > 0).ok_or_else(|| Error(format!("{mt}: head_sizes[{l}] = {} is not a width", head_sizes[l])))? as usize;
+        let rope = match positions[l].as_str() {
+            Some("rope") => Some(rope(rp, hd, max_pos, &format!("{mt} rope_parameters"))?),
+            Some("nope") => None,
+            _ => return err(format!("{mt}: position_layers[{l}] = {} is not supported (rope or nope)", positions[l])),
+        };
+        let window = match windows[l].as_array().map(|w| w.iter().map(Value::as_i64).collect::<Vec<_>>()).as_deref() {
+            Some([Some(-1), Some(0)]) => None,
+            Some([Some(left), Some(0)]) if *left > 0 => Some(*left as usize + 1),
+            _ => return err(format!("{mt}: window_sizes[{l}] = {} is not supported ([-1, 0] or [left, 0])", windows[l])),
+        };
+        match (types[l].as_str(), window) {
+            (Some("full_attention"), None) | (Some("sliding_attention"), Some(_)) => {}
+            _ => return err(format!("{mt}: layer_types[{l}] = {} does not agree with window_sizes[{l}] = {}", types[l], windows[l])),
+        }
+        if let (Some(w), Some(sw)) = (window, sliding_window) {
+            if w != sw {
+                return err(format!("{mt}: window_sizes[{l}] = {} is a window of {w} and sliding_window says {sw}", windows[l]));
+            }
+        }
+        first_rope = first_rope.or(rope.clone());
+        let a = Attn {
+            heads,
+            kv_heads: kv,
+            head_dim: hd,
+            v_head_dim: hd,
+            window,
+            sinks: false,
+            rope,
+            q_norm: Some(Norm::rms_bare(eps)),
+            k_norm: Some(Norm::rms(eps)),
+            v_norm: None,
+            gate: None,
+            softcap: None,
+            bias: false,
+            scale: (hd as f32).powf(-0.5),
+            k_eq_v: false,
+            indexer: None,
+            rounding: AttnRounding::F32,
+            kv_from: None,
+            v_scale: 1.0,
+        };
+        let p = names::HF.layer(prefix, l);
+        let (ar, fr) = (names::roles(part::DOMYN_ATTN, &p, 0, all), names::roles(part::DOMYN_MLP, &p, 0, all));
+        let (q, kvw) = (heads * hd, kv * hd);
+        shape_roles(
+            &mut shapes,
+            &ar,
+            &[
+                ("norm_in", vec![d]),
+                ("q", vec![q, d]),
+                ("k", vec![kvw, d]),
+                ("v", vec![kvw, d]),
+                ("o", vec![d, q]),
+                ("k_norm", vec![hd]),
+                ("norm_out", vec![d]),
+            ],
+        );
+        shape_roles(
+            &mut shapes,
+            &fr,
+            &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter]), ("norm_out", vec![d])],
+        );
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Attention(a)), norm_out: Some(Norm::rms(eps)), residual: Residual::Add });
+        roles.push(ar);
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: Some(Norm::rms(eps)), residual: Residual::Add });
+        roles.push(fr);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: Norm::rms(eps),
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32, correction: false },
+        mtp: Vec::new(),
+        vision: None,
+        rope: first_rope,
     };
+    let mut out = finish(&k, desc, &names::HF, prefix, roles, 0)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    out.shapes = shapes;
+    Ok(out)
+}
+
+/// Granite Swash, dense (`granite_swa`, GraniteSWAForCausalLM): a Llama-style decoder with Granite's four multipliers and, a layer, a window and a sink.
+///  - `embedding_multiplier` scales the embedding, `residual_multiplier` each part's output before it is added, `attention_multiplier` is the scores'
+///    factor (in place of 1 / sqrt(head width)), and the logits are divided by `logits_scaling`; each is 1 where the config does not say;
+///  - `layer_types` says a layer "full_attention" or "sliding_attention" (unsaid: every fourth layer, from the first, is full); a sliding layer's query
+///    sees `sliding_window` positions, its own among them (128 unsaid);
+///  - every layer has a learned logit a head, `sinks`, that takes part in the softmax and attends to nothing (transformers scales the output by
+///    sigmoid(logsumexp(scores) - sink), which is that softmax);
+///  - `layer_rope_theta`, where a config has it, is the rotary base a layer, 0 for a layer with no positions; unsaid, every layer has the model's.
+/// The defaults are transformers' configuration class's (`rms_norm_eps` 1e-5, the head tied to the embedding, as many key heads as heads where unsaid).
+/// No biases (`attention_bias`, `mlp_bias` false). The mixture of experts of the family (`granitemoe_swa`) is another model type, not read here.
+fn granite_swa(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, _, tied) = common(&k, tied_top.or(Some(true)))?;
+    let eps = k.opt_f64("rms_norm_eps")?.unwrap_or(1e-5) as f32;
+    let heads = k.usize("num_attention_heads")?;
+    let kv = k.opt_usize("num_key_value_heads")?.unwrap_or(heads);
+    if heads == 0 || d % heads != 0 {
+        return err(format!("{mt}: hidden_size {d} is not num_attention_heads {heads} heads of one width"));
+    }
+    let hd = d / heads;
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    k.expect("attention_bias", &Value::Bool(false))?;
+    k.expect("mlp_bias", &Value::Bool(false))?;
+    let act = act(k.str("hidden_act")?.unwrap_or("silu"))?;
+    let inter = k.usize("intermediate_size")?;
+    let mult = |key: &str| -> Result<f32> { Ok(k.opt_f64(key)?.unwrap_or(1.0) as f32) };
+    let (embed_x, residual_x, attn_x, logits_div) =
+        (mult("embedding_multiplier")?, mult("residual_multiplier")?, mult("attention_multiplier")?, mult("logits_scaling")?);
+    if logits_div == 0.0 {
+        return err(format!("{mt}: logits_scaling = 0"));
+    }
+    let window = k.opt_usize("sliding_window")?.unwrap_or(128);
+    let types: Vec<bool> = match k.raw("layer_types") {
+        None => (0..layers).map(|l| l % 4 != 0).collect(),
+        Some(_) => per_layer(&k, "layer_types", layers)?
+            .iter()
+            .enumerate()
+            .map(|(l, t)| match t.as_str() {
+                Some("full_attention") => Ok(false),
+                Some("sliding_attention") => Ok(true),
+                _ => err(format!("{mt}: layer_types[{l}] = {t} is not supported (full_attention or sliding_attention)")),
+            })
+            .collect::<Result<_>>()?,
+    };
+    // (the model's rotary: `rope_parameters`, or the earlier keys a release may still write, `rope_theta` among them)
+    let top_theta = k.opt_f64("rope_theta")?;
+    let model_rope: Map<String, Value> = match k.raw("rope_parameters") {
+        Some(Value::Object(o)) => o.clone(),
+        _ => Map::from_iter([("rope_type".to_string(), Value::from("default")), ("rope_theta".to_string(), Value::from(top_theta.unwrap_or(10000.0)))]),
+    };
+    let thetas: Option<&Vec<Value>> = if k.raw("layer_rope_theta").is_some() { Some(per_layer(&k, "layer_rope_theta", layers)?) } else { None };
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
+    let mut first_rope = None;
+    for l in 0..layers {
+        let theta = match thetas {
+            None => None,
+            Some(t) => Some(t[l].as_f64().filter(|x| *x >= 0.0).ok_or_else(|| Error(format!("{mt}: layer_rope_theta[{l}] = {} is not a base", t[l])))?),
+        };
+        let rope = match theta {
+            Some(0.0) => None,
+            _ => {
+                let mut p = model_rope.clone();
+                if let Some(t) = theta {
+                    p.insert("rope_theta".to_string(), Value::from(t));
+                }
+                Some(rope(&p, hd, max_pos, &format!("{mt} rope_parameters"))?)
+            }
+        };
+        first_rope = first_rope.or(rope.clone());
+        let a = Attn {
+            heads,
+            kv_heads: kv,
+            head_dim: hd,
+            v_head_dim: hd,
+            window: types[l].then_some(window),
+            sinks: true,
+            rope,
+            q_norm: None,
+            k_norm: None,
+            v_norm: None,
+            gate: None,
+            softcap: None,
+            bias: false,
+            scale: attn_x,
+            k_eq_v: false,
+            indexer: None,
+            rounding: AttnRounding::F32,
+            kv_from: None,
+            v_scale: 1.0,
+        };
+        let p = names::HF.layer(prefix, l);
+        let mut ar = names::roles(part::ATTN, &p, 0, |r| !r.ends_with("_bias") && !matches!(r, "q_norm" | "k_norm"));
+        ar.extend(names::roles(part::GRANITE_SINKS, &p, 0, all));
+        let fr = names::roles(part::MLP, &p, 0, all);
+        let (q, kvw) = (heads * hd, kv * hd);
+        shape_roles(
+            &mut shapes,
+            &ar,
+            &[("norm_in", vec![d]), ("q", vec![q, d]), ("k", vec![kvw, d]), ("v", vec![kvw, d]), ("o", vec![d, q]), ("sinks", vec![heads])],
+        );
+        shape_roles(&mut shapes, &fr, &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
+        let residual = if residual_x == 1.0 { Residual::Add } else { Residual::AddScaled(residual_x) };
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Attention(a)), norm_out: None, residual: residual.clone() });
+        roles.push(ar);
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: None, residual });
+        roles.push(fr);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: embed_x, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: Norm::rms(eps),
+        head: Head { tied, softcap: None, scale: 1.0 / logits_div, collapse: Collapse::None, rounding: Rounding::F32, correction: false },
+        mtp: Vec::new(),
+        vision: None,
+        rope: first_rope,
+    };
+    let mut out = finish(&k, desc, &names::HF, prefix, roles, 0)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    out.shapes = shapes;
+    Ok(out)
+}
+
+/// What a family of layers by type leaves unsaid, and whether some layers' feed-forward is a mixture of experts (`layer_typed`).
+struct LayerTyped {
+    heads: usize,
+    kv: usize,
+    inter: usize,
+    window: usize,
+    /// The rotary's base on the layers over the whole context and on the windowed ones, where a config has no `rope_parameters`: None where the class's
+    /// own default is a scaled rotary, which a config must then say.
+    thetas: Option<(f64, f64)>,
+    experts: bool,
+}
+
+const MELLUM: LayerTyped = LayerTyped { heads: 32, kv: 4, inter: 7168, window: 1024, thetas: Some((500_000.0, 10_000.0)), experts: true };
+/// Aion 1.0 Instruct (`aion_instruct`): the same attention a layer type, a gated MLP in every layer, no draft layers.
+const AION: LayerTyped = LayerTyped { heads: 24, kv: 8, inter: 8192, window: 2048, thetas: None, experts: false };
+
+/// Mellum 2 (`mellum`, MellumForCausalLM): a pre-norm decoder of Qwen3-style attention (queries and keys normed a head, each norm with a weight,
+/// before the rotation) and, a layer, a mixture of experts or a gated MLP.
+///  - `layer_types` says a layer "full_attention" or "sliding_attention" (unsaid: every layer full); a sliding layer's query sees `sliding_window`
+///    positions, its own among them (1,024 unsaid);
+///  - `rope_parameters` holds the rotary of each layer type under the type's name (Mellum 2.1: yarn at a base of 500,000 on the full layers, plain
+///    on the sliding ones); unsaid, the class's: plain, 500,000 on full layers and 10,000 on sliding ones. A type's `partial_rotary_factor` rotates a
+///    part of the head;
+///  - `mlp_layer_types` says a layer "sparse" (the experts: `num_experts` of `moe_intermediate_size`, the softmax of the router's logits, the best
+///    `num_experts_per_tok` kept and, with `norm_topk_prob`, divided by their sum; no shared expert) or "dense" (an MLP of `intermediate_size`);
+///    unsaid, every layer sparse.
+/// The defaults are transformers' configuration class's. The draft layers of the releases that have them (`num_mtp_layers`, `mtp.`) are counted and
+/// left unread. `use_sliding_window` and `max_window_layers`, which the releases still write, are an earlier class's keys and select nothing here.
+fn layer_typed(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, f: &LayerTyped) -> Result<Described> {
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
+    let (heads, kv) = (k.opt_usize("num_attention_heads")?.unwrap_or(f.heads), k.opt_usize("num_key_value_heads")?.unwrap_or(f.kv));
+    let hd = k.opt_usize("head_dim")?.unwrap_or(128);
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    k.expect("attention_bias", &Value::Bool(false))?;
+    let act = act(k.str("hidden_act")?.unwrap_or("silu"))?;
+    let inter = k.opt_usize("intermediate_size")?.unwrap_or(f.inter);
+    // (the experts' keys are read where the family has experts: elsewhere a config that names them is refused, by its unknown keys)
+    let (moe_inter, experts) =
+        if f.experts { (k.opt_usize("moe_intermediate_size")?.unwrap_or(896), k.opt_usize("num_experts")?.unwrap_or(64)) } else { (0, 0) };
+    let moe = Moe {
+        router: Router {
+            score: RouterScore::Softmax,
+            logit_scale: 1.0,
+            bias: false,
+            groups: None,
+            top_k: if f.experts { k.opt_usize("num_experts_per_tok")?.unwrap_or(8) } else { 0 },
+            renorm: !f.experts || k.bool("norm_topk_prob", true)?,
+            scale: 1.0,
+            hash: false,
+            routers: 1,
+            expert_scale: false,
+        },
+        experts,
+        expert: gated(act),
+        shared: None,
+        shared_gate: false,
+        latent: None,
+    };
+    let window = k.opt_usize("sliding_window")?.unwrap_or(f.window);
+    // (an earlier class's keys, still in the releases' configs; the class reads `layer_types`)
+    k.raw("use_sliding_window");
+    k.raw("max_window_layers");
+    let list = |key: &str, a: &str, b: &str, unsaid: bool| -> Result<Vec<bool>> {
+        match k.raw(key) {
+            None => Ok(vec![unsaid; layers]),
+            Some(_) => per_layer(&k, key, layers)?
+                .iter()
+                .enumerate()
+                .map(|(l, t)| match t.as_str() {
+                    Some(x) if x == a => Ok(false),
+                    Some(x) if x == b => Ok(true),
+                    _ => err(format!("{mt}: {key}[{l}] = {t} is not supported ({a} or {b})")),
+                })
+                .collect(),
+        }
+    };
+    let sliding = list("layer_types", "full_attention", "sliding_attention", false)?;
+    let sparse = if f.experts { list("mlp_layer_types", "dense", "sparse", true)? } else { vec![false; layers] };
+    let plain = |theta: f64| Map::from_iter([("rope_type".to_string(), Value::from("default")), ("rope_theta".to_string(), Value::from(theta))]);
+    let (full_rope, sliding_rope) = match k.raw("rope_parameters") {
+        None => match f.thetas {
+            Some((full, sliding)) => (plain(full), plain(sliding)),
+            None => return err(format!("{mt}: no rope_parameters, where the class's own are a scaled rotary: the config must say them")),
+        },
+        Some(Value::Object(o)) => {
+            let of = |ty: &str, needed: bool, unsaid: f64| match o.get(ty) {
+                Some(Value::Object(p)) => Ok(p.clone()),
+                None if !needed => Ok(plain(unsaid)),
+                _ => err(format!("{mt}: rope_parameters has no {ty}, which its layer_types name")),
+            };
+            if let Some(other) = o.keys().find(|t| !matches!(t.as_str(), "full_attention" | "sliding_attention")) {
+                return err(format!("{mt}: rope_parameters.{other} is not a layer type (full_attention, sliding_attention)"));
+            }
+            let (full, slid) = f.thetas.unwrap_or((10_000.0, 10_000.0));
+            (of("full_attention", sliding.iter().any(|s| !s), full)?, of("sliding_attention", sliding.iter().any(|s| *s), slid)?)
+        }
+        Some(v) => return err(format!("{mt}: rope_parameters = {v} is not the rotary of each layer type")),
+    };
+    let ropes = (
+        rope(&full_rope, hd, max_pos, &format!("{mt} rope_parameters.full_attention"))?,
+        rope(&sliding_rope, hd, max_pos, &format!("{mt} rope_parameters.sliding_attention"))?,
+    );
+    // (the draft layers' count under the class's name, or the one the -MTP releases write)
+    let mtp_layers = if f.experts { k.opt_usize("num_mtp_layers")?.or(k.opt_usize("num_nextn_predict_layers")?).unwrap_or(0) } else { 0 };
+    if f.experts {
+        k.raw("mtp_layer_types");
+        k.raw("mtp_mlp_layer_types");
+    }
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
+    for l in 0..layers {
+        let a = Attn {
+            heads,
+            kv_heads: kv,
+            head_dim: hd,
+            v_head_dim: hd,
+            window: sliding[l].then_some(window),
+            sinks: false,
+            rope: Some(if sliding[l] { ropes.1.clone() } else { ropes.0.clone() }),
+            q_norm: Some(Norm::rms(eps)),
+            k_norm: Some(Norm::rms(eps)),
+            v_norm: None,
+            gate: None,
+            softcap: None,
+            bias: false,
+            scale: (hd as f32).powf(-0.5),
+            k_eq_v: false,
+            indexer: None,
+            rounding: AttnRounding::F32,
+            kv_from: None,
+            v_scale: 1.0,
+        };
+        let p = names::HF.layer(prefix, l);
+        let ar = names::roles(part::ATTN, &p, 0, |r| !r.ends_with("_bias"));
+        let (q, kvw) = (heads * hd, kv * hd);
+        shape_roles(
+            &mut shapes,
+            &ar,
+            &[("norm_in", vec![d]), ("q", vec![q, d]), ("k", vec![kvw, d]), ("v", vec![kvw, d]), ("o", vec![d, q]), ("q_norm", vec![hd]), ("k_norm", vec![hd])],
+        );
+        blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Attention(a)), norm_out: None, residual: Residual::Add });
+        roles.push(ar);
+        if sparse[l] {
+            let fr = names::roles(part::QWEN_MOE, &p, experts, |r| !r.starts_with("shared"));
+            shape_roles(
+                &mut shapes,
+                &fr,
+                &[("norm_in", vec![d]), ("router", vec![experts, d]), ("experts_gate_up", vec![moe_inter, d]), ("experts_down", vec![d, moe_inter])],
+            );
+            blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Moe(moe.clone())), norm_out: None, residual: Residual::Add });
+            roles.push(fr);
+        } else {
+            let fr = names::roles(part::MLP, &p, 0, all);
+            shape_roles(&mut shapes, &fr, &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
+            blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: None, residual: Residual::Add });
+            roles.push(fr);
+        }
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: Norm::rms(eps),
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32, correction: false },
+        mtp: Vec::new(),
+        vision: None,
+        rope: Some(ropes.0),
+    };
+    let mut out = finish(&k, desc, &names::HF, prefix, roles, mtp_layers)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    out.shapes = shapes;
+    Ok(out)
+}
+
+/// LFM3 (`lfm3`, Lfm3ForCausalLM): a decoder whose layers are of three sorts, each a mixer then the gated SiLU MLP (`feed_forward`: w1 the gate, w3 the up
+/// projection, w2 the down; no biases), each part `x + norm_after(part(norm_before(x)))`.
+///  - `layer_types` says a layer "conv", "full_attention" or "sliding_attention" (unsaid: layer i full where i mod 4 is 2, sliding where i mod 4 is 0 past the
+///    first, else conv);
+///  - a conv layer is the gated short convolution (`kinds::ShortConv`): `conv_L_cache` taps a channel (7 unsaid), with `conv_bias` a bias on its two products
+///    and its convolution (false unsaid);
+///  - an attention layer has Qwen3-style queries and keys (normed a head, each norm with a weight, before the rotation), scores scaled by 1 / sqrt(head
+///    width), and with `use_attention_gate` (true unsaid: transformers' key; the release's own code has the gate always) each head's output times
+///    sigmoid(g_h . x), x the layer's normed input, the one the queries read: a value a head (`GateFrom::Head`). A sliding layer's query sees
+///    `sliding_window` positions, its own among them (256 unsaid);
+///  - `use_sandwich_norm` (true unsaid) gives each part the norm after it; without it a part's output is added as it is;
+///  - `rope_parameters` holds the rotary of each attention layer type under the type's name. Unsaid: the sliding layers' plain at a base of 10,000, the
+///    full layers' at 1,000,000 with `partial_rotary_factor` 0.5. A `rope_type` "default" with a partial factor below 1 is what transformers calls
+///    "proportional": the whole head pairs as (i, i + head / 2), the first factor x head / 2 pairs turn at theta^(-2i / head) (the exponent over the whole
+///    head) and the rest do not turn. That is how the release's own modelling file reads the "default" + 0.5 its config writes, and what vLLM and SGLang
+///    rewrite it to; transformers' own port, as first added, turns the whole head given "default" (it reads the factor only under "proportional", its class's
+///    default), and the plain reading of a partial rotary (the first half of the head, exponents over that half: `rope`'s) is a third function. The
+///    release's is taken. A scaled type with a partial factor is refused: the release cuts such a type's frequencies of the whole head, which no rotary
+///    here does.
+/// The norms are RMS with a weight at `norm_eps` (1e-5 unsaid; `rms_norm_eps` is the same key by the class's attribute map). The norm after the last layer
+/// is named `embedding_norm`. The head is the embedding unless `tie_word_embeddings` (or the older `tie_embedding`) says not. The defaults are the config
+/// class's.
+fn lfm3(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab) =
+        (k.opt_usize("hidden_size")?.unwrap_or(2048), k.opt_usize("num_hidden_layers")?.unwrap_or(24), k.opt_usize("vocab_size")?.unwrap_or(128_000));
+    let eps = match (k.opt_f64("norm_eps")?, k.opt_f64("rms_norm_eps")?) {
+        (Some(a), Some(b)) if a != b => return err(format!("{mt}: norm_eps {a} and rms_norm_eps {b} differ")),
+        (a, b) => a.or(b).unwrap_or(1e-5) as f32,
+    };
+    // (the older key wins where a config has both, as the release's config class takes it)
+    let tied = k.bool("tie_embedding", k.bool("tie_word_embeddings", tied_top.unwrap_or(true))?)?;
+    let (heads, kv) = (k.opt_usize("num_attention_heads")?.unwrap_or(16), k.opt_usize("num_key_value_heads")?.unwrap_or(4));
+    if heads == 0 || kv == 0 || !heads.is_multiple_of(kv) {
+        return err(format!("{mt}: {heads} query heads to {kv} KV heads"));
+    }
+    let hd = k.opt_usize("head_dim")?.unwrap_or(d / heads);
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    k.expect("attention_bias", &Value::Bool(false))?;
+    let inter = k.opt_usize("intermediate_size")?.unwrap_or(7680);
+    let conv = ShortConv { taps: k.opt_usize("conv_L_cache")?.unwrap_or(7), bias: k.bool("conv_bias", false)? };
+    if conv.taps == 0 {
+        return err(format!("{mt}: conv_L_cache = 0 is not a convolution"));
+    }
+    let (sandwich, gate) = (k.bool("use_sandwich_norm", true)?, k.bool("use_attention_gate", true)?);
+    #[derive(Clone, Copy, PartialEq)]
+    enum Sort {
+        Conv,
+        Full,
+        Sliding,
+    }
+    let sorts: Vec<Sort> = match k.raw("layer_types") {
+        None => (0..layers)
+            .map(|i| {
+                if i % 4 == 2 {
+                    Sort::Full
+                } else if i % 4 == 0 && i > 0 {
+                    Sort::Sliding
+                } else {
+                    Sort::Conv
+                }
+            })
+            .collect(),
+        Some(_) => per_layer(&k, "layer_types", layers)?
+            .iter()
+            .enumerate()
+            .map(|(l, t)| match t.as_str() {
+                Some("conv") => Ok(Sort::Conv),
+                Some("full_attention") => Ok(Sort::Full),
+                Some("sliding_attention") => Ok(Sort::Sliding),
+                _ => err(format!("{mt}: layer_types[{l}] = {t} is not supported (conv, full_attention or sliding_attention)")),
+            })
+            .collect::<Result<_>>()?,
+    };
+    let has = |s: Sort| sorts.contains(&s);
+    // (the class's 256 where the key is absent; a null is no window, which a config with sliding layers cannot say)
+    let window = k.opt_usize("sliding_window")?;
+    if has(Sort::Sliding) && matches!(tc.get("sliding_window"), Some(Value::Null)) {
+        return err(format!("{mt}: sliding_window = null, where its layer_types name sliding_attention layers"));
+    }
+    let window = window.unwrap_or(256);
+    let unsaid = |theta: f64, partial: Option<f64>| {
+        let mut m = Map::from_iter([("rope_type".to_string(), Value::from("default")), ("rope_theta".to_string(), Value::from(theta))]);
+        m.extend(partial.map(|p| ("partial_rotary_factor".to_string(), Value::from(p))));
+        m
+    };
+    let (full_rope, sliding_rope) = match k.raw("rope_parameters") {
+        None => (unsaid(1_000_000.0, Some(0.5)), unsaid(10_000.0, None)),
+        Some(Value::Object(o)) => {
+            if let Some(other) = o.keys().find(|t| !matches!(t.as_str(), "full_attention" | "sliding_attention")) {
+                return err(format!("{mt}: rope_parameters.{other} is not an attention layer type (full_attention, sliding_attention)"));
+            }
+            // (a type no layer is of may be left out: its rotary is then read by nothing)
+            let of = |ty: &str, needed: bool| match o.get(ty) {
+                Some(Value::Object(p)) => Ok(p.clone()),
+                None if !needed => Ok(unsaid(10_000.0, None)),
+                _ => err(format!("{mt}: rope_parameters has no {ty}, which its layer_types name")),
+            };
+            (of("full_attention", has(Sort::Full))?, of("sliding_attention", has(Sort::Sliding))?)
+        }
+        Some(v) => return err(format!("{mt}: rope_parameters = {v} is not the rotary of each attention layer type")),
+    };
+    // (the release's reading of a partial factor: see above)
+    let rope_of = |mut p: Map<String, Value>, ty: &str| -> Result<Rope> {
+        let what = format!("{mt} rope_parameters.{ty}");
+        let partial = p.get("partial_rotary_factor").and_then(Value::as_f64).unwrap_or(1.0);
+        match p.get("rope_type").and_then(Value::as_str).unwrap_or("default") {
+            "default" if partial < 1.0 => {
+                p.insert("rope_type".into(), Value::from("proportional"));
+            }
+            "default" | "proportional" => {}
+            // (the release's config class refuses the two: their frequencies are made anew in a pass, over the rotated part alone)
+            t @ ("dynamic" | "longrope") => return err(format!("{what}: rope_type {t} is not supported (the release's class refuses it)")),
+            t if partial != 1.0 => {
+                return err(format!("{what}: rope_type {t} with partial_rotary_factor {partial} is not supported (default or proportional)"))
+            }
+            _ => {}
+        }
+        rope(&p, hd, max_pos, &what)
+    };
+    let ropes = (rope_of(full_rope, "full_attention")?, rope_of(sliding_rope, "sliding_attention")?);
+    let n = Norm::rms(eps);
+    let after = sandwich.then_some(n);
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
+    let mut first_rope = None;
+    for (l, sort) in sorts.iter().enumerate() {
+        let p = names::LFM.layer(prefix, l);
+        let (body, mr) = match sort {
+            Sort::Conv => {
+                let r = names::roles(part::LFM_CONV, &p, 0, |r| (conv.bias || !r.ends_with("_bias")) && (sandwich || r != "norm_out"));
+                // (the convolution as the checkpoint holds it: a channel, one input channel, its taps)
+                let want = [
+                    ("in", vec![3 * d, d]),
+                    ("in_bias", vec![3 * d]),
+                    ("conv", vec![d, 1, conv.taps]),
+                    ("conv_bias", vec![d]),
+                    ("o", vec![d, d]),
+                    ("o_bias", vec![d]),
+                ];
+                shape_roles(&mut shapes, &r, &want);
+                (Body::Mixer(Mixer::ShortConv(conv)), r)
+            }
+            Sort::Full | Sort::Sliding => {
+                let sliding = *sort == Sort::Sliding;
+                let a = Attn {
+                    heads,
+                    kv_heads: kv,
+                    head_dim: hd,
+                    v_head_dim: hd,
+                    window: sliding.then_some(window),
+                    sinks: false,
+                    rope: Some(if sliding { ropes.1.clone() } else { ropes.0.clone() }),
+                    q_norm: Some(n),
+                    k_norm: Some(n),
+                    v_norm: None,
+                    gate: gate.then_some(OutGate { act: Act::Sigmoid, from: GateFrom::Head, norm: None }),
+                    softcap: None,
+                    bias: false,
+                    scale: (hd as f32).powf(-0.5),
+                    k_eq_v: false,
+                    indexer: None,
+                    rounding: AttnRounding::F32,
+                    kv_from: None,
+                    v_scale: 1.0,
+                };
+                first_rope = first_rope.or(a.rope.clone());
+                let r = names::roles(part::LFM_ATTN, &p, 0, |r| (gate || r != "g") && (sandwich || r != "norm_out"));
+                let (q, kvw) = (heads * hd, kv * hd);
+                let want = [
+                    ("q", vec![q, d]),
+                    ("k", vec![kvw, d]),
+                    ("v", vec![kvw, d]),
+                    ("o", vec![d, q]),
+                    ("q_norm", vec![hd]),
+                    ("k_norm", vec![hd]),
+                    ("g", vec![heads, d]),
+                ];
+                shape_roles(&mut shapes, &r, &want);
+                (Body::Mixer(Mixer::Attention(a)), r)
+            }
+        };
+        let fr = names::roles(part::LFM_MLP, &p, 0, |r| sandwich || r != "norm_out");
+        for r in [&mr, &fr] {
+            shape_roles(&mut shapes, r, &[("norm_in", vec![d]), ("norm_out", vec![d])]);
+        }
+        shape_roles(&mut shapes, &fr, &[("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
+        blocks.push(Block { norm_in: n, body, norm_out: after, residual: Residual::Add });
+        roles.push(mr);
+        blocks.push(Block { norm_in: n, body: Body::Ffn(Ffn::Mlp(gated(Act::Silu))), norm_out: after, residual: Residual::Add });
+        roles.push(fr);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: n,
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32, correction: false },
+        mtp: Vec::new(),
+        vision: None,
+        rope: first_rope,
+    };
+    let mut out = finish(&k, desc, &names::LFM, prefix, roles, 0)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    out.shapes = shapes;
+    Ok(out)
+}
+
+/// MiMo V2's `quantization_config` as released: FP8 E4M3 matrices in square blocks, each with its scales (`weight_scale_inv`), but the modules of
+/// `ignored_layers` (bf16); the routed experts stored as MXFP4 (`store_dtype`: 4-bit floats two a byte in runs of `mxfp4_block_size` 32 along a row, a
+/// byte's power-of-two scale a run, `weight_scale`). Anything else is refused with what differs.
+struct MimoQuant {
+    block: usize,
+    ignored: Vec<String>,
+}
+
+fn mimo_quant(q: &Value, mt: &str) -> Result<MimoQuant> {
+    let what = format!("{mt}: quantization_config");
+    let Some(o) = q.as_object() else { return err(format!("{what} = {q} is not an object")) };
+    let k = Keys::new(o, &what);
+    let (method, fmt, store) = (k.str("quant_method")?, k.str("fmt")?, k.str("store_dtype")?);
+    if method != Some("fp8") || fmt != Some("e4m3") {
+        return err(format!("{what}: {method:?} {fmt:?}, where the description reads fp8 e4m3"));
+    }
+    let block = match k.raw("weight_block_size").and_then(Value::as_array).map(|a| a.iter().map(Value::as_u64).collect::<Vec<_>>()).as_deref() {
+        Some([Some(a), Some(b)]) if a == b && *a > 0 => *a as usize,
+        _ => {
+            return err(format!(
+                "{what}: weight_block_size {} is not supported: square blocks of scales are",
+                o.get("weight_block_size").unwrap_or(&Value::Null)
+            ))
+        }
+    };
+    // (the experts' format: the one the release's loader reads, bytes of two 4-bit floats and a byte's exponent a run of 32)
+    if store != Some("mxfp4") {
+        return err(format!("{what}: store_dtype {store:?}: the experts' stored format is read as mxfp4 only"));
+    }
+    k.expect("mxfp4_block_size", &Value::from(32))?;
+    // (the activations' quantization is the serving engine's choice of arithmetic, not the weights': only the release's own is taken)
+    k.expect("activation_scheme", &Value::from("dynamic"))?;
+    let ignored = match k.raw("ignored_layers") {
+        None => Vec::new(),
+        Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+        Some(v) => return err(format!("{what}: ignored_layers = {v} is not a list of modules")),
+    };
+    k.finish()?;
+    Ok(MimoQuant { block, ignored })
+}
+
+/// One sort of MiMo V2 layer's attention: the layers over the whole context, or the sliding ones.
+struct MimoSort {
+    heads: usize,
+    kv: usize,
+    hd: usize,
+    vd: usize,
+    sinks: bool,
+    window: Option<usize>,
+    rope: Rope,
+}
+
+/// MiMo V2 (`mimo_v2`, MiMoV2ForCausalLM): a pre-norm decoder of two sorts of attention layer and, a layer, a gated MLP or a mixture of experts, read as
+/// the release's own serving code reads its config (SGLang's `mimo_v2.py`).
+///  - `hybrid_layer_pattern` says a layer 0 (attention over the whole context: `num_attention_heads`, `num_key_value_heads`, `head_dim`, `v_head_dim`,
+///    the rotary's base `rope_theta`) or 1 (sliding: the `swa_` keys of the same names, base `swa_rope_theta`). The queries and keys are `head_dim` wide
+///    and the values `v_head_dim` (192 and 128 in the releases), so `o` reads heads x `v_head_dim`; the scores are scaled by 1 / sqrt(head_dim);
+///  - a sliding layer's query sees `sliding_window_size` positions before it and its own (SGLang gives the size to the kernel as the window's left edge;
+///    transformers' earlier class says the same as a `sliding_window` of the size + 1). The config's `sliding_window`, which the release's code does not
+///    read, must be one of those two;
+///  - `add_full_attention_sink_bias` and `add_swa_attention_sink_bias` give a layer sort a learned logit a head, `attention_sink_bias`, that takes part
+///    in the softmax and attends to nothing;
+///  - `attention_value_scale` multiplies the values after their product (`Attn::v_scale`); `partial_rotary_factor` rotates that part of a head, from its
+///    first channel (int(head_dim x factor) channels); no q or k norm, no biases;
+///  - `attention_projection_layout` "fused_qkv" stores the three products as one matrix, `qkv_proj`, cut for `num_key_value_heads` shards (the whole-context
+///    sort's count, on the sliding layers too): shard i's rows are its query heads', then its key heads', then its value heads', so the matrix is not
+///    q, then k, then v (SGLang's `load_mimo_v2_qkv_proj_weight`, vLLM's `_shard_fp8_qkv_proj`). The description cuts it into the kind's `q`, `k` and `v`
+///    (`Source::RowsOf`). "split" or unsaid: a matrix a product;
+///  - `moe_layer_freq` says a layer 0 (a gated SiLU MLP of `intermediate_size`) or 1 (`n_routed_experts` of `moe_intermediate_size`: the sigmoid of the
+///    router's logits, a choice bias `e_score_correction_bias`, the best `num_experts_per_tok` kept and, with `norm_topk_prob`, divided by their sum; no
+///    shared expert, and the experts' sum is not scaled: the release's code gives 1 for `routed_scaling_factor` whatever the config says);
+///  - `num_nextn_predict_layers` draft layers under `model.mtp.layers.`: each a draft head of DeepSeek-V3's form (`MtpInput::Joined`: `enorm`, `hnorm`,
+///    `eh_proj`, `final_layernorm`, the model's embedding and head) whose block is a sliding layer's attention and a dense MLP (SGLang's
+///    `mimo_v2_nextn.py`; layer j drafts step j, vLLM's `mimo_v2_mtp.py`).
+/// Stored formats (`quantization_config`, `mimo_quant`): the fused products and the dense MLPs FP8 with their block scales, which on a fused matrix
+/// start again at every shard (a shard's rows are not a whole number of blocks); `o`, the routers, the norms, the embedding and the head bf16; the
+/// routed experts MXFP4, `weight` the codes and `weight_scale` the scales, the format Kimi-K3's experts are packed in under compressed-tensors' names
+/// (two codes a byte, the even column in the low four bits, as llama.cpp's converter unpacks this release's experts). The CPU reference reads the
+/// three forms by the description's scales and shards (`Described::stored`, `formats::Stored`); the executor's loaders read none of them.
+/// Where the references differ: an unsaid `rope_theta` is 10,000 in SGLang and 1,000,000 in vLLM (SGLang's is taken); transformers' earlier class has
+/// one set of heads with twice the key heads on sliding layers and a rotary a layer type in `rope_parameters`, where this layout says each sort's keys.
+/// The audio encoder, the speech embeddings and the vision tower (`audio_config`, `vision_config`, `processor_config`, `vision_model_type`) are left
+/// unread (`names::MIMO`). `attention_chunk_size` is another family's chunked local attention's key in the release's code, which this attention does not
+/// turn on: read, and nothing is selected by it.
+fn mimo_v2(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, quant: Option<&Value>) -> Result<Described> {
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab) = (k.usize("hidden_size")?, k.usize("num_hidden_layers")?, k.usize("vocab_size")?);
+    let eps = k.f64("layernorm_epsilon")? as f32;
+    let tied = k.bool("tie_word_embeddings", tied_top.unwrap_or(false))?;
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    k.expect("attention_bias", &Value::Bool(false))?;
+    k.expect("hidden_act", &Value::from("silu"))?;
+    let embed_x = k.opt_f64("scale_emb")?.unwrap_or(1.0) as f32;
+    for tower in ["audio_config", "vision_config", "processor_config", "vision_model_type", "attention_chunk_size"] {
+        k.raw(tower);
+    }
+    // (the audio encoder's block size where a config says it at the top: not a key of the text model's that the release's code reads)
+    k.expect("hybrid_block_size", &Value::Null)?;
+    let flags = |key: &str| -> Result<Vec<bool>> {
+        per_layer(&k, key, layers)?
+            .iter()
+            .enumerate()
+            .map(|(l, v)| match v.as_u64() {
+                Some(0) => Ok(false),
+                Some(1) => Ok(true),
+                _ => err(format!("{mt}: {key}[{l}] = {v} is not supported (0 or 1)")),
+            })
+            .collect()
+    };
+    let (sliding, sparse) = (flags("hybrid_layer_pattern")?, flags("moe_layer_freq")?);
+    let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
+    // the rotary: plain, a base a layer sort, a part of the head
+    let theta = k.opt_f64("rope_theta")?.unwrap_or(10_000.0);
+    let swa_theta = k.opt_f64("swa_rope_theta")?.unwrap_or(theta);
+    let partial = k.opt_f64("partial_rotary_factor")?.unwrap_or(1.0);
+    // (transformers 5 writes the model's rotary again as `rope_parameters`, which the release's code reads as `rope_scaling` and takes for none where its type
+    // is "default": it must say what the keys above say; a scaled rotary is not described)
+    for key in ["rope_parameters", "rope_scaling"] {
+        let o = match k.raw(key) {
+            None => continue,
+            Some(Value::Object(o)) => o,
+            Some(v) => return err(format!("{mt}: {key} = {v} is not a rotary's parameters")),
+        };
+        let ty = o.get("rope_type").or(o.get("type")).and_then(Value::as_str).unwrap_or("default");
+        if ty != "default" {
+            return err(format!("{mt}: {key}.rope_type {ty} is not supported (only the plain rotary, default)"));
+        }
+        for (name, want) in [("rope_theta", theta), ("partial_rotary_factor", partial)] {
+            if let Some(v) = o.get(name).filter(|v| v.as_f64() != Some(want)) {
+                return err(format!("{mt}: {key}.{name} = {v}, where the config's {name} is {want}"));
+            }
+        }
+        not_understood(&format!("{mt} {key}"), o.keys().filter(|x| !matches!(x.as_str(), "rope_type" | "type" | "rope_theta" | "partial_rotary_factor")))?;
+    }
+    let rope_of = |base: f64, hd: usize, what: &str| -> Result<Rope> {
+        let p = Map::from_iter([
+            ("rope_type".to_string(), Value::from("default")),
+            ("rope_theta".to_string(), Value::from(base)),
+            ("partial_rotary_factor".to_string(), Value::from(partial)),
+        ]);
+        rope(&p, hd, max_pos, &format!("{mt} {what}"))
+    };
+    // the two sorts of attention; a sort no layer is (and no draft layer: those are sliding) may be left unsaid
+    let size = k.opt_usize("sliding_window_size")?;
+    if let (Some(s), Some(w)) = (size, k.opt_usize("sliding_window")?) {
+        if w != s && w != s + 1 {
+            return err(format!("{mt}: sliding_window = {w}, where sliding_window_size {s} is a window of {} with the query's own position", s + 1));
+        }
+    }
+    let fused = match k.str("attention_projection_layout")? {
+        None | Some("split") => false,
+        Some("fused_qkv") => true,
+        Some(o) => return err(format!("{mt}: attention_projection_layout {o} is not supported (fused_qkv or split)")),
+    };
+    let sort = |pre: &str, theta: f64, sink_key: &str, window: Option<Option<usize>>, used: bool| -> Result<Option<MimoSort>> {
+        let key = |x: &str| format!("{pre}{x}");
+        let (heads, kv, hd) = (k.opt_usize(&key("num_attention_heads"))?, k.opt_usize(&key("num_key_value_heads"))?, k.opt_usize(&key("head_dim"))?);
+        let (vd, sinks) = (k.opt_usize(&key("v_head_dim"))?, k.bool(sink_key, false)?);
+        if !used {
+            return Ok(None);
+        }
+        let need = |v: Option<usize>, x: &str| v.filter(|n| *n > 0).ok_or_else(|| Error(format!("{mt}: no {}", key(x))));
+        let (heads, kv, hd) = (need(heads, "num_attention_heads")?, need(kv, "num_key_value_heads")?, need(hd, "head_dim")?);
+        if heads % kv != 0 {
+            return err(format!(
+                "{mt}: {} {heads} is not a whole number of heads a key head ({} {kv})",
+                key("num_attention_heads"),
+                key("num_key_value_heads")
+            ));
+        }
+        let window = match window {
+            None => None,
+            Some(w) => Some(w.ok_or_else(|| Error(format!("{mt}: no sliding_window_size, which its sliding layers read")))? + 1),
+        };
+        Ok(Some(MimoSort { heads, kv, hd, vd: vd.unwrap_or(hd), sinks, window, rope: rope_of(theta, hd, &format!("{pre}rope_theta"))? }))
+    };
+    let full = sort("", theta, "add_full_attention_sink_bias", None, sliding.iter().any(|s| !s))?;
+    let swa = sort("swa_", swa_theta, "add_swa_attention_sink_bias", Some(size), sliding.iter().any(|s| *s) || mtp_layers > 0)?;
+    let v_scale = k.opt_f64("attention_value_scale")?.unwrap_or(1.0) as f32;
+    if !v_scale.is_finite() || v_scale == 0.0 {
+        return err(format!("{mt}: attention_value_scale = {v_scale} is not a factor"));
+    }
+    // (a fused matrix's shards: the whole-context sort's key heads, whichever sort the layer is; each shard holds whole heads of each product)
+    let shards = k.opt_usize("num_key_value_heads")?.unwrap_or(0);
+    if fused {
+        for s in full.iter().chain(&swa) {
+            if shards == 0 || s.heads % shards != 0 || s.kv % shards != 0 {
+                return err(format!("{mt}: a fused qkv_proj of {shards} shards (num_key_value_heads) does not hold {} heads over {} key heads", s.heads, s.kv));
+            }
+        }
+    }
+    // the feed-forward
+    let inter = k.usize("intermediate_size")?;
+    let any_sparse = sparse.iter().any(|s| *s);
+    let count = |key: &str| -> Result<usize> {
+        match k.opt_usize(key)? {
+            Some(n) => Ok(n),
+            None if !any_sparse => Ok(0),
+            None => err(format!("{mt}: no {key}")),
+        }
+    };
+    let (moe_inter, ne, top_k) = (count("moe_intermediate_size")?, count("n_routed_experts")?, count("num_experts_per_tok")?);
+    k.expect("scoring_func", &Value::from("sigmoid"))?;
+    k.expect("topk_method", &Value::from("noaux_tc"))?;
+    // (the router's product is in this type and its logits are float32 either way: the same sums of the same bf16 values)
+    match k.str("moe_router_dtype")? {
+        None | Some("float32" | "bfloat16") => {}
+        Some(o) => return err(format!("{mt}: moe_router_dtype {o} is not supported (float32 or bfloat16)")),
+    }
+    if k.opt_usize("n_shared_experts")?.unwrap_or(0) != 0 {
+        return err(format!("{mt}: n_shared_experts is not supported: the layout's mixture has no shared expert"));
+    }
+    if let Some(f) = k.opt_f64("routed_scaling_factor")?.filter(|f| *f != 1.0) {
+        return err(format!("{mt}: routed_scaling_factor = {f} is not supported: the release's code weighs the experts' sum by 1 whatever the config says"));
+    }
+    let (ng, tg) = (k.opt_usize("n_group")?.unwrap_or(1), k.opt_usize("topk_group")?.unwrap_or(1));
+    let moe = Moe {
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias: true,
+            groups: (ng > 1).then_some((ng, tg)),
+            top_k,
+            renorm: k.bool("norm_topk_prob", true)?,
+            scale: 1.0,
+            hash: false,
+            routers: 1,
+            expert_scale: false,
+        },
+        experts: ne,
+        expert: gated(Act::Silu),
+        shared: None,
+        shared_gate: false,
+        latent: None,
+    };
+    k.raw("quantization_config");
+    let quant = quant.map(|q| mimo_quant(q, mt)).transpose()?;
+    // (a matrix the release holds in FP8: one its quantization_config does not leave out, under its own module's name or the one the release's draft model
+    // gives a draft layer's, `model.decoder.`)
+    let fp8 = |w: &str, alias: Option<(&str, &str)>| {
+        quant.as_ref().is_some_and(|q| {
+            let m = w.strip_suffix(".weight").unwrap_or(w);
+            !q.ignored.iter().any(|x| x == m || alias.is_some_and(|(at, a)| m.strip_prefix(at).is_some_and(|rest| *x == format!("{a}{rest}"))))
+        })
+    };
+    let n = Norm::rms(eps);
+    let (mut shapes, mut scales) = (BTreeMap::new(), BTreeMap::new());
+    // (a layer's two blocks and their roles: under `p`, of sort `s`, its feed-forward the experts or the dense MLP under `mlp`'s names)
+    let mut layer = |p: &str, s: &MimoSort, experts: bool, mlp: names::Roles, alias: Option<(&str, &str)>| -> (Vec<Block>, Vec<Vec<(String, Source)>>) {
+        let a = Attn {
+            heads: s.heads,
+            kv_heads: s.kv,
+            head_dim: s.hd,
+            v_head_dim: s.vd,
+            window: s.window,
+            sinks: s.sinks,
+            rope: Some(s.rope.clone()),
+            q_norm: None,
+            k_norm: None,
+            v_norm: None,
+            gate: None,
+            softcap: None,
+            bias: false,
+            scale: (s.hd as f32).powf(-0.5),
+            k_eq_v: false,
+            indexer: None,
+            rounding: AttnRounding::F32,
+            kv_from: None,
+            v_scale,
+        };
+        let (q, kw, vw) = (s.heads * s.hd, s.kv * s.hd, s.kv * s.vd);
+        let mut ar = Vec::new();
+        for (role, src) in names::roles(if fused { part::MIMO_ATTN } else { part::MIMO_ATTN_SPLIT }, p, 0, |r| s.sinks || r != "sinks") {
+            match (role.as_str(), src) {
+                // (shard i of the fused matrix: its queries' rows, its keys', its values')
+                ("qkv", Source::Tensor(w)) => {
+                    let each = (q + kw + vw) / shards;
+                    let cut = |from: usize, len: usize| (0..shards).map(|i| (i * each + from, i * each + from + len)).collect::<Vec<_>>();
+                    shapes.insert(w.clone(), vec![q + kw + vw, d]);
+                    let parts = [("q", cut(0, q / shards)), ("k", cut(q / shards, kw / shards)), ("v", cut((q + kw) / shards, vw / shards))];
+                    ar.extend(parts.map(|(x, rows)| (x.to_string(), Source::RowsOf(w.clone(), rows))));
+                }
+                (_, src) => ar.push((role, src)),
+            }
+        }
+        shape_roles(
+            &mut shapes,
+            &ar,
+            &[("norm_in", vec![d]), ("q", vec![q, d]), ("k", vec![kw, d]), ("v", vec![vw, d]), ("o", vec![d, s.heads * s.vd]), ("sinks", vec![s.heads])],
+        );
+        let (fr, body) = if experts {
+            let fr = names::roles(part::MIMO_MOE, p, ne, all);
+            shape_roles(
+                &mut shapes,
+                &fr,
+                &[
+                    ("norm_in", vec![d]),
+                    ("router", vec![ne, d]),
+                    ("choice_bias", vec![ne]),
+                    ("experts_gate_up", vec![moe_inter, d]),
+                    ("experts_down", vec![d, moe_inter]),
+                ],
+            );
+            (fr, Ffn::Moe(moe.clone()))
+        } else {
+            let fr = names::roles(mlp, p, 0, all);
+            shape_roles(&mut shapes, &fr, &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
+            (fr, Ffn::Mlp(gated(Act::Silu)))
+        };
+        // (the stored formats: the products FP8 with their scales, an expert's matrices MXFP4 with theirs)
+        for (role, src) in ar.iter().chain(&fr) {
+            match (role.as_str(), src) {
+                ("q" | "k" | "v" | "o" | "gate" | "up" | "down", Source::Tensor(w) | Source::RowsOf(w, _)) if fp8(w, alias) => {
+                    scales.insert(w.clone(), format!("{w}_scale_inv"));
+                }
+                (_, Source::Experts(e)) if quant.is_some() => scales.extend(e.iter().flatten().map(|w| (w.clone(), format!("{w}_scale")))),
+                _ => {}
+            }
+        }
+        let block = |body: Body| Block { norm_in: n, body, norm_out: None, residual: Residual::Add };
+        (vec![block(Body::Mixer(Mixer::Attention(a))), block(Body::Ffn(body))], vec![ar, fr])
+    };
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for l in 0..layers {
+        let s = if sliding[l] { &swa } else { &full }.as_ref().expect("a sort a layer is was read");
+        let (b, r) = layer(&names::MIMO.layer(prefix, l), s, sparse[l], part::MLP, None);
+        blocks.extend(b);
+        roles.extend(r);
+    }
+    // (the draft layers: each a head of its own, a sliding layer's attention and a dense MLP between the head's own roles)
+    let (mut mtp, mut mtp_roles, mut own_shapes) = (Vec::new(), Vec::new(), BTreeMap::new());
+    for j in 0..mtp_layers {
+        let p = format!("{prefix}mtp.layers.{j}");
+        let (at, s) = (format!("{p}."), swa.as_ref().expect("the sliding sort was read for the draft layers"));
+        let (b, r) = layer(&p, s, false, part::MIMO_MTP_MLP, Some((&at, "model.decoder.")));
+        let own = names::roles(part::MIMO_MTP, &p, 0, all);
+        shape_roles(&mut own_shapes, &own, &[("eh_proj", vec![d, 2 * d]), ("norm_embed", vec![d]), ("norm_hidden", vec![d]), ("final_norm", vec![d])]);
+        mtp.push(MtpHead { blocks: b, norm_embed: n, norm_hidden: n, final_norm: n, dspark: None, input: MtpInput::Joined });
+        mtp_roles.push((r, own));
+    }
+    shapes.extend(own_shapes);
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: embed_x, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: n,
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32, correction: false },
+        mtp,
+        vision: None,
+        rope: full.as_ref().or(swa.as_ref()).map(|s| s.rope.clone()),
+    };
+    let mut out = finish(&k, desc, &names::MIMO, prefix, roles, mtp_layers)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    (out.shapes, out.scales, out.mtp) = (shapes, scales, mtp_roles);
+    out.fp8_block = quant.map(|q| q.block);
+    Ok(out)
+}
+
+/// MiniMax M3's `quantization_config` as released (M3.1): `quant_method` "mxfp8", every product of a layer but the modules of `ignored_layers` FP8 E4M3 with
+/// a byte's power-of-two scale a run of 32 columns of a row (`weight_block_size` [1, 32]; the scales under the name `weight_scale_inv`, which here is what a
+/// value is multiplied by, 2^(byte - 127)); the routed experts NVFP4 as llm-compressor packs it (`moe_quant_algo` "NVFP4", `moe_quant_format`
+/// "nvfp4-pack-quantized", `group_size` 16: `weight_packed` two 4-bit E2M1 values a byte, `weight_scale` an FP8 E4M3 scale a run of 16 columns of a row,
+/// `weight_global_scale` one fp32 number a matrix that the block scales were multiplied by, so a weight is its E2M1 value times its run's scale over the
+/// global scale). Anything else is refused with what differs.
+struct MinimaxQuant {
+    ignored: Vec<String>,
+}
+
+impl MinimaxQuant {
+    /// Whether the config leaves the matrix `w`'s module in bf16: the module, or a part of the model above it, is in `ignored_layers` (a name there is a
+    /// whole path, `language_model.model.layers.3.block_sparse_moe.gate`, or its end, `lm_head`, `model.embed_tokens`).
+    fn leaves(&self, w: &str) -> bool {
+        let m = w.strip_suffix(".weight").unwrap_or(w);
+        self.ignored.iter().any(|x| m == x || m.ends_with(&format!(".{x}")) || m.starts_with(&format!("{x}.")) || m.contains(&format!(".{x}.")))
+    }
+}
+
+fn minimax_quant(q: &Value, mt: &str) -> Result<MinimaxQuant> {
+    let what = format!("{mt}: quantization_config");
+    let Some(o) = q.as_object() else { return err(format!("{what} = {q} is not an object")) };
+    let k = Keys::new(o, &what);
+    let method = k.str("quant_method")?;
+    if method != Some("mxfp8") {
+        return err(format!("{what}: quant_method {method:?}, where the description reads mxfp8"));
+    }
+    match k.raw("weight_block_size").and_then(Value::as_array).map(|a| a.iter().map(Value::as_u64).collect::<Vec<_>>()).as_deref() {
+        Some([Some(1), Some(32)]) => {}
+        _ => {
+            return err(format!(
+                "{what}: weight_block_size {} is not supported: a scale a run of 32 columns of a row, [1, 32], is",
+                o.get("weight_block_size").unwrap_or(&Value::Null)
+            ))
+        }
+    }
+    // (the activations' quantization is the serving engine's choice of arithmetic, not the weights': only the release's own is taken)
+    k.expect("activation_scheme", &Value::from("dynamic"))?;
+    // (the experts' format: the one the release's loader reads)
+    let (algo, fmt) = (k.str("moe_quant_algo")?, k.str("moe_quant_format")?);
+    if algo != Some("NVFP4") || fmt != Some("nvfp4-pack-quantized") {
+        return err(format!(
+            "{what}: moe_quant_algo {algo:?}, moe_quant_format {fmt:?}: the experts' stored format is read as NVFP4, nvfp4-pack-quantized, only"
+        ));
+    }
+    k.expect("group_size", &Value::from(16))?;
+    let ignored = match k.raw("ignored_layers") {
+        None => Vec::new(),
+        Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+        Some(v) => return err(format!("{what}: ignored_layers = {v} is not a list of modules")),
+    };
+    k.finish()?;
+    Ok(MinimaxQuant { ignored })
+}
+
+/// MiniMax M3 (the wrapper `minimax_m3_vl`, MiniMaxM3SparseForConditionalGeneration, whose `text_config` names no model type of its own): a pre-norm decoder
+/// of one grouped-query attention and, a layer, a dense gated MLP or a mixture of experts, read as the release's own serving code reads its config (SGLang's
+/// `minimax_m3.py`, of which the release's `configuration_minimax_m3_vl.py` says it is the mirror) and held to transformers' `minimax_m3_vl` and llama.cpp's
+/// `minimax-m3.cpp` where those say the same thing in other keys.
+///  - `use_gemma_norm`: every norm of the model (a layer's two, the last one, the q and k norms and the indexer's) is the RMS norm times (1 + weight)
+///    (`NormWeight::PlusOne`); false or unsaid, times the weight;
+///  - `num_attention_heads` query heads over `num_key_value_heads` of `head_dim` (unsaid: hidden / heads), no biases, the scores scaled by 1 / sqrt(head_dim);
+///    `qk_norm_type` "per_head" norms each query and key head with one weight of `head_dim` (the other types, one vector a layer and a weight a head, are
+///    not described; `use_qk_norm` is read by no code and must not say false); `attention_output_gate` is read by no code and must be false;
+///  - the rotary: plain, base `rope_theta` (unsaid: 10,000 in SGLang, 5,000,000 in transformers' class; SGLang's is taken), on the first `rotary_dim`
+///    channels of a head (unsaid: the whole head), paired (i, i + rotary_dim / 2); `partial_rotary_factor`, which transformers reads in its place, must say
+///    the same span;
+///  - `sparse_attention_config`: `sparse_attention_freq` says a layer 1 (sparse) or 0; a sparse layer has the block-max indexer (`IndexForm::Max`):
+///    `sparse_num_index_heads` queries of `sparse_index_dim` and one key a token, normed as the attention's and rotated by its rotary; blocks of
+///    `sparse_block_size` positions; `sparse_score_type` "max" scores a block by its best key ("lse", the log of the sum of the exponentials, is not
+///    described); `sparse_local_block` blocks ending at the query's own are always kept, among the `sparse_topk_blocks` kept; `sparse_init_block` first
+///    blocks of the sequence always kept: only 0; an index head chooses for one KV head, so the two counts must be equal (SGLang joins the choices of
+///    several index heads a KV head, which no release has); `sparse_disable_index_value` 1 says the indexer has no values of its own: 0 (an
+///    `index_v_proj` and an `index_o_proj` whose product is added to the attention's output) is not described; `use_sparse_attention` is read by no code;
+///  - `hidden_act` "swigluoai" with `swiglu_alpha` and `swiglu_limit`: min(g, l) sigmoid(alpha min(g, l)) (clamp(u, -l, l) + 1) in the dense MLPs, the
+///    experts and the shared expert alike (`Act::SwigluOai`, `Clamp::Gate`);
+///  - `moe_layer_freq` says a layer 0 (a dense MLP of `dense_intermediate_size`) or not 0 (unsaid: every layer): `num_local_experts` of
+///    `intermediate_size`, the sigmoid of the router's logits (`scoring_func`), with `use_routing_bias` a choice bias `e_score_correction_bias`, the best
+///    `num_experts_per_tok` kept and divided by their sum, the experts' sum times `routed_scaling_factor`; with `n_shared_experts` a shared expert of
+///    `intermediate_size` x `n_shared_experts` added unscaled (transformers sizes it by `shared_intermediate_size`, which must say the same; it and vLLM
+///    build one whatever the count says, vLLM of `intermediate_size`: at the releases' one shared expert of that width the four agree).
+/// Stored formats (`quantization_config`, `minimax_quant`): the attention's and the indexer's products, the dense MLPs and the shared expert FP8 with a
+/// scale a run of 32 (`X.weight_scale_inv`); the routed experts NVFP4, `X.weight_packed` the codes, `X.weight_scale` their runs' scales and, the scales' own
+/// scale, `X.weight_global_scale`; the routers fp32, the norms, the embedding and the head bf16. The CPU reference reads both formats by the
+/// tensors the description names (`Described::stored`, `formats::Stored`: the block [1, 32] from the scales' shape, `formats::nvfp4`); the executor's
+/// loaders read neither. The blocks are not square, so `fp8_block` says none.
+/// Left unread, by name: the vision tower, its projector and the patch merger (`vision_config` and the wrapper's keys of the image's path;
+/// `names::MINIMAX`), and the release's draft model, which is a checkpoint of its own beside this one (`dspark/`).
+fn minimax_m3(c: &ModelConfig) -> Result<Described> {
+    let (mt, tc) = (c.model_type.as_str(), &c.text);
+    const IMAGE: [&str; 11] = [
+        "vision_config",
+        "img_token_compression_config",
+        "image_grid_pinpoints",
+        "image_seq_length",
+        "multimodal_projector_bias",
+        "process_image_mode",
+        "projector_hidden_act",
+        "projector_hidden_size",
+        "vision_feature_layer",
+        "vision_feature_select_strategy",
+        "num_reward_heads",
+    ];
+    top_keys(&c.top, mt, &[&["text_config", "quantization_config", "tie_word_embeddings"][..], &IMAGE[..]].concat())?;
+    // (a key no code of the release reads; only what the release says of it is taken)
+    if let Some(v) = c.top.get("num_reward_heads").filter(|v| !v.is_null() && v.as_u64() != Some(0)) {
+        return err(format!("{mt}: num_reward_heads = {v} is not supported (only 0)"));
+    }
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, c.top.get("tie_word_embeddings").and_then(Value::as_bool))?;
+    let n = if k.bool("use_gemma_norm", false)? { Norm::rms_plus_one(eps) } else { Norm::rms(eps) };
+    // the attention
+    let (heads, kv) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?);
+    let hd = k.opt_usize("head_dim")?.unwrap_or(d / heads.max(1));
+    if heads == 0 || kv == 0 || hd == 0 || heads % kv != 0 {
+        return err(format!(
+            "{mt}: {heads} heads of {hd} over {kv} key heads (num_attention_heads, head_dim, num_key_value_heads) are not whole heads a key head"
+        ));
+    }
+    k.expect("use_qk_norm", &Value::Bool(true))?;
+    match k.str("qk_norm_type")? {
+        Some("per_head") => {}
+        None => return err(format!("{mt}: no qk_norm_type: the release's code then norms a layer's heads as one vector (per_layer), which is not described")),
+        Some(o) => return err(format!("{mt}: qk_norm_type {o} is not supported (only per_head: a norm a head, one weight of the head's width)")),
+    }
+    k.expect("attention_output_gate", &Value::Bool(false))?;
+    for key in ["rope_scaling", "rope_parameters"] {
+        k.expect(key, &Value::Null)?;
+    }
+    let theta = k.opt_f64("rope_theta")?.unwrap_or(10_000.0);
+    let rdim = k.opt_usize("rotary_dim")?.unwrap_or(hd);
+    if rdim == 0 || rdim % 2 != 0 || rdim > hd {
+        return err(format!("{mt}: rotary_dim = {rdim} is not an even span of a head of {hd}"));
+    }
+    if let Some(p) = k.opt_f64("partial_rotary_factor")?.filter(|p| (hd as f64 * p) as usize != rdim) {
+        return err(format!("{mt}: partial_rotary_factor = {p} of a head of {hd}, where rotary_dim rotates {rdim} channels: the two must say the same span"));
+    }
+    let rp = Rope::plain(theta, rdim);
+    // the sparse attention: which layers, and their indexer
+    let (indexed, indexer) = match k.raw("sparse_attention_config") {
+        None => (vec![false; layers], None),
+        Some(Value::Object(o)) => {
+            let s = Keys::new(o, &format!("{mt}: sparse_attention_config"));
+            s.expect("use_sparse_attention", &Value::Bool(true))?;
+            let flags = |key: &str| -> Result<Vec<bool>> {
+                per_layer(&s, key, layers)?
+                    .iter()
+                    .enumerate()
+                    .map(|(l, v)| v.as_u64().map(|x| x != 0).ok_or_else(|| Error(format!("{}: {key}[{l}] = {v} is not 0 or 1", s.what))))
+                    .collect()
+            };
+            let indexed = flags("sparse_attention_freq")?;
+            let (ih, idim) = (s.usize("sparse_num_index_heads")?, s.usize("sparse_index_dim")?);
+            let (keep, block, local) = (s.usize("sparse_topk_blocks")?, s.usize("sparse_block_size")?, s.usize("sparse_local_block")?);
+            match s.str("sparse_score_type")? {
+                None | Some("max") => {}
+                Some(o) => return err(format!("{}: sparse_score_type {o} is not supported (only max: a block's best key)", s.what)),
+            }
+            if let Some(i) = s.raw("sparse_init_block").filter(|v| v.as_u64() != Some(0)) {
+                return err(format!("{}: sparse_init_block = {i} is not supported (only 0: no block of the sequence's start is always kept)", s.what));
+            }
+            // (1: the indexer chooses and adds nothing; unsaid, the release's code gives a layer the indexer's own values and output product)
+            let chooses = match s.raw("sparse_disable_index_value") {
+                None => vec![false; layers],
+                Some(_) => flags("sparse_disable_index_value")?,
+            };
+            if let Some(l) = (0..layers).find(|&l| indexed[l] && !chooses[l]) {
+                return err(format!(
+                    "{}: sparse_disable_index_value does not say 1 for the sparse layer {l}: an indexer with values of its own (index_v_proj, index_o_proj) is not described",
+                    s.what
+                ));
+            }
+            if ih != kv {
+                return err(format!(
+                    "{}: sparse_num_index_heads = {ih} for {kv} key heads is not supported: an index head chooses the blocks of one key head",
+                    s.what
+                ));
+            }
+            if idim == 0 || block == 0 || keep == 0 || local > keep || rdim > idim {
+                return err(format!(
+                    "{}: an indexer of heads of {idim} keeping {keep} blocks of {block}, {local} of them the query's own and the ones before it, under a rotary of {rdim}",
+                    s.what
+                ));
+            }
+            s.finish()?;
+            let form = IndexForm::Max { norm: n, local };
+            (
+                indexed,
+                Some(Indexer {
+                    heads: ih,
+                    head_dim: idim,
+                    top_k: keep * block,
+                    block,
+                    shared: false,
+                    form,
+                    rope: 0,
+                    rope_style: None,
+                    q_in: None,
+                    pos_scale: false,
+                }),
+            )
+        }
+        Some(v) => return err(format!("{mt}: sparse_attention_config = {v} is not an object")),
+    };
+    // the feed-forward
+    match k.str("hidden_act")? {
+        Some("swigluoai") => {}
+        o => return err(format!("{mt}: hidden_act {o:?} is not supported (only swigluoai, with swiglu_alpha and swiglu_limit)")),
+    }
+    let (alpha, limit) = (k.f64("swiglu_alpha")? as f32, k.f64("swiglu_limit")? as f32);
+    if !(alpha.is_finite() && limit.is_finite() && alpha > 0.0 && limit > 0.0) {
+        return err(format!("{mt}: swiglu_alpha = {alpha} and swiglu_limit = {limit} are not a sigmoid's gain and a limit"));
+    }
+    let mlp = Mlp { act: Act::SwigluOai { alpha }, gated: true, bias: false, clamp: Some(Clamp::Gate(limit)) };
+    let sparse: Vec<bool> = match k.raw("moe_layer_freq") {
+        None => vec![true; layers],
+        Some(_) => per_layer(&k, "moe_layer_freq", layers)?
+            .iter()
+            .enumerate()
+            .map(|(l, v)| v.as_u64().map(|x| x != 0).ok_or_else(|| Error(format!("{mt}: moe_layer_freq[{l}] = {v} is not a count"))))
+            .collect::<Result<_>>()?,
+    };
+    let (any_sparse, any_dense) = (sparse.iter().any(|s| *s), sparse.iter().any(|s| !*s));
+    let count = |key: &str, used: bool| -> Result<usize> {
+        match k.opt_usize(key)? {
+            Some(x) if x > 0 || !used => Ok(x),
+            None if !used => Ok(0),
+            _ => err(format!("{mt}: no {key}")),
+        }
+    };
+    let dense_inter = count("dense_intermediate_size", any_dense)?;
+    let (inter, ne, top_k) = (count("intermediate_size", any_sparse)?, count("num_local_experts", any_sparse)?, count("num_experts_per_tok", any_sparse)?);
+    if top_k > ne {
+        return err(format!("{mt}: num_experts_per_tok = {top_k} of {ne} experts"));
+    }
+    k.expect("scoring_func", &Value::from("sigmoid"))?;
+    let scale = k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32;
+    let n_shared = k.opt_usize("n_shared_experts")?.unwrap_or(0);
+    let shared_inter = inter * n_shared;
+    if let Some(s) = k.opt_usize("shared_intermediate_size")?.filter(|s| any_sparse && n_shared > 0 && *s != shared_inter) {
+        return err(format!(
+            "{mt}: shared_intermediate_size = {s}, where {n_shared} shared experts of intermediate_size {inter} are {shared_inter} wide: the references size it by one and by the other"
+        ));
+    }
+    let bias = k.bool("use_routing_bias", false)?;
+    let moe = Moe {
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias,
+            groups: None,
+            top_k,
+            renorm: true,
+            scale,
+            hash: false,
+            routers: 1,
+            expert_scale: false,
+        },
+        experts: ne,
+        expert: mlp,
+        shared: (n_shared > 0).then_some(mlp),
+        shared_gate: false,
+        latent: None,
+    };
+    k.raw("quantization_config");
+    let quant = c.top.get("quantization_config").or(tc.get("quantization_config")).map(|q| minimax_quant(q, mt)).transpose()?;
+    let (ih, idim) = indexer.as_ref().map_or((0, 0), |x| (x.heads, x.head_dim));
+    let (mut shapes, mut scales) = (BTreeMap::new(), BTreeMap::new());
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for l in 0..layers {
+        let p = names::MINIMAX.layer("", l);
+        let a = Attn {
+            heads,
+            kv_heads: kv,
+            head_dim: hd,
+            v_head_dim: hd,
+            window: None,
+            sinks: false,
+            rope: Some(rp.clone()),
+            q_norm: Some(n),
+            k_norm: Some(n),
+            v_norm: None,
+            gate: None,
+            softcap: None,
+            bias: false,
+            scale: (hd as f32).powf(-0.5),
+            k_eq_v: false,
+            indexer: indexer.clone().filter(|_| indexed[l]),
+            rounding: AttnRounding::F32,
+            kv_from: None,
+            v_scale: 1.0,
+        };
+        let ar = names::roles(part::MINIMAX_ATTN, &p, 0, |r| indexed[l] || !r.starts_with("index_"));
+        shape_roles(
+            &mut shapes,
+            &ar,
+            &[
+                ("norm_in", vec![d]),
+                ("q", vec![heads * hd, d]),
+                ("k", vec![kv * hd, d]),
+                ("v", vec![kv * hd, d]),
+                ("o", vec![d, heads * hd]),
+                ("q_norm", vec![hd]),
+                ("k_norm", vec![hd]),
+                ("index_q", vec![ih * idim, d]),
+                ("index_k", vec![idim, d]),
+                ("index_q_norm", vec![idim]),
+                ("index_k_norm", vec![idim]),
+            ],
+        );
+        let (fr, body) = if sparse[l] {
+            let mut fr = names::roles(part::MINIMAX_MOE, &p, ne, |r| (bias || r != "choice_bias") && (n_shared > 0 || !r.starts_with("shared_")));
+            // (NVFP4 experts as released: each matrix its codes, `.weight_packed`, their runs' scales, and the scales' own scale)
+            for (_, src) in fr.iter_mut().filter(|(role, _)| quant.is_some() && role.starts_with("experts_")) {
+                if let Source::Experts(e) = src {
+                    for w in e.iter_mut().flatten() {
+                        let at = w.strip_suffix(".weight").unwrap_or(w).to_string();
+                        w.push_str("_packed");
+                        scales.insert(w.clone(), format!("{at}.weight_scale"));
+                        scales.insert(format!("{at}.weight_scale"), format!("{at}.weight_global_scale"));
+                    }
+                }
+            }
+            // (an expert's matrices at their rows and columns: its codes as released are two to a byte)
+            shape_roles(
+                &mut shapes,
+                &fr,
+                &[
+                    ("norm_in", vec![d]),
+                    ("router", vec![ne, d]),
+                    ("choice_bias", vec![ne]),
+                    ("experts_gate_up", vec![inter, d]),
+                    ("experts_down", vec![d, inter]),
+                    ("shared_gate", vec![shared_inter, d]),
+                    ("shared_up", vec![shared_inter, d]),
+                    ("shared_down", vec![d, shared_inter]),
+                ],
+            );
+            (fr, Ffn::Moe(moe.clone()))
+        } else {
+            let fr = names::roles(part::MLP, &p, 0, all);
+            shape_roles(
+                &mut shapes,
+                &fr,
+                &[("norm_in", vec![d]), ("gate", vec![dense_inter, d]), ("up", vec![dense_inter, d]), ("down", vec![d, dense_inter])],
+            );
+            (fr, Ffn::Mlp(mlp))
+        };
+        // (the stored formats: a product whose module the quantization_config does not leave out is FP8, its scales a run of 32 beside it)
+        const FP8: [&str; 12] = ["q", "k", "v", "o", "index_q", "index_k", "gate", "up", "down", "shared_gate", "shared_up", "shared_down"];
+        for (role, src) in ar.iter().chain(&fr) {
+            if let (true, Source::Tensor(w), Some(q)) = (FP8.contains(&role.as_str()), src, &quant) {
+                if !q.leaves(w) {
+                    scales.insert(w.clone(), format!("{w}_scale_inv"));
+                }
+            }
+        }
+        let block = |body: Body| Block { norm_in: n, body, norm_out: None, residual: Residual::Add };
+        blocks.extend([block(Body::Mixer(Mixer::Attention(a))), block(Body::Ffn(body))]);
+        roles.extend([ar, fr]);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: n,
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32, correction: false },
+        mtp: Vec::new(),
+        vision: None,
+        rope: Some(rp),
+    };
+    let mut out = finish(&k, desc, &names::MINIMAX, "", roles, 0)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    (out.shapes, out.scales) = (shapes, scales);
+    Ok(out)
+}
+
+/// The head width of the Qwen3.5 layout's config classes (`head_dim`), and the fraction of it the Qwen3.5 classes rotate where a config gives no `partial_rotary_factor`.
+pub(crate) const QWEN35_HEAD: usize = 256;
+pub(crate) const QWEN35_PARTIAL: f64 = 0.25;
+
+fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, have: Option<&BTreeSet<String>>) -> Result<Described> {
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
+    // (the defaults of a key a config leaves out are transformers' `Qwen3_5TextConfig` and `Qwen3_5MoeTextConfig`: heads of 256, the rotary on a quarter of them)
+    let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.opt_usize("head_dim")?.unwrap_or(QWEN35_HEAD));
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    let rp = standard_rope_of(&k, hd, max_pos, Some(QWEN35_PARTIAL))?;
+    // (the routed experts' stored form, which the config does not say: each expert's matrices a tensor, unless the checkpoint holds the layer's experts stacked)
+    let first = names::HF.layer(prefix, 0);
+    let stacked = have.is_some_and(|h| {
+        names::roles(part::QWEN_MOE_STACKED, &first, 0, |r| r == "experts_gate_up").iter().all(|(_, s)| s.names().iter().all(|n| h.contains(n)))
+    });
     k.expect("attention_bias", &Value::Bool(false))?;
     let gate = k.bool("attn_output_gate", true)?;
     let lin_gate = act(k.str("output_gate_type")?.unwrap_or("swish"))?;
     let act = act(k.str("hidden_act")?.unwrap_or("silu"))?;
     k.expect("mamba_ssm_dtype", &Value::from("float32"))?;
-    k.opt_usize("full_attention_interval")?;
-    let types: Vec<String> = k
-        .raw("layer_types")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| Error(format!("{mt}: no layer_types")))?
-        .iter()
-        .map(|x| x.as_str().unwrap_or("").to_string())
-        .collect();
+    let interval = k.opt_usize("full_attention_interval")?.unwrap_or(4);
+    // (a config without `layer_types` has transformers': a full attention at every interval-th layer, the others linear)
+    let types: Vec<String> = match k.raw("layer_types").and_then(|v| v.as_array()) {
+        Some(a) => a.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect(),
+        None if interval == 0 => return err(format!("{mt}: full_attention_interval 0 and no layer_types")),
+        None => (0..layers).map(|l| if (l + 1) % interval == 0 { "full_attention" } else { "linear_attention" }.to_string()).collect(),
+    };
     if types.len() != layers {
         return err(format!("{mt}: {} layer_types for {layers} layers", types.len()));
     }
@@ -432,20 +2188,26 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
         norm_eps: eps,
         state_f32: true,
     };
-    let moe = if k.raw("num_experts").is_some() {
-        let ne = k.usize("num_experts")?;
-        k.usize("moe_intermediate_size")?;
-        let shared = k.opt_usize("shared_expert_intermediate_size")?.is_some_and(|s| s > 0);
+    let mut dense_inter = None;
+    let (mut moe_inter, mut shared_inter) = (0, 0);
+    // (the Qwen3.5 layout's mixture of experts is its `moe` model types': 256 experts, 8 a token, 512 wide and a gated shared expert of 512, where a config says nothing)
+    let moe = if k.raw("num_experts").is_some() || mt.starts_with("qwen3_5_moe") {
+        let ne = k.opt_usize("num_experts")?.unwrap_or(256);
+        moe_inter = k.opt_usize("moe_intermediate_size")?.unwrap_or(512);
+        shared_inter = k.opt_usize("shared_expert_intermediate_size")?.unwrap_or(512);
+        let shared = shared_inter > 0;
         Some(Moe {
             router: Router {
                 score: RouterScore::Softmax,
                 logit_scale: 1.0,
                 bias: false,
                 groups: None,
-                top_k: k.usize("num_experts_per_tok")?,
+                top_k: k.opt_usize("num_experts_per_tok")?.unwrap_or(8),
                 renorm: k.bool("norm_topk_prob", true)?,
                 scale: 1.0,
                 hash: false,
+                routers: 1,
+                expert_scale: false,
             },
             experts: ne,
             expert: gated(act),
@@ -454,7 +2216,7 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             latent: None,
         })
     } else {
-        k.usize("intermediate_size")?;
+        dense_inter = Some(k.usize("intermediate_size")?);
         None
     };
     k.expect("mlp_only_layers", &Value::Array(Vec::new()))?;
@@ -462,27 +2224,28 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     k.bool("mtp_use_dedicated_embeddings", false)?;
     let pn = Norm::rms_plus_one(eps);
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    // (the shapes of the tensors, as the heads and widths make them: a mixture of experts' each expert's, the router's and the gated shared expert's too)
+    let mut shapes = std::collections::BTreeMap::new();
+    let (kh, vh, kd, vd) = (lin.k_heads, lin.v_heads, lin.k_dim, lin.v_dim);
+    let qkv = 2 * kh * kd + vh * vd;
     for (l, ty) in types.iter().enumerate() {
-        let p = format!("{prefix}layers.{l}");
-        let (mixer, mut r) = match ty.as_str() {
-            "linear_attention" => {
-                let a = format!("{p}.linear_attn");
-                let r: Vec<(String, Source)> = [
-                    ("qkv", "in_proj_qkv.weight"),
-                    ("gate", "in_proj_z.weight"),
-                    ("beta", "in_proj_b.weight"),
-                    ("decay", "in_proj_a.weight"),
-                    ("conv", "conv1d.weight"),
-                    ("a_log", "A_log"),
-                    ("dt_bias", "dt_bias"),
-                    ("norm", "norm.weight"),
-                    ("o", "out_proj.weight"),
-                ]
-                .iter()
-                .map(|(role, n)| (role.to_string(), t(format!("{a}.{n}"))))
-                .collect();
-                (Mixer::Linear(lin.clone()), r)
-            }
+        let p = names::HF.layer(prefix, l);
+        let (mixer, r, sh) = match ty.as_str() {
+            "linear_attention" => (
+                Mixer::Linear(lin.clone()),
+                names::roles(part::QWEN_LINEAR, &p, 0, all),
+                vec![
+                    ("qkv", vec![qkv, d]),
+                    ("gate", vec![vh * vd, d]),
+                    ("beta", vec![vh, d]),
+                    ("decay", vec![vh, d]),
+                    ("conv", vec![qkv, 1, lin.conv]),
+                    ("a_log", vec![vh]),
+                    ("dt_bias", vec![vh]),
+                    ("norm", vec![vd]),
+                    ("o", vec![d, vh * vd]),
+                ],
+            ),
             "full_attention" => {
                 let a = Attn {
                     heads,
@@ -501,62 +2264,541 @@ fn qwen35(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
                     scale: (hd as f32).powf(-0.5),
                     k_eq_v: false,
                     indexer: None,
+                    rounding: AttnRounding::Flash,
+                    kv_from: None,
+                    v_scale: 1.0,
                 };
-                let mut r = attn_roles(&p, false, true);
-                r.remove(0);
-                (Mixer::Attention(a), r)
+                let sh = vec![
+                    ("q", vec![heads * hd * if gate { 2 } else { 1 }, d]),
+                    ("k", vec![kv * hd, d]),
+                    ("v", vec![kv * hd, d]),
+                    ("o", vec![d, heads * hd]),
+                    ("q_norm", vec![hd]),
+                    ("k_norm", vec![hd]),
+                ];
+                (Mixer::Attention(a), names::roles(part::ATTN, &p, 0, |r| !r.ends_with("_bias")), sh)
             }
             other => return err(format!("{mt}: layer type {other} at layer {l}")),
         };
-        r.insert(0, ("norm_in".into(), t(format!("{p}.input_layernorm.weight"))));
         blocks.push(Block { norm_in: pn, body: Body::Mixer(mixer), norm_out: None, residual: Residual::Add });
-        roles.push(r);
-        match &moe {
+        let f = match &moe {
             None => {
                 blocks.push(Block { norm_in: pn, body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: None, residual: Residual::Add });
-                roles.push(mlp_roles(&p, "post_attention_layernorm"));
+                names::roles(part::MLP, &p, 0, all)
             }
             Some(m) => {
-                let f = format!("{p}.mlp");
-                let mut r = vec![
-                    ("norm_in".to_string(), t(format!("{p}.post_attention_layernorm.weight"))),
-                    ("router".into(), t(format!("{f}.gate.weight"))),
-                    (
-                        "experts_gate_up".into(),
-                        Source::Experts(
-                            (0..m.experts).map(|e| vec![format!("{f}.experts.{e}.gate_proj.weight"), format!("{f}.experts.{e}.up_proj.weight")]).collect(),
-                        ),
-                    ),
-                    ("experts_down".into(), Source::Experts((0..m.experts).map(|e| vec![format!("{f}.experts.{e}.down_proj.weight")]).collect())),
-                ];
-                if m.shared.is_some() {
-                    for x in ["gate", "up", "down"] {
-                        r.push((format!("shared_{x}"), t(format!("{f}.shared_expert.{x}_proj.weight"))));
-                    }
-                    r.push(("shared_router".into(), t(format!("{f}.shared_expert_gate.weight"))));
-                }
                 blocks.push(Block { norm_in: pn, body: Body::Ffn(Ffn::Moe(m.clone())), norm_out: None, residual: Residual::Add });
-                roles.push(r);
+                names::roles(if stacked { part::QWEN_MOE_STACKED } else { part::QWEN_MOE }, &p, m.experts, |r| m.shared.is_some() || !r.starts_with("shared_"))
             }
+        };
+        shape_roles(&mut shapes, &r, &[sh, vec![("norm_in", vec![d])]].concat());
+        match (dense_inter, &moe) {
+            (Some(inter), _) => {
+                shape_roles(&mut shapes, &f, &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])])
+            }
+            (None, Some(m)) => shape_roles(
+                &mut shapes,
+                &f,
+                &[
+                    ("norm_in", vec![d]),
+                    ("router", vec![m.experts, d]),
+                    // (a tensor an expert's matrix, or the stacked [experts, 2 inter, in] and [experts, out, inter])
+                    ("experts_gate_up", if stacked { vec![m.experts, 2 * moe_inter, d] } else { vec![moe_inter, d] }),
+                    ("experts_down", if stacked { vec![m.experts, d, moe_inter] } else { vec![d, moe_inter] }),
+                    ("shared_gate", vec![shared_inter, d]),
+                    ("shared_up", vec![shared_inter, d]),
+                    ("shared_down", vec![d, shared_inter]),
+                    ("shared_router", vec![1, d]),
+                ],
+            ),
+            (None, None) => unreachable!("a dense width or experts"),
         }
+        roles.push(r);
+        roles.push(f);
     }
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: 1 },
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: pn,
-        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None },
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32, correction: false },
         mtp: Vec::new(),
         vision: None,
         rope: Some(rp),
     };
-    finish(&k, desc, prefix, roles, mtp_layers)
+    let mut out = finish(&k, desc, &names::HF, prefix, roles, mtp_layers)?;
+    for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
+        shapes.insert(n.clone(), vec![vocab, d]);
+    }
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    out.shapes = shapes;
+    Ok(out)
+}
+
+/// Qwen3.8-Flash-Next (`qwen4_exp_text`, Ibis's model): the Qwen3.5 hybrid's Gated DeltaNet and gated attention, the attention's Qwen Sparse
+/// Attention indexer (`IndexForm::Mean`), the softmax-routed experts with the gated shared expert, every block inside gated residuals over
+/// `hc_count` streams (`Residual::GatedStreams`), the final mixer (`Collapse::GatedMix`), and the hashed n-gram embedding (`Body::Ngram`)
+/// before each layer `ple_layer_ids` names. A layer is two blocks, three with the n-gram embedding. The MTP layers are the draft head
+/// (`MtpInput::Streams`: each an indexed attention and its experts in gated residuals, as the model's layers, its front's norms and products
+/// and its own final mixer, `names::part::QX_MTP`). The vision tower is the multimodal config's (`with_tower`). The defaults of a key a config leaves
+/// out are transformers' (`Qwen4ExpTextConfig`). Each tensor's shape is said.
+fn qwen4x(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
+    let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.opt_usize("head_dim")?.unwrap_or(QWEN35_HEAD));
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    let rp = standard_rope_of(&k, hd, max_pos, None)?;
+    k.expect("attention_bias", &Value::Bool(false))?;
+    let gate = k.bool("attn_output_gate", true)?;
+    let act = act(k.str("hidden_act")?.unwrap_or("silu"))?;
+    let lin_gate = match k.str("output_gate_type")? {
+        Some(g) => self::act(g)?,
+        None => act,
+    };
+    k.expect("mamba_ssm_dtype", &Value::from("float32"))?;
+    let interval = k.opt_usize("full_attention_interval")?.unwrap_or(4).max(1);
+    // (the release writes "full_attention" for the layers transformers calls "indexed_attention")
+    let types: Vec<String> = match k.raw("layer_types").and_then(|v| v.as_array()) {
+        Some(a) => a.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect(),
+        None => (0..layers).map(|l| if (l + 1) % interval == 0 { "indexed_attention" } else { "linear_attention" }.to_string()).collect(),
+    };
+    if types.len() != layers {
+        return err(format!("{mt}: {} layer_types for {layers} layers", types.len()));
+    }
+    let lin = Linear {
+        kind: LinearKind::GatedDeltaNet,
+        k_heads: k.usize("linear_num_key_heads")?,
+        v_heads: k.usize("linear_num_value_heads")?,
+        k_dim: k.usize("linear_key_head_dim")?,
+        v_dim: k.usize("linear_value_head_dim")?,
+        conv: k.usize("linear_conv_kernel_dim")?,
+        decay: Decay::Softplus,
+        gate_act: lin_gate,
+        norm_eps: eps,
+        state_f32: true,
+    };
+    let pn = Norm::rms_plus_one(eps);
+    // the indexer: all five keys or none
+    const IX: [&str; 5] = ["indexer_n_heads", "indexer_kv_heads", "indexer_head_dim", "indexer_budget", "indexer_compress_ratio"];
+    let ix: Vec<Option<usize>> = IX.iter().map(|x| k.opt_usize(x)).collect::<Result<_>>()?;
+    let indexer = match ix[..] {
+        [Some(ih), Some(ikv), Some(idim), Some(budget), Some(ratio)] => {
+            if ikv != 1 {
+                return err(format!("{mt}: indexer_kv_heads = {ikv} is not supported (only 1: one key head)"));
+            }
+            if ih == 0 || idim == 0 || ratio == 0 || budget == 0 || budget % ratio != 0 || rp.dim > idim {
+                return err(format!("{mt}: an indexer of {ih} heads of {idim} keeping {budget} tokens in pools of {ratio}, under a rotary of {}", rp.dim));
+            }
+            Some(Indexer {
+                heads: ih,
+                head_dim: idim,
+                top_k: budget,
+                block: ratio,
+                shared: false,
+                form: IndexForm::Mean { norm: pn },
+                rope: 0,
+                rope_style: None,
+                q_in: None,
+                pos_scale: false,
+            })
+        }
+        [None, None, None, None, None] => None,
+        _ => return err(format!("{mt}: the indexer's keys come together ({}), and some are missing", IX.join(", "))),
+    };
+    let ne = k.opt_usize("num_experts")?.unwrap_or(512);
+    // (a config without the experts' widths has transformers' `Qwen4ExpTextConfig`: 512 and a shared expert of 512)
+    let (inter, shared_inter) = (k.opt_usize("moe_intermediate_size")?.unwrap_or(512), k.opt_usize("shared_expert_intermediate_size")?.unwrap_or(512));
+    let moe = Moe {
+        router: Router {
+            score: RouterScore::Softmax,
+            logit_scale: 1.0,
+            bias: false,
+            groups: None,
+            top_k: k.opt_usize("num_experts_per_tok")?.unwrap_or(10),
+            renorm: k.bool("norm_topk_prob", true)?,
+            scale: 1.0,
+            hash: false,
+            routers: 1,
+            expert_scale: false,
+        },
+        experts: ne,
+        expert: gated(act),
+        shared: (shared_inter > 0).then(|| gated(act)),
+        shared_gate: shared_inter > 0,
+        latent: None,
+    };
+    let (hc, rank) = (k.opt_usize("hc_count")?.unwrap_or(4), k.opt_usize("hc_lowrank")?.unwrap_or(320));
+    if hc < 2 || rank == 0 {
+        return err(format!("{mt}: gated residuals over {hc} streams of a rank of {rank}"));
+    }
+    let gr = Residual::GatedStreams(GatedStreamsP { streams: hc, lowrank: rank });
+    // the n-gram embedding: one-based layer ids, each a linear-attention layer
+    let mut ple: Vec<usize> = match k.raw("ple_layer_ids") {
+        Some(Value::Array(a)) => {
+            a.iter().map(|x| x.as_u64().map(|v| v as usize).ok_or_else(|| Error(format!("{mt}: ple_layer_ids {x}")))).collect::<Result<_>>()?
+        }
+        Some(v) => return err(format!("{mt}: ple_layer_ids {v}")),
+        None => Vec::new(),
+    };
+    ple.sort_unstable();
+    ple.dedup();
+    let (order, per) = (k.opt_usize("ngram_size")?.unwrap_or(3), k.opt_usize("heads_per_ngram")?.unwrap_or(8));
+    let ple_dim = k.opt_usize("ple_embed_dim")?.unwrap_or(d);
+    let base = k.opt_usize("ngram_vocab_size_base")?.unwrap_or(20_000_000) as u64;
+    let pad = k.opt_usize("make_ngram_vocab_size_divisible_by")?.unwrap_or(128);
+    let seed = k.opt_usize("seed")?.unwrap_or(1234) as u64;
+    let parts = k.opt_usize("split_ngram_parts")?.unwrap_or(512);
+    let taps = k.opt_usize("ple_conv_kernel_size")?.unwrap_or(4);
+    let states = if ple.is_empty() { 1 } else { 3 };
+    k.expect("number_of_conv_states", &Value::from(states))?;
+    let eos = match k.raw("eos_token_id") {
+        Some(Value::Array(a)) => a.first().and_then(Value::as_u64),
+        Some(v) => v.as_u64(),
+        None => None,
+    };
+    let tables = (order.max(1) - 1).saturating_mul(per);
+    let ngram = |index: usize| -> Result<Ngram> {
+        let eos = eos.ok_or_else(|| Error(format!("{mt}: an n-gram embedding and no eos_token_id")))? as u32;
+        // (sizes past these are no model's, and would keep the builder finding primes or naming shards for long: 2e7 and 512 are transformers' defaults)
+        let huge = base > 1 << 40 || tables.saturating_mul(index + 1) > 4096 || parts > 1 << 16 || order > 64;
+        if order < 2 || per == 0 || ple_dim == 0 || ple_dim % tables != 0 || taps == 0 || parts == 0 || huge {
+            return err(format!(
+                "{mt}: an n-gram embedding of {ple_dim} over {per} tables for each order up to {order}, a convolution of {taps}, {parts} shards"
+            ));
+        }
+        Ok(Ngram {
+            order,
+            heads: per,
+            dim: ple_dim,
+            base,
+            vocab,
+            seed,
+            index,
+            eos,
+            streams: hc,
+            conv: taps,
+            dilation: order,
+            norm: pn,
+            form: NgramForm::Segmented,
+            table: TableAt::Host,
+        })
+    };
+    for &l in &ple {
+        if l == 0 || l > layers || types[l - 1] != "linear_attention" {
+            return err(format!("{mt}: ple_layer_ids {l} is not a linear_attention layer (one-based)"));
+        }
+    }
+    // (the draft head's config: its layers, each an indexed attention with its experts on the model's last streams, at the model's rotary)
+    let mtp = match k.raw("mtp") {
+        Some(Value::Object(o)) => {
+            let types = o.get("layer_types").and_then(Value::as_array).map(|a| a.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect::<Vec<_>>());
+            if let Some(t) = types.iter().flatten().find(|t| !["full_attention", "indexed_attention"].contains(&t.as_str())) {
+                return err(format!("{mt}: an MTP layer of type {t}: the draft head's layers are indexed attentions"));
+            }
+            if o.get("mtp_use_hidden_state_from_layer").is_some_and(|v| !v.is_null()) {
+                return err(format!("{mt}: an MTP head on the hidden state of a layer before the last ({})", o["mtp_use_hidden_state_from_layer"]));
+            }
+            if let Some(t) = o.get("rope_theta").and_then(Value::as_f64).filter(|&t| t != rp.theta as f64) {
+                return err(format!("{mt}: an MTP head's rotary of theta {t}, where the model's is {}", rp.theta));
+            }
+            o.get("num_hidden_layers").and_then(Value::as_u64)
+        }
+        Some(v) => return err(format!("{mt}: mtp {v}")),
+        None => None,
+    };
+    let mtp_layers = k.opt_usize("mtp_num_hidden_layers")?.or(mtp.map(|n| n as usize)).unwrap_or(0);
+    k.bool("mtp_use_dedicated_embeddings", false)?;
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    let mut shapes = std::collections::BTreeMap::new();
+    let w = hc * d;
+    let gr_shapes = vec![("norm_in", vec![w]), ("mix_down", vec![rank, w]), ("mix_up", vec![w, rank]), ("inject", vec![hc, w])];
+    let (kh, vh, kd, vd) = (lin.k_heads, lin.v_heads, lin.k_dim, lin.v_dim);
+    let qkv = 2 * kh * kd + vh * vd;
+    // (an indexed attention block's mixer, roles and shapes under the path `p`: the model's attention layers' and the draft head's)
+    let attention = |p: &str, at: &str| -> Result<(Mixer, Vec<(String, Source)>, Vec<(&'static str, Vec<usize>)>)> {
+        let ix = indexer.clone().ok_or_else(|| Error(format!("{mt}: {at} is an indexed attention, and the config has no indexer_* keys")))?;
+        let a = Attn {
+            heads,
+            kv_heads: kv,
+            head_dim: hd,
+            v_head_dim: hd,
+            window: None,
+            sinks: false,
+            rope: Some(rp.clone()),
+            q_norm: Some(pn),
+            k_norm: Some(pn),
+            v_norm: None,
+            gate: gate.then_some(OutGate { act: Act::Sigmoid, from: GateFrom::InQuery, norm: None }),
+            softcap: None,
+            bias: false,
+            scale: (hd as f32).powf(-0.5),
+            k_eq_v: false,
+            rounding: AttnRounding::Flash,
+            kv_from: None,
+            v_scale: 1.0,
+            indexer: Some(ix.clone()),
+        };
+        let mut r = names::roles(part::ATTN, p, 0, |r| r != "norm_in" && !r.ends_with("_bias"));
+        r.extend(names::roles(part::QX_INDEXER, p, 0, all));
+        let sh = vec![
+            ("q", vec![heads * hd * if gate { 2 } else { 1 }, d]),
+            ("k", vec![kv * hd, d]),
+            ("v", vec![kv * hd, d]),
+            ("o", vec![d, heads * hd]),
+            ("q_norm", vec![hd]),
+            ("k_norm", vec![hd]),
+            ("index_qk", vec![(ix.heads + 1) * ix.head_dim, d]),
+            ("index_q_norm", vec![ix.head_dim]),
+            ("index_k_norm", vec![ix.head_dim]),
+        ];
+        Ok((Mixer::Attention(a), r, sh))
+    };
+    // (the experts' block in its gated residual under the path `p`, its roles, their shapes said)
+    let experts = |p: &str, shapes: &mut std::collections::BTreeMap<String, Vec<usize>>| -> (Block, Vec<(String, Source)>) {
+        let mut f = names::roles(part::QX_MOE, p, 0, |r| moe.shared.is_some() || !r.starts_with("shared_"));
+        f.extend(names::roles(part::QX_GR_MLP, p, 0, all));
+        let fs = vec![
+            ("router", vec![ne, d]),
+            ("experts_gate_up", vec![ne, 2 * inter, d]),
+            ("experts_down", vec![ne, d, inter]),
+            ("shared_gate", vec![shared_inter, d]),
+            ("shared_up", vec![shared_inter, d]),
+            ("shared_down", vec![d, shared_inter]),
+            ("shared_router", vec![1, d]),
+        ];
+        shape_roles(shapes, &f, &[fs, gr_shapes.clone()].concat());
+        (Block { norm_in: pn, body: Body::Ffn(Ffn::Moe(moe.clone())), norm_out: None, residual: gr.clone() }, f)
+    };
+    for (l, ty) in types.iter().enumerate() {
+        let p = names::QWEN4X.layer(prefix, l);
+        if let Some(index) = ple.iter().position(|&x| x == l + 1) {
+            let n = ngram(index)?;
+            let rows = super::reference::ngram::rows(&n, pad);
+            if rows % parts != 0 {
+                return err(format!("{mt}: an n-gram table of {rows} rows in {parts} shards"));
+            }
+            let mut r = names::roles(part::QX_NGRAM, &p, 0, all);
+            let sh = vec![
+                ("norm_in", vec![w]),
+                ("key", vec![w, ple_dim]),
+                ("value", vec![d, ple_dim]),
+                ("norm_key", vec![w]),
+                ("norm_conv", vec![w]),
+                ("conv", vec![w, 1, taps]),
+                ("ngram_mult", vec![order]),
+                ("ngram_sizes", vec![tables]),
+                ("ngram_offsets", vec![tables]),
+            ];
+            shape_roles(&mut shapes, &r, &sh);
+            let table = names::shards(part::QX_NGRAM_SHARD, &p, parts);
+            if let Source::Rows(v) = &table {
+                shapes.extend(v.iter().map(|s| (s.clone(), vec![rows / parts, ple_dim / tables])));
+            }
+            r.push(("ngram".into(), table));
+            blocks.push(Block { norm_in: pn, body: Body::Ngram(n), norm_out: None, residual: Residual::Add });
+            roles.push(r);
+        }
+        let (mixer, mut r, sh) = match ty.as_str() {
+            "linear_attention" => (
+                Mixer::Linear(lin.clone()),
+                names::roles(part::QWEN_LINEAR, &p, 0, |r| r != "norm_in"),
+                vec![
+                    ("qkv", vec![qkv, d]),
+                    ("gate", vec![vh * vd, d]),
+                    ("beta", vec![vh, d]),
+                    ("decay", vec![vh, d]),
+                    ("conv", vec![qkv, 1, lin.conv]),
+                    ("a_log", vec![vh]),
+                    ("dt_bias", vec![vh]),
+                    ("norm", vec![vd]),
+                    ("o", vec![d, vh * vd]),
+                ],
+            ),
+            "full_attention" | "indexed_attention" => {
+                let (a, r, sh) = attention(&p, &format!("layer {l}"))?;
+                (a, r, sh)
+            }
+            other => return err(format!("{mt}: layer type {other} at layer {l}")),
+        };
+        r.extend(names::roles(part::QX_GR_ATTN, &p, 0, all));
+        shape_roles(&mut shapes, &r, &[sh, gr_shapes.clone()].concat());
+        blocks.push(Block { norm_in: pn, body: Body::Mixer(mixer), norm_out: None, residual: gr.clone() });
+        roles.push(r);
+        let (b, f) = experts(&p, &mut shapes);
+        blocks.push(b);
+        roles.push(f);
+    }
+    // the draft head (`MtpInput::Streams`): each MTP layer an indexed attention and its experts in gated residuals, as the model's layers; its own front
+    // (the two norms and the two products) and its own final mixer
+    let (mut head_blocks, mut head_roles) = (Vec::new(), Vec::new());
+    for j in 0..mtp_layers {
+        let p = format!("mtp.layers.{j}");
+        let (mixer, mut r, sh) = attention(&p, &format!("MTP layer {j}"))?;
+        r.extend(names::roles(part::QX_GR_ATTN, &p, 0, all));
+        shape_roles(&mut shapes, &r, &[sh, gr_shapes.clone()].concat());
+        head_blocks.push(Block { norm_in: pn, body: Body::Mixer(mixer), norm_out: None, residual: gr.clone() });
+        head_roles.push(r);
+        let (b, f) = experts(&p, &mut shapes);
+        head_blocks.push(b);
+        head_roles.push(f);
+    }
+    let head_own = if mtp_layers > 0 { names::roles(part::QX_MTP, "mtp", 0, all) } else { Vec::new() };
+    shape_roles(
+        &mut shapes,
+        &head_own,
+        &[
+            ("norm_embed", vec![d]),
+            ("norm_hidden", vec![w]),
+            ("fc_embedding", vec![d, d]),
+            ("fc_hidden", vec![d, d]),
+            ("final_norm", vec![w]),
+            ("out_mix_down", vec![rank, w]),
+            ("out_mix_up", vec![w, rank]),
+        ],
+    );
+    let head =
+        (mtp_layers > 0).then_some(MtpHead { blocks: head_blocks, norm_embed: pn, norm_hidden: pn, final_norm: pn, dspark: None, input: MtpInput::Streams });
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: hc, per_layer: None, table: if tied { TableAt::Gpu } else { TableAt::Host } },
+        blocks,
+        final_norm: pn,
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::GatedMix, rounding: Rounding::F32, correction: false },
+        mtp: head.into_iter().collect(),
+        vision: None,
+        rope: Some(rp),
+    };
+    let mut out = finish(&k, desc, &names::QWEN4X, prefix, roles, mtp_layers)?;
+    for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
+        shapes.insert(n.clone(), vec![vocab, d]);
+    }
+    shapes.insert(out.final_norm.clone(), vec![w]);
+    shape_roles(&mut shapes, &out.extra, &[("out_mix_down", vec![rank, w]), ("out_mix_up", vec![w, rank])]);
+    out.shapes = shapes;
+    // (the draft head named: its tensors are read, no longer a part left)
+    if mtp_layers > 0 {
+        out.mtp = vec![(head_roles, head_own)];
+        out.unread.retain(|p| p != "mtp.");
+    }
+    Ok(out)
+}
+
+/// The Qwen-VL vision tower of a multimodal config (`kinds::VisionDesc`, `vision_config`) added to its text model's description `d`: the kind's
+/// parameters, the image token (the top level's `image_token_id`), its roles under `model.visual` (`names::part::VISION`, `VISION_BLOCK`) and each
+/// tensor's shape; its tensors then read, no longer a part left. `d` as it is where the config has no tower, or is the language model alone
+/// (`language_model_only`). The tower's tokens take M-RoPE positions in the text: the text's rotary must have interleaved sections. A tower with
+/// deepstack layers (its features added into the text's layers too) is refused, and so is a key the builder does not know.
+fn with_tower(mut d: Described, c: &ModelConfig) -> Result<Described> {
+    let Some(v) = c.top.get("vision_config").filter(|v| !v.is_null()) else { return Ok(d) };
+    if c.top.get("language_model_only").and_then(Value::as_bool) == Some(true) {
+        return Ok(d);
+    }
+    let Value::Object(v) = v else { return err(format!("vision_config {v}: not an object")) };
+    let k = Keys::new(v, "vision_config");
+    let (blocks, hidden, heads, inter) = (k.usize("depth")?, k.usize("hidden_size")?, k.usize("num_heads")?, k.usize("intermediate_size")?);
+    let act = act(k.str("hidden_act")?.unwrap_or("gelu_pytorch_tanh"))?;
+    let (channels, patch) = (k.opt_usize("in_channels")?.unwrap_or(3), k.usize("patch_size")?);
+    let (frames, merge) = (k.opt_usize("temporal_patch_size")?.unwrap_or(2), k.opt_usize("spatial_merge_size")?.unwrap_or(2));
+    let (out, positions) = (k.usize("out_hidden_size")?, k.usize("num_position_embeddings")?);
+    match k.raw("deepstack_visual_indexes") {
+        None => {}
+        Some(Value::Array(a)) if a.is_empty() => {}
+        Some(x) => return err(format!("vision_config: deepstack_visual_indexes {x}: a tower whose features go into the text's layers too is not supported")),
+    }
+    // (transformers' newer configs say the tower's rotary: the axial one, its theta; the release's says none, the default's 10,000)
+    let theta = match k.raw("rope_parameters") {
+        None => 10_000.0,
+        Some(Value::Object(o)) => {
+            let r = Keys::new(o, "vision_config rope_parameters");
+            if r.str("rope_type")?.unwrap_or("axial") != "axial" {
+                return err(format!("vision_config: rope_parameters {}: only the axial rotary is supported", Value::Object(o.clone())));
+            }
+            let t = r.opt_f64("rope_theta")?.unwrap_or(10_000.0);
+            r.finish()?;
+            t
+        }
+        Some(x) => return err(format!("vision_config: rope_parameters {x}")),
+    };
+    k.finish()?;
+    let table = (positions as f64).sqrt().round() as usize;
+    if [blocks, hidden, heads, inter, channels, patch, frames, merge, out].contains(&0)
+        || hidden % heads != 0
+        || (hidden / heads) % 4 != 0
+        || table * table != positions
+    {
+        return err(format!(
+            "vision_config: a tower of {blocks} blocks of {heads} heads over {hidden}, {inter} neurons, {positions} positions (a square table), patches of {channels} x {frames} x {patch} x {patch}, merged {merge} x {merge}: not a tower of this kind"
+        ));
+    }
+    if out != d.desc.hidden {
+        return err(format!("vision_config: out_hidden_size {out}, where the text model's rows are {}", d.desc.hidden));
+    }
+    let image_token = match c.top.get("image_token_id").and_then(Value::as_u64) {
+        Some(t) if (t as usize) < d.desc.vocab => t as u32,
+        t => return err(format!("image_token_id {t:?}: the image token must be one of the vocabulary's {}", d.desc.vocab)),
+    };
+    // (the image's tokens take M-RoPE positions: the text's rotary has sections, interleaved)
+    let rope = d.desc.blocks.iter().find_map(|b| if let Body::Mixer(Mixer::Attention(a)) = &b.body { a.rope.clone() } else { None }).or(d.desc.rope.clone());
+    let interleaved = ["rope_parameters", "rope_scaling"].iter().find_map(|r| c.text.get(*r)?.get("mrope_interleaved")?.as_bool()) == Some(true);
+    if !rope.as_ref().is_some_and(|r| r.mrope.is_some()) || !interleaved {
+        return err(format!("vision_config: a tower whose tokens' positions the text's rotary ({rope:?}) does not turn as interleaved M-RoPE sections"));
+    }
+    let at = names::part::VISION_AT;
+    let own = names::roles(part::VISION, at, 0, all);
+    let m = hidden * merge * merge;
+    let mut shapes = std::mem::take(&mut d.shapes);
+    shape_roles(
+        &mut shapes,
+        &own,
+        &[
+            ("patch", vec![hidden, channels, frames, patch, patch]),
+            ("patch_bias", vec![hidden]),
+            ("pos", vec![positions, hidden]),
+            ("merge_norm", vec![hidden]),
+            ("merge_norm_bias", vec![hidden]),
+            ("merge_up", vec![m, m]),
+            ("merge_up_bias", vec![m]),
+            ("merge_down", vec![out, m]),
+            ("merge_down_bias", vec![out]),
+        ],
+    );
+    let roles: Vec<Vec<(String, Source)>> = (0..blocks)
+        .map(|l| {
+            let r = names::roles(part::VISION_BLOCK, &format!("{at}.blocks.{l}"), 0, all);
+            shape_roles(
+                &mut shapes,
+                &r,
+                &[
+                    ("norm1", vec![hidden]),
+                    ("norm1_bias", vec![hidden]),
+                    ("qkv", vec![3 * hidden, hidden]),
+                    ("qkv_bias", vec![3 * hidden]),
+                    ("o", vec![hidden, hidden]),
+                    ("o_bias", vec![hidden]),
+                    ("norm2", vec![hidden]),
+                    ("norm2_bias", vec![hidden]),
+                    ("up", vec![inter, hidden]),
+                    ("up_bias", vec![inter]),
+                    ("down", vec![hidden, inter]),
+                    ("down_bias", vec![hidden]),
+                ],
+            );
+            r
+        })
+        .collect();
+    d.shapes = shapes;
+    d.desc.vision = Some(VisionDesc { blocks, hidden, heads, inter, act, channels, patch, frames, merge, out, table, theta, eps: 1e-6, image_token });
+    d.vision = Some(VisionRoles { own, blocks: roles });
+    d.unread.retain(|p| p != &format!("{at}."));
+    Ok(d)
 }
 
 fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>) -> Result<Described> {
     let k = Keys::new(tc, mt);
-    let (d, layers, vocab, eps, tied) = common(&k, tied_top)?;
+    // (transformers' Gemma 4 ties the head to the embedding unless the config says otherwise, where Llama and Qwen default to a head of their own)
+    let (d, layers, vocab, eps, tied) = common(&k, tied_top.or(Some(true)))?;
     let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.usize("head_dim")?);
     // the global layers' head dim and KV heads: the release's keys, or (transformers 5.18 writes these instead) `per_layer_config`
     let per = match k.raw("per_layer_config") {
@@ -573,16 +2815,20 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
     let max_pos = k.opt_usize("max_position_embeddings")?;
     k.expect("attention_bias", &Value::Bool(false))?;
     k.expect("enable_moe_block", &Value::Bool(false))?;
-    k.expect("hidden_size_per_layer_input", &Value::from(0))?;
-    k.expect("num_kv_shared_layers", &Value::from(0))?;
-    k.expect("use_double_wide_mlp", &Value::Bool(false))?;
+    // per-layer inputs (E2B, E4B): `ple` values a layer for each token, from a second table of `vocab_size_per_layer_input` rows
+    let ple = k.opt_usize("hidden_size_per_layer_input")?.unwrap_or(0);
+    let ple_vocab = k.opt_usize("vocab_size_per_layer_input")?;
+    // KV sharing (E2B, E4B): the last `shared` layers' queries attend to the keys and values of the last earlier layer of their type; with the
+    // double-wide MLP those layers' intermediate width is twice the config's
+    let shared = k.opt_usize("num_kv_shared_layers")?.unwrap_or(0);
+    let wide = k.bool("use_double_wide_mlp", false)?;
     for x in ["num_experts", "top_k_experts", "moe_intermediate_size"] {
         k.expect(x, &Value::Null)?;
     }
     if k.str("use_bidirectional_attention")? == Some("all") {
         return err(format!("{mt}: bidirectional attention for text is not supported"));
     }
-    k.usize("intermediate_size")?;
+    let inter = k.usize("intermediate_size")?;
     let act = act(k.str("hidden_activation")?.or(k.str("hidden_act")?).unwrap_or("gelu_pytorch_tanh"))?;
     let softcap = k.opt_f64("final_logit_softcapping")?.map(|v| v as f32);
     let rps = match k.raw("rope_parameters") {
@@ -620,14 +2866,31 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             }
         }
     }
+    if shared >= layers {
+        return err(format!("{mt}: {shared} of {layers} layers share keys and values, where an earlier layer of each type must make them"));
+    }
+    let first_shared = layers - shared;
+    // (each shared layer's store: the last layer before the shared ones of its type; its attention block is twice its index)
+    let store = |l: usize| -> Result<Option<usize>> {
+        if l < first_shared {
+            return Ok(None);
+        }
+        match types[..first_shared].iter().rposition(|t| *t == types[l]) {
+            Some(j) => Ok(Some(2 * j)),
+            None => err(format!("{mt}: layer {l} ({}) shares keys and values, and no earlier layer of its type makes them", types[l])),
+        }
+    };
     let n = Norm::rms(eps);
-    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
+    let mut unread = Vec::new();
     for (l, ty) in types.iter().enumerate() {
         let sliding = match ty.as_str() {
             "sliding_attention" => true,
             "full_attention" => false,
             o => return err(format!("{mt}: layer type {o} at layer {l}")),
         };
+        let kv_from = store(l)?;
+        let inter = if wide && kv_from.is_some() { 2 * inter } else { inter };
         let (h, kvh, kev) = if sliding { (hd, kv, false) } else { (ghd, gkv, k_eq_v) };
         let a = Attn {
             heads,
@@ -646,33 +2909,80 @@ fn gemma4(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool
             scale: 1.0,
             k_eq_v: kev,
             indexer: None,
+            rounding: AttnRounding::Eager,
+            kv_from,
+            v_scale: 1.0,
         };
-        let p = format!("{prefix}layers.{l}");
-        let mut r = attn_roles(&p, false, true);
-        if kev {
-            r.retain(|(role, _)| role != "v");
+        let p = names::GEMMA.layer(prefix, l);
+        let own_kv = kv_from.is_none();
+        let r = [
+            names::roles(part::ATTN, &p, 0, |r| !r.ends_with("_bias") && !(kev && r == "v") && (own_kv || !matches!(r, "k" | "v" | "k_norm"))),
+            names::roles(part::GEMMA_ATTN_OUT, &p, 0, all),
+        ]
+        .concat();
+        // (a shared layer's checkpoint may still hold its key and value products and k norm: not read)
+        if !own_kv {
+            unread.extend(["k_proj.", "v_proj.", "k_norm."].map(|t| format!("{p}.self_attn.{t}")));
         }
-        r.push(("norm_out".into(), t(format!("{p}.post_attention_layernorm.weight"))));
+        // (with per-layer inputs the layer scalar follows their branch, the MLP's residual a plain add)
+        let f = names::roles(part::GEMMA_MLP, &p, 0, |r| ple == 0 || r != "res_scale");
+        // (the shapes: each matrix [rows, columns] as the layer's heads and widths make it, each norm and scalar its width)
+        shape_roles(
+            &mut shapes,
+            &r,
+            &[
+                ("norm_in", vec![d]),
+                ("q", vec![heads * h, d]),
+                ("k", vec![kvh * h, d]),
+                ("v", vec![kvh * h, d]),
+                ("o", vec![d, heads * h]),
+                ("q_norm", vec![h]),
+                ("k_norm", vec![h]),
+                ("norm_out", vec![d]),
+            ],
+        );
+        shape_roles(
+            &mut shapes,
+            &f,
+            &[("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter]), ("norm_out", vec![d]), ("res_scale", vec![1])],
+        );
         blocks.push(Block { norm_in: n, body: Body::Mixer(Mixer::Attention(a)), norm_out: Some(n), residual: Residual::Add });
         roles.push(r);
-        let mut r = mlp_roles(&p, "pre_feedforward_layernorm");
-        r.push(("norm_out".into(), t(format!("{p}.post_feedforward_layernorm.weight"))));
-        r.push(("res_scale".into(), t(format!("{p}.layer_scalar"))));
-        blocks.push(Block { norm_in: n, body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: Some(n), residual: Residual::AddThenScale });
-        roles.push(r);
+        let mlp_res = if ple == 0 { Residual::AddThenScale } else { Residual::Add };
+        blocks.push(Block { norm_in: n, body: Body::Ffn(Ffn::Mlp(gated(act))), norm_out: Some(n), residual: mlp_res });
+        roles.push(f);
+        if ple > 0 {
+            let g = names::roles(part::GEMMA_PER_LAYER, &p, 0, all);
+            shape_roles(&mut shapes, &g, &[("gate", vec![ple, d]), ("proj", vec![d, ple]), ("norm_out", vec![d]), ("res_scale", vec![1])]);
+            let norm_in = Norm { kind: NormKind::Identity, weight: NormWeight::None, eps, rounding: Rounding::F32 };
+            blocks.push(Block { norm_in, body: Body::PerLayer(PerLayer { layer: l, act }), norm_out: Some(n), residual: Residual::AddThenScale });
+            roles.push(g);
+        }
     }
+    let per_layer = (ple > 0).then(|| PerLayerIn { dim: ple, layers, vocab: ple_vocab.unwrap_or(vocab), norm: n });
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: (d as f32).sqrt(), norm: None, streams: 1 },
+        embed: Embed { scale: (d as f32).sqrt(), norm: None, streams: 1, per_layer, table: TableAt::Gpu },
         blocks,
         final_norm: n,
-        head: Head { tied, softcap, scale: 1.0, collapse: Collapse::None },
+        // (the release's head is bf16: transformers soft-caps `lm_head`'s bf16 logits by three bf16 operations)
+        head: Head { tied, softcap, scale: 1.0, collapse: Collapse::None, rounding: Rounding::Twice, correction: false },
         mtp: Vec::new(),
         vision: None,
         rope: None,
     };
-    finish(&k, desc, prefix, roles, 0)
+    let mut out = finish(&k, desc, &names::GEMMA, prefix, roles, 0)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(pl) = per_layer {
+        let x = names::roles(part::GEMMA_PER_LAYER_IN, prefix.trim_end_matches('.'), 0, all);
+        shape_roles(&mut shapes, &x, &[("ple_embed", vec![pl.vocab, layers * ple]), ("ple_proj", vec![layers * ple, d]), ("ple_norm", vec![ple])]);
+        out.extra.extend(x);
+    }
+    out.shapes = shapes;
+    out.unread.extend(unread);
+    Ok(out)
 }
 
 /// FP8 block quantization as released (`quantization_config`): which matrices hold FP8 and their block.
@@ -692,7 +3002,8 @@ impl Fp8 {
         let block = match q.get("weight_block_size") {
             Some(Value::Array(a)) if a.len() == 2 && a[0] == a[1] => a[0].as_u64().unwrap_or(128) as usize,
             Some(v) => return err(format!("{what}: weight_block_size {v}")),
-            None => 128,
+            // (no block size: one scale a tensor or a channel, not the block scales the loaders read; refused, as the GLM loader refuses it)
+            None => return err(format!("{what}: FP8 with no weight_block_size (scales a tensor or a channel) is not supported: block scales are")),
         };
         let skip = q
             .get("modules_to_not_convert")
@@ -726,6 +3037,36 @@ fn glm_types(k: &Keys, layers: usize, mt: &str) -> Result<Vec<bool>> {
         return Ok(t[..layers].to_vec());
     }
     Ok(vec![false; layers])
+}
+
+/// Each layer's indexer, `full` (its own) or `shared` (the picks of the layer before), as transformers' GlmMoeDsaConfig reads them: `indexer_types` where the
+/// config lists them; else the schedule they are made from, `index_topk_pattern` (a string of F and S, or a list), else `index_topk_freq` and
+/// `index_skip_topk_offset` (layer i's own where max(i - offset + 1, 0) is a multiple of freq; 1 and 2 where absent). A config with neither: every one full.
+fn indexer_types(k: &Keys, layers: usize, mt: &str) -> Result<Vec<String>> {
+    let pattern = k.raw("index_topk_pattern").filter(|v| !v.is_null());
+    let (freq, offset) = (k.opt_usize("index_topk_freq")?, k.opt_usize("index_skip_topk_offset")?);
+    let kind = |x: &Value| match x.as_str() {
+        Some(t @ ("full" | "shared")) => Ok(t.to_string()),
+        Some("F") => Ok("full".to_string()),
+        Some("S") => Ok("shared".to_string()),
+        o => err(format!("{mt}: an indexer of type {o:?}")),
+    };
+    let types: Vec<String> = match (k.raw("indexer_types").filter(|v| !v.is_null()), pattern) {
+        (Some(Value::Array(a)), _) => a.iter().map(kind).collect::<Result<_>>()?,
+        (Some(v), _) => return err(format!("{mt}: indexer_types {v}")),
+        (None, Some(Value::String(p))) => p.chars().map(|c| kind(&Value::from(c.to_string()))).collect::<Result<_>>()?,
+        (None, Some(Value::Array(a))) => a.iter().map(kind).collect::<Result<_>>()?,
+        (None, Some(v)) => return err(format!("{mt}: index_topk_pattern {v}")),
+        (None, None) if freq.is_none() && offset.is_none() => return Ok(Vec::new()),
+        (None, None) => {
+            let (f, o) = (freq.unwrap_or(1).max(1), offset.unwrap_or(2));
+            (0..layers).map(|i| if (i + 1).saturating_sub(o) % f == 0 { "full" } else { "shared" }.to_string()).collect()
+        }
+    };
+    if types.first().is_some_and(|t| t == "shared") {
+        return err(format!("{mt}: the first layer's indexer is shared, with no layer before it to take picks from"));
+    }
+    Ok(types)
 }
 
 fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, quant: Option<&Value>) -> Result<Described> {
@@ -770,10 +3111,28 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     } else {
         types
     };
-    let bound = match lac.and_then(|o| o.get("gate_lower_bound")) {
-        Some(v) => v.as_f64(),
-        None => k.opt_f64("linear_lower_bound")?,
+    // (the forget gate's lower bound by transformers' rule, `glm::gate_bound`: a key absent and a key null are told apart; none: the softplus decay)
+    let given = |v: Option<&Value>, what: &str| -> Result<crate::runtime::config::Given<f64>> {
+        use crate::runtime::config::Given;
+        match v {
+            None => Ok(Given::Missing),
+            Some(Value::Null) => Ok(Given::Null),
+            Some(x) => x.as_f64().map(Given::Some).ok_or_else(|| Error(format!("{mt}: {what} is not a number"))),
+        }
     };
+    k.raw("linear_lower_bound");
+    let flat = given(k.m.get("linear_lower_bound"), "linear_lower_bound")?;
+    let block = match lac {
+        Some(o) => {
+            let safe = match o.get("safe_gate") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.as_bool().ok_or_else(|| Error(format!("{mt}: linear_attn_config.safe_gate is not true or false")))?),
+            };
+            Some((given(o.get("gate_lower_bound"), "linear_attn_config.gate_lower_bound")?, safe))
+        }
+        None => None,
+    };
+    let bound = crate::glm::gate_bound(&flat, block.as_ref().map(|(b, s)| (b, *s)));
     let lin = Linear {
         kind: LinearKind::KimiDelta,
         k_heads: lin_num("num_heads", "linear_num_heads")?.unwrap_or(0),
@@ -824,18 +3183,34 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
     }
     let mla_eps = if flash { eps } else { 1e-6 };
     let (ih, idim, itop) = (k.opt_usize("index_n_heads")?, k.opt_usize("index_head_dim")?, k.opt_usize("index_topk")?);
-    let pool = k.opt_usize("index_kpool")?.unwrap_or(1);
-    for x in ["index_kpool_always_select_tail", "index_kpool_compress", "index_share_for_mtp_iteration", "indexer_rope_interleave"] {
-        k.bool(x, true)?;
+    // (GLM-5.3-Flash's pools: transformers' Glm5NextTextConfig has 16 where the key is absent; GLM-5.3's indexer keys a token each)
+    let pool = k.opt_usize("index_kpool")?.unwrap_or(if flash { 16 } else { 1 });
+    // (the releases' flags of the one form this builder describes: the rotary of the attention and of the indexer in interleaved pairs (2i, 2i + 1), as
+    // transformers' GlmMoeDsaAttention and GlmMoeDsaIndexer turn them whatever the flags say; the pools' keys the gated softmax of their tokens' keys, and
+    // the open pool's tokens attended to beside the picked pools (Glm5NextTextIndexer). A flag of another form is refused where it changes what is computed:
+    // no rotary, no rotated indexer channels, keys a token each. index_share_for_mtp_iteration is the draft head's: drafting only, either way)
+    k.bool("index_share_for_mtp_iteration", true)?;
+    for (x, applies, form) in [
+        ("rope_interleave", rope.is_some(), "a rotary in halves (i, i + d/2): the latent attention turns interleaved pairs (2i, 2i + 1)"),
+        (
+            "indexer_rope_interleave",
+            rope.is_some() && idim.is_some(),
+            "an indexer's rotary in halves (i, i + d/2): the indexer turns interleaved pairs (2i, 2i + 1)",
+        ),
+        ("index_kpool_compress", pool > 1, "pools whose keys are not the gated softmax of their tokens' keys"),
+        ("index_kpool_always_select_tail", pool > 1, "picks without the open pool's tokens"),
+    ] {
+        if !k.bool(x, true)? && applies {
+            return err(format!("{mt}: {x} = false ({form}) is not supported: the engine runs {x} = true"));
+        }
     }
-    let itypes: Vec<String> =
-        k.raw("indexer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str().unwrap_or("full").to_string()).collect()).unwrap_or_default();
+    let itypes = indexer_types(&k, layers, mt)?;
     // the feed-forward
     let first_dense = k.opt_usize("first_k_dense_replace")?;
     let mlp_types: Option<Vec<bool>> = k.raw("mlp_layer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str() == Some("sparse")).collect());
-    k.usize("intermediate_size")?;
-    k.usize("moe_intermediate_size")?;
-    let clamp = if flash { k.opt_f64("swiglu_limit")?.map(|v| v as f32) } else { None };
+    let dense_inter = k.usize("intermediate_size")?;
+    let moe_inter = k.usize("moe_intermediate_size")?;
+    let clamp = if flash { k.opt_f64("swiglu_limit")?.map(|v| Clamp::Gate(v as f32)) } else { None };
     let mlp = Mlp { act, gated: true, bias: false, clamp };
     let ne = k.usize("n_routed_experts")?;
     let ng = k.opt_usize("n_group")?.unwrap_or(1);
@@ -850,6 +3225,8 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
             renorm: k.bool("norm_topk_prob", true)?,
             scale: k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32,
             hash: false,
+            routers: 1,
+            expert_scale: false,
         },
         experts: ne,
         expert: mlp,
@@ -857,97 +3234,123 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
         shared_gate: false,
         latent: None,
     };
+    let shared_inter = moe_inter * k.opt_usize("n_shared_experts")?.unwrap_or(0);
     // the residual streams (GLM-5.3-Flash)
     let streams = if flash && k.bool("mhc", true)? {
         Some(StreamsP {
+            lagged: false,
+            eps_outside: false,
+            apart: None,
             streams: k.opt_usize("hc_mult")?.unwrap_or(4),
             sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
             eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
             norm_eps: eps,
+            rounding: Rounding::Twice,
         })
     } else {
         None
     };
     let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
-    let n = Norm::rms(eps);
-    let fp8w = |w: String, out: &mut BTreeSet<String>| -> Source {
-        if fp8.as_ref().is_some_and(|f| f.holds(&w)) {
-            out.insert(w.clone());
+    // (the RMS norms round as the release's do, Glm5NextTextRMSNorm and GlmMoeDsaRMSNorm in bf16: the normed value to bf16, times the bf16 weight, rounded:
+    // the blocks', the final one, the latent attention's q and key-value latents')
+    let n = Norm { rounding: Rounding::Twice, ..Norm::rms(eps) };
+    // (the matrices a release holds in FP8: those of these roles that its quantization_config does not leave out; a layer's experts as its first expert's)
+    let held = |w: &str| fp8.as_ref().is_some_and(|f| f.holds(w));
+    let mark = |r: &[(String, Source)], out: &mut BTreeSet<String>| {
+        for (role, src) in r {
+            if !FP8_ROLES.contains(&role.as_str()) {
+                continue;
+            }
+            match src {
+                Source::Tensor(w) if held(w) => {
+                    out.insert(w.clone());
+                }
+                Source::Experts(e) => out.extend(e.first().into_iter().flatten().filter(|w| held(w)).cloned()),
+                _ => {}
+            }
         }
-        Source::Tensor(w)
+        let first = r.iter().find_map(|(role, s)| match s {
+            Source::Experts(e) if role == "experts_gate_up" => e.first().and_then(|x| x.first()),
+            _ => None,
+        });
+        if first.is_some_and(|w| held(w)) {
+            out.extend(r.iter().filter(|(role, _)| role.starts_with("experts_")).flat_map(|(_, s)| s.names()));
+        }
     };
     let mut fp8set = BTreeSet::new();
+    // (the shapes of the tensors the full-size layout reads, which a loader by the kinds and a random model take: the norms, the latent attention and its
+    // indexer, the experts, the dense MLP; the streams' too. Not yet the delta attention's)
+    let mut shapes = std::collections::BTreeMap::new();
+    let hc = streams.map(|s| s.streams).unwrap_or(0);
+    let hc_shapes = [("hc_fn", vec![(2 + hc) * hc, hc * d]), ("hc_base", vec![(2 + hc) * hc]), ("hc_scale", vec![3])];
     let (mut blocks, mut roles) = (Vec::new(), Vec::new());
-    for (l, &is_lin) in types.iter().enumerate() {
-        let p = format!("{prefix}layers.{l}");
-        let a = format!("{p}.self_attn");
-        let residual = |sub: &str, r: &mut Vec<(String, Source)>| -> Residual {
+    // (the draft layers after the model's, GLM-5.3's: each a draft head of DeepSeek-V3's form (`MtpInput::Joined`), its block a latent attention with an
+    // indexer of its own, then the experts, on a plain residual; GLM-5.3-Flash's sits in a model of streams and is left unread)
+    let drafts = if streams.is_none() { mtp_layers } else { 0 };
+    let (mut head_blocks, mut head_roles) = (Vec::new(), Vec::new());
+    for (l, is_lin) in types.iter().copied().chain(std::iter::repeat_n(false, drafts)).enumerate() {
+        let (blocks, roles) = if l < layers { (&mut blocks, &mut roles) } else { (&mut head_blocks, &mut head_roles) };
+        let p = names::HF.layer(prefix, l);
+        let residual = |table: names::Roles, r: &mut Vec<(String, Source)>| -> Residual {
             match streams {
                 Some(s) => {
-                    for (role, x) in [("hc_fn", "fn"), ("hc_base", "base"), ("hc_scale", "scale")] {
-                        r.push((role.to_string(), t(format!("{p}.hc_{sub}_{x}"))));
-                    }
+                    r.extend(names::roles(table, &p, 0, all));
                     Residual::Streams(s)
                 }
                 None => Residual::Add,
             }
         };
-        let mut r = vec![("norm_in".to_string(), t(format!("{p}.input_layernorm.weight")))];
+        let mut r = names::roles(part::NORM_IN, &p, 0, all);
         let mixer = if is_lin {
-            for (role, x) in [
-                ("q", "q_proj"),
-                ("k", "k_proj"),
-                ("v", "v_proj"),
-                ("beta", "b_proj"),
-                ("decay_a", "f_a_proj"),
-                ("decay_b", "f_b_proj"),
-                ("gate_a", "g_a_proj"),
-                ("gate_b", "g_b_proj"),
-                ("o", "o_proj"),
-            ] {
-                r.push((role.to_string(), fp8w(format!("{a}.{x}.weight"), &mut fp8set)));
-            }
-            r.push(("conv".into(), Source::Rows(["q", "k", "v"].iter().map(|x| format!("{a}.{x}_conv1d.weight")).collect())));
-            for (role, x) in [("a_log", "A_log"), ("dt_bias", "dt_bias"), ("norm", "o_norm.weight")] {
-                r.push((role.to_string(), t(format!("{a}.{x}"))));
-            }
+            r.extend(but(part::KDA, &p, 0, &["gate"]));
             Mixer::Linear(lin.clone())
         } else {
-            match q_lora {
-                Some(_) => {
-                    r.push(("q_a".into(), fp8w(format!("{a}.q_a_proj.weight"), &mut fp8set)));
-                    r.push(("q_a_norm".into(), t(format!("{a}.q_a_layernorm.weight"))));
-                    r.push(("q_b".into(), fp8w(format!("{a}.q_b_proj.weight"), &mut fp8set)));
-                }
-                None => r.push(("q".into(), fp8w(format!("{a}.q_proj.weight"), &mut fp8set))),
-            }
-            r.push(("kv_a".into(), fp8w(format!("{a}.kv_a_proj_with_mqa.weight"), &mut fp8set)));
-            r.push(("kv_a_norm".into(), t(format!("{a}.kv_a_layernorm.weight"))));
-            r.push(("kv_b".into(), fp8w(format!("{a}.kv_b_proj.weight"), &mut fp8set)));
-            r.push(("o".into(), fp8w(format!("{a}.o_proj.weight"), &mut fp8set)));
+            let q = if q_lora.is_some() { "q" } else { "q_a q_a_norm q_b" };
+            r.extend(names::roles(part::MLA, &p, 0, |x| x != "g" && !q.split(' ').any(|y| y == x)));
             let shared = itypes.get(l).is_some_and(|s| s == "shared");
             let indexer = match (ih, idim, itop) {
                 (Some(h), Some(dim), Some(top)) => {
                     if !shared {
-                        let ix = format!("{a}.indexer");
-                        let mut names = vec![
-                            ("indexer_wq_b", "wq_b.weight"),
-                            ("indexer_wk", "wk.weight"),
-                            ("indexer_k_norm", "k_norm.weight"),
-                            ("indexer_k_norm_bias", "k_norm.bias"),
-                            ("indexer_weights", "weights_proj.weight"),
-                        ];
-                        if flash {
-                            names.extend([("indexer_pool_ape", "index_kpool_compress_ape"), ("indexer_pool_gate", "index_kpool_compress_gate")]);
-                        }
-                        for (role, x) in names {
-                            r.push((role.to_string(), t(format!("{ix}.{x}"))));
-                        }
+                        r.extend(names::roles(part::MLA_INDEXER, &p, 0, |x| flash || !x.starts_with("indexer_pool")));
                     }
-                    Some(Indexer { heads: h, head_dim: dim, top_k: top, block: pool, shared })
+                    // (with a rotary the indexer's queries and keys turn their first channels by it too: transformers' GlmMoeDsaIndexer)
+                    let turned = if rope.is_some() { rd } else { 0 };
+                    if turned > dim {
+                        return err(format!("{mt}: an indexer of heads of {dim} under a rotary of {turned} channels"));
+                    }
+                    Some(Indexer {
+                        heads: h,
+                        head_dim: dim,
+                        top_k: top,
+                        block: pool,
+                        shared,
+                        form: IndexForm::LAYER_KEYS,
+                        rope: turned,
+                        q_in: None,
+                        pos_scale: false,
+                        rope_style: None,
+                    })
                 }
                 _ => None,
             };
+            let qw = heads * (nope + rd);
+            let mut sh = vec![("kv_a", vec![kvl + rd, d]), ("kv_a_norm", vec![kvl]), ("kv_b", vec![heads * (nope + vd), kvl]), ("o", vec![d, heads * vd])];
+            match q_lora {
+                Some(ql) => sh.extend([("q_a", vec![ql, d]), ("q_a_norm", vec![ql]), ("q_b", vec![qw, ql])]),
+                None => sh.push(("q", vec![qw, d])),
+            }
+            if let (Some(h), Some(dim)) = (ih, idim) {
+                sh.extend([
+                    ("indexer_wq_b", vec![h * dim, q_lora.unwrap_or(d)]),
+                    ("indexer_wk", vec![dim, d]),
+                    ("indexer_k_norm", vec![dim]),
+                    ("indexer_k_norm_bias", vec![dim]),
+                    ("indexer_weights", vec![h, d]),
+                    ("indexer_pool_ape", vec![pool, dim]),
+                    ("indexer_pool_gate", vec![dim, d]),
+                ]);
+            }
+            shape_roles(&mut shapes, &r, &sh);
             Mixer::Mla(Mla {
                 heads,
                 q_lora,
@@ -956,90 +3359,144 @@ fn glm(tc: &Map<String, Value>, prefix: &str, mt: &str, tied_top: Option<bool>, 
                 rope_dim: rd,
                 v_dim: vd,
                 rope: rope.clone(),
-                q_norm: Norm::rms(mla_eps),
-                kv_norm: Norm::rms(mla_eps),
+                q_norm: Norm { rounding: Rounding::Twice, ..Norm::rms(mla_eps) },
+                kv_norm: Norm { rounding: Rounding::Twice, ..Norm::rms(mla_eps) },
                 gate: None,
                 scale,
                 absorbed: true,
                 indexer,
+                head_mix: 0,
+                sinks: false,
+                window: None,
+                pos_scale: false,
+                kv_from: None,
+                rope_learned: false,
             })
         };
-        let res = residual("attn", &mut r);
+        mark(&r, &mut fp8set);
+        let res = residual(part::HC_ATTN, &mut r);
+        shape_roles(&mut shapes, &r, &[vec![("norm_in", vec![d])], hc_shapes.to_vec()].concat());
         blocks.push(Block { norm_in: n, body: Body::Mixer(mixer), norm_out: None, residual: res });
         roles.push(r);
+        // (with neither key, transformers' first three layers dense: GlmMoeDsaConfig's first_k_dense_replace of 3, Glm5NextTextConfig's three)
         let sparse = match (&mlp_types, first_dense) {
             (Some(t), _) => t.get(l).copied().unwrap_or(true),
             (None, Some(f)) => l >= f,
-            (None, None) => true,
+            (None, None) => l >= 3,
         };
-        let f = format!("{p}.mlp");
-        let mut r = vec![("norm_in".to_string(), t(format!("{p}.post_attention_layernorm.weight")))];
+        let mut r = names::roles(part::NORM_POST, &p, 0, all);
         let body = if sparse {
-            r.push(("router".into(), t(format!("{f}.gate.weight"))));
-            r.push(("choice_bias".into(), t(format!("{f}.gate.e_score_correction_bias"))));
-            let ex = |x: &str, out: &mut BTreeSet<String>| -> Vec<String> {
-                let w = format!("{f}.experts.0.{x}_proj.weight");
-                let _ = fp8w(w, out);
-                (0..ne).map(|e| format!("{f}.experts.{e}.{x}_proj.weight")).collect()
-            };
-            let (g, u, dn) = (ex("gate", &mut fp8set), ex("up", &mut fp8set), ex("down", &mut fp8set));
-            if fp8set.contains(&format!("{f}.experts.0.gate_proj.weight")) {
-                fp8set.extend(g.iter().chain(&u).chain(&dn).cloned());
-            }
-            r.push(("experts_gate_up".into(), Source::Experts(g.into_iter().zip(u).map(|(a, b)| vec![a, b]).collect())));
-            r.push(("experts_down".into(), Source::Experts(dn.into_iter().map(|x| vec![x]).collect())));
-            if moe.shared.is_some() {
-                for x in ["gate", "up", "down"] {
-                    r.push((format!("shared_{x}"), fp8w(format!("{f}.shared_experts.{x}_proj.weight"), &mut fp8set)));
-                }
-            }
+            r.extend(names::roles(part::MOE, &p, ne, |x| moe.shared.is_some() || !x.starts_with("shared_")));
+            shape_roles(
+                &mut shapes,
+                &r,
+                &[
+                    ("router", vec![ne, d]),
+                    ("choice_bias", vec![ne]),
+                    ("experts_gate_up", vec![moe_inter, d]),
+                    ("experts_down", vec![d, moe_inter]),
+                    ("shared_gate", vec![shared_inter, d]),
+                    ("shared_up", vec![shared_inter, d]),
+                    ("shared_down", vec![d, shared_inter]),
+                ],
+            );
             Body::Ffn(Ffn::Moe(moe.clone()))
         } else {
-            for x in ["gate", "up", "down"] {
-                r.push((x.to_string(), fp8w(format!("{f}.{x}_proj.weight"), &mut fp8set)));
-            }
+            r.extend(names::roles(part::MLP_BODY, &p, 0, all));
+            // (a dense MLP's shapes, which the lowering to the executor reads its width from)
+            shape_roles(&mut shapes, &r, &[("gate", vec![dense_inter, d]), ("up", vec![dense_inter, d]), ("down", vec![d, dense_inter])]);
             Body::Ffn(Ffn::Mlp(mlp))
         };
-        let res = residual("ffn", &mut r);
+        mark(&r, &mut fp8set);
+        let res = residual(part::HC_FFN, &mut r);
+        shape_roles(&mut shapes, &r, &[vec![("norm_in", vec![d])], hc_shapes.to_vec()].concat());
         blocks.push(Block { norm_in: n, body, norm_out: None, residual: res });
         roles.push(r);
+    }
+    // (each draft head: its layer's two blocks, its own roles beside them (vLLM deepseek_mtp.py, SGLang deepseek_nextn.py: enorm, hnorm, eh_proj,
+    // shared_head.norm; the model's embedding and LM head))
+    let (mut mtp, mut mtp_roles) = (Vec::new(), Vec::new());
+    for (j, (bs, rs)) in head_blocks.chunks(2).zip(head_roles.chunks(2)).enumerate() {
+        let own = names::roles(part::MTP_LAYER, &names::HF.layer(prefix, layers + j), 0, all);
+        shape_roles(&mut shapes, &own, &[("eh_proj", vec![d, 2 * d]), ("norm_embed", vec![d]), ("norm_hidden", vec![d]), ("final_norm", vec![d])]);
+        mtp.push(MtpHead { blocks: bs.to_vec(), norm_embed: n, norm_hidden: n, final_norm: n, dspark: None, input: MtpInput::Joined });
+        mtp_roles.push((rs.to_vec(), own));
     }
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: None, streams: streams.map_or(1, |s| s.streams) },
+        embed: Embed { scale: 1.0, norm: None, streams: streams.map_or(1, |s| s.streams), per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: n,
-        head: Head { tied, softcap: None, scale: 1.0, collapse: if streams.is_some() { Collapse::Mean } else { Collapse::None } },
-        mtp: Vec::new(),
+        // (the logits in bf16: the release's lm_head is a bf16 product, its output the logits (modeling_glm5_next.py, modeling_glm_moe_dsa.py))
+        head: Head {
+            tied,
+            softcap: None,
+            scale: 1.0,
+            collapse: if streams.is_some() { Collapse::Mean } else { Collapse::None },
+            rounding: Rounding::Once,
+            correction: false,
+        },
+        mtp,
         vision: None,
         rope,
     };
-    let mut out = finish(&k, desc, prefix, roles, mtp_layers)?;
+    let mut out = finish(&k, desc, &names::HF, prefix, roles, mtp_layers)?;
     out.scales = fp8set.into_iter().map(|w| (w.clone(), format!("{w}_scale_inv"))).collect();
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    out.shapes = shapes;
+    // (the draft layers follow the model's, under the same names: the ones described as heads are read)
+    out.unread.extend((drafts..mtp_layers).map(|i| format!("{}.", names::HF.layer(prefix, layers + i))));
+    out.mtp = mtp_roles;
     let _ = fp8.map(|f| f.block);
     Ok(out)
 }
 
+/// The roles whose matrices a release may hold in FP8 (GLM's `quantization_config`): the products of the attention and the feed-forward, and the indexer's
+/// query and key products (GLM-5.3 holds them so; GLM-5.3-Flash's list leaves its attention out); not the routers, the norms, the convolutions or the
+/// indexer's head weights (bf16 in both releases, fp32 in transformers: GlmMoeDsaPreTrainedModel's `_keep_in_fp32_modules`).
+const FP8_ROLES: &[&str] = &[
+    "indexer_wq_b",
+    "indexer_wk",
+    "q",
+    "k",
+    "v",
+    "beta",
+    "decay_a",
+    "decay_b",
+    "gate_a",
+    "gate_b",
+    "o",
+    "q_a",
+    "q_b",
+    "kv_a",
+    "kv_b",
+    "gate",
+    "up",
+    "down",
+    "shared_gate",
+    "shared_up",
+    "shared_down",
+    "experts_gate_up",
+    "experts_down",
+];
+
 /// The top-level keys of a multimodal config that the text model does not read.
-fn top_keys(cfg: &Value, what: &str, known: &[&str]) -> Result<()> {
-    for k in cfg.as_object().map(|m| m.keys().collect::<Vec<_>>()).unwrap_or_default() {
-        if !known.contains(&k.as_str()) && !INERT.contains(&k.as_str()) && !k.ends_with("_token_id") && !k.ends_with("_token_index") {
-            return err(format!("{what}: config key {k} is not understood by the description builder"));
-        }
-    }
-    Ok(())
+fn top_keys(top: &Map<String, Value>, what: &str, known: &[&str]) -> Result<()> {
+    not_understood(what, top.keys().filter(|k| !known.contains(&k.as_str()) && !inert(k)))
 }
 
-/// Kimi-K3 (`kimi_k3`, a `kimi_linear` text model): Kimi delta attention and gated NoPE MLA, the depth mix over groups of
-/// `attn_res_block_size` layers, a dense first layer then the latent MoE, situ activations, KimiRMSNorm (two roundings).
-fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
-    let mt = "kimi_linear";
-    top_keys(cfg, "kimi_k3", &["text_config", "vision_config", "quantization_config", "tie_word_embeddings"])?;
+/// Kimi-K3 (`kimi_k3`, a `kimi_linear` text model; Kimi-K3.1's `kimi_k31` is the same layout with the latent attention's sparse indexer, `dsa_config`): Kimi
+/// delta attention and gated NoPE MLA, the depth mix over groups of `attn_res_block_size` layers, a dense first layer then the latent MoE, situ activations,
+/// KimiRMSNorm (two roundings).
+fn kimi(c: &ModelConfig) -> Result<Described> {
+    let (mt, tc) = ("kimi_linear", &c.text);
+    top_keys(&c.top, &c.model_type, &["text_config", "vision_config", "quantization_config", "tie_word_embeddings"])?;
     let k = Keys::new(tc, mt);
-    if tc.get("model_type").and_then(|v| v.as_str()) != Some(mt) {
-        return err("kimi_k3: the text model is not kimi_linear");
-    }
     let (d, layers, vocab, eps, tied) = common(&k, None)?;
     if k.str("hidden_act")? != Some("situ") {
         return err(format!("{mt}: only situ is supported"));
@@ -1056,6 +3513,8 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
     k.expect("num_expert_group", &Value::from(1))?;
     k.expect("topk_group", &Value::from(1))?;
     k.expect("topk_method", &Value::from("noaux_tc"))?;
+    // (grouped top-k over one group of all the experts, which the two above make it, is the plain top-k)
+    let _ = k.raw("use_grouped_topk");
     k.expect("moe_layer_freq", &Value::from(1))?;
     k.expect("rope_scaling", &Value::Null)?;
     k.opt_usize("max_position_embeddings")?;
@@ -1108,12 +3567,70 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
         scale: ((nope + rd) as f32).powf(-0.5),
         absorbed: true,
         indexer: None,
+        head_mix: 0,
+        sinks: false,
+        window: None,
+        pos_scale: false,
+        kv_from: None,
+        rope_learned: false,
+    };
+    // Kimi-K3.1's sparse attention (`dsa_config`): on the latent attention layers it names (1-based), the sparse attention's indexer of a key a token, the
+    // gated form, its keys RMS-normed at the model's eps or LayerNorm-ed with a bias (`index_k_norm_type`); the indexer's query from the q latent
+    let dsa = match k.raw("dsa_config") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(o)) => {
+            let dk = Keys::new(o, "kimi_linear: dsa_config");
+            let named = if dk.raw("dsa_layers").is_some() { "dsa_layers" } else { "layers" };
+            let on: BTreeSet<u64> = dk
+                .raw(named)
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(Value::as_u64).collect())
+                .ok_or_else(|| Error(format!("{mt}: dsa_config names no layers")))?;
+            if let Some(l) = on.iter().find(|&&l| l == 0 || l > layers as u64 || kda_l.contains(&l)) {
+                return err(format!("{mt}: dsa_config names layer {l}, which is not one of the latent attention's (1-based)"));
+            }
+            let key = match dk.str("index_k_norm_type")?.unwrap_or("rmsnorm") {
+                "rmsnorm" => Norm::rms(eps),
+                "layernorm" => Norm { kind: NormKind::Layer, ..Norm::rms(eps) },
+                other => return err(format!("{mt}: dsa_config.index_k_norm_type {other}: rmsnorm or layernorm")),
+            };
+            // (a rotary on the indexer's first dims, picks shared across layers and an FP8 indexer are not described)
+            for (x, want) in [("index_rope_dim", 0), ("index_topk_freq", 1), ("index_skip_topk_offset", 1)] {
+                dk.expect(x, &Value::from(want))?;
+            }
+            dk.expect("indexer_use_fp8", &Value::Bool(false))?;
+            let ix = Indexer {
+                heads: dk.usize("index_num_heads")?,
+                head_dim: dk.usize("index_head_dim")?,
+                top_k: dk.usize("index_topk")?,
+                block: 1,
+                shared: false,
+                form: IndexForm::Gated { key },
+                rope: 0,
+                rope_style: None,
+                q_in: None,
+                pos_scale: false,
+            };
+            dk.finish()?;
+            Some((on, ix))
+        }
+        Some(v) => return err(format!("{mt}: dsa_config {v}: an object")),
     };
     let dense = k.usize("first_k_dense_replace")?;
-    k.usize("intermediate_size")?;
-    k.usize("moe_intermediate_size")?;
+    let inter = k.usize("intermediate_size")?;
+    let moe_inter = k.usize("moe_intermediate_size")?;
     let ne = k.usize("num_experts")?;
-    let shared = k.usize("num_shared_experts")? > 0;
+    // (the routed experts as released: MXFP4, 4-bit floats in groups of 32 with a byte's scale each, as compressed-tensors packs them; every other matrix bf16)
+    let mxfp4 = match k.raw("quantization_config") {
+        None => false,
+        Some(q) => {
+            kimi_mxfp4(q)?;
+            true
+        }
+    };
+    let mut scales = std::collections::BTreeMap::new();
+    let n_shared = k.usize("num_shared_experts")?;
+    let shared = n_shared > 0;
     let lat = k.usize("routed_expert_hidden_size")?;
     let moe = Moe {
         router: Router {
@@ -1125,6 +3642,8 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
             renorm: true,
             scale: k.f64("routed_scaling_factor")? as f32,
             hash: false,
+            routers: 1,
+            expert_scale: false,
         },
         experts: ne,
         expert: mlp,
@@ -1135,124 +3654,939 @@ fn kimi(cfg: &Value, tc: &Map<String, Value>) -> Result<Described> {
     let group = k.usize("attn_res_block_size")?;
     let prefix = "language_model.model.";
     let n = twice(eps);
-    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
     for l in 0..layers {
-        let p = format!("{prefix}layers.{l}");
-        let a = format!("{p}.self_attn");
-        let mut r = vec![
-            ("norm_in".to_string(), t(format!("{p}.input_layernorm.weight"))),
-            ("mix_norm".into(), t(format!("{p}.self_attention_res_norm.weight"))),
-            ("mix_proj".into(), t(format!("{p}.self_attention_res_proj.weight"))),
-        ];
+        let p = names::KIMI.layer(prefix, l);
+        let mut r = names::roles(part::KIMI_ATTN_MIX, &p, 0, all);
         let mixer = if kda_l.contains(&(l as u64 + 1)) {
-            for (role, x) in [
-                ("q", "q_proj"),
-                ("k", "k_proj"),
-                ("v", "v_proj"),
-                ("beta", "b_proj"),
-                ("decay_a", "f_a_proj"),
-                ("decay_b", "f_b_proj"),
-                ("gate", "g_proj"),
-                ("o", "o_proj"),
-            ] {
-                r.push((role.to_string(), t(format!("{a}.{x}.weight"))));
-            }
-            r.push(("conv".into(), Source::Rows(["q", "k", "v"].iter().map(|x| format!("{a}.{x}_conv1d.weight")).collect())));
-            for (role, x) in [("a_log", "A_log"), ("dt_bias", "dt_bias"), ("norm", "o_norm.weight")] {
-                r.push((role.to_string(), t(format!("{a}.{x}"))));
-            }
+            let x = but(part::KDA, &p, 0, &["gate_a", "gate_b"]);
+            // (each matrix's shape, which the lowering to the executor sizes its products by and names its tensors with; the forget gate's low rank the delta
+            // heads' size)
+            let qd = kh * kd;
+            shape_roles(
+                &mut shapes,
+                &x,
+                &[
+                    ("q", vec![qd, d]),
+                    ("k", vec![qd, d]),
+                    ("v", vec![qd, d]),
+                    ("gate", vec![qd, d]),
+                    ("decay_a", vec![kd, d]),
+                    ("beta", vec![kh, d]),
+                    ("o", vec![d, qd]),
+                    ("decay_b", vec![qd, kd]),
+                ],
+            );
+            r.extend(x);
             Mixer::Linear(lin.clone())
         } else {
-            for (role, x) in [
-                ("q_a", "q_a_proj.weight"),
-                ("q_a_norm", "q_a_layernorm.weight"),
-                ("q_b", "q_b_proj.weight"),
-                ("kv_a", "kv_a_proj_with_mqa.weight"),
-                ("kv_a_norm", "kv_a_layernorm.weight"),
-                ("kv_b", "kv_b_proj.weight"),
-                ("g", "g_proj.weight"),
-                ("o", "o_proj.weight"),
-            ] {
-                r.push((role.to_string(), t(format!("{a}.{x}"))));
+            let x = but(part::MLA, &p, 0, &["q"]);
+            let (ql, hv) = (mla.q_lora.unwrap_or(0), heads * mla.v_dim);
+            shape_roles(
+                &mut shapes,
+                &x,
+                &[
+                    ("q_a", vec![ql, d]),
+                    ("g", vec![hv, d]),
+                    ("kv_a", vec![mla.kv_lora + rd, d]),
+                    ("q_b", vec![heads * (nope + rd), ql]),
+                    ("kv_b", vec![heads * (nope + mla.v_dim), mla.kv_lora]),
+                    ("o", vec![d, hv]),
+                ],
+            );
+            r.extend(x);
+            let indexer = dsa.as_ref().filter(|(on, _)| on.contains(&(l as u64 + 1))).map(|(_, ix)| ix.clone());
+            if let Some((IndexForm::Gated { key }, ix)) = indexer.as_ref().map(|ix| (ix.form, ix)) {
+                let x =
+                    names::roles(part::MLA_INDEXER, &p, 0, |x| !x.starts_with("indexer_pool") && (key.kind == NormKind::Layer || x != "indexer_k_norm_bias"));
+                let (ih, id) = (ix.heads, ix.head_dim);
+                shape_roles(&mut shapes, &x, &[("indexer_wq_b", vec![ih * id, ql]), ("indexer_wk", vec![id, d]), ("indexer_weights", vec![ih, d])]);
+                r.extend(x);
             }
-            Mixer::Mla(mla.clone())
+            Mixer::Mla(Mla { indexer, ..mla.clone() })
         };
         blocks.push(Block { norm_in: n, body: Body::Mixer(mixer), norm_out: None, residual: Residual::DepthMix(DepthMixP { starts: l % group == 0 }) });
         roles.push(r);
-        let mut r = vec![
-            ("norm_in".to_string(), t(format!("{p}.post_attention_layernorm.weight"))),
-            ("mix_norm".into(), t(format!("{p}.mlp_res_norm.weight"))),
-            ("mix_proj".into(), t(format!("{p}.mlp_res_proj.weight"))),
-        ];
+        let mut r = names::roles(part::KIMI_FFN_MIX, &p, 0, all);
         let body = if l < dense {
-            for x in ["gate", "up", "down"] {
-                r.push((x.to_string(), t(format!("{p}.mlp.{x}_proj.weight"))));
-            }
+            r.extend(names::roles(part::MLP_BODY, &p, 0, all));
+            shape_roles(&mut shapes, &r, &[("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
             Body::Ffn(Ffn::Mlp(mlp))
         } else {
-            let f = format!("{p}.block_sparse_moe");
-            for (role, x) in [
-                ("router", "gate.weight"),
-                ("choice_bias", "gate.e_score_correction_bias"),
-                ("latent_down", "routed_expert_down_proj.weight"),
-                ("latent_up", "routed_expert_up_proj.weight"),
-                ("latent_norm_out", "routed_expert_norm.weight"),
-            ] {
-                r.push((role.to_string(), t(format!("{f}.{x}"))));
-            }
-            r.push((
-                "experts_gate_up".into(),
-                Source::Experts((0..ne).map(|e| vec![format!("{f}.experts.{e}.w1.weight"), format!("{f}.experts.{e}.w3.weight")]).collect()),
-            ));
-            r.push(("experts_down".into(), Source::Experts((0..ne).map(|e| vec![format!("{f}.experts.{e}.w2.weight")]).collect())));
-            if shared {
-                for x in ["gate", "up", "down"] {
-                    r.push((format!("shared_{x}"), t(format!("{f}.shared_experts.{x}_proj.weight"))));
+            let mut x = names::roles(part::KIMI_MOE, &p, ne, |x| shared || !x.starts_with("shared_"));
+            // (MXFP4 experts as released: each matrix its codes, `.weight_packed`, and its scales)
+            for (_, src) in x.iter_mut().filter(|(role, _)| mxfp4 && role.starts_with("experts_")) {
+                if let Source::Experts(e) = src {
+                    for w in e.iter_mut().flatten() {
+                        w.push_str("_packed");
+                        scales.insert(w.clone(), w.replace(".weight_packed", ".weight_scale"));
+                    }
                 }
             }
+            let si = n_shared * moe_inter;
+            // (an expert's matrices at their rows and columns, on the latent: its codes as released are two to a byte, their scales `scales`')
+            shape_roles(
+                &mut shapes,
+                &x,
+                &[
+                    ("router", vec![ne, d]),
+                    ("latent_down", vec![lat, d]),
+                    ("latent_up", vec![d, lat]),
+                    ("experts_gate_up", vec![moe_inter, lat]),
+                    ("experts_down", vec![lat, moe_inter]),
+                    ("shared_gate", vec![si, d]),
+                    ("shared_up", vec![si, d]),
+                    ("shared_down", vec![d, si]),
+                ],
+            );
+            r.extend(x);
             Body::Ffn(Ffn::Moe(moe.clone()))
         };
         blocks.push(Block { norm_in: n, body, norm_out: None, residual: Residual::DepthMix(DepthMixP { starts: false }) });
         roles.push(r);
     }
-    k.finish()?;
-    Ok(Described {
-        desc: ModelDesc {
-            hidden: d,
-            vocab,
-            embed: Embed { scale: 1.0, norm: None, streams: 1 },
-            blocks,
-            final_norm: n,
-            head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::DepthMix },
-            mtp: Vec::new(),
-            vision: None,
-            rope: None,
-        },
-        embed: format!("{prefix}embed_tokens.weight"),
-        final_norm: format!("{prefix}norm.weight"),
-        head: (!tied).then(|| "language_model.lm_head.weight".to_string()),
-        blocks: roles,
-        extra: vec![
-            ("out_mix_norm".into(), t(format!("{prefix}output_attn_res_norm.weight"))),
-            ("out_mix_proj".into(), t(format!("{prefix}output_attn_res_proj.weight"))),
-        ],
-        mtp_layers: 0,
-        scales: Default::default(),
-    })
+    // (the checkpoint's next-token-prediction layers, which the description does not use yet)
+    let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: n,
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::DepthMix, rounding: Rounding::F32, correction: false },
+        mtp: Vec::new(),
+        vision: None,
+        rope: None,
+    };
+    let mut out = finish(&k, desc, &names::KIMI, prefix, roles, mtp_layers)?;
+    // (the embedding's and the head's too: every matrix a product multiplies by or a token's row is read from)
+    shapes.extend(std::iter::once(&out.embed).chain(&out.head).map(|n| (n.clone(), vec![vocab, d])));
+    (out.scales, out.shapes) = (scales, shapes);
+    Ok(out)
+}
+
+/// Kimi-K3's `quantization_config` as released: compressed-tensors' `mxfp4-pack-quantized`, 4-bit floats in symmetric groups of 32, the attention, the shared experts, the
+/// dense layer's MLP and the head left out (so only the routed experts are packed). Anything else is refused with what differs.
+fn kimi_mxfp4(q: &Value) -> Result<()> {
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    let what = "kimi_linear: quantization_config";
+    if s(q, "quant_method").as_deref() != Some("compressed-tensors") || s(q, "format").as_deref() != Some("mxfp4-pack-quantized") {
+        return err(format!("{what}: {:?} {:?}, where the description reads compressed-tensors' mxfp4-pack-quantized", s(q, "quant_method"), s(q, "format")));
+    }
+    let groups = q.get("config_groups").and_then(Value::as_object).ok_or_else(|| Error(format!("{what}: no config_groups")))?;
+    if groups.len() != 1 {
+        return err(format!("{what}: {} config groups, where the description reads one", groups.len()));
+    }
+    let w = groups.values().next().and_then(|g| g.get("weights")).ok_or_else(|| Error(format!("{what}: a config group with no weights")))?;
+    let n = |k: &str| w.get(k).and_then(Value::as_u64);
+    if n("num_bits") != Some(4)
+        || n("group_size") != Some(32)
+        || s(w, "type").as_deref() != Some("float")
+        || s(w, "strategy").as_deref() != Some("group")
+        || w.get("symmetric").and_then(Value::as_bool) != Some(true)
+    {
+        return err(format!("{what}: weights {w}, where the description reads 4-bit floats in symmetric groups of 32"));
+    }
+    let ignore: Vec<String> =
+        q.get("ignore").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    for part in ["self_attn", "shared_experts", "mlp", "lm_head"] {
+        if !ignore.iter().any(|x| x.contains(part)) {
+            return err(format!("{what}: the {part} matrices are packed too, where the description reads them in bf16"));
+        }
+    }
+    Ok(())
+}
+
+/// The roles whose matrices a Ling release holds in FP8 where its `quantization_config` does not leave their module out: every product of a layer (the
+/// modules that are `nn.Linear`); not the router (a parameter, and listed), the convolutions, the norms, A_log or dt_bias.
+const LING_FP8: &[&str] = &[
+    "q",
+    "k",
+    "v",
+    "o",
+    "decay",
+    "gate",
+    "beta",
+    "q_a",
+    "q_b",
+    "kv_a",
+    "kv_b",
+    "g",
+    "up",
+    "down",
+    "shared_gate",
+    "shared_up",
+    "shared_down",
+    "experts_gate_up",
+    "experts_down",
+];
+
+/// Ling 3 (`bailing_hybrid`, the text model of BailingMoeV3VLForConditionalGeneration, `bailing_moe_v3_vl`): a pre-norm decoder on a plain residual whose
+/// layers are of two sorts of mixer and, a layer, a gated SiLU MLP or a mixture of experts, read as the release's own modelling code reads its config
+/// (`modeling_bailing_moe_v3_vl.py`), with vLLM's, SGLang's, llama.cpp's and transformers' readings beside it.
+///  - `layer_group_size` g: layer l is a latent attention where (l + 1) is a multiple of g, and where l is past the last whole group (l >= layers / g * g);
+///    every other layer is the Kimi delta attention. (transformers and SGLang have the first rule alone: the two differ only where the layers are not a
+///    whole number of groups, and the release's, vLLM's and llama.cpp's is taken.)
+///  - the delta attention (`Linear`, `LinearKind::KimiDelta`): `num_attention_heads` heads of `head_dim` for the queries, keys and values, each of q, k
+///    and v its own product and its own causal convolution of `short_conv_kernel_size` taps with a SiLU; q and k l2-normed, q times 1 / sqrt(head_dim);
+///    beta the sigmoid of one value a head (`b_proj`); the decay a value a key channel from the full-rank `f_proj` (`no_kda_lora`), with
+///    `kda_safe_gate` g = `kda_lower_bound` sigmoid(exp(A_log[head]) (f + dt_bias)) (`Decay::Bounded`), else -exp(A_log[head]) softplus(f + dt_bias);
+///    the output RMS-normed a head and times sigmoid of the full-rank `g_proj`, then `o_proj`. No positions.
+///  - the latent attention (`Mla`): the queries one product (`q_proj`; with `q_lora_rank`, `q_a_proj`, a norm and `q_b_proj`), the key-value latent of
+///    `kv_lora_rank` normed at 1e-6 (the release's norm of the latents takes its default eps, not `rms_norm_eps`; vLLM gives it the config's) with
+///    `qk_rope_head_dim` shared key channels beside it; those channels and the queries' last `qk_rope_head_dim` turned in interleaved pairs (2i, 2i + 1)
+///    at `rope_theta`, angle i's frequency theta^(-2i / qk_rope_head_dim): `partial_rotary_factor` is in the config and every reference sets it aside
+///    (the rotary is the whole of `qk_rope_head_dim`). The scores times 1 / sqrt(qk_nope_head_dim + qk_rope_head_dim). The output gate
+///    (`gated_attention_proj_granularity_type`): "head_wise", sigmoid of one value a head on the layer's input, every channel of the head's output
+///    times it (`GateFrom::Head`, `g_proj` [heads, hidden]); "element_wise", a value a channel (`GateFrom::Own`). Then the output product, `dense`.
+///  - `mrope_section` [t, h, w] (in pairs, summing to qk_rope_head_dim / 2, h = w): where an image's tokens have three positions, the first h + w
+///    angles turn by the row's (even angles) and the column's (odd ones) and the last t by the temporal one. A text token's three positions are one,
+///    so the text model's rotary is the plain one; the description names no sections (`Rope::mrope` is the interleaved layout of another family) and
+///    leaves the vision tower and its projector unread (`names::LING`; `vision_config`).
+///  - the first `first_k_dense_replace` layers' feed-forward is a gated MLP of `intermediate_size`; the others `num_experts` of
+///    `moe_intermediate_size`: the sigmoid of the router's fp32 logits, the choice among the scores plus `expert_bias`, inside the best `topk_group` of
+///    `n_group` groups (a group's score the sum of its two best), the best `num_experts_per_tok` kept, their own scores divided by their sum (not with
+///    one expert a token) and times `routed_scaling_factor`; and one shared MLP of `moe_shared_expert_intermediate_size` x `num_shared_experts`, added.
+///  - `expert_swiglu_limit_list` and `share_expert_swiglu_limit_list`: a limit a layer for the routed experts and for the shared MLP (0, null or past
+///    the list's end: none), on the ACTIVATED gate: min(silu(gate), l) clamp(up, -l, l) (`Clamp::Activated`; not DeepSeek-V4's, which holds the gate
+///    before its activation). The dense layers' MLP has none.
+///  - `num_nextn_predict_layers` draft layers follow the model's under the same names (`model.layers.{layers + j}`): each a draft head of DeepSeek-V3's
+///    form (`MtpInput::Joined`: `enorm`, `hnorm`, `eh_proj`, `final_layernorm`, the model's embedding and head) whose block is a latent attention and
+///    the experts; its number is past the limit lists, so its experts have no limit.
+/// The norms are RMS norms computed in fp32, cast, then times the weight (`Rounding::Twice`); the head is not the embedding.
+/// Keys whose default differs between the release's config class and transformers' are required, not defaulted: `layer_group_size`,
+/// `first_k_dense_replace`, `routed_scaling_factor`, `rope_theta`, `kda_safe_gate`, `gated_attention_proj_granularity_type`. Keys of the family's
+/// earlier softmax attention that no code of this layout reads (`use_qk_norm`, `group_norm_size`, `linear_silu`, `rotary_dim`) and the config class's
+/// training settings are read and select nothing; `use_mla_nope` (SGLang: no rotary) must be false.
+/// Stored formats (`quantization_config`): FP8 E4M3 matrices in square blocks, each with its scales (`weight_scale_inv`), every product of a layer but
+/// the modules of `modules_to_not_convert` (as released: the embedding, the head, the routers, the delta attention's `b_proj` and the model's latent
+/// attentions' `g_proj`; a draft layer's `g_proj` is FP8); the convolutions, the norms, A_log, dt_bias and a draft head's `eh_proj` are not FP8.
+fn ling(c: &ModelConfig) -> Result<Described> {
+    let (mt, tc, prefix) = ("bailing_hybrid", &c.text, "model.");
+    if c.nested {
+        top_keys(&c.top, &c.model_type, &["text_config", "vision_config", "quantization_config", "tie_word_embeddings", "norm_query_embeds"])?;
+        // (a key no code of the release reads; only what the release says of it is taken)
+        if let Some(v) = c.top.get("norm_query_embeds").filter(|v| !v.is_null() && **v != Value::Bool(false)) {
+            return err(format!("{}: norm_query_embeds = {v} is not supported (only false)", c.model_type));
+        }
+    }
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, c.top.get("tie_word_embeddings").and_then(Value::as_bool))?;
+    k.expect("hidden_act", &Value::from("silu"))?;
+    for x in ["use_bias", "use_qkv_bias"] {
+        k.expect(x, &Value::Bool(false))?;
+    }
+    // (the config class's keys that its modelling code does not read, the training's; and the earlier softmax attention's, which this layout has none of)
+    for x in [
+        "max_window_layers",
+        "seq_aux",
+        "mtp_loss_scaling_factor",
+        "embedding_dropout",
+        "output_dropout",
+        "use_qk_norm",
+        "group_norm_size",
+        "linear_silu",
+        "rotary_dim",
+    ] {
+        k.raw(x);
+    }
+    let need = |key: &str, why: &str| -> Error { Error(format!("{mt}: no {key} ({why})")) };
+    // the two sorts of mixer
+    let group = k.opt_usize("layer_group_size")?.ok_or_else(|| need("layer_group_size", "the release's code has 5 where unsaid and transformers' 6"))?;
+    if group == 0 {
+        return err(format!("{mt}: layer_group_size = 0 is not a group of layers"));
+    }
+    let latent = |l: usize| (l + 1) % group == 0 || l >= layers / group * group;
+    let any_delta = (0..layers).any(|l| !latent(l));
+    let heads = k.usize("num_attention_heads")?;
+    // (the latent attention has one shared key part and a latent, not key heads: the release's code takes the two counts' ratio as 1)
+    k.expect("num_key_value_heads", &Value::from(heads))?;
+    // the delta attention
+    let (kd, conv) = (k.opt_usize("head_dim")?.unwrap_or(128), k.opt_usize("short_conv_kernel_size")?.unwrap_or(4));
+    let full_rank = k.bool("no_kda_lora", false)?;
+    let safe = match k.raw("kda_safe_gate") {
+        Some(Value::Bool(b)) => Some(*b),
+        Some(v) => return err(format!("{mt}: kda_safe_gate = {v} is not true or false")),
+        None => None,
+    };
+    let bound = k.opt_f64("kda_lower_bound")?;
+    let decay = match (safe, bound) {
+        (Some(true), Some(b)) if b < 0.0 => Decay::Bounded(b as f32),
+        (Some(true), b) => return err(format!("{mt}: kda_safe_gate with kda_lower_bound = {b:?}, where the bounded decay's bound is below 0")),
+        (Some(false), _) => Decay::Softplus,
+        (None, _) if !any_delta => Decay::Softplus,
+        (None, _) => return Err(need("kda_safe_gate", "the release's code has the softplus decay where unsaid and transformers' the bounded one")),
+    };
+    if any_delta && !full_rank {
+        return err(format!(
+            "{mt}: no_kda_lora is not true: the delta attention's forget and output gates in a low rank (f_a_proj, g_a_proj) are not supported"
+        ));
+    }
+    if any_delta && (kd == 0 || conv == 0) {
+        return err(format!("{mt}: a delta attention of heads of {kd} and a convolution of {conv} taps"));
+    }
+    let lin = Linear {
+        kind: LinearKind::KimiDelta,
+        k_heads: heads,
+        v_heads: heads,
+        k_dim: kd,
+        v_dim: kd,
+        conv,
+        decay,
+        gate_act: Act::Sigmoid,
+        norm_eps: eps,
+        state_f32: true,
+    };
+    // the latent attention
+    let (nope, rd, vd, kvl) = (k.usize("qk_nope_head_dim")?, k.usize("qk_rope_head_dim")?, k.usize("v_head_dim")?, k.usize("kv_lora_rank")?);
+    let q_lora = k.opt_usize("q_lora_rank")?;
+    let gate = match k.str("gated_attention_proj_granularity_type")? {
+        Some("head_wise") => GateFrom::Head,
+        Some("element_wise") => GateFrom::Own,
+        Some(o) => return err(format!("{mt}: gated_attention_proj_granularity_type {o} is not supported (head_wise or element_wise)")),
+        None => {
+            return Err(need("gated_attention_proj_granularity_type", "the release's code has no output gate where unsaid and transformers' a head-wise one"))
+        }
+    };
+    // (the rotary: plain, the whole of the shared key part, in interleaved pairs; SGLang's use_mla_nope turns it off, the release's code never)
+    k.expect("use_mla_nope", &Value::Bool(false))?;
+    k.expect("rope_interleave", &Value::Bool(true))?;
+    k.expect("rope_scaling", &Value::Null)?;
+    k.expect("rope_parameters", &Value::Null)?;
+    k.opt_f64("partial_rotary_factor")?;
+    let theta = k.opt_f64("rope_theta")?.ok_or_else(|| need("rope_theta", "the release's code has 600,000 where unsaid and transformers' 6,000,000"))?;
+    if rd == 0 || rd % 2 != 0 {
+        return err(format!("{mt}: qk_rope_head_dim = {rd} is not a rotary's pairs"));
+    }
+    match k.raw("mrope_section").map(|v| (v, v.as_array().map(|a| a.iter().map(Value::as_u64).collect::<Vec<_>>()))) {
+        None => {}
+        Some((_, Some(a))) if matches!(a[..], [Some(t), Some(h), Some(w)] if h == w && 2 * (t + h + w) == rd as u64) => {}
+        Some((v, _)) => {
+            return err(format!("{mt}: mrope_section = {v} is not supported: [t, h, w] pairs with h = w that sum to qk_rope_head_dim / 2 = {}", rd / 2))
+        }
+    }
+    let rope = Rope { style: RopeStyle::Interleaved, ..Rope::plain(theta, rd) };
+    let twice = |e: f32| Norm { rounding: Rounding::Twice, ..Norm::rms(e) };
+    let mla = Mla {
+        heads,
+        q_lora,
+        kv_lora: kvl,
+        nope,
+        rope_dim: rd,
+        v_dim: vd,
+        rope: Some(rope.clone()),
+        q_norm: twice(1e-6),
+        kv_norm: twice(1e-6),
+        gate: Some(OutGate { act: Act::Sigmoid, from: gate, norm: None }),
+        scale: ((nope + rd) as f32).powf(-0.5),
+        absorbed: true,
+        indexer: None,
+        head_mix: 0,
+        sinks: false,
+        window: None,
+        pos_scale: false,
+        kv_from: None,
+        rope_learned: false,
+    };
+    // the feed-forward
+    let dense =
+        k.opt_usize("first_k_dense_replace")?.ok_or_else(|| need("first_k_dense_replace", "the release's code has 1 where unsaid and transformers' 2"))?;
+    let inter = k.usize("intermediate_size")?;
+    let (ne, top_k, moe_inter) = (k.usize("num_experts")?, k.usize("num_experts_per_tok")?, k.usize("moe_intermediate_size")?);
+    let n_shared = k.opt_usize("num_shared_experts")?.unwrap_or(1);
+    if n_shared == 0 {
+        return err(format!("{mt}: num_shared_experts = 0 is not supported: the layout's mixture has a shared MLP"));
+    }
+    let shared_inter = k.usize("moe_shared_expert_intermediate_size")? * n_shared;
+    for x in ["score_function", "scoring_func"] {
+        k.expect(x, &Value::from("sigmoid"))?;
+    }
+    k.expect("topk_method", &Value::from("noaux_tc"))?;
+    k.expect("moe_router_enable_expert_bias", &Value::Bool(true))?;
+    // (the release's code divides the chosen scores by their sum whatever the key says; SGLang reads it)
+    k.expect("norm_topk_prob", &Value::Bool(true))?;
+    k.expect("router_dtype", &Value::from("fp32"))?;
+    let (ng, tg) = (k.opt_usize("n_group")?.unwrap_or(8), k.opt_usize("topk_group")?.unwrap_or(4));
+    if ng == 0 || ne % ng != 0 || tg == 0 || tg > ng || (ng > 1 && ne / ng < 2) {
+        return err(format!("{mt}: {ne} experts in n_group = {ng} groups of which topk_group = {tg} are kept: not groups of two experts or more"));
+    }
+    let scale =
+        k.opt_f64("routed_scaling_factor")?.ok_or_else(|| need("routed_scaling_factor", "the release's code has 1 where unsaid and transformers' 2.5"))?;
+    let router = Router {
+        score: RouterScore::Sigmoid,
+        logit_scale: 1.0,
+        bias: true,
+        groups: (ng > 1).then_some((ng, tg)),
+        top_k,
+        renorm: top_k > 1,
+        scale: scale as f32,
+        hash: false,
+        routers: 1,
+        expert_scale: false,
+    };
+    // (a limit a layer: 0 and null are none, and so is a layer past the list's end, a draft layer among them)
+    let limits = |key: &str| -> Result<Vec<Option<Clamp>>> {
+        let list = match k.raw(key) {
+            None => return Ok(Vec::new()),
+            Some(Value::Array(a)) => a,
+            Some(v) => return err(format!("{mt}: {key} = {v} is not a list of limits")),
+        };
+        list.iter()
+            .enumerate()
+            .map(|(l, v)| match (v, v.as_f64()) {
+                (Value::Null, _) => Ok(None),
+                (_, Some(x)) if x > 0.0 && x.is_finite() => Ok(Some(Clamp::Activated(x as f32))),
+                (_, Some(x)) if x.abs() < f64::MIN_POSITIVE => Ok(None),
+                _ => err(format!("{mt}: {key}[{l}] = {v} is not a limit")),
+            })
+            .collect()
+    };
+    let (expert_limits, shared_limits) = (limits("expert_swiglu_limit_list")?, limits("share_expert_swiglu_limit_list")?);
+    let silu = |clamp: Option<Clamp>| Mlp { act: Act::Silu, gated: true, bias: false, clamp };
+    let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
+    k.raw("quantization_config");
+    let fp8 = Fp8::parse(c.top.get("quantization_config").or(tc.get("quantization_config")), mt)?;
+    let held = |w: &str| fp8.as_ref().is_some_and(|f| f.holds(w));
+    let n = twice(eps);
+    let (mut shapes, mut scales) = (BTreeMap::new(), BTreeMap::new());
+    // (a layer's two blocks and their roles: layer `l` of the checkpoint, its mixer the latent attention or the delta attention, its feed-forward the
+    // experts or the dense MLP)
+    let mut layer = |l: usize, latent: bool, sparse: bool| -> (Vec<Block>, Vec<Vec<(String, Source)>>) {
+        let p = names::LING.layer(prefix, l);
+        let mut ar = names::roles(part::NORM_IN, &p, 0, all);
+        let mixer = if latent {
+            ar.extend(but(part::LING_MLA, &p, 0, if q_lora.is_some() { &["q"] } else { &["q_a", "q_a_norm", "q_b"] }));
+            let (qw, ql) = (heads * (nope + rd), q_lora.unwrap_or(0));
+            shape_roles(
+                &mut shapes,
+                &ar,
+                &[
+                    ("q", vec![qw, d]),
+                    ("q_a", vec![ql, d]),
+                    ("q_a_norm", vec![ql]),
+                    ("q_b", vec![qw, ql]),
+                    ("kv_a", vec![kvl + rd, d]),
+                    ("kv_a_norm", vec![kvl]),
+                    ("kv_b", vec![heads * (nope + vd), kvl]),
+                    ("g", vec![if gate == GateFrom::Head { heads } else { heads * vd }, d]),
+                    ("o", vec![d, heads * vd]),
+                ],
+            );
+            Mixer::Mla(mla.clone())
+        } else {
+            ar.extend(names::roles(part::LING_KDA, &p, 0, all));
+            let qd = heads * kd;
+            shape_roles(
+                &mut shapes,
+                &ar,
+                &[
+                    ("q", vec![qd, d]),
+                    ("k", vec![qd, d]),
+                    ("v", vec![qd, d]),
+                    ("o", vec![d, qd]),
+                    ("decay", vec![qd, d]),
+                    ("gate", vec![qd, d]),
+                    ("beta", vec![heads, d]),
+                    ("a_log", vec![heads]),
+                    ("dt_bias", vec![qd]),
+                    ("norm", vec![kd]),
+                ],
+            );
+            // (each product's convolution, a tensor of one input channel: [channels, 1, taps])
+            for (_, src) in ar.iter().filter(|(role, _)| role == "conv") {
+                shapes.extend(src.names().into_iter().map(|w| (w, vec![qd, 1, conv])));
+            }
+            Mixer::Linear(lin.clone())
+        };
+        let mut fr = names::roles(part::NORM_POST, &p, 0, all);
+        let body = if sparse {
+            fr.extend(names::roles(part::LING_MOE, &p, ne, all));
+            shape_roles(
+                &mut shapes,
+                &fr,
+                &[
+                    ("router", vec![ne, d]),
+                    ("choice_bias", vec![ne]),
+                    ("experts_gate_up", vec![moe_inter, d]),
+                    ("experts_down", vec![d, moe_inter]),
+                    ("shared_gate", vec![shared_inter, d]),
+                    ("shared_up", vec![shared_inter, d]),
+                    ("shared_down", vec![d, shared_inter]),
+                ],
+            );
+            let limit = |list: &[Option<Clamp>]| list.get(l).copied().flatten();
+            Ffn::Moe(Moe {
+                router: router.clone(),
+                experts: ne,
+                expert: silu(limit(&expert_limits)),
+                shared: Some(silu(limit(&shared_limits))),
+                shared_gate: false,
+                latent: None,
+            })
+        } else {
+            fr.extend(names::roles(part::MLP_BODY, &p, 0, all));
+            shape_roles(&mut shapes, &fr, &[("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
+            Ffn::Mlp(silu(None))
+        };
+        shape_roles(&mut shapes, &ar, &[("norm_in", vec![d])]);
+        shape_roles(&mut shapes, &fr, &[("norm_in", vec![d])]);
+        // (the stored formats: a product the quantization_config does not leave out is FP8 with its scales; a layer's experts as its first expert's)
+        for (_, src) in ar.iter().chain(&fr).filter(|(role, _)| LING_FP8.contains(&role.as_str())) {
+            let fp8 = match src {
+                Source::Tensor(w) => held(w),
+                Source::Experts(e) => e.first().and_then(|x| x.first()).is_some_and(|w| held(w)),
+                _ => false,
+            };
+            if fp8 {
+                scales.extend(src.names().into_iter().map(|w| (w.clone(), format!("{w}_scale_inv"))));
+            }
+        }
+        let block = |body: Body| Block { norm_in: n, body, norm_out: None, residual: Residual::Add };
+        (vec![block(Body::Mixer(mixer)), block(Body::Ffn(body))], vec![ar, fr])
+    };
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for l in 0..layers {
+        let (b, r) = layer(l, latent(l), l >= dense);
+        blocks.extend(b);
+        roles.extend(r);
+    }
+    // (the draft layers: each a head of its own, a latent attention and the experts between the head's own roles, which are not FP8)
+    let (mut mtp, mut mtp_roles, mut own_shapes) = (Vec::new(), Vec::new(), BTreeMap::new());
+    for j in 0..mtp_layers {
+        let (b, r) = layer(layers + j, true, true);
+        let own = names::roles(part::LING_MTP, &names::LING.layer(prefix, layers + j), 0, all);
+        shape_roles(&mut own_shapes, &own, &[("eh_proj", vec![d, 2 * d]), ("norm_embed", vec![d]), ("norm_hidden", vec![d]), ("final_norm", vec![d])]);
+        mtp.push(MtpHead { blocks: b, norm_embed: n, norm_hidden: n, final_norm: n, dspark: None, input: MtpInput::Joined });
+        mtp_roles.push((r, own));
+    }
+    shapes.extend(own_shapes);
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: n,
+        // (the logits in bf16: the release's lm_head is a bf16 product, its output the logits)
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::Once, correction: false },
+        mtp,
+        vision: None,
+        rope: Some(rope),
+    };
+    let mut out = finish(&k, desc, &names::LING, prefix, roles, mtp_layers)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    (out.shapes, out.scales, out.mtp) = (shapes, scales, mtp_roles);
+    out.fp8_block = fp8.map(|f| f.block);
+    Ok(out)
+}
+
+/// The modules of a Mistral Large layer whose matrices a release may hold in FP8, each role with the name transformers gives its module (the names its
+/// `quantization_config` leaves modules out by): every product of the attention, of its indexer and of the feed-forward; not the router (a parameter kept in
+/// fp32), the norms or the scales by position.
+const MISTRAL_FP8: &[(&str, &str)] = &[
+    ("q", "self_attn.q_proj"),
+    ("kv_a", "self_attn.kv_a_proj_with_mqa"),
+    ("kv_b", "self_attn.kv_b_proj"),
+    ("o", "self_attn.o_proj"),
+    ("indexer_wq_b", "self_attn.indexer.wq_b"),
+    ("indexer_wk", "self_attn.indexer.wk"),
+    ("indexer_weights", "self_attn.indexer.weights_proj"),
+    ("gate", "mlp.gate_proj"),
+    ("up", "mlp.up_proj"),
+    ("down", "mlp.down_proj"),
+    ("shared_gate", "mlp.shared_experts.gate_proj"),
+    ("shared_up", "mlp.shared_experts.up_proj"),
+    ("shared_down", "mlp.shared_experts.down_proj"),
+    ("experts_gate_up", "mlp.experts"),
+    ("experts_down", "mlp.experts"),
+];
+
+/// Mistral Large (`mistral_large4_text`, the text model of MistralLarge4ForConditionalGeneration, `mistral_large4`): a pre-norm decoder on a plain residual,
+/// every layer a latent attention with a sparse indexer, then a gated SiLU MLP or a mixture of experts, read as transformers' `mistral_large4` reads the
+/// config, with vLLM's and llama.cpp's readings of the same release beside it.
+///  - the latent attention (`Mla`): the queries one product (`wq`, no query latent: a `q_lora_rank` is refused); the key-value latent of `kv_lora_rank`,
+///    RMS-normed at `rms_norm_eps`, with `qk_rope_head_dim` shared key channels beside it; the scores times 1 / sqrt(qk_nope_head_dim + qk_rope_head_dim)
+///    (times the square of YaRN's `mscale_all_dim` factor where the rotary has one; the release has none).
+///  - `no_rope_layers`, a value a layer: 1, the layer rotates the queries' last `qk_rope_head_dim` channels and the shared key part, in interleaved pairs
+///    (2i, 2i + 1); 0, it has no positions: its key-value product makes the latent alone (no shared key part) and its heads' keys are `qk_nope_head_dim +
+///    qk_rope_head_dim` wide, all from the latent (`Mla` with `rope_dim` 0 and that `nope`). Without the list, layer l rotates unless (l + 1) is a multiple
+///    of `no_rope_layer_interval` (4 where unsaid).
+///  - the rotary: `rope_parameters` (YaRN over 512 positions by 2048 with no magnitude factor, where unsaid), its frequencies over `qk_rope_head_dim`;
+///    then each angle's frequency times exp(alpha_i), alpha the checkpoint's `lerope.alpha` (`Mla::rope_learned`): one tensor, every rotating layer's and
+///    its indexer's. `head_dim` and `qk_head_dim` are in the config and the config class overwrites both from the two key widths.
+///  - the queries' scale by position (`Mla::pos_scale`): each query head, after its rotary, times s_h ln(pos + 1) + b_h (`ssmax_scaling.s`, `.b`), pos the
+///    query's position from 0. Every layer has it; the keys are not scaled.
+///  - `kv_source_layers`, a layer's number a layer: its own, the layer makes and caches its latents; an earlier one's, it has no key-value latent product and
+///    no norm of it and attends to that layer's latents, expanded by its own `wkv_b` (`Mla::kv_from`). The source makes its own latents, is earlier, and
+///    is the last layer before it that lends any of the same sort (rotating or not): transformers keeps one lent cache a sort, vLLM and llama.cpp the
+///    named layer's, and the two agree exactly there. Without the list every layer makes its own.
+///  - the indexer (`index_n_heads` heads of `index_head_dim`, the best `index_topk` tokens kept, a key a token): `indexer_types` a layer, "full" (its own)
+///    or "shared" (the picks of the layer before); its queries are a LayerNorm (1e-6, a bias) of the layer's normed input through `wq_b`
+///    (`Indexer::q_in`), each head times its own scale by position (`Indexer::pos_scale`), then on a rotating layer the first `qk_rope_head_dim` channels
+///    of each head turned as the attention's; its keys `wk` of the same input, LayerNorm-ed (1e-6, a bias) and turned alike; a token's score sum_h w_h
+///    relu(q_h . k / sqrt(index_head_dim)), w the weights' product of the input over sqrt(heads).
+///  - `mlp_layer_types` a layer, "dense" (a gated MLP of `intermediate_size`) or "sparse" (the experts); without it the first `first_k_dense_replace`
+///    layers (1 where unsaid) are dense. The experts: `n_routed_experts` of `moe_intermediate_size`, chosen by the softmax of the router's fp32 logits, the
+///    best `num_experts_per_tok` kept, their scores divided by their sum and times `routed_scaling_factor`; and one shared MLP of `moe_intermediate_size` x
+///    `n_shared_experts`, added. `n_group` and `topk_group` must be 1 (vLLM refuses groups; transformers would take the best groups first).
+///  - the head is its own matrix unless the config ties it; the logits soft-capped, cap tanh(logit / cap), `final_logit_softcapping` (30 where unsaid).
+/// The norms are RMS norms computed in fp32, cast, then times the weight (`Rounding::Twice`).
+/// Stored formats: the checkpoint is Mistral's consolidated one, in Mistral's names (`names::MISTRAL`). `quantization_config` (fp8, blocks of
+/// `weight_block_size`): every product of a layer but the modules of `modules_to_not_convert` is FP8 E4M3 with an fp32 scale a block, W = code x scale, in a
+/// tensor named `X.qscale_weight` beside `X.weight` (the scales of DeepSeek's `weight_scale_inv`, under Mistral's name: the CPU reference reads them by
+/// the description's `scales`, `formats::Stored`; the executor's loaders read `weight_scale_inv` alone). As released the key-value latent's two
+/// products, the indexer's key product and head weights, the routers, the embedding and the head are bf16.
+/// Left unread: the vision encoder, its norm, patch merger and adapter (`vision_config` and the wrapper's projector keys), and the draft model under
+/// `mtp_dspark.`, which the config says nothing of.
+fn mistral_large4(c: &ModelConfig) -> Result<Described> {
+    let (mt, tc) = ("mistral_large4_text", &c.text);
+    if c.nested {
+        top_keys(
+            &c.top,
+            &c.model_type,
+            &[
+                "text_config",
+                "vision_config",
+                "quantization_config",
+                "tie_word_embeddings",
+                "transformers_weights",
+                "projector_hidden_act",
+                "vision_feature_layer",
+                "multimodal_projector_bias",
+                "spatial_merge_size",
+            ],
+        )?;
+    }
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab) = (k.usize("hidden_size")?, k.usize("num_hidden_layers")?, k.usize("vocab_size")?);
+    // (the config class's default, not the 1e-6 of the Llama-style ones)
+    let eps = k.opt_f64("rms_norm_eps")?.unwrap_or(1e-5) as f32;
+    let tied = k.bool("tie_word_embeddings", c.top.get("tie_word_embeddings").and_then(Value::as_bool).unwrap_or(false))?;
+    k.expect("hidden_act", &Value::from("silu"))?;
+    k.expect("attention_bias", &Value::Bool(false))?;
+    if let Some(v) = k.raw("q_lora_rank") {
+        return err(format!("{mt}: q_lora_rank = {v} is not supported: the layout's queries are one product, with no query latent"));
+    }
+    // (a layer's sort: the config class has the one)
+    if let Some(v) = k.raw("layer_types") {
+        let ok = v.as_array().is_some_and(|a| a.len() >= layers && a.iter().all(|x| x.as_str() == Some("indexed_attention")));
+        if !ok {
+            return err(format!("{mt}: layer_types is not {layers} layers of indexed_attention: no other sort of layer is supported"));
+        }
+    }
+    // the latent attention
+    let heads = k.usize("num_attention_heads")?;
+    // (the latent attention has one shared key part and a latent, not key heads: a ratio of the two counts other than 1 is not this layout)
+    k.expect("num_key_value_heads", &Value::from(heads))?;
+    let (nope, rd, vd, kvl) = (k.usize("qk_nope_head_dim")?, k.usize("qk_rope_head_dim")?, k.usize("v_head_dim")?, k.usize("kv_lora_rank")?);
+    if rd == 0 || rd % 2 != 0 {
+        return err(format!("{mt}: qk_rope_head_dim = {rd} is not a rotary's pairs"));
+    }
+    // (both overwritten by the config class: head_dim is qk_rope_head_dim, which the rotary's frequencies are over; qk_head_dim the two widths' sum)
+    k.opt_usize("head_dim")?;
+    k.opt_usize("qk_head_dim")?;
+    let rotates: Vec<bool> = match k.raw("no_rope_layers") {
+        Some(Value::Array(a)) if a.len() >= layers => a[..layers]
+            .iter()
+            .enumerate()
+            .map(|(l, x)| match x.as_u64() {
+                Some(v @ (0 | 1)) => Ok(v == 1),
+                _ => err(format!("{mt}: no_rope_layers[{l}] = {x} is not 1 (a rotary) or 0 (no positions)")),
+            })
+            .collect::<Result<_>>()?,
+        Some(v) => return err(format!("{mt}: no_rope_layers = {v} is not a value a layer for {layers} layers")),
+        None => Vec::new(),
+    };
+    let interval = k.opt_usize("no_rope_layer_interval")?.unwrap_or(4);
+    let rotates = if rotates.is_empty() {
+        if interval == 0 {
+            return err(format!("{mt}: no_rope_layer_interval = 0 is not an interval of layers"));
+        }
+        (0..layers).map(|l| (l + 1) % interval != 0).collect()
+    } else {
+        rotates
+    };
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    // (the config class's rotary where the config has none: YaRN over a window of 512 positions, no magnitude factor)
+    let default_rope: Map<String, Value> = [
+        ("rope_type", Value::from("yarn")),
+        ("rope_theta", Value::from(10_000.0)),
+        ("factor", Value::from(2048.0)),
+        ("original_max_position_embeddings", Value::from(512)),
+        ("beta_fast", Value::from(32.0)),
+        ("beta_slow", Value::from(1.0)),
+        ("attention_factor", Value::from(1.0)),
+    ]
+    .into_iter()
+    .map(|(key, v)| (key.to_string(), v))
+    .collect();
+    let rope = match k.raw("rope_parameters") {
+        Some(Value::Object(o)) => rope(o, rd, max_pos, &format!("{mt} rope_parameters"))?,
+        Some(v) => return err(format!("{mt}: rope_parameters = {v} is not a rotary's parameters")),
+        None => rope(&default_rope, rd, max_pos, &format!("{mt} rope_parameters"))?,
+    };
+    let rope = Rope { style: RopeStyle::Interleaved, ..rope };
+    let mut scale = ((nope + rd) as f32).powf(-0.5);
+    if let Rope { scaling: RopeScaling::Yarn { factor, mscale_all_dim: Some(m), .. }, .. } = &rope {
+        let ms = if *factor <= 1.0 || *m == 0.0 { 1.0 } else { 0.1 * m * factor.ln() + 1.0 };
+        scale *= (ms * ms) as f32;
+    }
+    // (each layer's latents: its own, or an earlier layer's)
+    let sources: Vec<usize> = match k.raw("kv_source_layers") {
+        None => (0..layers).collect(),
+        Some(Value::Array(a)) if a.len() == layers => a
+            .iter()
+            .enumerate()
+            .map(|(l, x)| x.as_u64().map(|v| v as usize).ok_or_else(|| Error(format!("{mt}: kv_source_layers[{l}] = {x} is not a layer's number"))))
+            .collect::<Result<_>>()?,
+        Some(v) => return err(format!("{mt}: kv_source_layers = {v} is not a layer's number a layer for {layers} layers")),
+    };
+    for (l, &src) in sources.iter().enumerate() {
+        if src == l {
+            continue;
+        }
+        if src > l || sources[src] != src {
+            return err(format!("{mt}: kv_source_layers[{l}] = {src} is not an earlier layer that makes its own latents"));
+        }
+        if rotates[src] != rotates[l] {
+            return err(format!(
+                "{mt}: kv_source_layers[{l}] = {src}: a layer {} positions attending to the latents of one {}, which no reference runs",
+                if rotates[l] { "with" } else { "without" },
+                if rotates[src] { "with" } else { "without" }
+            ));
+        }
+        // (transformers keeps one lent cache a sort of layer, the last lender's; vLLM and llama.cpp the named layer's: the same where it is that one)
+        let lends = |s: usize| sources[s] == s && sources[s + 1..].contains(&s);
+        if let Some(later) = (src + 1..l).rev().find(|&s| rotates[s] == rotates[l] && lends(s)) {
+            return err(format!(
+                "{mt}: kv_source_layers[{l}] = {src}, with layer {later} lending its latents between them: the references differ there (transformers \
+                 attends to the last lender's, vLLM to the named layer's) and the form is not supported"
+            ));
+        }
+    }
+    // the indexer
+    let (ih, idim, itop) = (k.usize("index_n_heads")?, k.usize("index_head_dim")?, k.usize("index_topk")?);
+    if ih == 0 || idim < rd || itop == 0 {
+        return err(format!("{mt}: an indexer of {ih} heads of {idim} keeping {itop} tokens, under a rotary of {rd} channels"));
+    }
+    let itypes = indexer_types(&k, layers, mt)?;
+    if !itypes.is_empty() && itypes.len() < layers {
+        return err(format!("{mt}: indexer_types has {} entries for {layers} layers", itypes.len()));
+    }
+    let layer_norm = Norm { kind: NormKind::Layer, weight: NormWeight::Plain, eps: 1e-6, rounding: Rounding::F32 };
+    // the feed-forward
+    let first_dense = k.opt_usize("first_k_dense_replace")?.unwrap_or(1);
+    let sparse: Vec<bool> = match k.raw("mlp_layer_types") {
+        None => (0..layers).map(|l| l >= first_dense).collect(),
+        Some(Value::Array(a)) if a.len() >= layers => a[..layers]
+            .iter()
+            .enumerate()
+            .map(|(l, x)| match x.as_str() {
+                Some("dense") => Ok(false),
+                Some("sparse") => Ok(true),
+                _ => err(format!("{mt}: mlp_layer_types[{l}] = {x} is not dense or sparse")),
+            })
+            .collect::<Result<_>>()?,
+        Some(v) => return err(format!("{mt}: mlp_layer_types = {v} is not a sort a layer for {layers} layers")),
+    };
+    let inter = k.usize("intermediate_size")?;
+    // (`num_experts` is the config class's older name of the count, and overrides it)
+    let ne = match k.opt_usize("num_experts")? {
+        Some(n) => {
+            k.opt_usize("n_routed_experts")?;
+            n
+        }
+        None => k.usize("n_routed_experts")?,
+    };
+    let (top_k, moe_inter) = (k.usize("num_experts_per_tok")?, k.usize("moe_intermediate_size")?);
+    let n_shared = k.opt_usize("n_shared_experts")?.unwrap_or(1);
+    if n_shared == 0 {
+        return err(format!("{mt}: n_shared_experts = 0 is not supported: the layout's mixture has a shared MLP"));
+    }
+    let shared_inter = moe_inter * n_shared;
+    for x in ["n_group", "topk_group"] {
+        k.expect(x, &Value::from(1))?;
+    }
+    if top_k == 0 || top_k > ne {
+        return err(format!("{mt}: num_experts_per_tok = {top_k} of {ne} experts"));
+    }
+    let router = Router {
+        score: RouterScore::Softmax,
+        logit_scale: 1.0,
+        bias: false,
+        groups: None,
+        top_k,
+        // (the chosen scores are always divided by their sum: the router has no key for it)
+        renorm: true,
+        scale: k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32,
+        hash: false,
+        routers: 1,
+        expert_scale: false,
+    };
+    let silu = Mlp { act: Act::Silu, gated: true, bias: false, clamp: None };
+    let cap = k.opt_f64("final_logit_softcapping")?.unwrap_or(30.0);
+    if !(cap > 0.0 && cap.is_finite()) {
+        return err(format!("{mt}: final_logit_softcapping = {cap} is not a cap: the head divides the logits by it"));
+    }
+    k.raw("quantization_config");
+    let fp8 = Fp8::parse(c.top.get("quantization_config").or(tc.get("quantization_config")), mt)?;
+    let twice = |e: f32| Norm { rounding: Rounding::Twice, ..Norm::rms(e) };
+    let n = twice(eps);
+    let cv = &names::MISTRAL;
+    let (mut shapes, mut scales) = (BTreeMap::new(), BTreeMap::new());
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for l in 0..layers {
+        let p = cv.layer("", l);
+        let (turns, own) = (rotates[l], sources[l] == l);
+        // (a layer without positions: no shared key part, its heads' keys the whole of the two key widths from the latent)
+        let (nope_l, rd_l) = if turns { (nope, rd) } else { (nope + rd, 0) };
+        let shared_ix = itypes.get(l).is_some_and(|t| t == "shared");
+        let mut ar = but(part::MISTRAL_MLA, &p, 0, if own { &[] } else { &["kv_a", "kv_a_norm"] });
+        if turns {
+            ar.push(("rope_alpha".to_string(), Source::Tensor(part::MISTRAL_ROPE_ALPHA.to_string())));
+        }
+        if !shared_ix {
+            ar.extend(names::roles(part::MISTRAL_INDEXER, &p, 0, all));
+        }
+        shape_roles(
+            &mut shapes,
+            &ar,
+            &[
+                ("norm_in", vec![d]),
+                ("q", vec![heads * (nope + rd), d]),
+                ("kv_a", vec![kvl + rd_l, d]),
+                ("kv_a_norm", vec![kvl]),
+                ("kv_b", vec![heads * (nope_l + vd), kvl]),
+                ("o", vec![d, heads * vd]),
+                ("q_scale_s", vec![heads]),
+                ("q_scale_b", vec![heads]),
+                ("rope_alpha", vec![rd / 2]),
+                ("indexer_q_norm", vec![d]),
+                ("indexer_q_norm_bias", vec![d]),
+                ("indexer_wq_b", vec![ih * idim, d]),
+                ("indexer_scale_s", vec![ih]),
+                ("indexer_scale_b", vec![ih]),
+                ("indexer_wk", vec![idim, d]),
+                ("indexer_k_norm", vec![idim]),
+                ("indexer_k_norm_bias", vec![idim]),
+                ("indexer_weights", vec![ih, d]),
+            ],
+        );
+        let mla = Mla {
+            heads,
+            q_lora: None,
+            kv_lora: kvl,
+            nope: nope_l,
+            rope_dim: rd_l,
+            v_dim: vd,
+            rope: turns.then(|| rope.clone()),
+            q_norm: twice(eps),
+            kv_norm: twice(eps),
+            gate: None,
+            scale,
+            absorbed: true,
+            indexer: Some(Indexer {
+                heads: ih,
+                head_dim: idim,
+                top_k: itop,
+                block: 1,
+                shared: shared_ix,
+                form: IndexForm::LAYER_KEYS,
+                rope: if turns { rd } else { 0 },
+                q_in: Some(layer_norm),
+                pos_scale: true,
+                rope_style: None,
+            }),
+            pos_scale: true,
+            // (a layer's mixer is its first block: layer j's is block 2 j)
+            kv_from: (!own).then_some(2 * sources[l]),
+            rope_learned: turns,
+            head_mix: 0,
+            sinks: false,
+            window: None,
+        };
+        let mut fr = Vec::new();
+        let body = if sparse[l] {
+            fr.extend(names::roles(part::MISTRAL_MOE, &p, ne, all));
+            shape_roles(
+                &mut shapes,
+                &fr,
+                &[
+                    ("router", vec![ne, d]),
+                    ("experts_gate_up", vec![moe_inter, d]),
+                    ("experts_down", vec![d, moe_inter]),
+                    ("shared_gate", vec![shared_inter, d]),
+                    ("shared_up", vec![shared_inter, d]),
+                    ("shared_down", vec![d, shared_inter]),
+                ],
+            );
+            Ffn::Moe(Moe { router: router.clone(), experts: ne, expert: silu, shared: Some(silu), shared_gate: false, latent: None })
+        } else {
+            fr.extend(names::roles(part::MISTRAL_MLP, &p, 0, all));
+            shape_roles(&mut shapes, &fr, &[("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])]);
+            Ffn::Mlp(silu)
+        };
+        shape_roles(&mut shapes, &fr, &[("norm_in", vec![d])]);
+        // (the stored formats: a product whose module the quantization_config does not leave out is FP8, its scales beside it under Mistral's name)
+        for (role, src) in ar.iter().chain(&fr) {
+            let Some((_, module)) = MISTRAL_FP8.iter().find(|(r, _)| r == role) else { continue };
+            if fp8.as_ref().is_some_and(|f| f.holds(&format!("model.language_model.layers.{l}.{module}.weight"))) {
+                scales.extend(src.names().into_iter().map(|w| {
+                    let scale = format!("{}.qscale_weight", w.strip_suffix(".weight").unwrap_or(&w));
+                    (w, scale)
+                }));
+            }
+        }
+        let block = |body: Body| Block { norm_in: n, body, norm_out: None, residual: Residual::Add };
+        blocks.extend([block(Body::Mixer(Mixer::Mla(mla))), block(Body::Ffn(body))]);
+        roles.extend([ar, fr]);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: n,
+        // (the logits in the model's type, as transformers' head makes them: the product's bf16 output, then the cap's division, tanh and product)
+        head: Head { tied, softcap: Some(cap as f32), scale: 1.0, collapse: Collapse::None, rounding: Rounding::Twice, correction: false },
+        mtp: Vec::new(),
+        vision: None,
+        rope: Some(rope),
+    };
+    let mut out = finish(&k, desc, cv, "", roles, 0)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    (out.shapes, out.scales) = (shapes, scales);
+    out.fp8_block = fp8.map(|f| f.block);
+    Ok(out)
 }
 
 /// Muse Spark (`muse_spark`): GQA with weightless q/k norms, rope and a window on the sliding layers only, a gated output with a per-head
-/// norm; a normed embedding; sandwich norms with Muse's gated residual; the latent MoE in every layer; a soft-capped head.
-fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
-    let mt = "muse_spark_text";
+/// norm; a normed embedding; sandwich norms with Muse's gated residual; the latent MoE in every layer; a soft-capped head. Its numbers read as
+/// its family's reader reads them (`muse::number`: transformers' defaults where absent); a quantized checkpoint refused (`muse::quantized`); its
+/// audio and vision towers unread (`names::MUSE`).
+fn muse(c: &ModelConfig) -> Result<Described> {
+    let (tc, prefix, mt) = (&c.text, c.prefix(), "muse_spark_text");
+    crate::muse::quantized(&c.top, tc, mt)?;
     let k = Keys::new(tc, mt);
-    let (d, layers, vocab, eps, tied) = common(&k, None)?;
-    let pe = k.f64("post_norm_eps")? as f32;
+    let num = |key: &str| {
+        k.raw(key);
+        crate::muse::number(tc, key, mt)
+    };
+    let (d, layers, vocab, _, tied) = common(&k, None)?;
+    let (eps, pe) = (num("rms_norm_eps")?, num("post_norm_eps")?);
     k.expect("hidden_act", &Value::from("silu"))?;
     k.expect("attention_bias", &Value::Bool(false))?;
     k.expect("num_shared_experts", &Value::from(0))?;
+    // (read for their types: the reader takes the longest context; the dense MLP's width, where every MLP is sparse, is none's)
     k.opt_usize("max_position_embeddings")?;
-    k.usize("intermediate_size")?;
+    k.opt_usize("intermediate_size")?;
     let (heads, kv, hd) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?, k.usize("head_dim")?);
     let window = k.usize("sliding_window")?;
     let strs = |x: &str| -> Result<Vec<String>> {
@@ -1274,10 +4608,8 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
             return err(format!("{mt}: rope scaling is not supported"));
         }
     }
-    let qk = k.f64("qk_scale_factor")? as f32;
-    let out_mult = k.f64("output_multiplier")? as f32;
-    let softcap = k.opt_f64("final_logit_softcapping")?.map(|v| v as f32);
-    let temperature = k.f64("residual_gate_temperature")? as f32;
+    let (qk, out_mult, softcap, temperature) =
+        (num("qk_scale_factor")?, num("output_multiplier")?, num("final_logit_softcapping")?, num("residual_gate_temperature")?);
     let (ne, lat) = (k.usize("num_local_experts")?, k.usize("moe_hidden_size")?);
     k.usize("moe_intermediate_size")?;
     let moe = Moe {
@@ -1288,8 +4620,10 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
             groups: None,
             top_k: k.usize("num_experts_per_tok")?,
             renorm: true,
-            scale: k.f64("routed_scaling_factor")? as f32,
+            scale: num("routed_scaling_factor")?,
             hash: false,
+            routers: 1,
+            expert_scale: false,
         },
         experts: ne,
         expert: Mlp { act: Act::Silu, gated: true, bias: false, clamp: None },
@@ -1327,58 +4661,40 @@ fn muse(tc: &Map<String, Value>, prefix: &str) -> Result<Described> {
             scale: qk / (hd as f32).sqrt(),
             k_eq_v: false,
             indexer: None,
+            rounding: AttnRounding::Sdpa,
+            kv_from: None,
+            v_scale: 1.0,
         };
-        let p = format!("{prefix}layers.{l}");
-        let mut r =
-            vec![("norm_in".to_string(), t(format!("{p}.input_layernorm.weight"))), ("res_gate".into(), t(format!("{p}.post_attention_residual_gate.gate")))];
-        for (role, x) in [("q", "q_proj"), ("k", "k_proj"), ("v", "v_proj"), ("g", "gate_proj"), ("o", "o_proj")] {
-            r.push((role.to_string(), t(format!("{p}.self_attn.{x}.weight"))));
-        }
+        let p = names::MUSE.layer(prefix, l);
         blocks.push(Block {
             norm_in: Norm::rms_plus_one(eps),
             body: Body::Mixer(Mixer::Attention(a)),
             norm_out: Some(Norm::rms_bare(pe)),
             residual: Residual::Gated(GateP { temperature }),
         });
-        roles.push(r);
-        let m = format!("{p}.mlp");
-        let mut r = vec![
-            ("norm_in".to_string(), t(format!("{p}.pre_feedforward_layernorm.weight"))),
-            ("norm_out".into(), t(format!("{p}.post_feedforward_layernorm.weight"))),
-            ("res_gate".into(), t(format!("{p}.post_feedforward_residual_gate.gate"))),
-        ];
-        for (role, x) in [
-            ("router", "gate.weight"),
-            ("choice_bias", "gate.e_score_correction_bias"),
-            ("latent_down", "pre_expert_proj.weight"),
-            ("latent_norm_in", "pre_expert_norm.weight"),
-            ("experts_gate_up", "experts.gate_up_proj"),
-            ("experts_down", "experts.down_proj"),
-            ("expert_norm", "experts.post_expert_norm.weight"),
-            ("latent_up", "post_expert_proj.weight"),
-        ] {
-            r.push((role.to_string(), t(format!("{m}.{x}"))));
-        }
+        roles.push(names::roles(part::MUSE_ATTN, &p, 0, all));
         blocks.push(Block {
             norm_in: Norm::rms_plus_one(eps),
             body: Body::Ffn(Ffn::Moe(moe.clone())),
             norm_out: Some(Norm { weight: NormWeight::InputPlusOne, ..Norm::rms(pe) }),
             residual: Residual::Gated(GateP { temperature }),
         });
-        roles.push(r);
+        roles.push(names::roles(part::MUSE_MOE, &p, 0, all));
     }
     let desc = ModelDesc {
         hidden: d,
         vocab,
-        embed: Embed { scale: 1.0, norm: Some(bare), streams: 1 },
+        embed: Embed { scale: 1.0, norm: Some(bare), streams: 1, per_layer: None, table: TableAt::Gpu },
         blocks,
         final_norm: Norm::rms(eps),
-        head: Head { tied, softcap, scale: out_mult, collapse: Collapse::None },
+        // (the release's head is bf16: its product, the output multiplier's product and the soft-cap's three operations each rounded, as muse_ref.rs and the
+        // engine's muse_softcap compute them)
+        head: Head { tied, softcap: Some(softcap), scale: out_mult, collapse: Collapse::None, rounding: Rounding::Twice, correction: false },
         mtp: Vec::new(),
         vision: None,
         rope: None,
     };
-    finish(&k, desc, prefix, roles, 0)
+    finish(&k, desc, &names::MUSE, prefix, roles, 0)
 }
 
 /// DeepSeek-V4 (`deepseek_v4`): the compressed attention (`kinds::Comp`), MoE with hash routing in the first layers then sqrt-softplus
@@ -1403,7 +4719,8 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     k.raw("architectures");
     let released = k.m.contains_key("compress_ratios");
     let fp4 = k.str("expert_dtype")? == Some("fp4");
-    let fp8 = Fp8::parse(k.raw("quantization_config"), mt)?.is_some();
+    let fp8_block = Fp8::parse(k.raw("quantization_config"), mt)?.map(|f| f.block);
+    let fp8 = fp8_block.is_some();
     let (heads, hd, rd) = (k.usize("num_attention_heads")?, k.usize("head_dim")?, k.usize("qk_rope_head_dim")?);
     k.opt_f64("partial_rotary_factor")?;
     let (q_lora, o_lora, o_groups, window) =
@@ -1411,13 +4728,20 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     let (ih, idim, itop) = (k.usize("index_n_heads")?, k.usize("index_head_dim")?, k.usize("index_topk")?);
     let (ne, top_k) = (k.usize("n_routed_experts")?, k.usize("num_experts_per_tok")?);
     k.usize("moe_intermediate_size")?;
-    let limit = k.opt_f64("swiglu_limit")?.filter(|&l| l > 0.0).map(|l| l as f32);
-    let scale = k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32;
+    // (keys a config leaves out take transformers' DeepseekV4Config defaults: the SwiGLU clamp at 10, the routed weights times 1.5, the first three layers
+    // routed by the token (below); a limit of 0 or less clamps nothing)
+    let limit = Some(k.opt_f64("swiglu_limit")?.unwrap_or(10.0)).filter(|&l| l > 0.0).map(|l| l as f32);
+    let scale = k.opt_f64("routed_scaling_factor")?.unwrap_or(1.5) as f32;
+    let hash_layers = k.opt_usize("num_hash_layers")?.unwrap_or(3);
     let streams = StreamsP {
+        lagged: false,
+        eps_outside: false,
+        apart: None,
         streams: k.usize("hc_mult")?,
         sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
         eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
         norm_eps: eps,
+        rounding: Rounding::Once,
     };
     let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
     // each layer's compression ratio and whether it is CSA (overlap and indexer), its rope, and whether its MoE is hash-routed
@@ -1428,7 +4752,6 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
             return err(format!("{mt}: {} compress_ratios for {layers} layers", r.len()));
         }
         let r = r[..layers].to_vec();
-        let nh = k.opt_usize("num_hash_layers")?.unwrap_or(0);
         let mut main = Rope::plain(k.opt_f64("rope_theta")?.unwrap_or(10_000.0), rd);
         main.style = RopeStyle::Interleaved;
         let mut comp_m = Map::new();
@@ -1442,7 +4765,7 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         }
         let mut comp = rope(&comp_m, rd, max_pos, &format!("{mt} rope_scaling"))?;
         comp.style = RopeStyle::Interleaved;
-        (r.clone(), r.iter().map(|&x| x == 4).collect(), (0..layers).map(|l| l < nh).collect(), main, comp)
+        (r.clone(), r.iter().map(|&x| x == 4).collect(), (0..layers).map(|l| l < hash_layers).collect(), main, comp)
     } else {
         let rates = match k.raw("compress_rates") {
             Some(Value::Object(o)) => o.clone(),
@@ -1464,8 +4787,9 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
                 o => return err(format!("{mt}: layer type {o}")),
             });
         }
-        let mlp: Vec<String> =
-            k.raw("mlp_layer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect()).unwrap_or_default();
+        // (no mlp_layer_types: transformers' schedule, the first num_hash_layers (3) routed by the token)
+        let mlp: Option<Vec<String>> =
+            k.raw("mlp_layer_types").and_then(|v| v.as_array()).map(|a| a.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect());
         let rp = match k.raw("rope_parameters") {
             Some(Value::Object(o)) => o.clone(),
             _ => return err(format!("{mt}: no rope_parameters")),
@@ -1483,53 +4807,47 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
         (
             r,
             types.iter().take(layers).map(|t| t == "compressed_sparse_attention").collect(),
-            (0..layers).map(|l| mlp.get(l).is_some_and(|m| m == "hash_moe")).collect(),
+            (0..layers).map(|l| mlp.as_ref().map_or(l < hash_layers, |m| m.get(l).is_some_and(|m| m == "hash_moe"))).collect(),
             one("main")?,
             one("compress")?,
         )
     };
-    let (p0, names): (&str, [&str; 4]) = if released {
-        ("", ["embed.weight", "norm.weight", "head.weight", "hc_head_"])
-    } else {
-        ("model.", ["model.embed_tokens.weight", "model.norm.weight", "head.weight", "model.hc_head.hc_"])
-    };
-    let kv_norm = if released { "kv_norm" } else { "norm" };
+    // (a ratio of 1 is no DeepSeek-V4 layer's: its layers compress by 4 or 128, or not at all (0, the window alone); vLLM and TensorRT-LLM read a 1 as the
+    // window alone, transformers maps 0, 4 and 128 only, and this builder's ratio of 1 is DeepSeek-V4.1's compressor of a token: refused, never computed)
+    if let Some(l) = ratios.iter().position(|&r| r == 1) {
+        return err(format!(
+            "{mt}: layer {l} compresses by 1, which no DeepSeek-V4 layer does (a ratio of 4 or 128, or 0 for the window alone): not supported"
+        ));
+    }
+    let cv = if released { &names::DEEPSEEK } else { &names::DEEPSEEK_HF };
+    // (the release's quantized matrices, each with its `.scale`: the FP8 products of the attention and the shared experts, the FP4 routed experts)
     let mut scales = std::collections::BTreeMap::new();
-    let q8 = |w: String, scales: &mut std::collections::BTreeMap<String, String>| -> Source {
-        if fp8 && released {
-            scales.insert(w.clone(), w.replace(".weight", ".scale"));
-        }
-        t(w)
-    };
-    let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: limit };
-    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
-    for l in 0..layers {
-        let p = format!("{p0}layers.{l}");
-        let a = format!("{p}.attn");
-        let (ratio, is_csa) = (ratios[l], csa[l]);
-        let mut r = vec![("norm_in".to_string(), t(format!("{p}.attn_norm.weight")))];
-        for (role, x) in [("q_a", "wq_a"), ("q_b", "wq_b"), ("kv", "wkv"), ("o_a", "wo_a"), ("o_b", "wo_b")] {
-            r.push((role.to_string(), q8(format!("{a}.{x}.weight"), &mut scales)));
-        }
-        r.push(("q_a_norm".into(), t(format!("{a}.q_norm.weight"))));
-        r.push(("kv_norm".into(), t(format!("{a}.{kv_norm}.weight"))));
-        r.push(("sinks".into(), t(format!("{a}.attn_sink"))));
-        let pool = |pre: &str, at: &str, r: &mut Vec<(String, Source)>| {
-            for (role, x) in [("kv", "wkv.weight"), ("gate", "wgate.weight"), ("ape", "ape"), ("norm", "norm.weight")] {
-                r.push((format!("{pre}_{role}"), t(format!("{at}.{x}"))));
+    let q8 = ["q_a", "q_b", "kv", "o_a", "o_b", "idx_q_b", "shared_gate", "shared_up", "shared_down", "main_proj"];
+    let mark = |r: &[(String, Source)], scales: &mut std::collections::BTreeMap<String, String>| {
+        for (_, src) in r.iter().filter(|(role, _)| released && if role.starts_with("experts_") { fp4 } else { fp8 && q8.contains(&role.as_str()) }) {
+            for w in src.names() {
+                scales.insert(w.clone(), w.replace(".weight", ".scale"));
             }
-        };
+        }
+    };
+    let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: limit.map(Clamp::Gate) };
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    // (the last layer's attention and feed-forward, of which a DSpark drafter's are made)
+    let (mut comp_template, mut moe_template) = (None, None);
+    for l in 0..layers {
+        let p = cv.layer("", l);
+        let (ratio, is_csa) = (ratios[l], csa[l]);
+        let mut r = names::roles(part::V4_ATTN, &p, 0, all);
+        r.extend(names::roles(if released { part::V4_KV_NORM } else { part::V4_KV_NORM_HF }, &p, 0, all));
+        r.extend(names::roles(part::V4_SINKS, &p, 0, all));
         if ratio > 0 {
-            pool("comp", &format!("{a}.compressor"), &mut r);
+            r.extend(names::roles(part::V4_COMP, &p, 0, all));
         }
         if ratio > 0 && is_csa {
-            pool("idx", &format!("{a}.indexer.compressor"), &mut r);
-            r.push(("idx_q_b".into(), q8(format!("{a}.indexer.wq_b.weight"), &mut scales)));
-            r.push(("idx_weights".into(), t(format!("{a}.indexer.weights_proj.weight"))));
+            r.extend(names::roles(part::V4_INDEXER, &p, 0, all));
         }
-        for (role, x) in [("hc_fn", "fn"), ("hc_base", "base"), ("hc_scale", "scale")] {
-            r.push((role.to_string(), t(format!("{p}.hc_attn_{x}"))));
-        }
+        r.extend(names::roles(part::HC_ATTN, &p, 0, all));
+        mark(&r, &mut scales);
         let c = Comp {
             heads,
             head_dim: hd,
@@ -1540,50 +4858,53 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
             ratio,
             overlap: ratio > 0 && is_csa,
             rope: if ratio > 0 { comp_rope.clone() } else { main_rope.clone() },
-            indexer: (ratio > 0 && is_csa).then_some(Indexer { heads: ih, head_dim: idim, top_k: itop, block: ratio, shared: false }),
+            // (its compressed entries' keys normed by the compressor's RMS norm, `idx_norm`)
+            indexer: (ratio > 0 && is_csa).then_some(Indexer {
+                heads: ih,
+                head_dim: idim,
+                top_k: itop,
+                block: ratio,
+                shared: false,
+                form: IndexForm::Gated { key: Norm::rms(eps) },
+                rope: 0,
+                rope_style: None,
+                q_in: None,
+                pos_scale: false,
+            }),
             norm_eps: eps,
+            ape: true,
+            q_head_norm: true,
+            share: None,
+            gate: None,
+            head_mix: 0,
         };
+        comp_template = Some(c.clone());
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Mixer(Mixer::Compressed(c)), norm_out: None, residual: Residual::Streams(streams) });
         roles.push(r);
-        let f = format!("{p}.ffn");
-        let mut r = vec![("norm_in".to_string(), t(format!("{p}.ffn_norm.weight"))), ("router".into(), t(format!("{f}.gate.weight")))];
-        if hash[l] {
-            r.push(("hash".into(), t(format!("{f}.gate.tid2eid"))));
-        } else {
-            r.push(("choice_bias".into(), t(format!("{f}.gate.bias"))));
-        }
-        let ex = |w: &str, scales: &mut std::collections::BTreeMap<String, String>| -> Vec<String> {
-            (0..ne)
-                .map(|e| {
-                    let n = format!("{f}.experts.{e}.{w}.weight");
-                    if fp4 && released {
-                        scales.insert(n.clone(), n.replace(".weight", ".scale"));
-                    }
-                    n
-                })
-                .collect()
-        };
-        let (w1, w3, w2) = (ex("w1", &mut scales), ex("w3", &mut scales), ex("w2", &mut scales));
-        r.push(("experts_gate_up".into(), Source::Experts(w1.into_iter().zip(w3).map(|(g, u)| vec![g, u]).collect())));
-        r.push(("experts_down".into(), Source::Experts(w2.into_iter().map(|x| vec![x]).collect())));
-        for (role, x) in [("shared_gate", "w1"), ("shared_up", "w3"), ("shared_down", "w2")] {
-            let w = format!("{f}.shared_experts.{x}.weight");
-            if fp8 && released {
-                scales.insert(w.clone(), w.replace(".weight", ".scale"));
-            }
-            r.push((role.to_string(), t(w)));
-        }
-        for (role, x) in [("hc_fn", "fn"), ("hc_base", "base"), ("hc_scale", "scale")] {
-            r.push((role.to_string(), t(format!("{p}.hc_ffn_{x}"))));
-        }
+        // (a hash-routed layer's table of experts by token, else the choice bias)
+        let mut r = names::roles(part::V4_MOE, &p, ne, |x| x != if hash[l] { "choice_bias" } else { "hash" });
+        r.extend(names::roles(part::HC_FFN, &p, 0, all));
+        mark(&r, &mut scales);
         let moe = Moe {
-            router: Router { score: RouterScore::SqrtSoftplus, logit_scale: 1.0, bias: !hash[l], groups: None, top_k, renorm: true, scale, hash: hash[l] },
+            router: Router {
+                score: RouterScore::SqrtSoftplus,
+                logit_scale: 1.0,
+                bias: !hash[l],
+                groups: None,
+                top_k,
+                renorm: true,
+                scale,
+                hash: hash[l],
+                routers: 1,
+                expert_scale: false,
+            },
             experts: ne,
             expert: mlp,
             shared: Some(mlp),
             shared_gate: false,
             latent: None,
         };
+        moe_template = Some(moe.clone());
         blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ffn(Ffn::Moe(moe)), norm_out: None, residual: Residual::Streams(streams) });
         roles.push(r);
     }
@@ -1602,25 +4923,1852 @@ fn deepseek_v4(tc: &Map<String, Value>) -> Result<Described> {
     ] {
         k.raw(x);
     }
-    k.finish()?;
-    Ok(Described {
-        desc: ModelDesc {
-            hidden: d,
-            vocab,
-            embed: Embed { scale: 1.0, norm: None, streams: streams.streams },
-            blocks,
-            final_norm: Norm::rms(eps),
-            head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::Weighted { eps: streams.eps, norm_eps: eps } },
-            mtp: Vec::new(),
-            vision: None,
-            rope: None,
+    // (a DSpark drafter: `n_mtp_layers` of the decoder's layers with the window alone, the format's default where the config does not say)
+    let draft = match (comp_template, moe_template) {
+        (Some(c), Some(mut m)) => {
+            let window = Comp { ratio: 0, overlap: false, rope: main_rope.clone(), indexer: None, ..c };
+            (m.router.hash, m.router.bias) = (false, true);
+            dspark_head(&k, k.opt_usize("n_mtp_layers")?.unwrap_or(DSPARK_LAYERS), window, m, Residual::Streams(streams), Norm::rms(eps))?
+        }
+        _ => None,
+    };
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: streams.streams, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: Norm::rms(eps),
+        head: Head {
+            tied,
+            softcap: None,
+            scale: 1.0,
+            collapse: Collapse::Weighted { eps: streams.eps, norm_eps: eps },
+            rounding: Rounding::F32,
+            correction: false,
         },
-        embed: names[0].to_string(),
-        final_norm: names[1].to_string(),
-        head: (!tied).then(|| names[2].to_string()),
-        blocks: roles,
-        extra: ["fn", "base", "scale"].iter().map(|x| (format!("out_hc_{x}"), t(format!("{}{x}", names[3])))).collect(),
-        mtp_layers,
-        scales,
-    })
+        mtp: draft.into_iter().collect(),
+        vision: None,
+        rope: None,
+    };
+    let mut out = finish(&k, desc, cv, "", roles, mtp_layers)?;
+    // (the 0731 release's drafter's tensors, under DeepSeek's names)
+    if let (Some(h), true) = (out.desc.mtp.first(), released) {
+        let (blocks, own) = dspark_roles(h.blocks.len() / 2, ne, false);
+        for r in blocks.iter().chain(std::iter::once(&own)) {
+            mark(r, &mut scales);
+        }
+        out.mtp = vec![(blocks, own)];
+    }
+    out.scales = scales;
+    out.fp8_block = fp8_block;
+    Ok(out)
+}
+
+/// A DSpark drafter's layers where its config has the drafter's keys and no `n_mtp_layers`: the format's default, which its readers define (vLLM's
+/// `models/deepseek_v4/nvidia/dspark.py`: `n_mtp_layers`, else 3). A directory is held to its index (`describe_dir`): a checkpoint that lacks a draft layer
+/// the count reads is refused, its tensors named.
+const DSPARK_LAYERS: usize = 3;
+
+/// A DeepSeek release's DSpark drafter (`dspark_*` keys; `kinds::DSpark`), where the config has one: `layers` draft layers, each the model's
+/// decoder layer with the window alone (the attention `window` with the model's own form, the feed-forward `moe`) on the model's residual rule,
+/// drafting `dspark_block_size` tokens from main_x of `dspark_target_layer_ids`; a Markov head of `dspark_markov_rank` and a confidence head.
+fn dspark_head(k: &Keys, layers: usize, window: Comp, moe: Moe, residual: Residual, norm: Norm) -> Result<Option<MtpHead>> {
+    let Some(block) = k.opt_usize("dspark_block_size")? else { return Ok(None) };
+    let targets: Vec<usize> = k
+        .raw("dspark_target_layer_ids")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect())
+        .ok_or_else(|| Error("dspark_target_layer_ids: a list of layers".into()))?;
+    let dspark =
+        DSpark { block, noise: k.usize("dspark_noise_token_id")? as u32, targets, markov_rank: k.usize("dspark_markov_rank")?, confidence: true, after: false };
+    let b = |body: Body| Block { norm_in: norm, body, norm_out: None, residual: residual.clone() };
+    let blocks = (0..layers).flat_map(|_| [b(Body::Mixer(Mixer::Compressed(window.clone()))), b(Body::Ffn(Ffn::Moe(moe.clone())))]).collect();
+    Ok(Some(MtpHead { blocks, norm_embed: norm, norm_hidden: norm, final_norm: norm, dspark: Some(dspark), input: MtpInput::Joined }))
+}
+
+/// A DSpark drafter's tensors as DeepSeek releases name them (`mtp.{i}.`): each draft layer's attention (the window's: no compressor) and its
+/// experts as the model's layers name them; the head's own on its first module (`main_proj`, `main_norm`) and its last (the Markov head's two factors,
+/// `markov_w1` and `markov_w2`, V4.1's `embed` and `head`; the confidence head, the final norm, and V4's hyper-head `hc_head_*`).
+fn dspark_roles(layers: usize, experts: usize, v41: bool) -> (Vec<Vec<(String, Source)>>, Vec<(String, Source)>) {
+    let mut blocks = Vec::new();
+    for i in 0..layers {
+        let p = format!("mtp.{i}");
+        let mut r = names::roles(part::V4_ATTN, &p, 0, all);
+        for t in [part::V4_KV_NORM, part::V4_SINKS, part::HC_ATTN] {
+            r.extend(names::roles(t, &p, 0, all));
+        }
+        blocks.push(r);
+        let mut r = names::roles(part::V4_MOE, &p, experts, |x| x != "hash");
+        r.extend(names::roles(part::HC_FFN, &p, 0, all));
+        blocks.push(r);
+    }
+    let (first, last) = ("mtp.0".to_string(), format!("mtp.{}", layers.saturating_sub(1)));
+    let t = |at: &str, n: &str| Source::Tensor(format!("{at}.{n}"));
+    let (w1, w2) = if v41 { ("markov_head.embed.weight", "markov_head.head.weight") } else { ("markov_head.markov_w1.weight", "markov_head.markov_w2.weight") };
+    let mut own = vec![
+        ("main_proj".to_string(), t(&first, "main_proj.weight")),
+        ("main_norm".to_string(), t(&first, "main_norm.weight")),
+        ("markov_embed".to_string(), t(&last, w1)),
+        ("markov_head".to_string(), t(&last, w2)),
+        ("confidence".to_string(), t(&last, "confidence_head.proj.weight")),
+        ("final_norm".to_string(), t(&last, "norm.weight")),
+    ];
+    if !v41 {
+        own.extend(
+            [("out_hc_fn", "hc_head_fn"), ("out_hc_base", "hc_head_base"), ("out_hc_scale", "hc_head_scale")].map(|(r, n)| (r.to_string(), t(&last, n))),
+        );
+    }
+    (blocks, own)
+}
+
+/// DeepSeek-V4.1 (`deepseek_v41`, its text model `deepseek_v41_text`, a vision tower beside it): V4's decoder with V4.1's three mechanisms, each a
+/// parameter of a kind V4 has. Its attention is CSA2 (`Comp` with no window bias and no per-head query norm): `compress_ratios` 0 (the window
+/// alone), 1 or 2, every compressing layer reading the entries of the most recent kv source at or below it (`kv_source_layer_ids`) and the picks of
+/// the most recent index source (`index_source_layer_ids`), the candidate source (`candidate_source_layer_id`) publishing blocks of
+/// `candidate_block_size` entries, `candidate_topk_blocks` kept, which the index sources after it score inside (`CompShare`). Its residual is lagged
+/// mHC (`StreamsP::lagged`, the head's collapse `Collapse::LastPre`: no hyper-head). On `engram_layer_ids` an Engram block (`NgramForm::Engram`)
+/// comes before the layer's attention, its tables read by rows on the host (`TableAt::Host`). The MoE is V4's sqrt-softplus router (no hash layers;
+/// `gate_temp` 1 alone). Not read: the DSpark draft layers (counted), the vision tower, the routers' image-token bias.
+fn deepseek_v41(c: &ModelConfig) -> Result<Described> {
+    let (mt, tc) = ("deepseek_v41", &c.text);
+    // (the image token beside the vision tower's config: the tower is not read)
+    top_keys(&c.top, mt, &["text_config", "vision_config", "quantization_config", "architectures", "tie_word_embeddings", "image_token_id"])?;
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, c.top.get("tie_word_embeddings").and_then(|v| v.as_bool()))?;
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    k.expect("hidden_act", &Value::from("silu"))?;
+    k.expect("attention_bias", &Value::Bool(false))?;
+    k.expect("scoring_func", &Value::from("sqrtsoftplus"))?;
+    k.expect("topk_method", &Value::from("noaux_tc"))?;
+    k.expect("num_key_value_heads", &Value::from(1))?;
+    k.expect("n_shared_experts", &Value::from(1))?;
+    k.expect("norm_topk_prob", &Value::Bool(true))?;
+    // (the router's logits divided by the gate temperature before the score: as their factor 1 / it, the same at the release's 1)
+    let temperature = match (k.opt_f64("gate_temperature")?, k.opt_f64("gate_temp")?) {
+        (Some(a), Some(b)) if a != b => return err(format!("{mt}: gate_temperature {a} and gate_temp {b} differ")),
+        (a, b) => a.or(b).unwrap_or(1.0),
+    };
+    if temperature <= 0.0 {
+        return err(format!("{mt}: a gate temperature of {temperature}"));
+    }
+    // (the Engram tables' scale blocks: one a 32 values, which the scales' shapes say)
+    k.expect("engram_block_size", &Value::from(32))?;
+    k.expect("num_hash_layers", &Value::from(0))?;
+    let q = c.top.get("quantization_config").or(k.raw("quantization_config"));
+    let fp8_block = Fp8::parse(
+        q.map(|v| {
+            let mut o = v.as_object().cloned().unwrap_or_default();
+            // (the experts' and the Engram tables' formats, said beside the dense matrices' FP8)
+            o.retain(|key, _| !key.starts_with("engram_") && !matches!(key.as_str(), "expert_dtype" | "scale_fmt" | "activation_scheme"));
+            Value::Object(o)
+        })
+        .as_ref(),
+        mt,
+    )?
+    .map(|f| f.block);
+    let fp8 = fp8_block.is_some();
+    let fp4 = q.and_then(|v| v.get("expert_dtype")).or(k.raw("expert_dtype")).and_then(|v| v.as_str()) == Some("fp4");
+    let (heads, hd, rd) = (k.usize("num_attention_heads")?, k.usize("head_dim")?, k.usize("qk_rope_head_dim")?);
+    let (q_lora, o_lora, o_groups, window) =
+        (k.usize("q_lora_rank")?, k.usize("o_lora_rank")?, k.usize("o_groups")?, k.opt_usize("sliding_window")?.unwrap_or(128));
+    let (ih, idim, itop) = (k.usize("index_n_heads")?, k.usize("index_head_dim")?, k.usize("index_topk")?);
+    let (ne, top_k) = (k.usize("n_routed_experts")?, k.usize("num_experts_per_tok")?);
+    k.usize("moe_intermediate_size")?;
+    let limit = k.opt_f64("swiglu_limit")?.filter(|&l| l > 0.0).map(|l| l as f32);
+    let scale = k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32;
+    let streams = StreamsP {
+        streams: k.usize("hc_mult")?,
+        sinkhorn_iters: k.opt_usize("hc_sinkhorn_iters")?.unwrap_or(20),
+        eps: k.opt_f64("hc_eps")?.unwrap_or(1e-6) as f32,
+        norm_eps: eps,
+        rounding: Rounding::Once,
+        lagged: true,
+        eps_outside: false,
+        apart: None,
+    };
+    // (the release's RMSNorm: fp32, the weight times the normed value cast to bf16 once; Engram's gate normalises in fp32 and keeps it)
+    let rn = Norm { rounding: Rounding::Once, ..Norm::rms(eps) };
+    let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
+    // (a list of counts: one that is not a list, or holds an entry that is not a count, is refused by name, never read as the entries that are)
+    let list = |x: &str| -> Result<Vec<usize>> {
+        let v = k.raw(x).ok_or_else(|| Error(format!("{mt}: no {x}")))?;
+        let a = v.as_array().ok_or_else(|| Error(format!("{mt}: {x} = {v} is not a list")))?;
+        a.iter().map(|e| e.as_u64().map(|n| n as usize).ok_or_else(|| Error(format!("{mt}: {x} = {v}: {e} is not a count")))).collect()
+    };
+    let ratios = list("compress_ratios")?;
+    if ratios.len() < layers || ratios[..layers].iter().any(|r| *r > 2) {
+        return err(format!("{mt}: compress_ratios {ratios:?} for {layers} layers: 0, 1 or 2 each"));
+    }
+    let (kv_src, idx_src) = (list("kv_source_layer_ids")?, list("index_source_layer_ids")?);
+    let cand = k.raw("candidate_source_layer_id").and_then(|v| v.as_i64()).filter(|&c| c >= 0).map(|c| c as usize);
+    let cand_shape = match cand {
+        Some(_) => Some((k.usize("candidate_block_size")?, k.usize("candidate_topk_blocks")?)),
+        None => None,
+    };
+    // (each compressing layer's sources: the most recent at or below it, which compresses by the same ratio. The layouts described are the release's: a
+    // source of another ratio is refused (vLLM takes the most recent of any ratio), and so is an index source that keeps no entries of its own whose kv
+    // source is no index source: its indexer keys are its entries' source's, which keeps none (exo takes them from the most recent layer that is both))
+    let latest = |ids: &[usize], l: usize| ids.iter().copied().filter(|&s| s <= l).max();
+    let source = |ids: &[usize], l: usize| latest(ids, l).filter(|&s| ratios[s] == ratios[l]);
+    for l in (0..layers).filter(|&l| ratios[l] > 0) {
+        for (key, ids) in [("kv_source_layer_ids", &kv_src), ("index_source_layer_ids", &idx_src)] {
+            match latest(ids, l) {
+                None => return err(format!("{mt}: layer {l} compresses by {}, and {key} {ids:?} has no layer at or below it", ratios[l])),
+                Some(s) if ratios[s] != ratios[l] => {
+                    return err(format!(
+                        "{mt}: layer {l} compresses by {}, and its source in {key}, layer {s} (the most recent at or below it), by {}: a source of another ratio is not supported",
+                        ratios[l], ratios[s]
+                    ))
+                }
+                _ => {}
+            }
+        }
+        if let Some(s) = latest(&kv_src, l).filter(|s| idx_src.contains(&l) && !kv_src.contains(&l) && !idx_src.contains(s)) {
+            return err(format!(
+                "{mt}: index source {l} takes its entries from kv source {s}, which is not in index_source_layer_ids and so keeps no indexer keys for them: not supported"
+            ));
+        }
+        // (a candidate block is a span of positions of the candidate source's ratio: an index source of another ratio is not described)
+        if let Some(c) = cand.filter(|&c| c < l && idx_src.contains(&l) && ratios[c] != ratios[l]) {
+            return err(format!("{mt}: index source {l} compresses by {}, the candidate source {c} by {}", ratios[l], ratios[c]));
+        }
+    }
+    let mut main = Rope::plain(k.opt_f64("rope_theta")?.unwrap_or(10_000.0), rd);
+    main.style = RopeStyle::Interleaved;
+    // (the compressing layers' YaRN: rope_scaling, else the rope_yarn_* keys, else the release's defaults: 16, 65,536, 32, 1)
+    let mut comp_m = match k.raw("rope_scaling") {
+        Some(Value::Object(o)) => o.clone(),
+        _ => {
+            let mut o = Map::new();
+            o.insert("type".into(), Value::from("yarn"));
+            for (key, own, dflt) in [
+                ("factor", "rope_yarn_factor", 16.0),
+                ("original_max_position_embeddings", "rope_yarn_original_max_position_embeddings", 65536.0),
+                ("beta_fast", "rope_yarn_beta_fast", 32.0),
+                ("beta_slow", "rope_yarn_beta_slow", 1.0),
+            ] {
+                let v = k.opt_f64(own)?.unwrap_or(dflt);
+                o.insert(key.into(), if key == "original_max_position_embeddings" { Value::from(v as u64) } else { Value::from(v) });
+            }
+            o
+        }
+    };
+    comp_m.insert("rope_theta".into(), Value::from(k.opt_f64("compress_rope_theta")?.unwrap_or(160_000.0)));
+    if comp_m.contains_key("factor") && !comp_m.contains_key("attention_factor") {
+        comp_m.insert("attention_factor".into(), Value::from(1.0));
+    }
+    let mut comp_rope = rope(&comp_m, rd, max_pos, &format!("{mt} rope_scaling"))?;
+    comp_rope.style = RopeStyle::Interleaved;
+    // Engram's layers, each a block before the layer's attention: its tables the next primes past engram_vocab_size, their rows engram_num_embeddings
+    // (no engram_layer_ids: a model with no Engram layers; one that is there and is not a list of layers is refused, not read as none)
+    let engram: Vec<usize> = match k.raw("engram_layer_ids") {
+        None => Vec::new(),
+        Some(_) => list("engram_layer_ids")?,
+    };
+    let engram_kind = |place: usize, layer: usize| -> Result<Ngram> {
+        let (order, heads, head_dim) = (k.usize("engram_max_ngram_size")?, k.usize("engram_n_heads")?, k.usize("engram_head_dim")?);
+        let (base, vocab) = (k.usize("engram_vocab_size")? as u64, k.usize("engram_compressed_vocab_size")?);
+        // (sizes that are no model's: an order under 2 has no table, no heads or head width divides by zero, and past these the builder would keep finding
+        // primes; the bounds are the other n-gram form's, above)
+        let tables = order.saturating_sub(1).saturating_mul(heads);
+        if order < 2 || order > 64 || heads == 0 || head_dim == 0 || vocab == 0 || base == 0 || base > 1 << 40 || tables.saturating_mul(place + 1) > 4096 {
+            return err(format!(
+                "{mt}: Engram of engram_max_ngram_size {order}, engram_n_heads {heads}, engram_head_dim {head_dim}, engram_vocab_size {base}, engram_compressed_vocab_size {vocab}: an order of 2 to 64, heads and widths above 0, a vocabulary up to 2^40 and at most 4096 tables"
+            ));
+        }
+        let n = Ngram {
+            order,
+            heads,
+            dim: (order - 1) * heads * head_dim,
+            base,
+            vocab,
+            seed: 10007 * layer as u64,
+            index: place,
+            eos: k.usize("engram_pad_token_id")? as u32,
+            streams: streams.streams,
+            conv: 0,
+            dilation: 1,
+            norm: Norm::rms(eps),
+            form: NgramForm::Engram,
+            // (its tables read by rows on the host: the release's are 384M rows of 256 a layer, FP8 with a scale a run of 32, about 98 GB each)
+            table: TableAt::Host,
+        };
+        let rows = list("engram_num_embeddings")?;
+        let want = super::reference::ngram::tables(&n).0.iter().sum::<u64>();
+        if rows.get(place).map(|&r| r as u64) != Some(want) {
+            return err(format!("{mt}: engram_num_embeddings {rows:?}: Engram layer {layer}'s tables hold {want} rows"));
+        }
+        Ok(n)
+    };
+    let cv = &names::DEEPSEEK_V41;
+    let mut scales = std::collections::BTreeMap::new();
+    let q8 = ["q_a", "q_b", "kv", "o_a", "o_b", "idx_q_b", "shared_gate", "shared_up", "shared_down", "ngram", "main_proj"];
+    let mark = |r: &[(String, Source)], scales: &mut std::collections::BTreeMap<String, String>| {
+        for (_, src) in r.iter().filter(|(role, _)| if role.starts_with("experts_") { fp4 } else { fp8 && q8.contains(&role.as_str()) }) {
+            for w in src.names() {
+                scales.insert(w.clone(), w.replace(".weight", ".scale"));
+            }
+        }
+    };
+    let mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: limit.map(Clamp::Gate) };
+    let (mut blocks, mut roles, mut attn_block) = (Vec::new(), Vec::new(), vec![0usize; layers]);
+    // (the last layer's attention and feed-forward, of which the drafter's are made)
+    let (mut comp_template, mut moe_template) = (None, None);
+    for l in 0..layers {
+        let p = cv.layer("", l);
+        if let Some(place) = engram.iter().position(|&e| e == l) {
+            let r = names::roles(part::ENGRAM, &p, 0, all);
+            mark(&r, &mut scales);
+            blocks.push(Block { norm_in: Norm::rms(eps), body: Body::Ngram(engram_kind(place, l)?), norm_out: None, residual: Residual::Add });
+            roles.push(r);
+        }
+        attn_block[l] = blocks.len();
+        let ratio = ratios[l];
+        let (is_kv, is_idx) = (kv_src.contains(&l), idx_src.contains(&l));
+        let mut r = names::roles(part::V4_ATTN, &p, 0, all);
+        r.extend(names::roles(part::V4_KV_NORM, &p, 0, all));
+        r.extend(names::roles(part::V4_SINKS, &p, 0, all));
+        if ratio > 0 && is_kv {
+            r.extend(names::roles(part::V41_COMP, &p, 0, |x| ratio > 1 || x != "comp_gate"));
+        }
+        if ratio > 0 && is_idx {
+            r.extend(names::roles(part::V41_INDEXER, &p, 0, |x| is_kv || !x.starts_with("idx_k")));
+        }
+        r.extend(names::roles(part::HC_ATTN, &p, 0, all));
+        mark(&r, &mut scales);
+        let share = (ratio > 0).then(|| CompShare {
+            entries: (!is_kv).then(|| attn_block[source(&kv_src, l).expect("checked above")]),
+            picks: (!is_idx).then(|| attn_block[source(&idx_src, l).expect("checked above")]),
+            candidates: cand.filter(|&c| is_idx && c < l).map(|c| attn_block[c]),
+            publish: cand_shape.filter(|_| cand == Some(l)),
+        });
+        let comp = Comp {
+            heads,
+            head_dim: hd,
+            q_lora,
+            o_groups,
+            o_lora,
+            window,
+            ratio,
+            overlap: false,
+            rope: if ratio > 0 { comp_rope.clone() } else { main.clone() },
+            indexer: (ratio > 0).then_some(Indexer {
+                heads: ih,
+                head_dim: idim,
+                top_k: itop,
+                block: ratio,
+                shared: false,
+                form: IndexForm::Gated { key: Norm::rms(eps) },
+                rope: 0,
+                rope_style: None,
+                q_in: None,
+                pos_scale: false,
+            }),
+            norm_eps: eps,
+            ape: false,
+            q_head_norm: false,
+            share,
+            gate: None,
+            head_mix: 0,
+        };
+        comp_template = Some(comp.clone());
+        blocks.push(Block { norm_in: rn, body: Body::Mixer(Mixer::Compressed(comp)), norm_out: None, residual: Residual::Streams(streams) });
+        roles.push(r);
+        let mut r = names::roles(part::V4_MOE, &p, ne, |x| x != "hash");
+        r.extend(names::roles(part::HC_FFN, &p, 0, all));
+        mark(&r, &mut scales);
+        let moe = Moe {
+            router: Router {
+                score: RouterScore::SqrtSoftplus,
+                logit_scale: (1.0 / temperature) as f32,
+                bias: true,
+                groups: None,
+                top_k,
+                renorm: true,
+                scale,
+                hash: false,
+                routers: 1,
+                expert_scale: false,
+            },
+            experts: ne,
+            expert: mlp,
+            shared: Some(mlp),
+            shared_gate: false,
+            latent: None,
+        };
+        moe_template = Some(moe.clone());
+        blocks.push(Block { norm_in: rn, body: Body::Ffn(Ffn::Moe(moe)), norm_out: None, residual: Residual::Streams(streams) });
+        roles.push(r);
+    }
+    for x in ["rope_scaling", "rope_theta", "compress_rope_theta", "candidate_source_layer_id", "candidate_block_size", "candidate_topk_blocks", "expert_dtype"]
+    {
+        k.raw(x);
+    }
+    for x in [
+        "engram_max_ngram_size",
+        "engram_n_heads",
+        "engram_head_dim",
+        "engram_vocab_size",
+        "engram_compressed_vocab_size",
+        "engram_pad_token_id",
+        "engram_num_embeddings",
+    ] {
+        k.raw(x);
+    }
+    // (the DSpark drafter: its layers the decoder's with the window alone, their experts its own count)
+    let window_attn = Comp { ratio: 0, rope: main.clone(), indexer: None, share: None, ..comp_template.ok_or_else(|| Error(format!("{mt}: no layers")))? };
+    let mut dmoe = moe_template.ok_or_else(|| Error(format!("{mt}: no layers")))?;
+    dmoe.router.top_k = k.opt_usize("dspark_num_experts_per_tok")?.unwrap_or(top_k);
+    dmoe.experts = k.opt_usize("dspark_n_routed_experts")?.unwrap_or(ne);
+    let n_draft = k.opt_usize("n_mtp_layers")?.unwrap_or(mtp_layers);
+    let draft = dspark_head(&k, n_draft, window_attn, dmoe, Residual::Streams(streams), rn)?;
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: streams.streams, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: rn,
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::LastPre, rounding: Rounding::F32, correction: false },
+        mtp: draft.into_iter().collect(),
+        vision: None,
+        rope: None,
+    };
+    let mut out = finish(&k, desc, cv, "", roles, mtp_layers)?;
+    if let Some(h) = out.desc.mtp.first() {
+        let experts = h.blocks.iter().find_map(|b| if let Body::Ffn(Ffn::Moe(m)) = &b.body { Some(m.experts) } else { None }).unwrap_or(0);
+        let (blocks, own) = dspark_roles(h.blocks.len() / 2, experts, true);
+        for r in blocks.iter().chain(std::iter::once(&own)) {
+            mark(r, &mut scales);
+        }
+        out.mtp = vec![(blocks, own)];
+    }
+    out.scales = scales;
+    out.fp8_block = fp8_block;
+    out.shapes = v41_shapes(&out, k.usize("moe_intermediate_size")?);
+    Ok(out)
+}
+
+/// Each tensor's shape in a DeepSeek-V4.1 description (its blocks', its drafter's), from the kinds' widths and the experts' `inter`: what a lowering sizes
+/// its matrices by and what a random model of the config is made at.
+fn v41_shapes(out: &Described, inter: usize) -> std::collections::BTreeMap<String, Vec<usize>> {
+    let (d, v) = (out.desc.hidden, out.desc.vocab);
+    let mut sh = std::collections::BTreeMap::new();
+    let mut put = |b: &Block, r: &[(String, Source)]| {
+        let n = match b.residual {
+            Residual::Streams(s) => s.streams,
+            _ => 1,
+        };
+        let hc = [("hc_fn", vec![(2 + n) * n, n * d]), ("hc_base", vec![(2 + n) * n]), ("hc_scale", vec![3])];
+        let want: Vec<(&str, Vec<usize>)> = match &b.body {
+            Body::Mixer(Mixer::Compressed(c)) => {
+                let (q, hd, (ih, idim)) = (c.q_lora, c.head_dim, c.indexer.as_ref().map_or((0, 0), |x| (x.heads, x.head_dim)));
+                vec![
+                    ("norm_in", vec![d]),
+                    ("q_a", vec![q, d]),
+                    ("q_a_norm", vec![q]),
+                    ("q_b", vec![c.heads * hd, q]),
+                    ("kv", vec![hd, d]),
+                    ("kv_norm", vec![hd]),
+                    ("o_a", vec![c.o_groups * c.o_lora, c.heads * hd / c.o_groups.max(1)]),
+                    ("o_b", vec![d, c.o_groups * c.o_lora]),
+                    ("sinks", vec![c.heads]),
+                    ("comp_kv", vec![hd, d]),
+                    ("comp_gate", vec![hd, d]),
+                    ("comp_norm", vec![hd]),
+                    ("idx_q_b", vec![ih * idim, q]),
+                    ("idx_weights", vec![ih, d]),
+                    ("idx_k", vec![idim, hd]),
+                    ("idx_k_norm", vec![idim]),
+                ]
+            }
+            Body::Ffn(Ffn::Moe(m)) => vec![
+                ("norm_in", vec![d]),
+                ("router", vec![m.experts, d]),
+                ("choice_bias", vec![m.experts]),
+                ("experts_gate_up", vec![inter, d]),
+                ("experts_down", vec![d, inter]),
+                ("shared_gate", vec![inter, d]),
+                ("shared_up", vec![inter, d]),
+                ("shared_down", vec![d, inter]),
+            ],
+            Body::Ngram(g) => {
+                let rows = super::reference::ngram::tables(g).0.iter().sum::<u64>() as usize;
+                vec![
+                    ("ngram", vec![rows, g.dim / ((g.order - 1) * g.heads)]),
+                    ("kv", vec![(g.streams + 1) * d, g.dim]),
+                    ("norm_in", vec![g.streams, d]),
+                    ("norm_key", vec![g.streams, d]),
+                ]
+            }
+            _ => Vec::new(),
+        };
+        shape_roles(&mut sh, r, &[want, hc.to_vec()].concat());
+    };
+    for (b, r) in out.desc.blocks.iter().zip(&out.blocks) {
+        put(b, r);
+    }
+    if let (Some(h), Some((blocks, own))) = (out.desc.mtp.first(), out.mtp.first()) {
+        for (b, r) in h.blocks.iter().zip(blocks) {
+            put(b, r);
+        }
+        if let Some(ds) = &h.dspark {
+            let own_shapes = [
+                ("main_proj", vec![d, ds.targets.len() * d]),
+                ("main_norm", vec![d]),
+                ("markov_embed", vec![v, ds.markov_rank]),
+                ("markov_head", vec![v, ds.markov_rank]),
+                ("confidence", vec![1, d + ds.markov_rank]),
+                ("final_norm", vec![d]),
+            ];
+            shape_roles(&mut sh, own, &own_shapes);
+        }
+    }
+    for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
+        sh.insert(n.clone(), vec![v, d]);
+    }
+    sh.insert(out.final_norm.clone(), vec![d]);
+    sh
+}
+
+/// Each of `want`'s roles' tensors at the shape the checkpoint stores it in, from the role's own shape: one tensor as it is; a matrix stored transposed
+/// turned; tensors stacked by rows (or scalars joined) each an equal part of the rows; an expert's matrices each the shape given.
+fn shape_sources(shapes: &mut BTreeMap<String, Vec<usize>>, r: &[(String, Source)], want: &[(&str, Vec<usize>)]) {
+    for (role, s) in want {
+        match r.iter().find(|(x, _)| x == role) {
+            Some((_, Source::Tensor(n))) => {
+                shapes.insert(n.clone(), s.clone());
+            }
+            Some((_, Source::Transposed(n))) => {
+                shapes.insert(n.clone(), s.iter().rev().copied().collect());
+            }
+            Some((_, Source::Rows(v))) => {
+                let mut part = s.clone();
+                part[0] /= v.len().max(1);
+                shapes.extend(v.iter().map(|n| (n.clone(), part.clone())));
+            }
+            Some((_, Source::Experts(e))) => shapes.extend(e.iter().flatten().map(|n| (n.clone(), s.clone()))),
+            _ => {}
+        }
+    }
+}
+
+/// ERNIE 5.5 (`ernie5_5_moe`, `Ernie5_5_MoeForCausalLM`; text in, text out: no tower): DeepSeek-V4's decoder (residual streams, the compressed
+/// attention with a window, grouped low-rank output) with layers of a second sort and parts of its own, each a parameter of a kind. `compress_ratios`
+/// says each layer's attention: 128, the compressed attention (`Comp`: one key-value head of `head_dim`, the window of `sliding_window` tokens and every
+/// closed window of 128 as one entry, sinks, no indexer; the YaRN rotary of `compress_rope_theta`); -2, a latent attention (`Mla` of the `hybrid_mla_*`
+/// widths, the plain rotary of `rope_theta` in interleaved pairs, sinks) that reads its last `sliding_window` tokens and the `index_topk` tokens before
+/// them its indexer keeps (a key a token, LayerNorm-ed with a bias, its own rotary in halves; DeepSeek-V3.2's form). Both gate their output by the
+/// query latent (`GateFrom::Latent`) and mix their heads' outputs at a rank of a quarter of the heads (`head_mix`). The feed-forward is a dense SiTU
+/// MLP on the first `first_k_dense_replace` layers and experts after them: `n_routed_experts` in a latent of `moe_latent_size` (a projection down, the
+/// weighed sum normed, a projection up), two routers whose sigmoid scores add and a learned scale an expert, a shared expert on the full vector. The
+/// residual streams' norm has its epsilon outside the root (`StreamsP::eps_outside`); the head's logits take the four-part correction
+/// (`Head::correction`), a bf16 tensor between operations. A DSpark drafter of `dspark_target_layer_ids`' length is under `model.mtp.`: its layers the
+/// compressed attention's window with the compressing layers' rotary, its targets read after their layers (`DSpark::after`).
+///
+/// Read from SGLang's implementation (models/ernie55.py, configs/ernie55.py, models/ernie55_dspark.py, layers/attention/ernie55_backend.py), the one
+/// reader of the family: the release ships no modeling code. Every key is read and held to what that reader computes; a key it does not read is held to
+/// the released value, so that a release that changes one is stopped here. Nothing here is held to a run of the release: the CPU reference of each part
+/// is its formula as that reader computes it, in f32 (the reader rounds to bf16 between operations in places the kinds do not say: the gate's sigmoid,
+/// the heads' mix, the routers' weights).
+fn ernie5_5(tc: &Map<String, Value>) -> Result<Described> {
+    let mt = "ernie5_5_moe";
+    let k = Keys::new(tc, mt);
+    let (d, layers, vocab, eps, tied) = common(&k, None)?;
+    if tied {
+        return err(format!("{mt}: tie_word_embeddings = true is not supported (the release has a head of its own)"));
+    }
+    k.opt_usize("max_position_embeddings")?;
+    // (the settings the reader's config class asks for by value: configs/ernie55.py `_REQUIRED_CHECKPOINT_VALUES`)
+    for (key, want) in [
+        ("hidden_act", Value::from("situ")),
+        ("latent_moe_use_norm", Value::Bool(true)),
+        ("moe_split_feature_routing", Value::Bool(true)),
+        ("multimax", Value::from("lm_head")),
+        ("n_group", Value::from(1)),
+        ("topk_group", Value::from(1)),
+        ("routed_scaling_factor_learnable", Value::Bool(true)),
+    ] {
+        k.expect(key, &want)?;
+    }
+    // (the settings no reader reads: the release's values say the form its reader computes, each named for what it turns on where the name says so.
+    // gated_linear_unit: the MLPs are gated pairs. use_qk_norm, qk_norm_type: the weightless RMS norm of each query head. use_gated_attn,
+    // gated_attn_act, gated_attn_use_q_lora: the output gate, a sigmoid, from the query latent. use_vha_attention: the heads' mix.
+    // add_full_attention_sink_bias: the latent layers' sinks. enable_hyper_connections: the residual streams. scoring_func, topk_method,
+    // norm_topk_prob: sigmoid scores, a bias for the choice, the chosen scores divided by their sum. rope_interleave: pairs (2i, 2i + 1))
+    for (key, want) in [
+        ("attention_bias", Value::Bool(false)),
+        ("use_bias", Value::Bool(false)),
+        ("gated_linear_unit", Value::Bool(true)),
+        ("num_key_value_heads", Value::from(1)),
+        ("use_mla", Value::Bool(false)),
+        ("experimental_attention_variant", Value::from("dsv4_hybrid")),
+        ("hybrid_mla_attention", Value::from("mqa_dsa")),
+        ("csa_dense_mode", Value::Bool(true)),
+        ("mqa_split_kv_b_proj", Value::Bool(true)),
+        ("use_attn_merger", Value::Bool(true)),
+        ("use_fast_hadamard", Value::Bool(true)),
+        ("use_qk_norm", Value::Bool(true)),
+        ("qk_norm_type", Value::from("per_head")),
+        ("use_gated_attn", Value::Bool(true)),
+        ("gated_attn_act", Value::from("sigmoid")),
+        ("gated_attn_use_q_lora", Value::Bool(true)),
+        ("use_vha_attention", Value::Bool(true)),
+        ("add_full_attention_sink_bias", Value::Bool(true)),
+        ("enable_hyper_connections", Value::Bool(true)),
+        ("scoring_func", Value::from("sigmoid")),
+        ("topk_method", Value::from("noaux_tc")),
+        ("norm_topk_prob", Value::Bool(true)),
+        ("moe_group_experts", Value::Bool(false)),
+        ("moe_shared_expert_gate", Value::Bool(false)),
+        ("moe_layer_freq", Value::from(1)),
+        ("n_shared_experts", Value::from(1)),
+        ("rope_interleave", Value::Bool(true)),
+        ("rope_type", Value::from("rope")),
+        ("hca_rope_type", Value::from("yarn")),
+        ("use_dense_mtp", Value::Bool(false)),
+        ("mtp_shared_last_layer", Value::Bool(true)),
+    ] {
+        k.expect(key, &want)?;
+    }
+    // (how the experts' tokens travel between GPUs in the reader: no part of what a layer computes)
+    k.str("moe_token_dispatcher_type")?;
+    let (beta, linear) = (k.f64("activation_situ_beta")?, k.f64("activation_situ_linear_beta")?);
+    if beta <= 0.0 || linear <= 0.0 {
+        return err(format!("{mt}: activation_situ_beta = {beta}, activation_situ_linear_beta = {linear}: both divide, and are above 0"));
+    }
+    // the compressed attention: one key-value head whose keys are its values, the rotary on the trailing channels of a head
+    let (heads, hd, rd) = (k.usize("num_attention_heads")?, k.usize("head_dim")?, k.usize("qk_rope_head_dim")?);
+    let (q_lora, o_lora, o_groups) = (k.usize("q_lora_rank")?, k.usize("o_lora_rank")?, k.usize("o_groups")?);
+    let window = k.opt_usize("sliding_window")?.unwrap_or(128);
+    for (key, want, why) in [
+        ("qk_nope_head_dim", hd.saturating_sub(rd), "head_dim less qk_rope_head_dim: the channels of a head the rotary leaves"),
+        ("v_head_dim", hd, "head_dim: the keys are the values"),
+        ("kv_lora_rank", hd, "head_dim: the one key-value head's width"),
+        ("qk_pos_emb_head_dim", rd, "qk_rope_head_dim: the channels the rotary turns"),
+    ] {
+        match k.opt_usize(key)? {
+            Some(v) if v != want => return err(format!("{mt}: {key} = {v} is not supported (only {want}, {why})")),
+            _ => {}
+        }
+    }
+    if rd > hd || rd % 2 != 0 || o_groups == 0 || heads % o_groups != 0 {
+        return err(format!("{mt}: {heads} heads of {hd} with a rotary of {rd} channels in {o_groups} output groups"));
+    }
+    // the rotaries: the latent layers' plain one, the compressing layers' YaRN (the frequencies stretched, no factor on cos and sin: DeepSeek-V4's)
+    let theta = k.opt_f64("rope_theta")?.unwrap_or(10_000.0);
+    if k.opt_f64("rotary_base")?.is_some_and(|b| b != theta) {
+        return err(format!("{mt}: rotary_base is not rope_theta ({theta}): one rotary's base under two names"));
+    }
+    if k.opt_f64("rotary_percent")?.is_some_and(|p| p != 1.0) {
+        return err(format!("{mt}: rotary_percent is not supported (only 1.0)"));
+    }
+    let mut comp_m = match k.raw("rope_scaling") {
+        Some(Value::Object(o)) => o.clone(),
+        _ => return err(format!("{mt}: no rope_scaling (the compressing layers' YaRN)")),
+    };
+    let ty = comp_m.get("rope_type").or(comp_m.get("type")).and_then(Value::as_str).unwrap_or("default").to_string();
+    if ty != "yarn" {
+        return err(format!("{mt}: rope_scaling of type {ty} is not supported (only yarn)"));
+    }
+    comp_m.insert("rope_theta".into(), Value::from(k.opt_f64("compress_rope_theta")?.unwrap_or(160_000.0)));
+    comp_m.entry("attention_factor").or_insert(Value::from(1.0));
+    let mut comp_rope = rope(&comp_m, rd, k.opt_usize("max_position_embeddings")?, &format!("{mt} rope_scaling"))?;
+    comp_rope.style = RopeStyle::Interleaved;
+    // the latent attention and its indexer
+    let (mh, mnope, mrd, mvd) = (
+        k.usize("hybrid_mla_num_attention_heads")?,
+        k.usize("hybrid_mla_qk_nope_head_dim")?,
+        k.usize("hybrid_mla_qk_rope_head_dim")?,
+        k.usize("hybrid_mla_v_head_dim")?,
+    );
+    let (mq, mkv) = (k.usize("hybrid_mla_q_lora_rank")?, k.usize("hybrid_mla_kv_lora_rank")?);
+    // (a latent attention's keys and values are a head's each, made from the one shared latent: the count of them is the heads')
+    if k.opt_usize("hybrid_mla_num_key_value_heads")?.is_some_and(|v| v != mh) {
+        return err(format!("{mt}: hybrid_mla_num_key_value_heads is not supported (only hybrid_mla_num_attention_heads, {mh})"));
+    }
+    let (ih, idim, itop) = (k.usize("index_n_heads")?, k.usize("index_head_dim")?, k.usize("index_topk")?);
+    // (the indexer turns the first channels of its heads by the latent attention's rotary: as many as that turns)
+    if mrd % 2 != 0 || mrd > idim || mh == 0 || mvd == 0 || itop == 0 || mq == 0 || mkv == 0 || mnope + mrd == 0 || ih == 0 {
+        return err(format!("{mt}: a latent attention of {mh} heads ({mnope} + {mrd}, values of {mvd}) with an indexer of {ih} heads of {idim}"));
+    }
+    // each layer's sort
+    let ratios: Vec<i64> = match k.raw("compress_ratios") {
+        Some(Value::Array(a)) => a.iter().map(|x| x.as_i64().unwrap_or(i64::MIN)).collect(),
+        _ => return err(format!("{mt}: no compress_ratios (each layer's attention: 128 or -2)")),
+    };
+    // (the reader's class has one draft layer where the key is absent, and its ratio after the layers'; the release has none)
+    let nextn = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(1);
+    if nextn != 0 {
+        return err(format!("{mt}: num_nextn_predict_layers = {nextn} is not supported (only 0: a draft layer after the model's is not read)"));
+    }
+    if ratios.len() != layers {
+        return err(format!("{mt}: {} compress_ratios for {layers} layers", ratios.len()));
+    }
+    if let Some((l, r)) = ratios.iter().enumerate().find(|(_, &r)| r != 128 && r != -2) {
+        return err(format!("{mt}: layer {l} has compress ratio {r} (only 128, the compressed attention, and -2, the latent one)"));
+    }
+    let latent_layers = ratios.iter().filter(|&&r| r == -2).count();
+    // the residual streams
+    let (hc, hc_iters, hc_eps) = (k.usize("hc_mult")?, k.usize("hc_sinkhorn_iters")?, k.f64("hc_eps")?);
+    if hc == 0 || hc_iters == 0 || hc_eps <= 0.0 {
+        return err(format!("{mt}: {hc} residual streams, {hc_iters} Sinkhorn passes, hc_eps {hc_eps}"));
+    }
+    // the feed-forward
+    let dense = k.opt_usize("first_k_dense_replace")?.unwrap_or(0).min(layers);
+    let (inter, moe_inter, latent) = (k.usize("intermediate_size")?, k.usize("moe_intermediate_size")?, k.usize("moe_latent_size")?);
+    let (ne, top_k) = (k.usize("n_routed_experts")?, k.usize("num_experts_per_tok")?);
+    // (the routed weights' factor where it is not learned; the release learns one an expert, `gate.routed_scaling_factor_param`, and its reader does not read this)
+    k.opt_f64("routed_scaling_factor")?;
+    if top_k == 0 || top_k > ne || inter == 0 || moe_inter == 0 || latent == 0 {
+        return err(format!("{mt}: {top_k} of {ne} experts a token, of {moe_inter} in a latent of {latent}; a dense MLP of {inter}"));
+    }
+    // the drafter
+    let targets: Vec<usize> = match k.raw("dspark_target_layer_ids") {
+        Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect(),
+        Some(v) => return err(format!("{mt}: dspark_target_layer_ids {v}: a list of layers")),
+        None => Vec::new(),
+    };
+    let draft = (k.opt_usize("dspark_block_size")?, k.opt_usize("dspark_markov_rank")?, k.opt_usize("dspark_noise_token_id")?);
+    if let Some(l) = targets.iter().find(|&&l| l >= layers) {
+        return err(format!("{mt}: dspark_target_layer_ids names layer {l} of {layers}"));
+    }
+    if !targets.is_empty() && !matches!(draft, (Some(b), Some(r), Some(_)) if b > 0 && r > 0) {
+        return err(format!("{mt}: a DSpark drafter without its dspark_block_size, dspark_markov_rank (its Markov head) or dspark_noise_token_id"));
+    }
+    // (the heads' mix has a rank of a quarter of the heads, as the reader makes it; its indexer keeps more tokens than the window it does not pick among)
+    if heads % 4 != 0 || mh % 4 != 0 {
+        return err(format!("{mt}: {heads} and {mh} heads, where the heads' mix has a rank of a quarter of them"));
+    }
+    if latent_layers > 0 && itop <= window {
+        return err(format!(
+            "{mt}: index_topk = {itop} is not above sliding_window ({window}): a latent layer reads its window and the tokens before it its indexer keeps"
+        ));
+    }
+    let cv = &names::ERNIE;
+    let norm = Norm::rms(eps);
+    let gate = Some(OutGate { act: Act::Sigmoid, from: GateFrom::Latent, norm: None });
+    let streams = StreamsP {
+        streams: hc,
+        sinkhorn_iters: hc_iters,
+        eps: hc_eps as f32,
+        norm_eps: eps,
+        rounding: Rounding::Once,
+        lagged: false,
+        eps_outside: true,
+        apart: None,
+    };
+    let residual = Residual::Streams(streams);
+    let comp = Comp {
+        heads,
+        head_dim: hd,
+        q_lora,
+        o_groups,
+        o_lora,
+        window,
+        ratio: 128,
+        overlap: false,
+        rope: comp_rope.clone(),
+        indexer: None,
+        norm_eps: eps,
+        ape: true,
+        q_head_norm: true,
+        share: None,
+        gate,
+        head_mix: heads / 4,
+    };
+    let main_rope = Rope { style: RopeStyle::Interleaved, ..Rope::plain(theta, mrd) };
+    let mla = Mla {
+        heads: mh,
+        q_lora: Some(mq),
+        kv_lora: mkv,
+        nope: mnope,
+        rope_dim: mrd,
+        v_dim: mvd,
+        rope: (mrd > 0).then(|| main_rope.clone()),
+        q_norm: norm,
+        kv_norm: norm,
+        gate,
+        scale: ((mnope + mrd) as f32).powf(-0.5),
+        absorbed: true,
+        indexer: Some(Indexer {
+            heads: ih,
+            head_dim: idim,
+            top_k: itop,
+            block: 1,
+            shared: false,
+            form: IndexForm::LAYER_KEYS,
+            rope: mrd,
+            rope_style: Some(RopeStyle::Half),
+            q_in: None,
+            pos_scale: false,
+        }),
+        head_mix: mh / 4,
+        sinks: true,
+        window: Some(window),
+        pos_scale: false,
+        kv_from: None,
+        rope_learned: false,
+    };
+    let situ = Mlp { act: Act::Situ { beta: beta as f32, linear: linear as f32 }, gated: true, bias: false, clamp: None };
+    let moe = Moe {
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias: true,
+            groups: None,
+            top_k,
+            renorm: true,
+            scale: 1.0,
+            hash: false,
+            routers: 2,
+            expert_scale: true,
+        },
+        experts: ne,
+        expert: situ,
+        shared: Some(situ),
+        shared_gate: false,
+        latent: Some(Latent { dim: latent, norm_in: None, expert_norm: None, norm_out: Some(norm) }),
+    };
+    // each block's roles, and every tensor's shape as the checkpoint stores it
+    let mut shapes: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let hc_shapes = [("hc_fn", vec![(2 + hc) * hc, hc * d]), ("hc_base", vec![(2 + hc) * hc]), ("hc_scale", vec![3])];
+    let comp_shapes = |ratio: usize| {
+        let mut v = vec![
+            ("norm_in", vec![d]),
+            ("q_a", vec![q_lora, d]),
+            ("q_a_norm", vec![q_lora]),
+            ("q_b", vec![heads * hd, q_lora]),
+            ("kv", vec![hd, d]),
+            ("kv_norm", vec![hd]),
+            ("o_a", vec![o_groups * o_lora, heads * hd / o_groups]),
+            ("o_b", vec![d, o_groups * o_lora]),
+            ("g", vec![o_groups * o_lora, q_lora]),
+            ("mix_u", vec![heads, heads / 4]),
+            ("mix_v", vec![heads, heads / 4]),
+            ("sinks", vec![heads]),
+        ];
+        if ratio > 0 {
+            v.extend([("comp_kv", vec![hd, d]), ("comp_gate", vec![hd, d]), ("comp_ape", vec![ratio, hd]), ("comp_norm", vec![hd])]);
+        }
+        v
+    };
+    let mla_shapes = [
+        ("norm_in", vec![d]),
+        ("q_a", vec![mq, d]),
+        ("q_a_norm", vec![mq]),
+        ("q_b", vec![mh * (mnope + mrd), mq]),
+        ("kv_a", vec![mkv + mrd, d]),
+        ("kv_a_norm", vec![mkv]),
+        ("kv_b", vec![mh * (mnope + mvd), mkv]),
+        ("o", vec![d, mh * mvd]),
+        ("g", vec![mh * mvd, mq]),
+        ("mix_u", vec![mh, mh / 4]),
+        ("mix_v", vec![mh, mh / 4]),
+        ("sinks", vec![mh]),
+        ("indexer_wq_b", vec![ih * idim, mq]),
+        ("indexer_wk", vec![idim, d]),
+        ("indexer_k_norm", vec![idim]),
+        ("indexer_k_norm_bias", vec![idim]),
+        ("indexer_weights", vec![ih, d]),
+    ];
+    let moe_shapes = [
+        ("norm_in", vec![d]),
+        ("router", vec![2 * ne, d]),
+        ("choice_bias", vec![ne]),
+        ("expert_scale", vec![ne]),
+        ("latent_down", vec![latent, d]),
+        ("latent_up", vec![d, latent]),
+        ("latent_norm_out", vec![latent]),
+        ("shared_gate", vec![moe_inter, d]),
+        ("shared_up", vec![moe_inter, d]),
+        ("shared_down", vec![d, moe_inter]),
+        ("experts_gate_up", vec![moe_inter, latent]),
+        ("experts_down", vec![latent, moe_inter]),
+    ];
+    let mlp_shapes = [("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter])];
+    // (a layer's attention block at `at`: the compressed attention of `ratio`, a compressor where it compresses)
+    let comp_roles = |at: &str, ratio: usize, shapes: &mut BTreeMap<String, Vec<usize>>| {
+        let mut r = names::roles(part::ERNIE_COMP_ATTN, at, 0, all);
+        if ratio > 0 {
+            r.extend(names::roles(part::ERNIE_COMP, at, 0, all));
+        }
+        r.extend(names::roles(part::ERNIE_HC_ATTN, at, 0, all));
+        shape_sources(shapes, &r, &[comp_shapes(ratio), hc_shapes.to_vec()].concat());
+        r
+    };
+    let moe_roles = |at: &str, shapes: &mut BTreeMap<String, Vec<usize>>| {
+        let mut r = names::roles(part::ERNIE_MOE, at, ne, all);
+        r.extend(names::roles(part::ERNIE_HC_FFN, at, 0, all));
+        shape_sources(shapes, &r, &[moe_shapes.to_vec(), hc_shapes.to_vec()].concat());
+        r
+    };
+    let block = |body: Body| Block { norm_in: norm, body, norm_out: None, residual: residual.clone() };
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for (l, &ratio) in ratios.iter().enumerate() {
+        let p = cv.layer("model.", l);
+        if ratio == -2 {
+            let mut r = names::roles(part::ERNIE_MLA, &p, 0, all);
+            r.extend(names::roles(part::ERNIE_HC_ATTN, &p, 0, all));
+            shape_sources(&mut shapes, &r, &[mla_shapes.to_vec(), hc_shapes.to_vec()].concat());
+            blocks.push(block(Body::Mixer(Mixer::Mla(mla.clone()))));
+            roles.push(r);
+        } else {
+            blocks.push(block(Body::Mixer(Mixer::Compressed(comp.clone()))));
+            roles.push(comp_roles(&p, 128, &mut shapes));
+        }
+        if l < dense {
+            let mut r = names::roles(part::NORM_POST, &p, 0, all);
+            r.extend(names::roles(part::MLP_BODY, &p, 0, all));
+            r.extend(names::roles(part::ERNIE_HC_FFN, &p, 0, all));
+            shape_sources(&mut shapes, &r, &[mlp_shapes.to_vec(), hc_shapes.to_vec()].concat());
+            blocks.push(block(Body::Ffn(Ffn::Mlp(situ))));
+            roles.push(r);
+        } else {
+            blocks.push(block(Body::Ffn(Ffn::Moe(moe.clone()))));
+            roles.push(moe_roles(&p, &mut shapes));
+        }
+    }
+    // the drafter: a stage a target layer, each the compressed attention's window (with the compressing layers' rotary) and the experts
+    let stage = Comp { ratio: 0, ..comp.clone() };
+    let mut draft = if targets.is_empty() { None } else { dspark_head(&k, targets.len(), stage, moe.clone(), residual.clone(), norm)? };
+    if let Some(ds) = draft.as_mut().and_then(|h| h.dspark.as_mut()) {
+        ds.after = true;
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: hc, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: norm,
+        head: Head {
+            tied,
+            softcap: None,
+            scale: 1.0,
+            collapse: Collapse::Weighted { eps: hc_eps as f32, norm_eps: eps },
+            rounding: Rounding::Twice,
+            correction: true,
+        },
+        mtp: draft.into_iter().collect(),
+        vision: None,
+        rope: None,
+    };
+    let mut out = finish(&k, desc, cv, "model.", roles, 0)?;
+    let head_shapes = [("out_hc_fn", vec![hc, hc * d]), ("out_hc_base", vec![hc]), ("out_hc_scale", vec![1])];
+    shape_sources(&mut shapes, &out.extra, &[head_shapes.to_vec(), vec![("logit_ranges", vec![4]), ("logit_ts", vec![4])]].concat());
+    for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
+        shapes.insert(n.clone(), vec![vocab, d]);
+    }
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(ds) = out.desc.mtp.first().and_then(|h| h.dspark.as_ref()) {
+        let mut stages = Vec::new();
+        for i in 0..ds.targets.len() {
+            let p = format!("model.mtp.{i}");
+            stages.push(comp_roles(&p, 0, &mut shapes));
+            stages.push(moe_roles(&p, &mut shapes));
+        }
+        let own = names::roles(part::ERNIE_DRAFT, "model.mtp", 0, all);
+        let own_shapes = [
+            ("main_proj", vec![d, ds.targets.len() * d]),
+            ("main_norm", vec![d]),
+            ("markov_embed", vec![vocab, ds.markov_rank]),
+            ("markov_head", vec![vocab, ds.markov_rank]),
+            ("confidence", vec![1, d + ds.markov_rank]),
+            ("final_norm", vec![d]),
+        ];
+        shape_sources(&mut shapes, &own, &[own_shapes.to_vec(), head_shapes.to_vec()].concat());
+        out.mtp = vec![(stages, own)];
+    }
+    out.shapes = shapes;
+    Ok(out)
+}
+
+/// Hy4 Flash's latent attention of one sort of layer: `heads` heads of `nope` + `rd` and values of `vd` (`w`) from the latents `q_lora` and `kv_lora`
+/// (`lora`), each latent RMS-normed, the rotary on a head's trailing `rd` channels in interleaved pairs, the score's scale (nope + rd)^-0.5, a sink a
+/// head, each channel of the heads' outputs times the sigmoid of a product of the block's input (`self_attn.linear_gate`). A sliding layer's has the
+/// `window` and no indexer; a layer with the indexer no window.
+///
+/// The sink is `Mla::sinks` as it stands: the readers hand the fp32 `learnable_sink_param` to their sparse kernel, which multiplies a head's output by
+/// exp(lse) / (exp(lse) + exp(sink)), lse over the scaled scores (vLLM models/hy_v4/nvidia/flashmla_sparse.py): one more logit in the softmax, the value
+/// as it is, which weighs nothing. The window is `Mla::window` with no indexer: both readers give a sliding layer's query the tokens
+/// p - sliding_window + 1 ..= p that are in the sequence, itself the last (vLLM models/hy_v4_flash/nvidia/swa.py `window_indices`, SGLang's
+/// `window_indices` kernel), and `window_size` is held to [sliding_window - 1, 0].
+fn hy4_mla(w: (usize, usize, usize, usize), lora: (usize, usize), rope: Rope, eps: f32, window: Option<usize>, indexer: Option<Indexer>) -> Mla {
+    let (heads, nope, rd, vd) = w;
+    Mla {
+        heads,
+        q_lora: Some(lora.0),
+        kv_lora: lora.1,
+        nope,
+        rope_dim: rd,
+        v_dim: vd,
+        rope: Some(Rope { style: RopeStyle::Interleaved, ..rope }),
+        q_norm: Norm::rms(eps),
+        kv_norm: Norm::rms(eps),
+        gate: Some(OutGate { act: Act::Sigmoid, from: GateFrom::Own, norm: None }),
+        scale: ((nope + rd) as f32).powf(-0.5),
+        absorbed: true,
+        indexer,
+        head_mix: 0,
+        sinks: true,
+        window,
+        pos_scale: false,
+        kv_from: None,
+        rope_learned: false,
+    }
+}
+
+/// The epsilon of the norms in Hy4 Flash's n-gram memory's gate (a stream's, a key's): the readers' `nn.RMSNorm` with no eps on bf16 values, which is
+/// bf16's machine epsilon, 2^-7 (SGLang names it: `torch.finfo(torch.bfloat16).eps`).
+const HY4_GATE_EPS: f32 = 0.0078125;
+
+/// The names a config gives a layer of latent attention with the indexer (`layer_types`, and the per-sort `rope_parameters`): transformers' own, and the
+/// three the family's readers fold into it.
+const HY4_SPARSE: &[&str] = &["deepseek_sparse_attention", "indexed_attention", "sparse_attention", "sparse"];
+
+/// Hy4 Flash (`hy_v4_flash`, `HYV4FlashForConditionalGeneration`): a decoder of latent attention on residual streams that do not mix. `layer_types` says
+/// each layer's attention. `deepseek_sparse_attention`: the latent attention (`Mla`: `num_attention_heads` heads of `qk_nope_head_dim` +
+/// `qk_rope_head_dim` and values of `v_head_dim`, latents of `q_lora_rank` and `kv_lora_rank`) over the tokens its compressed indexer picks
+/// (`IndexForm::Grouped`: groups of `compressed_indexer_compress_ratio` tokens, the best `compressed_indexer_group_topk` - 1 closed groups and the
+/// query's own, `index_topk` tokens at most). `sliding_attention`: the same attention with the `swa_*` heads and widths over the last `sliding_window`
+/// tokens (`Mla::window`), no indexer. Both (`hy4_mla`): the rotary of their sort (`rope_parameters` by layer type: plain, in interleaved pairs, its
+/// angles by three axes for the tower's tokens), a sink a head, the heads' output times the sigmoid of a product of the block's input, and with
+/// `sandwich_norm` an RMS norm of each block's output before the residual. The feed-forward is a dense SiLU MLP or, where `mlp_layer_types` says
+/// sparse, `n_routed_experts` experts in a latent of `routed_expert_hidden_size` (a projection down and one up, no norm between; the router and the
+/// shared expert on the full vector; sigmoid scores, a bias for the choice, the chosen scores over their sum times `routed_scaling_factor`; the routed
+/// experts' SwiGLU held to `swiglu_limit`, the gate before its activation). The residual is `hc_mult` streams (`StreamsP::apart`, the magnitude
+/// `hc_magnitude`, each result rounded once): each block reads their weighed sum and each stream adds its own weight of the output; a hyper-head
+/// (`Collapse::Weighted`) joins them for the final norm, and the logits are fp32 (`enable_lm_head_fp32`). On the layers of `engram_layer_ids`
+/// (numbered from 1: the checkpoint's layer one less, where its tensors are) the n-gram memory (`NgramForm::EngramNormed`) adds to the streams before
+/// the layer's attention, a block of its own; its tables are read by rows on the host.
+///
+/// Two parts of the checkpoint are left, by name (`names::HUNYUAN`'s `unread`), and the text model runs without either. The drafter
+/// (`model.dfly_layers.`, the top level's `dfly_*` keys): a block of mask tokens after the last token drafted in one pass by `dfly_num_hidden_layers`
+/// layers of one residual that read the model's own keys at `dfly_target_kv_layers` with its picks at `dfly_target_index_layer`. Its keys are read and
+/// held to the readers' form, so that a release that changes one is stopped here; its tensors are not read and drafting is not described. The vision
+/// tower and its adapter (`vit.`, `vision_config`): not read.
+///
+/// Read from the family's two readers, vLLM (models/hy_v4_flash, over models/hy_v4) and SGLang (models/hunyuan_v4_flash.py, configs/hy_v4_flash.py):
+/// the release ships no modeling code, and transformers and llama.cpp read Hy4 without Flash's parts. Every key is read. A key a reader reads is held
+/// to what the readers compute; a key neither reads is held to the released value; a key of the training alone (an initial value, a loss's weight) is
+/// read and not held. Nothing here is held to a run of the release: the CPU reference of each part is its formula as the readers compute it, in f32
+/// but for the streams (rounded once, where the readers cast their fp32 results). The readers round to bf16 in places the kinds do not say: each
+/// product's output and each norm's, the gate's sigmoid, the n-gram memory's normed rows, keys and gate, and the indexer's keys and queries, which
+/// they also turn by a Hadamard transform and quantize to FP8 before scoring.
+fn hy4_flash(c: &ModelConfig) -> Result<Described> {
+    let (mt, tc) = ("hy_v4_flash", &c.text);
+    let k = Keys::new(tc, mt);
+    // (the drafter's keys are the top level's, which is the text model's own where the config is not nested)
+    let top = Keys::new(&c.top, mt);
+    let dk = if c.nested { &top } else { &k };
+    if c.nested {
+        // (the tower and its processor's settings: not read)
+        for key in ["text_config", "vision_config", "processor_class", "spatial_merge_size", "language_model_only"] {
+            top.raw(key);
+        }
+    }
+    let (d, layers, vocab) = (k.usize("hidden_size")?, k.usize("num_hidden_layers")?, k.usize("vocab_size")?);
+    let eps = k.opt_f64("rms_norm_eps")?.unwrap_or(1e-5);
+    let max_pos = k.opt_usize("max_position_embeddings")?;
+    let tied = k.bool("tie_word_embeddings", false)?;
+    if d == 0 || layers == 0 || vocab == 0 || eps <= 0.0 {
+        return err(format!("{mt}: {layers} layers of {d} over a vocabulary of {vocab}, rms_norm_eps {eps}"));
+    }
+    // (the settings the readers ask for by value, or compute one form of: models/hy_v4_flash/configs.py `validate_flash_config`, nvidia/attention.py,
+    // configs/hy_v4_flash.py `_validate`. gate_lora_rank, o_lora_rank, gate_groups, o_groups: the gate and the output are one product each. full_nope:
+    // the rotary turns its channels. qk_norm: the query and key-value latents are normed)
+    for (key, want) in [
+        ("hidden_act", Value::from("silu")),
+        ("gated_mla", Value::Bool(true)),
+        ("gating_type", Value::from("elementwise")),
+        ("learnable_sink", Value::Bool(true)),
+        ("enable_ihc", Value::Bool(true)),
+        ("use_compressed_indexer", Value::Bool(true)),
+        ("compressed_indexer_skip_fine_select", Value::Bool(true)),
+        ("compressed_indexer_reuse_fine_indexer", Value::Bool(false)),
+        ("compressed_indexer_key_pooling", Value::from("gated")),
+        ("compressed_indexer_head_dim", Value::from(128)),
+        ("index_head_dim", Value::from(128)),
+        ("gate_lora_rank", Value::Null),
+        ("o_lora_rank", Value::Null),
+        ("gate_groups", Value::from(1)),
+        ("o_groups", Value::from(1)),
+        ("full_nope", Value::Bool(false)),
+        ("qk_norm", Value::Bool(true)),
+    ] {
+        k.expect(key, &want)?;
+    }
+    // (the settings no reader reads: the release's values say the form its readers compute. use_mla, use_dsa: the latent attention, its indexer.
+    // n_group, topk_group, moe_router_use_sigmoid, moe_router_enable_expert_bias: one group of all the experts, sigmoid scores, the bias for the choice.
+    // The rest name how a reader's kernels run, or what its server returns)
+    for (key, want) in [
+        ("attention_bias", Value::Bool(false)),
+        ("use_mla", Value::Bool(true)),
+        ("use_dsa", Value::Bool(true)),
+        ("gate_lora_op", Value::from("none")),
+        ("o_lora_op", Value::from("none")),
+        ("n_group", Value::from(1)),
+        ("topk_group", Value::from(1)),
+        ("moe_router_use_sigmoid", Value::Bool(true)),
+        ("moe_router_enable_expert_bias", Value::Bool(true)),
+        ("ihc_kernel_backend", Value::from("naive")),
+        ("compressed_indexer_stage2_query_block_size", Value::from(8192)),
+        ("compressed_indexer_teacher_pooling_type", Value::from("max")),
+        ("compressed_indexer_triton_pooling_min_groups", Value::from(1)),
+        ("compressed_indexer_use_triton_pooling", Value::Bool(true)),
+        ("engram_isolate_fffd_namespace", Value::Bool(false)),
+        ("engram_tokenizer_name_or_path", Value::Null),
+        ("engram_vocab_map_path", Value::Null),
+        ("bitwise_backward_align", Value::Bool(true)),
+        ("fast_op_fp32_linear_gemm", Value::Bool(true)),
+        ("return_bos_score", Value::Bool(true)),
+        ("return_max_logit", Value::Bool(true)),
+        ("use_grouped_mm", Value::Bool(false)),
+    ] {
+        k.expect(key, &want)?;
+    }
+    // (the training's alone: a loss's weight, the sinks' and the tables' initial values; a key the readers drop before they read the rest)
+    k.opt_f64("moe_aux_loss_coeff")?;
+    k.opt_f64("learnable_sink_init")?;
+    k.opt_f64("engram_embed_random_seed")?;
+    k.raw("engram_enable");
+    // (lists: one that is not a list, or holds an entry of another type, is refused by name)
+    let names = |key: &str| -> Result<Option<Vec<&str>>> {
+        let Some(v) = k.raw(key) else { return Ok(None) };
+        let a = v.as_array().ok_or_else(|| Error(format!("{mt}: {key} = {v} is not a list")))?;
+        a.iter().map(|e| e.as_str().ok_or_else(|| Error(format!("{mt}: {key}: {e} is not a name")))).collect::<Result<_>>().map(Some)
+    };
+    let counts = |from: &Keys, key: &str| -> Result<Option<Vec<usize>>> {
+        let Some(v) = from.raw(key) else { return Ok(None) };
+        let a = v.as_array().ok_or_else(|| Error(format!("{mt}: {key} = {v} is not a list")))?;
+        a.iter().map(|e| e.as_u64().map(|n| n as usize).ok_or_else(|| Error(format!("{mt}: {key} = {v}: {e} is not a count")))).collect::<Result<_>>().map(Some)
+    };
+    // the latent attention, of the layers with the indexer and of the sliding ones (a width the config does not give the sliding layers is the others')
+    let (heads, nope, rd, vd) = (k.usize("num_attention_heads")?, k.usize("qk_nope_head_dim")?, k.usize("qk_rope_head_dim")?, k.usize("v_head_dim")?);
+    let (q_lora, kv_lora) = (k.usize("q_lora_rank")?, k.usize("kv_lora_rank")?);
+    let swa = (
+        k.opt_usize("swa_num_attention_heads")?.unwrap_or(heads),
+        k.opt_usize("swa_qk_nope_head_dim")?.unwrap_or(nope),
+        k.opt_usize("swa_qk_rope_head_dim")?.unwrap_or(rd),
+        k.opt_usize("swa_v_head_dim")?.unwrap_or(vd),
+    );
+    for (key, want, why) in [
+        ("swa_qk_rope_head_dim", rd, "qk_rope_head_dim: one rotary's channels in both sorts of layer"),
+        ("qk_head_dim", nope + rd, "qk_nope_head_dim + qk_rope_head_dim"),
+        ("swa_qk_head_dim", swa.1 + swa.2, "swa_qk_nope_head_dim + swa_qk_rope_head_dim"),
+        ("head_dim", rd, "qk_rope_head_dim: the channels the rotary turns"),
+        ("num_key_value_heads", heads, "num_attention_heads: a key and a value a head, from the one latent"),
+    ] {
+        match k.opt_usize(key)? {
+            Some(v) if v != want => return err(format!("{mt}: {key} = {v} is not supported (only {want}, {why})")),
+            _ => {}
+        }
+    }
+    if heads == 0 || swa.0 == 0 || q_lora == 0 || kv_lora == 0 || rd == 0 || rd % 2 != 0 || vd == 0 || swa.3 == 0 {
+        return err(format!(
+            "{mt}: a latent attention of {heads} heads ({nope} + {rd}, values of {vd}; {} of {} + {}, values of {} on a sliding layer) from latents of {q_lora} and {kv_lora}",
+            swa.0, swa.1, swa.2, swa.3
+        ));
+    }
+    // each layer's sort
+    let sliding: Vec<bool> = match names("layer_types")? {
+        None => vec![false; layers],
+        Some(t) => {
+            if t.len() != layers {
+                return err(format!("{mt}: {} layer_types for {layers} layers", t.len()));
+            }
+            let sort = |(l, x): (usize, &&str)| match *x {
+                "sliding_attention" => Ok(true),
+                x if HY4_SPARSE.contains(&x) => Ok(false),
+                x => err(format!(
+                    "{mt}: layer {l} is of type {x:?} (only deepseek_sparse_attention, the latent attention with the indexer, and sliding_attention)"
+                )),
+            };
+            t.iter().enumerate().map(sort).collect::<Result<_>>()?
+        }
+    };
+    // (the same list as numbers, which no reader reads: 1 a sliding layer)
+    if counts(&k, "swa_pattern")?.is_some_and(|p| p.len() != layers || p.iter().zip(&sliding).any(|(&p, &s)| p != s as usize)) {
+        return err(format!("{mt}: swa_pattern is not layer_types' (1 where a layer is sliding_attention, 0 where it is not)"));
+    }
+    // (a layer with the indexer picks for itself: the Flash readers have no layer that takes another's picks)
+    if names("indexer_types")?.is_some_and(|t| t.len() != layers || t.iter().any(|x| *x != "full")) {
+        return err(format!("{mt}: indexer_types is not \"full\" for each of the {layers} layers (a layer that shares another's picks is not read)"));
+    }
+    let window = k.opt_usize("sliding_window")?.unwrap_or(512);
+    if window == 0 {
+        return err(format!("{mt}: sliding_window = 0 (a sliding layer's query reads itself at least)"));
+    }
+    if let Some(v) = k.raw("window_size").filter(|v| **v != serde_json::json!([window - 1, 0])) {
+        return err(format!("{mt}: window_size = {v} is not supported (only [{}, 0]: sliding_window - 1 tokens before a query and none after it)", window - 1));
+    }
+    // the rotaries: one a sort of layer, or one for both; plain, its angles by three axes (which a text's positions make one)
+    let given = match k.raw("rope_parameters") {
+        Some(Value::Object(o)) => o.clone(),
+        Some(v) => return err(format!("{mt}: rope_parameters = {v}")),
+        None => Map::new(),
+    };
+    let by_sort = given.values().any(Value::is_object);
+    if let Some((key, _)) = given.iter().find(|(key, v)| by_sort && !v.is_object() && !matches!(key.as_str(), "mrope_section" | "mrope_interleaved")) {
+        return err(format!("{mt}: rope_parameters has {key} beside a rotary a sort of layer"));
+    }
+    let mut sections = BTreeSet::new();
+    let mut ropes: [Option<Rope>; 2] = [None, None];
+    for (is_sliding, sort) in [(false, "deepseek_sparse_attention"), (true, "sliding_attention")] {
+        if !sliding.contains(&is_sliding) {
+            continue;
+        }
+        let mut m = if by_sort {
+            let own = given.iter().find(|(key, _)| if is_sliding { *key == sort } else { HY4_SPARSE.contains(&key.as_str()) });
+            let Some(mut m) = own.and_then(|(_, v)| v.as_object()).cloned() else {
+                return err(format!("{mt}: rope_parameters has no rotary for the {sort} layers"));
+            };
+            for key in ["mrope_section", "mrope_interleaved"] {
+                if let Some(v) = given.get(key) {
+                    m.entry(key).or_insert(v.clone());
+                }
+            }
+            m
+        } else {
+            given.clone()
+        };
+        m.entry("rope_theta").or_insert(Value::from(10_000.0));
+        let what = format!("{mt} rope_parameters ({sort})");
+        let r = rope(&m, rd, max_pos, &what)?;
+        if r.scaling != RopeScaling::None {
+            return err(format!("{what}: rope_type {} is not supported (only default)", r.scaling.name()));
+        }
+        if let Some(s) = r.mrope {
+            if 2 * s.iter().sum::<usize>() != rd {
+                return err(format!("{what}: mrope_section {s:?} is not the {} angles of qk_rope_head_dim", rd / 2));
+            }
+            if m.get("mrope_interleaved") == Some(&Value::Bool(false)) {
+                return err(format!("{what}: mrope_interleaved = false is not supported (the three axes' angles interleave)"));
+            }
+        }
+        sections.insert(r.mrope);
+        ropes[is_sliding as usize] = Some(r);
+    }
+    if sections.len() > 1 {
+        return err(format!("{mt}: rope_parameters' mrope_section differs between the two sorts of layer"));
+    }
+    // the compressed indexer: groups of `ratio` tokens, the best `group_topk` - 1 of them and the query's own, which is `index_topk` tokens at most
+    let (itop, ratio) = (k.opt_usize("index_topk")?.unwrap_or(2048), k.opt_usize("compressed_indexer_compress_ratio")?.unwrap_or(4));
+    // (a key's width, which both readers fix: compressed_indexer_head_dim and index_head_dim are held to it above)
+    let idim = 128;
+    if rd > idim {
+        return err(format!("{mt}: qk_rope_head_dim = {rd} is past the indexer's keys of {idim}, whose trailing channels the rotary turns"));
+    }
+    let (iheads, gtop, ctop) = (
+        k.opt_usize("compressed_indexer_num_attention_heads")?.unwrap_or(16),
+        k.opt_usize("compressed_indexer_group_topk")?.unwrap_or(512),
+        k.opt_usize("compressed_indexer_candidate_topk")?.unwrap_or(2048),
+    );
+    // (the heads of an indexer with a key a token, which Flash does not build)
+    k.opt_usize("index_n_heads")?;
+    if ![2, 4, 8, 16].contains(&ratio) {
+        return err(format!("{mt}: compressed_indexer_compress_ratio = {ratio} is not supported (only 2, 4, 8 or 16 tokens a group)"));
+    }
+    if iheads == 0 || iheads > 64 || gtop < 2 {
+        return err(format!("{mt}: a compressed indexer of {iheads} heads (1 to 64) that keeps {gtop} groups (2 at least: one is the query's own)"));
+    }
+    if ctop != gtop * ratio || itop != gtop * ratio {
+        return err(format!(
+            "{mt}: index_topk = {itop} and compressed_indexer_candidate_topk = {ctop}, where both are compressed_indexer_group_topk x compressed_indexer_compress_ratio ({})",
+            gtop * ratio
+        ));
+    }
+    // the residual streams
+    let (hc, hc_eps, hc_magnitude) = (k.opt_usize("hc_mult")?.unwrap_or(4), k.opt_f64("hc_eps")?.unwrap_or(1e-6), k.opt_f64("hc_magnitude")?.unwrap_or(2.0));
+    if hc == 0 || hc_eps < 0.0 || hc_magnitude <= 0.0 {
+        return err(format!("{mt}: {hc} residual streams, hc_eps {hc_eps}, hc_magnitude {hc_magnitude}"));
+    }
+    // the feed-forward
+    let dense: Vec<bool> = match names("mlp_layer_types")? {
+        None => (0..layers).map(|l| l == 0).collect(),
+        Some(t) => {
+            if t.len() != layers {
+                return err(format!("{mt}: {} mlp_layer_types for {layers} layers", t.len()));
+            }
+            let sort = |(l, x): (usize, &&str)| match *x {
+                "dense" => Ok(true),
+                "sparse" => Ok(false),
+                x => err(format!("{mt}: layer {l}'s feed-forward is of type {x:?} (only dense and sparse)")),
+            };
+            t.iter().enumerate().map(sort).collect::<Result<_>>()?
+        }
+    };
+    // (the count of dense layers before the first of experts, which no reader reads: mlp_layer_types says each layer's)
+    let leading = dense.iter().take_while(|&&x| x).count();
+    if let Some(f) = k.opt_usize("first_k_dense_replace")?.filter(|&f| f != leading) {
+        return err(format!("{mt}: first_k_dense_replace = {f}, where mlp_layer_types has {leading} dense layers before its first of experts"));
+    }
+    let (inter, moe_inter, ne, top_k) =
+        (k.usize("intermediate_size")?, k.usize("moe_intermediate_size")?, k.usize("n_routed_experts")?, k.usize("num_experts_per_tok")?);
+    let (shared, latent) = (k.opt_usize("n_shared_experts")?.unwrap_or(1), k.opt_usize("routed_expert_hidden_size")?);
+    // (the readers' classes differ where the factor is absent, 2.827 and 3.998: it is asked for)
+    let scale = k.f64("routed_scaling_factor")?;
+    let renorm = k.bool("norm_topk_prob", true)?;
+    // (0 or less: no limit)
+    let limit = k.opt_f64("swiglu_limit")?.filter(|&l| l > 0.0);
+    if top_k == 0 || top_k > ne || inter == 0 || moe_inter == 0 || latent == Some(0) || scale <= 0.0 {
+        return err(format!(
+            "{mt}: {top_k} of {ne} experts a token, of {moe_inter} in a latent of {}, {shared} shared, routed_scaling_factor {scale}; a dense MLP of {inter}",
+            latent.unwrap_or(d)
+        ));
+    }
+    // (with sandwich_norm each block's output is normed before the residual; dsa_skip_attn_post_norm leaves the attention's of the layers with the indexer out)
+    let (sandwich, skip_post) = (k.bool("sandwich_norm", true)?, k.bool("dsa_skip_attn_post_norm", false)?);
+    let fp32_head = k.bool("enable_lm_head_fp32", true)?;
+    // (draft layers after the model's, DeepSeek-V3's: the release has none, and the readers' classes differ where the key is absent, one and none)
+    match k.opt_usize("num_nextn_predict_layers")? {
+        Some(0) => {}
+        Some(n) => return err(format!("{mt}: num_nextn_predict_layers = {n} is not supported (only 0: a draft layer after the model's is not read)")),
+        None => return err(format!("{mt}: no num_nextn_predict_layers (0 in the release; its readers' classes have one and none where it is absent)")),
+    }
+    // the n-gram memory: its layers numbered from 1, and each one's tables' sizes (an order's heads each a size, the orders 2 to engram_max_ngram_size)
+    let engram = counts(&k, "engram_layer_ids")?.unwrap_or_default();
+    let (order, edim, eheads) = (
+        k.opt_usize("engram_max_ngram_size")?.unwrap_or(3),
+        k.opt_usize("engram_n_embed_per_ngram")?.unwrap_or(768),
+        k.opt_usize("engram_n_head_per_ngram")?.unwrap_or(8),
+    );
+    let pad = k.opt_usize("engram_pad_id")?.unwrap_or(120_002);
+    let eseed = k.opt_usize("engram_seed")?.unwrap_or(0);
+    // (the tables bf16; FP8 with a scale a row beside the table is a stored format the description does not name)
+    if k.bool("engram_fp8_embedding", false)? {
+        return err(format!("{mt}: engram_fp8_embedding = true is not supported (only false: the n-gram tables in bf16)"));
+    }
+    let sizes = k.raw("engram_layer_head_vocab_sizes");
+    let past = counts(&k, "engram_vocab_size")?;
+    let mut base: Option<u64> = past.as_ref().and_then(|p| p.first()).map(|&b| b as u64);
+    let mut memories: Vec<Ngram> = Vec::new();
+    if !engram.is_empty() {
+        let unique: BTreeSet<&usize> = engram.iter().collect();
+        if let Some(l) = engram.iter().find(|&&l| l == 0 || l > layers) {
+            return err(format!("{mt}: engram_layer_ids names layer {l}: the layers numbered from 1, 1 to {layers}"));
+        }
+        if unique.len() != engram.len() {
+            return err(format!("{mt}: engram_layer_ids {engram:?} names a layer twice"));
+        }
+        if order < 2 || eheads == 0 || edim % eheads != 0 || pad >= vocab {
+            return err(format!("{mt}: an n-gram memory of orders up to {order}, {eheads} heads an order over {edim} values, engram_pad_id {pad} of {vocab}"));
+        }
+        if past.as_ref().is_some_and(|p| p.len() != order - 1) {
+            return err(format!("{mt}: engram_vocab_size {past:?} for {} orders", order - 1));
+        }
+        for (place, l) in engram.iter().enumerate() {
+            let tables = sizes.and_then(|s| s.get(l.to_string())).and_then(Value::as_array).filter(|o| o.len() == order - 1);
+            let rows = |o: &Value| o.as_array().filter(|h| h.len() == eheads).map(|h| h.iter().map(|x| x.as_u64().unwrap_or(0) as usize).collect::<Vec<_>>());
+            let Some(tables) = tables.and_then(|t| t.iter().map(rows).collect::<Option<Vec<_>>>()).filter(|t| t.iter().flatten().all(|&n| n > 0)) else {
+                return err(format!("{mt}: engram_layer_head_vocab_sizes has no tables for layer {l} ({} orders of {eheads} sizes)", order - 1));
+            };
+            // (no reader reads engram_vocab_size: the sizes the config lists are primes past it, an order's past its entry)
+            if let Some((o, n)) =
+                tables.iter().enumerate().flat_map(|(o, t)| t.iter().map(move |n| (o, *n))).find(|&(o, n)| past.as_ref().is_some_and(|p| n <= p[o]))
+            {
+                return err(format!(
+                    "{mt}: engram_layer_head_vocab_sizes: layer {l}'s table of {n} rows is not past engram_vocab_size ({})",
+                    past.as_ref().map_or(0, |p| p[o])
+                ));
+            }
+            // (the kind makes a layer's tables' sizes: the model's primes in order past the base, a layer's after the layer's before; the config's list
+            // is held to them. The multipliers are seeded by the layer's number as the config counts it, from 1)
+            let b = *base.get_or_insert(tables[0][0] as u64);
+            if order > 64 || b > 1 << 40 || (order - 1) * eheads * (place + 1) > 4096 {
+                return err(format!("{mt}: an n-gram memory of orders up to {order} with {eheads} tables an order past {b}: no model's"));
+            }
+            let n = Ngram {
+                order,
+                heads: eheads,
+                dim: (order - 1) * edim,
+                base: b,
+                vocab,
+                seed: (eseed + 10007 * l) as u64,
+                index: place,
+                eos: pad as u32,
+                streams: hc,
+                conv: 0,
+                dilation: 1,
+                norm: Norm::rms(HY4_GATE_EPS),
+                form: NgramForm::EngramNormed,
+                // (its tables read by rows on the host: the release's are about 165M rows of 96 a layer in bf16, about 30 GiB each)
+                table: TableAt::Host,
+            };
+            let want = super::reference::ngram::tables(&n).0;
+            if !tables.iter().flatten().map(|&x| x as u64).eq(want.iter().copied()) {
+                return err(format!(
+                    "{mt}: engram_layer_head_vocab_sizes: layer {l}'s tables are not the primes {} to {} past {b} in order ({} to {})",
+                    place * want.len() + 1,
+                    (place + 1) * want.len(),
+                    want[0],
+                    want[want.len() - 1]
+                ));
+            }
+            memories.push(n);
+        }
+    }
+    // the drafter (models/hy_v4/dfly_config.py `_derive_dfly_config`, models/hy_v4_flash/dfly_config.py): absent with no dfly_num_hidden_layers
+    let drafts = dk.opt_usize("dfly_num_hidden_layers")?.unwrap_or(0);
+    for (key, want) in [
+        ("dfly_mtp_fusion", Value::from("slot0")),
+        ("dfly_enable_hidden_correction", Value::Bool(true)),
+        ("dfly_enable_ihc", Value::Bool(false)),
+        ("dfly_mlp_type", Value::from("dense")),
+        ("dfly_attn_causal", Value::Bool(true)),
+    ] {
+        dk.expect(key, &want)?;
+    }
+    let (block, mask, target_top) =
+        (dk.opt_usize("dfly_block_size")?, dk.opt_usize("dfly_mask_token_id")?, dk.opt_usize("dfly_target_index_topk")?.unwrap_or(itop));
+    // (the tokens before the last a draft layer reads besides the picks; its MLPs' widths, which the checkpoint's shapes say where the keys are absent;
+    // whether its attention's output is normed, which the checkpoint's tensors say where the key is null)
+    dk.opt_usize("dfly_context_local_window")?;
+    dk.opt_usize("dfly_intermediate_size")?;
+    dk.opt_usize("dfly_hidden_correction_intermediate_size")?;
+    if dk.raw("dfly_attn_post_proj_norm").is_some_and(|v| !v.is_boolean()) {
+        return err(format!("{mt}: dfly_attn_post_proj_norm is not true or false"));
+    }
+    let index_layer = match dk.raw("dfly_target_index_layer") {
+        Some(v) if v.is_u64() => Some(vec![v.as_u64().unwrap_or(0) as usize; drafts]),
+        _ => counts(dk, "dfly_target_index_layer")?,
+    };
+    let kv_layers = counts(dk, "dfly_target_kv_layers")?;
+    if drafts > 0 {
+        if !block.is_some_and(|b| (2..=17).contains(&b)) || !mask.is_some_and(|m| m < vocab) {
+            return err(format!("{mt}: a drafter without its dfly_block_size (2 to 17 tokens a pass) or its dfly_mask_token_id (a token of the vocabulary)"));
+        }
+        if target_top != itop {
+            return err(format!("{mt}: dfly_target_index_topk = {target_top} is not supported (only index_topk, {itop}: the drafter reads the model's picks)"));
+        }
+        for (key, list) in [("dfly_target_index_layer", &index_layer), ("dfly_target_kv_layers", &kv_layers)] {
+            let Some(list) = list.as_ref().filter(|x| x.len() == drafts) else {
+                return err(format!("{mt}: {key} is not a layer of the model for each of the {drafts} draft layers"));
+            };
+            if let Some(l) = list.iter().find(|&&l| l == 0 || l >= layers || sliding[l]) {
+                return err(format!("{mt}: {key} names layer {l}: a layer of latent attention with the indexer, 1 to {}", layers - 1));
+            }
+        }
+        if kv_layers.as_ref().is_some_and(|x| x.iter().collect::<BTreeSet<_>>().len() != drafts) {
+            return err(format!("{mt}: dfly_target_kv_layers names a layer twice"));
+        }
+    }
+    // (every key of the text model and of the top level is read: one that is not is named, with all of them)
+    let unread = |x: &Keys| -> Vec<String> { x.m.keys().filter(|key| !x.used.borrow().contains(*key) && !inert(key)).cloned().collect() };
+    let mut left = if c.nested { unread(&top) } else { Vec::new() };
+    left.extend(unread(&k));
+    not_understood(mt, left.iter())?;
+    // (what is left of the checkpoint, by name: the drafter's tensors and the tower's; `names::HUNYUAN`)
+    let (eps, cv) = (eps as f32, &names::HUNYUAN);
+    let norm = Norm::rms(eps);
+    let residual = Residual::Streams(StreamsP {
+        streams: hc,
+        sinkhorn_iters: 0,
+        eps: hc_eps as f32,
+        norm_eps: eps,
+        rounding: Rounding::Once,
+        lagged: false,
+        eps_outside: false,
+        apart: Some(hc_magnitude as f32),
+    });
+    // each sort of layer's attention. The indexer is the f32 form: the readers round its keys and queries to bf16, turn them by a Hadamard transform
+    // and quantize them to FP8 with a power-of-two scale a vector before they score (models/hy_v4_flash/nvidia/indexpool_ops.py `fwht_quantize`,
+    // SGLang's `_rope_quant_row`), which moves a score and so, near a tie, a pick
+    let indexer = Indexer {
+        heads: iheads,
+        head_dim: idim,
+        top_k: itop,
+        block: ratio,
+        shared: false,
+        form: IndexForm::Grouped { key: norm, pool: norm },
+        rope: rd,
+        rope_style: None,
+        q_in: None,
+        pos_scale: false,
+    };
+    let [sparse_rope, sliding_rope] = ropes;
+    let sparse_attn = sparse_rope.map(|r| hy4_mla((heads, nope, rd, vd), (q_lora, kv_lora), r, eps, None, Some(indexer)));
+    let sliding_attn = sliding_rope.map(|r| hy4_mla(swa, (q_lora, kv_lora), r, eps, Some(window), None));
+    let dense_mlp = Mlp { act: Act::Silu, gated: true, bias: false, clamp: None };
+    let moe = Moe {
+        router: Router {
+            score: RouterScore::Sigmoid,
+            logit_scale: 1.0,
+            bias: true,
+            groups: None,
+            top_k,
+            renorm,
+            scale: scale as f32,
+            hash: false,
+            routers: 1,
+            expert_scale: false,
+        },
+        experts: ne,
+        expert: Mlp { clamp: limit.map(|l| Clamp::Gate(l as f32)), ..dense_mlp },
+        shared: (shared > 0).then_some(dense_mlp),
+        shared_gate: false,
+        latent: latent.map(|dim| Latent { dim, norm_in: None, expert_norm: None, norm_out: None }),
+    };
+    // each block's roles, and every tensor's shape as the checkpoint stores it (the compressed vocabulary's length is the checkpoint's own: no shape)
+    let mut shapes: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let hc_shapes = [("hc_fn", vec![2 * hc, hc * d]), ("hc_base", vec![2 * hc]), ("hc_scale", vec![2])];
+    let mla_shapes = |m: &Mla| {
+        let (h, ql) = (m.heads, q_lora);
+        vec![
+            ("norm_in", vec![d]),
+            ("q_a", vec![ql, d]),
+            ("q_a_norm", vec![ql]),
+            ("q_b", vec![h * (m.nope + m.rope_dim), ql]),
+            ("kv_a", vec![m.kv_lora + m.rope_dim, d]),
+            ("kv_a_norm", vec![m.kv_lora]),
+            ("kv_b", vec![h * (m.nope + m.v_dim), m.kv_lora]),
+            ("g", vec![h * m.v_dim, d]),
+            ("o", vec![d, h * m.v_dim]),
+            ("sinks", vec![h]),
+            ("norm_out", vec![d]),
+            ("indexer_wk", vec![idim, d]),
+            ("indexer_k_norm", vec![idim]),
+            ("indexer_pool_value", vec![idim, idim]),
+            ("indexer_pool_gate", vec![idim, idim]),
+            ("indexer_pool_ape", vec![ratio, idim]),
+            ("indexer_pool_norm", vec![idim]),
+            ("indexer_wq_b", vec![iheads * idim, ql]),
+            ("indexer_weights", vec![iheads, d]),
+        ]
+    };
+    let width = latent.unwrap_or(d);
+    let moe_shapes = [
+        ("norm_in", vec![d]),
+        ("router", vec![ne, d]),
+        ("choice_bias", vec![ne]),
+        ("latent_down", vec![width, d]),
+        ("latent_up", vec![d, width]),
+        ("shared_gate", vec![moe_inter * shared, d]),
+        ("shared_up", vec![moe_inter * shared, d]),
+        ("shared_down", vec![d, moe_inter * shared]),
+        ("experts_gate_up", vec![ne, 2 * moe_inter, width]),
+        ("experts_down", vec![ne, width, moe_inter]),
+        ("norm_out", vec![d]),
+    ];
+    let mlp_shapes = [("norm_in", vec![d]), ("gate", vec![inter, d]), ("up", vec![inter, d]), ("down", vec![d, inter]), ("norm_out", vec![d])];
+    let (mut blocks, mut roles) = (Vec::new(), Vec::new());
+    for l in 0..layers {
+        let p = cv.layer("model.", l);
+        // (the memory of the layer the config numbers l + 1, on the streams before the layer's attention: its gate's norm of each stream is the block's)
+        if let Some(n) = engram.iter().position(|&id| id == l + 1).map(|place| memories[place]) {
+            let tables = (n.order - 1) * n.heads;
+            let r = names::hy_memory(&p, tables, hc);
+            let rows = super::reference::ngram::tables(&n).0.iter().sum::<u64>() as usize;
+            let memory_shapes = [
+                ("ngram", vec![rows, n.dim / tables]),
+                ("ngram_norm", vec![n.dim]),
+                ("kv", vec![(hc + 1) * d, n.dim]),
+                ("kv_bias", vec![(hc + 1) * d]),
+                ("norm_in", vec![hc * d]),
+                ("norm_key", vec![hc * d]),
+                ("value_gamma", vec![d]),
+                ("stream_scale", vec![hc * d]),
+            ];
+            shape_sources(&mut shapes, &r, &memory_shapes);
+            blocks.push(Block { norm_in: n.norm, body: Body::Ngram(n), norm_out: None, residual: Residual::Add });
+            roles.push(r);
+        }
+        let attn = if sliding[l] { &sliding_attn } else { &sparse_attn };
+        let Some(attn) = attn.clone() else { return err(format!("{mt}: layer {l}'s sort of attention has no rotary")) };
+        // (the norm of the attention's output, which dsa_skip_attn_post_norm leaves out of the layers with the indexer)
+        let post = sandwich && (sliding[l] || !skip_post);
+        let mut r = names::roles(part::HY_MLA, &p, 0, |x| x != "norm_out" || post);
+        if !sliding[l] {
+            r.extend(names::roles(part::HY_INDEXER, &p, 0, all));
+        }
+        r.extend(names::roles(part::HY_HC_ATTN, &p, 0, all));
+        shape_sources(&mut shapes, &r, &[mla_shapes(&attn), hc_shapes.to_vec()].concat());
+        blocks.push(Block { norm_in: norm, body: Body::Mixer(Mixer::Mla(attn)), norm_out: post.then_some(norm), residual: residual.clone() });
+        roles.push(r);
+        let (body, mut r, want) = if dense[l] {
+            (Ffn::Mlp(dense_mlp), names::roles(part::HY_MLP, &p, 0, |x| x != "norm_out" || sandwich), mlp_shapes.to_vec())
+        } else {
+            let keep = |x: &str| match x {
+                "norm_out" => sandwich,
+                "latent_down" | "latent_up" => latent.is_some(),
+                "shared_gate" | "shared_up" | "shared_down" => shared > 0,
+                _ => true,
+            };
+            (Ffn::Moe(moe.clone()), names::roles(part::HY_MOE, &p, ne, keep), moe_shapes.to_vec())
+        };
+        r.extend(names::roles(part::HY_HC_FFN, &p, 0, all));
+        shape_sources(&mut shapes, &r, &[want, hc_shapes.to_vec()].concat());
+        blocks.push(Block { norm_in: norm, body: Body::Ffn(body), norm_out: sandwich.then_some(norm), residual: residual.clone() });
+        roles.push(r);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: hc, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: norm,
+        // (the logits' product summed in fp32 from the model's bf16 state and weights; without enable_lm_head_fp32 it is the model's type's)
+        head: Head {
+            tied,
+            softcap: None,
+            scale: 1.0,
+            collapse: Collapse::Weighted { eps: hc_eps as f32, norm_eps: eps },
+            rounding: if fp32_head { Rounding::F32 } else { Rounding::Once },
+            correction: false,
+        },
+        mtp: Vec::new(),
+        vision: None,
+        rope: None,
+    };
+    let mut out = finish(&k, desc, cv, "model.", roles, 0)?;
+    shape_sources(&mut shapes, &out.extra, &[("out_hc_fn", vec![hc, hc * d]), ("out_hc_base", vec![hc]), ("out_hc_scale", vec![1])]);
+    for n in [Some(&out.embed), out.head.as_ref()].into_iter().flatten() {
+        shapes.insert(n.clone(), vec![vocab, d]);
+    }
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    out.shapes = shapes;
+    Ok(out)
+}
+
+/// Nemotron 3 (`nemotron_h`, `NemotronHForCausalLM`): a layer is one block, `x + mixer(norm(x))`, its mixer named by the pattern:
+/// Mamba-2 (`M`), attention without any position embedding (`*`), or a mixture of experts (`E`) whose routed experts run in a latent
+/// (two projections around them; none where `moe_latent_size` is null) with a shared expert on the full vector. The router is
+/// DeepSeek-V3's: sigmoid scores, a bias for the choice, the chosen scores normed and times `routed_scaling_factor`. The pattern is
+/// `hybrid_override_pattern`, or a list of types (`layers_block_type`). The draft head (`mtp.*`, `mtp_layers_block_type`) is counted and left unread: see below.
+fn nemotron_h(tc: &Map<String, Value>) -> Result<Described> {
+    let k = Keys::new(tc, "nemotron_h");
+    let (d, vocab) = (k.usize("hidden_size")?, k.usize("vocab_size")?);
+    let tied = k.bool("tie_word_embeddings", false)?;
+    // (one eps for the layers' norms, the final norm and the Mamba-2 gated norm; a config with two that differ does not say which is whose)
+    let eps = match (k.opt_f64("layer_norm_epsilon")?, k.opt_f64("norm_eps")?) {
+        (Some(a), Some(b)) if a != b => return err(format!("nemotron_h: layer_norm_epsilon {a} and norm_eps {b} differ")),
+        (a, b) => a.or(b).unwrap_or(1e-5) as f32,
+    };
+    let kinds: Vec<char> = if let Some(p) = k.str("hybrid_override_pattern")? {
+        p.chars().collect()
+    } else if let Some(a) = k.raw("layers_block_type").or(k.raw("layer_types")).and_then(|v| v.as_array()) {
+        a.iter()
+            .map(|x| match x.as_str() {
+                Some("mamba" | "linear_attention") => Ok('M'),
+                Some("attention" | "full_attention") => Ok('*'),
+                Some("moe") => Ok('E'),
+                other => err(format!("nemotron_h: a layer of type {other:?} is not supported (mamba, attention, moe)")),
+            })
+            .collect::<Result<_>>()?
+    } else {
+        return err("nemotron_h: no hybrid_override_pattern");
+    };
+    (k.raw("layers_block_type"), k.raw("layer_types"));
+    if let Some(c) = kinds.iter().find(|c| !"M*E".contains(**c)) {
+        return err(format!("nemotron_h: a layer {c:?} in hybrid_override_pattern is not supported (M, * and E)"));
+    }
+    if kinds.is_empty() || k.opt_usize("num_hidden_layers")?.is_some_and(|n| n != kinds.len()) {
+        return err(format!("nemotron_h: {} layers in the pattern, num_hidden_layers {:?}", kinds.len(), tc.get("num_hidden_layers")));
+    }
+    // settings the description does not take otherwise
+    for (key, want) in [
+        ("use_bias", Value::Bool(false)),
+        ("mlp_bias", Value::Bool(false)),
+        ("attention_bias", Value::Bool(false)),
+        ("mamba_proj_bias", Value::Bool(false)),
+        ("use_conv_bias", Value::Bool(true)),
+        ("residual_in_fp32", Value::Bool(false)),
+        ("mamba_hidden_act", Value::from("silu")),
+        ("mamba_ssm_cache_dtype", Value::from("float32")),
+    ] {
+        k.expect(key, &want)?;
+    }
+    // (when the shared experts' work overlaps the routed experts' exchange between GPUs: a schedule, not arithmetic; the releases say true, the transformers
+    // default; either is read)
+    k.bool("moe_shared_expert_overlap", true)?;
+    if k.raw("sliding_window").is_some() {
+        return err("nemotron_h: a sliding window is not supported");
+    }
+    // (read and without effect: the attention has no position embedding; the time steps' range and floor and the rescaling are how the weights were
+    // first set; the kernels and the logits kept are transformers' own choices; no layer of the pattern is a plain MLP. One difference, not measured: transformers'
+    // modeling also takes `time_step_min` as the floor of the step (`time_step_limit = (time_step_min, inf)`), where vLLM's and SGLang's Mamba-2 pass (0, inf)
+    // whatever the config says; the engine does what those two do)
+    for x in [
+        "rope_theta",
+        "partial_rotary_factor",
+        "time_step_floor",
+        "time_step_max",
+        "time_step_min",
+        "time_step_rank",
+        "time_step_scale",
+        "time_step_limit",
+        "rescale_prenorm_residual",
+        "use_mamba_kernels",
+        "num_logits_to_keep",
+        "intermediate_size",
+    ] {
+        k.raw(x);
+    }
+    // (the draft head's, multi-token prediction: `num_nextn_predict_layers` steps, each the layers `mtp_layers_block_type` lists, the release's ["attention", "moe"]: an
+    // attention block that takes `eh_proj` of [enorm(embedding), hnorm(hidden)], then a mixture of experts and `final_layernorm`; `mtp_hybrid_override_pattern` is the
+    // same list as a string ("*E"), an older config's; tensors `mtp.layers.*`. It drafts the token after the next one (vLLM nemotron_h_mtp.py, SGLang nemotron_h_mtp.py)
+    // and the model's own logits do not depend on it, so the keys are read and the layers left: the tree has no draft head of this layout (`draftcheck`'s cases are
+    // Qwen3.8-Flash-Next's, GLM's and DeepSeek's), `mtp_layers` counts the steps and `unread` names the checkpoint's `mtp.`. transformers' config fills the key in
+    // (["full_attention", "moe"]) where a config has none, whether or not the model has a head: it is read with `num_nextn_predict_layers` 0 as well)
+    for x in ["mtp_layers_block_type", "mtp_hybrid_override_pattern"] {
+        k.raw(x);
+    }
+    let has = |c: char| kinds.contains(&c);
+    let mamba = if has('M') {
+        let (heads, head_dim, groups) = (k.usize("mamba_num_heads")?, k.usize("mamba_head_dim")?, k.usize("n_groups")?);
+        if heads == 0 || groups == 0 || !heads.is_multiple_of(groups) {
+            return err(format!("nemotron_h: {heads} Mamba-2 heads in {groups} groups"));
+        }
+        // (the inner width is the heads' channels; `expand` is not what sets it: the toy model of the GPU check has 64 heads of 64 on a width of 256)
+        k.raw("expand");
+        Some(Mamba2 {
+            heads,
+            head_dim,
+            state: k.usize("ssm_state_size")?,
+            groups,
+            conv: k.usize("conv_kernel")?,
+            chunk: k.opt_usize("chunk_size")?.unwrap_or(128),
+            norm_eps: eps,
+        })
+    } else {
+        for x in ["mamba_num_heads", "mamba_head_dim", "n_groups", "expand", "ssm_state_size", "conv_kernel", "chunk_size"] {
+            k.raw(x);
+        }
+        None
+    };
+    let attn = {
+        let (heads, kv) = (k.usize("num_attention_heads")?, k.usize("num_key_value_heads")?);
+        if heads == 0 || kv == 0 || !heads.is_multiple_of(kv) {
+            return err(format!("nemotron_h: {heads} query heads to {kv} KV heads"));
+        }
+        let hd = k.opt_usize("head_dim")?.unwrap_or(d / heads);
+        Attn {
+            heads,
+            kv_heads: kv,
+            head_dim: hd,
+            v_head_dim: hd,
+            window: None,
+            sinks: false,
+            rope: None,
+            q_norm: None,
+            k_norm: None,
+            v_norm: None,
+            gate: None,
+            softcap: None,
+            bias: false,
+            scale: (hd as f32).powf(-0.5),
+            k_eq_v: false,
+            indexer: None,
+            rounding: AttnRounding::Flash,
+            kv_from: None,
+            v_scale: 1.0,
+        }
+    };
+    let moe_keys =
+        ["n_routed_experts", "num_experts_per_tok", "moe_intermediate_size", "moe_shared_expert_intermediate_size", "moe_latent_size", "mlp_hidden_act"];
+    // (an expert's width inside and the shared expert's)
+    let mut moe_widths = (0, 0);
+    let moe = if has('E') {
+        let (experts, top_k) = (k.usize("n_routed_experts")?, k.usize("num_experts_per_tok")?);
+        if top_k == 0 || top_k > experts {
+            return err(format!("nemotron_h: {top_k} experts a token of {experts}"));
+        }
+        for g in ["n_group", "topk_group", "n_shared_experts"] {
+            k.expect(g, &Value::from(1))?;
+        }
+        moe_widths = (k.usize("moe_intermediate_size")?, k.usize("moe_shared_expert_intermediate_size")?);
+        let mlp = Mlp { act: act(k.str("mlp_hidden_act")?.unwrap_or("relu2"))?, gated: false, bias: false, clamp: None };
+        Some(Moe {
+            router: Router {
+                score: RouterScore::Sigmoid,
+                logit_scale: 1.0,
+                bias: true,
+                groups: None,
+                top_k,
+                renorm: k.bool("norm_topk_prob", true)?,
+                scale: k.opt_f64("routed_scaling_factor")?.unwrap_or(1.0) as f32,
+                hash: false,
+                routers: 1,
+                expert_scale: false,
+            },
+            experts,
+            expert: mlp,
+            shared: Some(mlp),
+            shared_gate: false,
+            latent: k.opt_usize("moe_latent_size")?.filter(|&l| l > 0).map(|dim| Latent { dim, norm_in: None, expert_norm: None, norm_out: None }),
+        })
+    } else {
+        for x in moe_keys.iter().chain(&["n_group", "topk_group", "n_shared_experts", "norm_topk_prob", "routed_scaling_factor"]) {
+            k.raw(x);
+        }
+        None
+    };
+    let mtp_layers = k.opt_usize("num_nextn_predict_layers")?.unwrap_or(0);
+    let n = Norm::rms(eps);
+    let (mut blocks, mut roles, mut shapes) = (Vec::new(), Vec::new(), std::collections::BTreeMap::new());
+    for (l, c) in kinds.iter().enumerate() {
+        let p = names::NEMOTRON.layer("", l);
+        // (the shapes: each matrix [rows, columns] as the heads and widths make it, each norm, bias and per-head value its width)
+        let (body, r, want) = match (c, &mamba, &moe) {
+            ('M', Some(mb), _) => {
+                let (nh, inner) = (mb.heads, mb.heads * mb.head_dim);
+                let cd = inner + 2 * mb.groups * mb.state;
+                let want = vec![
+                    ("in", vec![inner + cd + nh, d]),
+                    ("conv", vec![cd, 1, mb.conv]),
+                    ("conv_bias", vec![cd]),
+                    ("a_log", vec![nh]),
+                    ("d", vec![nh]),
+                    ("dt_bias", vec![nh]),
+                    ("norm", vec![inner]),
+                    ("o", vec![d, inner]),
+                ];
+                (Body::Mixer(Mixer::Mamba2(mb.clone())), names::roles(part::NH_MAMBA, &p, 0, all), want)
+            }
+            // (no latent: the experts read the model's width, and there are no projections around them)
+            ('E', _, Some(me)) => {
+                let ((inter, shared), lat) = (moe_widths, me.latent.as_ref().map_or(0, |x| x.dim));
+                let w = if lat > 0 { lat } else { d };
+                let want = vec![
+                    ("router", vec![me.experts, d]),
+                    ("choice_bias", vec![me.experts]),
+                    ("latent_down", vec![lat, d]),
+                    ("latent_up", vec![d, lat]),
+                    ("shared_up", vec![shared, d]),
+                    ("shared_down", vec![d, shared]),
+                    ("experts_up", vec![inter, w]),
+                    ("experts_down", vec![w, inter]),
+                ];
+                let r = names::roles(part::NH_MOE, &p, me.experts, |x| me.latent.is_some() || !x.starts_with("latent_"));
+                (Body::Ffn(Ffn::Moe(me.clone())), r, want)
+            }
+            _ => {
+                let (q, kv) = (attn.heads * attn.head_dim, attn.kv_heads * attn.head_dim);
+                let want = vec![("q", vec![q, d]), ("k", vec![kv, d]), ("v", vec![kv, d]), ("o", vec![d, q])];
+                (Body::Mixer(Mixer::Attention(attn.clone())), names::roles(part::NH_ATTN, &p, 0, all), want)
+            }
+        };
+        shape_roles(&mut shapes, &r, &want);
+        shape_roles(&mut shapes, &r, &[("norm_in", vec![d])]);
+        blocks.push(Block { norm_in: n, body, norm_out: None, residual: Residual::Add });
+        roles.push(r);
+    }
+    let desc = ModelDesc {
+        hidden: d,
+        vocab,
+        embed: Embed { scale: 1.0, norm: None, streams: 1, per_layer: None, table: TableAt::Gpu },
+        blocks,
+        final_norm: n,
+        head: Head { tied, softcap: None, scale: 1.0, collapse: Collapse::None, rounding: Rounding::F32, correction: false },
+        mtp: Vec::new(),
+        vision: None,
+        rope: None,
+    };
+    let mut out = finish(&k, desc, &names::NEMOTRON, "", roles, mtp_layers)?;
+    shapes.insert(out.embed.clone(), vec![vocab, d]);
+    shapes.insert(out.final_norm.clone(), vec![d]);
+    if let Some(h) = &out.head {
+        shapes.insert(h.clone(), vec![vocab, d]);
+    }
+    out.shapes = shapes;
+    Ok(out)
 }

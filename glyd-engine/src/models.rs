@@ -3,7 +3,7 @@
 //! A model is a Hub id (`google/gemma-4-12B-it`), a directory, a GGUF file, or a short name from the manifest (models.json: versioned, in the repository and in the
 //! program; `$GLYD_MODELS` or `<cache>/models.json` names another). The grammar of a short name is `NAME[:SIZE][:LEVEL]` (`gemma4`, `qwen3.8:27b`,
 //! `gemma4:12b:wren`); a tag of letters only is a level (levels.rs), so `:27b` and `:35b-a3b` are sizes. NAME and SIZE are matched without case, and NAME without
-//! its `-` and `_`. Where SIZE is left out the family's default is taken; choosing the size that fits this computer is `glyd fit`'s (P4b).
+//! its `-` and `_`. Where SIZE is left out, `run`, `serve`, `fit` and `pull` choose it by the plan for this computer (src/choose.rs); the manifest's default is the size where a command does not plan (`names`, `ls`, `rm`).
 //!
 //! The copies of a model are in the Hub's cache (hub.rs; `$HF_HUB_CACHE`) as huggingface_hub keeps them, so what vLLM or the Python tool downloaded is here too,
 //! and in the engine's cache of packed copies (store.rs, `$GLYD_CACHE`): `glyd rm` takes a model out of both.
@@ -98,6 +98,21 @@ impl Manifest {
                     }
                     Some(d) => return Err(format!("{name}:{size}: \"released\" {d} is not YYYY-MM-DD")),
                 };
+                // license, gated and measured: what the catalog says of an entry (docs/guide/src/catalog.md). A manifest from before them still parses; the repository's own is
+                // checked to have them all (the test below). Where they are there they must be what they say.
+                if m.get("license").is_some_and(|l| !l.as_str().is_some_and(|l| !l.is_empty())) {
+                    return Err(format!("{name}:{size}: \"license\" is not a license name"));
+                }
+                match m.get("gated") {
+                    None | Some(serde_json::Value::Bool(_)) => {}
+                    Some(serde_json::Value::String(g)) if g == "auto" || g == "manual" => {}
+                    Some(_) => return Err(format!("{name}:{size}: \"gated\" is true, false, \"auto\" or \"manual\"")),
+                }
+                match m.get("measured") {
+                    None | Some(serde_json::Value::Null) => {}
+                    Some(serde_json::Value::String(r)) if !r.is_empty() && !r.starts_with('/') && !r.contains("..") => {}
+                    Some(_) => return Err(format!("{name}:{size}: \"measured\" is null or a path in the repository")),
+                }
                 models.push(Entry { size, repo, default: m.get("default").and_then(|x| x.as_bool()).unwrap_or(false), released });
             }
             if models.is_empty() || models.iter().filter(|e| e.default).count() != 1 {
@@ -210,10 +225,13 @@ pub struct Resolved {
     pub repo: String,
     /// The level the user tagged, lowercase.
     pub level: Option<String>,
+    /// The family as the manifest names it (`qwen3.5`), and whether the size was given (`qwen3.5:9b`) or left to the family's default.
+    pub family: String,
+    pub size_given: bool,
 }
 
 impl Resolved {
-    /// The model as the rest of the engine takes it: `Qwen/Qwen3.5-9B` or `Qwen/Qwen3.5-9B:swift`.
+    /// The model as the rest of the engine takes it: `Qwen/Qwen3.5-9B` or `Qwen/Qwen3.5-9B:linnet`.
     pub fn model(&self) -> String {
         match &self.level {
             Some(l) => format!("{}:{l}", self.repo),
@@ -268,7 +286,13 @@ fn resolve_with(arg: &str, m: &Manifest, exists: &dyn Fn(&str) -> bool) -> Resul
             return Err(format!("{arg}: :{t} is not a level. The levels: {}.", levels::names_now().join(", ")));
         }
     }
-    Ok(Some(Resolved { name: format!("{}:{}", fam.name, entry.size), repo: entry.repo.clone(), level: tag }))
+    Ok(Some(Resolved {
+        name: format!("{}:{}", fam.name, entry.size),
+        repo: entry.repo.clone(),
+        level: tag,
+        family: fam.name.clone(),
+        size_given: size.is_some(),
+    }))
 }
 
 /// The model word of a command's arguments made a Hub id where it is a short name (one line says which). Err: the refusal, for the caller to print; exit 1.
@@ -281,6 +305,18 @@ pub fn resolve_args(a: &mut Args) -> Result<(), String> {
     // (`verify PATH` and `rm`'s Hub ids are taken as they are: only a name the manifest has changes)
     match resolve_refreshing(&arg) {
         Ok(Some(r)) => {
+            // a family named with no size, for a command that plans: the size this computer takes (the largest that reaches the floors: src/choose.rs), said in a line
+            if !r.size_given && matches!(a.pos[0].as_str(), "run" | "serve" | "fit" | "pull") {
+                let m = Manifest::load();
+                if let Some(fam) = m.family(&r.family).filter(|f| f.models.len() > 1) {
+                    let (c, line) = crate::choose::choose(fam, r.level.as_deref(), a)?;
+                    eprintln!("glyd: {line}");
+                    let level = r.level.clone();
+                    a.pos[1] =
+                        Resolved { name: format!("{}:{}", fam.name, c.picked.size), repo: c.picked.repo, level, family: r.family, size_given: true }.model();
+                    return Ok(());
+                }
+            }
             eprintln!("glyd: {arg} is {}{}", r.repo, r.level.as_deref().map(|l| format!(" at level {l}")).unwrap_or_default());
             a.pos[1] = r.model();
             Ok(())
@@ -488,7 +524,7 @@ pub struct Local {
     pub repo: String,
     /// The bytes its files take.
     pub bytes: u64,
-    /// The level its repo is (`glyd/Qwen3.5-9B-swift`: swift); penguin for a release's own weights (lossless: what the first run packs).
+    /// The level its repo is (`glyd/Qwen3.5-9B-linnet`: linnet); penguin for a release's own weights (lossless: what the first run packs).
     pub level: String,
     /// The short name of the manifest, where the repo is one of its.
     pub name: Option<String>,
@@ -746,6 +782,44 @@ mod tests {
         }
     }
 
+    /// The catalog's rule (docs/guide/src/catalog.md, P15): every entry of the repository's manifest names its license, says whether the Hub gates it, and says where the engine
+    /// was measured on it (a record in the repository that exists) or that it was not (null).
+    #[test]
+    fn every_entry_says_its_license_whether_it_is_gated_and_where_it_was_measured() {
+        let v: serde_json::Value = serde_json::from_str(EMBEDDED).unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut n = 0;
+        for f in v["families"].as_array().unwrap() {
+            for e in f["models"].as_array().unwrap() {
+                let who = format!("{}:{}", f["name"].as_str().unwrap(), e["size"].as_str().unwrap());
+                assert!(e["license"].as_str().is_some_and(|l| !l.is_empty()), "{who}: no \"license\"");
+                assert!(
+                    e["gated"].is_boolean() || matches!(e["gated"].as_str(), Some("auto" | "manual")),
+                    "{who}: no \"gated\" (true, false, \"auto\" or \"manual\")"
+                );
+                let measured = e.get("measured").unwrap_or_else(|| panic!("{who}: no \"measured\" (a record in the repository, or null where there is none)"));
+                if let Some(path) = measured.as_str() {
+                    assert!(root.join(path).exists(), "{who}: \"measured\" {path} is not in the repository");
+                } else {
+                    assert!(measured.is_null(), "{who}: \"measured\" is a path or null");
+                }
+                n += 1;
+            }
+        }
+        assert!(n >= 19, "{n} entries");
+        // a manifest with a wrong field is refused with the reason
+        let bad = |field: &str| {
+            Manifest::parse(&format!(
+                "{{\"version\":1,\"families\":[{{\"name\":\"x\",\"models\":[{{\"size\":\"1b\",\"repo\":\"a/b\",\"default\":true,{field}}}]}}]}}"
+            ))
+            .unwrap_err()
+        };
+        assert!(bad("\"license\":\"\"").contains("license"));
+        assert!(bad("\"gated\":\"yes\"").contains("gated"));
+        assert!(bad("\"measured\":\"../x\"").contains("measured"));
+        assert!(Manifest::parse("{\"version\":1,\"families\":[{\"name\":\"x\",\"models\":[{\"size\":\"1b\",\"repo\":\"a/b\",\"default\":true,\"license\":\"mit\",\"gated\":\"manual\",\"measured\":null}]}]}").is_ok());
+    }
+
     #[test]
     fn every_default_is_a_recent_model_and_the_older_ones_are_legacy() {
         // the owner's rule (2026-11-20): what we test and show was released within six months of 2026-05-20
@@ -799,11 +873,11 @@ mod tests {
         let m = manifest();
         let r = resolve("qwen3.5:27b", &m).unwrap().unwrap();
         assert_eq!((r.repo.as_str(), r.level.as_deref()), ("Qwen/Qwen3.5-27B", None));
-        let r = resolve("qwen3.5:27b:swift", &m).unwrap().unwrap();
-        assert_eq!((r.repo.as_str(), r.level.as_deref(), r.model().as_str()), ("Qwen/Qwen3.5-27B", Some("swift"), "Qwen/Qwen3.5-27B:swift"));
+        let r = resolve("qwen3.5:27b:linnet", &m).unwrap().unwrap();
+        assert_eq!((r.repo.as_str(), r.level.as_deref(), r.model().as_str()), ("Qwen/Qwen3.5-27B", Some("linnet"), "Qwen/Qwen3.5-27B:linnet"));
         // letters only after the name is a level; a size has a digit
-        let r = resolve("qwen3.5:swift", &m).unwrap().unwrap();
-        assert_eq!((r.name.as_str(), r.level.as_deref()), ("qwen3.5:9b", Some("swift")));
+        let r = resolve("qwen3.5:linnet", &m).unwrap().unwrap();
+        assert_eq!((r.name.as_str(), r.level.as_deref()), ("qwen3.5:9b", Some("linnet")));
         // a size with a dash is one size, and the part before the dash finds it where only one starts so
         assert_eq!(resolve("qwen3.5:35b-a3b", &m).unwrap().unwrap().repo, "Qwen/Qwen3.5-35B-A3B");
         assert_eq!(resolve("qwen3.5:35b", &m).unwrap().unwrap().repo, "Qwen/Qwen3.5-35B-A3B");
@@ -818,9 +892,17 @@ mod tests {
     #[test]
     fn hub_ids_paths_and_ggufs_are_not_names() {
         let m = manifest();
-        for arg in
-            ["Qwen/Qwen3.5-9B", "Qwen/Qwen3.5-9B:swift", "glyd/Qwen3.5-9B-swift", "./qwen3.5", "/models/qwen3.5", "~/m", "model.gguf", "C:\\models\\m", "dir/"]
-        {
+        for arg in [
+            "Qwen/Qwen3.5-9B",
+            "Qwen/Qwen3.5-9B:linnet",
+            "glyd/Qwen3.5-9B-linnet",
+            "./qwen3.5",
+            "/models/qwen3.5",
+            "~/m",
+            "model.gguf",
+            "C:\\models\\m",
+            "dir/",
+        ] {
             assert_eq!(resolve(arg, &m), Ok(None), "{arg}");
         }
         // an existing directory is a directory even where its name is a family's
@@ -847,9 +929,9 @@ mod tests {
     #[test]
     fn resolve_args_changes_the_model_word_of_the_commands_that_take_one() {
         let words = |v: &[&str]| Args::from(v.iter().map(|s| s.to_string()));
-        let mut a = words(&["pull", "qwen3.5:27b:swift", "--hf-token", "x"]);
+        let mut a = words(&["pull", "qwen3.5:27b:linnet", "--hf-token", "x"]);
         resolve_args(&mut a).unwrap();
-        assert_eq!(a.pos, ["pull", "Qwen/Qwen3.5-27B:swift"]);
+        assert_eq!(a.pos, ["pull", "Qwen/Qwen3.5-27B:linnet"]);
         assert_eq!(a.flag("hf-token"), Some("x"));
         let mut a = words(&["run", "Qwen/Qwen3-8B"]);
         resolve_args(&mut a).unwrap();
@@ -881,7 +963,7 @@ mod tests {
     #[test]
     fn the_cache_is_read_as_huggingface_hub_keeps_it() {
         let m = manifest();
-        let d = fake_cache("scan", &[("Qwen/Qwen3.5-9B", 3000), ("glyd/Qwen3.5-9B-swift", 1000), ("someone/else", 10), ("glyd/Qwen3.5-27B-wren", 5)]);
+        let d = fake_cache("scan", &[("Qwen/Qwen3.5-9B", 3000), ("glyd/Qwen3.5-9B-linnet", 1000), ("someone/else", 10), ("glyd/Qwen3.5-27B-wren", 5)]);
         let got = scan(&d, &m);
         let row = |r: &str| got.iter().find(|l| l.repo == r).unwrap();
         // a blob is counted once, though the snapshot links to it
@@ -889,8 +971,8 @@ mod tests {
             (row("Qwen/Qwen3.5-9B").bytes, row("Qwen/Qwen3.5-9B").level.as_str(), row("Qwen/Qwen3.5-9B").name.as_deref()),
             (3000, "penguin", Some("qwen3.5:9b"))
         );
-        let s = row("glyd/Qwen3.5-9B-swift");
-        assert_eq!((s.bytes, s.level.as_str(), s.name.as_deref()), (1000, "swift", Some("qwen3.5:9b")));
+        let s = row("glyd/Qwen3.5-9B-linnet");
+        assert_eq!((s.bytes, s.level.as_str(), s.name.as_deref()), (1000, "linnet", Some("qwen3.5:9b")));
         assert_eq!(row("someone/else").name, None);
         assert_eq!(row("glyd/Qwen3.5-27B-wren").name.as_deref(), Some("qwen3.5:27b"));
         assert_eq!(got.len(), 4, "a dataset is not a model");
@@ -903,7 +985,7 @@ mod tests {
         assert!(is_packed_of("Qwen--Qwen3-8B-0123abcd-mma", "Qwen/Qwen3-8B"));
         assert!(is_packed_of("Qwen--Qwen3-8B-0123abcd-i5", "Qwen/Qwen3-8B"));
         assert!(is_packed_of("Qwen--Qwen3-8B-a", "Qwen/Qwen3-8B"));
-        assert!(is_packed_of("glyd--Qwen3.5-9B-swift-deadbeef-i5", "glyd/Qwen3.5-9B-swift"));
+        assert!(is_packed_of("glyd--Qwen3.5-9B-linnet-deadbeef-i5", "glyd/Qwen3.5-9B-linnet"));
         // another model whose name starts with this one's
         assert!(!is_packed_of("Qwen--Qwen3-8B-FP8-0123abcd-mma", "Qwen/Qwen3-8B"));
         assert!(!is_packed_of("Qwen--Qwen3-80B-0123abcd-mma", "Qwen/Qwen3-8B"));
@@ -914,7 +996,7 @@ mod tests {
     #[test]
     fn rm_takes_out_the_model_its_levels_and_its_packed_copies_and_nothing_else() {
         let m = manifest();
-        let cache = fake_cache("rm", &[("Qwen/Qwen3-8B", 100), ("glyd/Qwen3-8B-swift", 50), ("Qwen/Qwen3-32B", 7)]);
+        let cache = fake_cache("rm", &[("Qwen/Qwen3-8B", 100), ("glyd/Qwen3-8B-linnet", 50), ("Qwen/Qwen3-32B", 7)]);
         let packed = std::env::temp_dir().join(format!("glyd-models-{}-rm-packed", std::process::id()));
         let _ = std::fs::remove_dir_all(&packed);
         for d in ["Qwen--Qwen3-8B-0123abcd-mma", "Qwen--Qwen3-8B-FP8-0123abcd-mma", "Qwen--Qwen3-32B-0123abcd-mma"] {
@@ -922,8 +1004,8 @@ mod tests {
             std::fs::write(packed.join(d).join("engine.safetensors"), [0u8; 4]).unwrap();
         }
         let rm = |v: &[&str]| rm_in(&Args::from(v.iter().map(|s| s.to_string())), &m, &cache, &packed);
-        assert_eq!(rm(&["rm", "Qwen/Qwen3-8B:swift"]), 0);
-        assert!(!cache.join("models--glyd--Qwen3-8B-swift").exists() && cache.join("models--Qwen--Qwen3-8B").exists());
+        assert_eq!(rm(&["rm", "Qwen/Qwen3-8B:linnet"]), 0);
+        assert!(!cache.join("models--glyd--Qwen3-8B-linnet").exists() && cache.join("models--Qwen--Qwen3-8B").exists());
         assert_eq!(rm(&["rm", "Qwen/Qwen3-8B"]), 0);
         assert!(!cache.join("models--Qwen--Qwen3-8B").exists());
         assert!(cache.join("models--Qwen--Qwen3-32B").exists(), "another model's files stay");

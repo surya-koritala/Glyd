@@ -209,7 +209,7 @@ impl Mcp {
                 let max = args.get("max_tokens").and_then(Value::as_u64).unwrap_or(1024);
                 let body = format!("{{\"messages\":[{{\"role\":\"user\",\"content\":{}}}],\"max_tokens\":{max}}}", jstr(prompt));
                 let mut text = String::new();
-                post(&format!("{url}/v1/chat/completions"), &body).map_err(|e| e.0)?.read_to_string(&mut text).map_err(|e| e.to_string())?;
+                post(&format!("{url}/v1/chat/completions"), &body).map_err(|e| e.msg)?.read_to_string(&mut text).map_err(|e| e.to_string())?;
                 let v = json::parse(&text)?;
                 v.get("choices")
                     .and_then(Value::as_array)
@@ -242,7 +242,7 @@ pub fn mcp(a: &Args) -> Result<()> {
         let res = match msg.get("method").and_then(Value::as_str).unwrap_or("") {
             "initialize" => {
                 let v = p.and_then(|p| p.get("protocolVersion")).and_then(Value::as_str).unwrap_or("2025-06-18");
-                format!("{{\"protocolVersion\":{},\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"condor\",\"version\":\"0.2.3\"}}}}", jstr(v))
+                format!("{{\"protocolVersion\":{},\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"ibis\",\"version\":\"0.2.3\"}}}}", jstr(v))
             }
             // (one line: a message a line)
             "tools/list" => format!("{{\"tools\":{}}}", json::parse(TOOLS).map(|v| json::to_compact(&v)).unwrap_or_default()),

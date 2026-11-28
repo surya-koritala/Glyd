@@ -47,6 +47,19 @@ GPU memory in use: {{ m.memory }}
 ```
 
 {% endfor %}
+{% if quality %}
+## Quality
+
+Against the lossless level of the same model, with Glyd's quality suite (`glyd-engine quality`: next-token distributions on four fixed texts,
+and small reasoning, code and long-context tasks; greedy, thinking off), on {{ quality.gpu }}:
+
+```
+{% for l in quality.lines %}
+{{ l }}
+{% endfor %}
+```
+
+{% endif %}
 ## Known limits
 
 - Linux + NVIDIA RTX 30 series or newer. No Windows, Mac or AMD yet.

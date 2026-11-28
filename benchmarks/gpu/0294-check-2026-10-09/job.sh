@@ -1,5 +1,5 @@
-# 0.29.4's GPU check (rp_run.sh contract: results in ~/results, ~/results/DONE at the end). Branch int5-swift from src.tar:
-# library + engine built, crate tests, examples/int5 and int6, Qwen3.8-27B: bench i5/i6, run :swift / :kestrel / --lossy, :wren refused.
+# 0.29.4's GPU check (rp_run.sh contract: results in ~/results, ~/results/DONE at the end). Branch int5-linnet from src.tar:
+# library + engine built, crate tests, examples/int5 and int6, Qwen3.8-27B: bench i5/i6, run :linnet / :kestrel / --lossy, :wren refused.
 set -u
 R=~/results; mkdir -p $R ~/v; cd ~/v; tar -xf ~/src.tar
 P=$R/steps.txt; : > $P
@@ -19,7 +19,7 @@ wait
 E=~/v/src/target/release/glyd-engine
 step bench-i5 env GLYD_GPU_LIB=$LIB $E bench ~/v/bf16 --layout i5 --prompt 1024 --new 256
 step bench-i6 env GLYD_GPU_LIB=$LIB $E bench ~/v/bf16 --layout i6 --prompt 1024 --new 256
-step run-swift env GLYD_GPU_LIB=$LIB $E run ~/v/bf16:swift -p "In two sentences: what is the capital of Australia, and why was it chosen?"
+step run-linnet env GLYD_GPU_LIB=$LIB $E run ~/v/bf16:linnet -p "In two sentences: what is the capital of Australia, and why was it chosen?"
 step run-kestrel env GLYD_GPU_LIB=$LIB $E run ~/v/bf16:kestrel --no-think -p "Name three primes above 100."
 step run-lossy env GLYD_GPU_LIB=$LIB $E run ~/v/bf16 --lossy --no-think -p "What is 17 times 23?"
 step tag-wren env GLYD_GPU_LIB=$LIB $E run ~/v/bf16:wren -p "hi"

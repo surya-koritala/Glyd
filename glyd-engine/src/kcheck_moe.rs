@@ -10,7 +10,7 @@
 //! where a bound is not kept.
 
 use crate::args::Args;
-use crate::dev::{memset_async, Buf, Dev, Timer};
+use crate::dev::{Buf, Dev, Timer};
 use crate::ffi::{err, Error, Lib, Result};
 use crate::moe::{expert_strides, Act, ExpertStack, Joined, MoeCfg, MoeLayer, MoeScratch, MoeWeights, Router, Scoring, Shared};
 use crate::moe_ref::{plan_of, read_plan, route, scores, RefLayer, RefShared};
@@ -65,7 +65,7 @@ fn up_f32(v: &[f32]) -> Result<Buf> {
     Ok(b)
 }
 
-fn rd<T: Copy + Default>(b: &Buf, n: usize) -> Result<Vec<T>> {
+fn rd<T: crate::dev::Plain + Default>(b: &Buf, n: usize) -> Result<Vec<T>> {
     let mut v = vec![T::default(); n];
     b.read(0, &mut v)?;
     Ok(v)
@@ -656,7 +656,8 @@ fn graph_check(dev: &Dev, lib: &Lib, layer: &MoeLayer, sc: &MoeScratch, c: &Case
     let mut same = true;
     for _ in 0..2 {
         y.zero()?;
-        g.launch(s)?;
+        // SAFETY: the buffers and kernels this check captured are alive and unchanged since the capture.
+        unsafe { g.launch(s) }?;
         dev.sync()?;
         same &= rd::<u16>(&y, hid)? == eager;
     }
@@ -839,8 +840,8 @@ fn presets() -> Vec<Preset> {
 fn arbitrary_stack(dev: &Dev, tag: u32, experts: usize, rows: usize, cols: usize) -> Result<ExpertStack> {
     let (d, sc) = expert_strides(tag, rows, cols)?;
     let (data, scales) = (Buf::new((d * experts as u64) as usize)?, Buf::new((sc * experts as u64) as usize)?);
-    memset_async(data.ptr, 0xA5, data.bytes, dev.stream)?;
-    memset_async(scales.ptr, 0x3C, scales.bytes, dev.stream)?;
+    data.fill_async(0xA5, dev.stream)?;
+    scales.fill_async(0x3C, dev.stream)?;
     dev.sync()?;
     ExpertStack::from_buffers(tag, [tag << 24, 0, 0], experts, rows, cols, data, scales)
 }
@@ -958,7 +959,8 @@ fn speed_one(dev: &Dev, lib: &Lib, p: &Preset, f: &Fmt, r: &mut Rng) -> Result<(
         let mut ms: Vec<f32> = Vec::new();
         for _ in 0..5 {
             tm.start(s)?;
-            g.launch(s)?;
+            // SAFETY: the buffers and kernels this check captured are alive and unchanged since the capture.
+            unsafe { g.launch(s) }?;
             ms.push(tm.stop(s)?);
         }
         ms.sort_by(|a, b| a.partial_cmp(b).expect("a time"));
@@ -982,8 +984,8 @@ fn arbitrary_rows(dev: &Dev, bits: u32, experts: usize, rows: usize, cols: usize
     let tag = [glyd_gpu::pack::INT4_ROW_TAG, glyd_gpu::pack::INT5_ROW_TAG, glyd_gpu::pack::INT6_ROW_TAG][bits as usize - 4];
     let (d, sc) = row_strides(tag, rows, cols)?;
     let (data, scales) = (Buf::new((d * experts as u64) as usize)?, Buf::new((sc * experts as u64) as usize)?);
-    memset_async(data.ptr, 0xA5, data.bytes, dev.stream)?;
-    memset_async(scales.ptr, 0x3C, scales.bytes, dev.stream)?;
+    data.fill_async(0xA5, dev.stream)?;
+    scales.fill_async(0x3C, dev.stream)?;
     dev.sync()?;
     RowStack::from_buffers(tag, experts, rows, cols, data, scales)
 }
@@ -1064,7 +1066,8 @@ fn speed_sparse(dev: &Dev, lib: &Lib, p: &Preset, f: &Fmt, r: &mut Rng) -> Resul
             let mut ms: Vec<f32> = Vec::new();
             for _ in 0..5 {
                 tm.start(s)?;
-                g.launch(s)?;
+                // SAFETY: the buffers and kernels this check captured are alive and unchanged since the capture.
+                unsafe { g.launch(s) }?;
                 ms.push(tm.stop(s)?);
             }
             ms.sort_by(|a, b| a.partial_cmp(b).expect("a time"));

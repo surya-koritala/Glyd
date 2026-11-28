@@ -40,7 +40,7 @@ pub const CMDS: &[Cmd] = &[
         name: "run",
         args: "MODEL[:LEVEL]",
         summary: "chat with a model in the terminal and at one URL",
-        detail: "MODEL is a short name (gemma4, qwen3.8:27b), a Hub id (ORG/NAME), a directory or a GGUF file. LEVEL is penguin (lossless, the default), kestrel, swift, wren or hummingbird. \
+        detail: "MODEL is a short name (gemma4, qwen3.8:27b), a Hub id (ORG/NAME), a directory or a GGUF file. LEVEL is penguin (lossless, the default), kestrel, linnet, wren or hummingbird. \
                  --prompt TEXT answers once and exits. Where the service is running the chat goes through it.",
         flags: &["context", "users", "devices", "port", "host"],
     },
@@ -118,7 +118,7 @@ pub const CMDS: &[Cmd] = &[
         detail: "Exit 0 it will, 3 it will not (and why), 1 that could not be told.",
         flags: &["context", "users", "json"],
     },
-    Cmd { name: "prepare", args: "MODEL[:LEVEL]", summary: "download a model and pack it for this GPU", detail: "The KV cache's tables are left for the first run.", flags: &["context"] },
+    Cmd { name: "prepare", args: "MODEL[:LEVEL]", summary: "download a model and pack it for this GPU", detail: "Any model the engine runs, at the level glyd run would load it at (the one given, else the one that fits this computer).", flags: &["context"] },
     Cmd { name: "costs", args: "MODEL[:LEVEL] [--predict]", summary: "a model's cost profile and predicted decode speed", detail: "docs/cost-profile.md.", flags: &["context"] },
     Cmd { name: "rates", args: "[--dir DIR]", summary: "this computer's memory tiers, measured", detail: "The GPU's memory, the link to it, the main memory and the disk under DIR.", flags: &[] },
     Cmd {
@@ -146,7 +146,7 @@ pub const CMDS: &[Cmd] = &[
     Cmd {
         name: "cluster",
         args: "",
-        summary: "one model across computers (not yet: ROADMAP.md, M5)",
+        summary: "one model across computers (not yet: ROADMAP.md, M4)",
         detail: "Today that is the starlings program.",
         flags: &[],
     },

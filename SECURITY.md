@@ -56,7 +56,7 @@ credited in the advisory unless they ask not to be.
   time. The chat page, `/health`, `/ready` and `/stats` do not need the key; `/metrics` does.
 - In scope: reading or using the model without the key where one is set; getting past the loopback checks on an
   address the server chose itself; a request that crashes, hangs or exhausts memory beyond the limits it sets
-  (request body 16 MiB, header block 64 KiB, 256 headers, 64 connections, 30 s for the request line and headers, 120 s for the body, 60 s for a write to a client that reads nothing: a request that is too slow is answered 408); an out-of-bounds read or
+  (request body 16 MiB, header block 64 KiB, 256 headers, 50,000 open connections, 8,192 requests in flight, 30 s for the request line and headers, 120 s for the body, 60 s for a write to a client that reads nothing: a request that is too slow is answered 408); an out-of-bounds read or
   write while parsing a request; reading a file outside the chat page's own directory.
 - Image URLs in chat requests: the server fetches only `http(s)` URLs whose host resolves to a public address, at
   every redirect (up to 5), with a 64 MiB and 30 s limit. `file:` and other schemes are refused. A way to make it
@@ -84,8 +84,10 @@ In scope: a way to make it install a file that fails the check, run code from a 
 release, or write outside the directories it names. The checksum is published with the tarball, so it guards
 against a damaged or swapped download, not against a compromised release.
 
-**The GPU library** (`libglyd_gpu_cuda12.so`, `libglyd_gpu_cuda13.so`, `gpu/`, `glyd-gpu/`). It is loaded with
-`dlopen` by name from the loader's path, or from the file `GLYD_GPU_LIB` names. In scope: memory-unsafe behavior in
+**The GPU library** (`libglyd_gpu_cuda12.so`, `libglyd_gpu_cuda13.so`, `gpu/`, `glyd-gpu/`). The Python package loads
+it with `dlopen` by name from the loader's path, or from the file `GLYD_GPU_LIB` names; the engine loads it only from the
+file `GLYD_GPU_LIB` names (an NVIDIA build runs its own kernels without it; an AMD build also looks for `libglyd_gpu_hip`
+beside the program and on the loader's path). In scope: memory-unsafe behavior in
 the library on input from a model file or the codec's streams. Whoever can set `GLYD_GPU_LIB`, or write into the
 loader's search path, can already run code as you, so that is not a vulnerability.
 

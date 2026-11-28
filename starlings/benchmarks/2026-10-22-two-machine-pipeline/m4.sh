@@ -9,7 +9,7 @@ M=/opt/m4
 S=$M/starlings
 T=$M/pipeline_tool
 R=/workspace/m4run
-MODEL=/workspace/.cache/huggingface/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d
+MODEL=/workspace/.cache/huggingface/hub/models--glyd--Qwen3.5-9B-linnet/snapshots/073a2132abeaa41c119678b9687092871521eb4d
 C_IP=10.0.26.59
 G_IP=10.1.54.61
 admin() { sleep 0.3; "$S" --state-dir "$@"; }

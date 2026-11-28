@@ -33,7 +33,7 @@ How issues and pull requests are labeled. The maintainer applies them when triag
 | `area: runtime` | Engine runtime |
 | `area: scheduler` | Batching, KV cache, prefix cache |
 | `area: security` | Security, supply chain, safe defaults |
-| `condor` | Condor: a big MoE on one consumer GPU (`condor/`) |
+| `ibis` | Ibis: a big MoE on one consumer GPU (`ibis/`) |
 
 ## Which hardware
 

@@ -4,7 +4,7 @@ Starlings runs one model across two GPUs: two cards in one machine, or two machi
 Each GPU holds a contiguous range of the model's layers. A request's tokens cross between them
 once per step. The answers are the same tokens the whole model gives on one card.
 
-This beta runs Glyd's Qwen3.5-family models (for example `glyd/Qwen3.8-27B-swift`, 18.7 GB) on
+This beta runs Glyd's Qwen3.5-family models (for example `glyd/Qwen3.8-27B-linnet`, 18.7 GB) on
 NVIDIA GPUs under Linux.
 
 ## What you need
@@ -27,7 +27,7 @@ stay.
 
 ## One machine
 
-    starlings up --model glyd/Qwen3.8-27B-swift
+    starlings up --model glyd/Qwen3.8-27B-linnet
 
 The model downloads into the Hugging Face cache the first time; `up` asks before it downloads. It
 then:
@@ -42,11 +42,11 @@ it is slower than running the model whole. Ctrl-C stops everything.
 
 On the first machine:
 
-    starlings up --model glyd/Qwen3.8-27B-swift --machines 2
+    starlings up --model glyd/Qwen3.8-27B-linnet --machines 2
 
 It prints a **join code** and a **cluster check**. On the second machine, within five minutes:
 
-    starlings join --model glyd/Qwen3.8-27B-swift
+    starlings join --model glyd/Qwen3.8-27B-linnet
 
 1. Paste the join code when the second machine asks for it. That machine shows the cluster
    check; it must be the same as the first machine's. It shows which layers it will take; answer
@@ -78,7 +78,7 @@ Both listen on loopback only. To use them from another machine, tunnel with
 
 ## What it measured
 
-Qwen3.8-27B swift on two RTX 4090s (24 GB) in one data center (0.5 ms apart), 256 tokens, greedy:
+Qwen3.8-27B linnet on two RTX 4090s (24 GB) in one data center (0.5 ms apart), 256 tokens, greedy:
 
 | | tok/s |
 | --- | --- |

@@ -6,30 +6,30 @@
 use crate::ffi::{err, Error, Result};
 use crate::glm::GlmKind;
 use crate::kimi::ConfigKimi;
-use crate::qwen35_ref::bf16;
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
+
+#[cfg(test)]
+thread_local! {
+    /// A test's switch: every bf16 rounding of this reference off on this thread, so that its arithmetic is held term by term to the kinds' reference in
+    /// fp32 (`logits::tests::kimi_references_compute_the_same_function`).
+    pub(crate) static PLAIN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The bf16 value of `x`, where the release holds a bf16 tensor (`x` itself on a thread of a test that set `PLAIN`).
+fn bf16(x: f32) -> f32 {
+    #[cfg(test)]
+    if PLAIN.with(|p| p.get()) {
+        return x;
+    }
+    crate::qwen35_ref::bf16(x)
+}
 
 fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| Error(e.to_string()))
 }
 
-/// E2M1's values: the low three bits the magnitude, the fourth the sign.
-const E2M1: [f32; 16] = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0];
-
-/// An MXFP4 matrix [rows, cols] as compressed-tensors packs it: two weights a byte (the even column in the low four bits), an E8M0 scale (2^(s - 127)) per 32 of a row.
-pub fn mxfp4(packed: &[u8], scales: &[u8], rows: usize, cols: usize) -> Result<Vec<f32>> {
-    if cols % 32 != 0 || packed.len() != rows * cols / 2 || scales.len() != rows * cols / 32 {
-        return err(format!("an MXFP4 matrix of {rows} x {cols}: {} bytes and {} scales", packed.len(), scales.len()));
-    }
-    Ok((0..rows * cols)
-        .map(|i| {
-            let b = packed[i / 2];
-            let code = if i % 2 == 0 { b & 15 } else { b >> 4 };
-            E2M1[code as usize] * 2f32.powi(scales[i / 32] as i32 - 127)
-        })
-        .collect())
-}
+pub use crate::formats::mxfp4;
 
 /// A matrix's values [rows, cols].
 struct Mat {
@@ -113,14 +113,14 @@ pub fn situ(a: f32, b: f32, (beta, linear): (f32, f32)) -> f32 {
     bf16(beta * (a / beta).tanh() * sigmoid(a) * linear * (b / linear).tanh())
 }
 
-/// The depth mix of `src` (each a bf16 vector of the model's width): a query u = norm weight x proj weight, each source scored u . v / rms(v) (eps 1e-5), the
-/// softmax over the sources weighting their sum, rounded to bf16.
-fn mix(src: &[&[f32]], w_n: &[f32], w_p: &[f32]) -> Vec<f32> {
+/// The depth mix of `src` (each a bf16 vector of the model's width): a query u = norm weight x proj weight, each source scored u . v / rms(v) (`eps`, the
+/// model's rms_norm_eps, as vLLM's score norm's), the softmax over the sources weighting their sum, rounded to bf16.
+fn mix(src: &[&[f32]], w_n: &[f32], w_p: &[f32], eps: f32) -> Vec<f32> {
     let h = w_n.len();
     let s: Vec<f64> = src
         .iter()
         .map(|v| {
-            let r = 1.0 / ((v.iter().map(|&x| x * x).sum::<f32>() / h as f32 + 1e-5).sqrt());
+            let r = 1.0 / ((v.iter().map(|&x| x * x).sum::<f32>() / h as f32 + eps).sqrt());
             (0..h).map(|d| (w_n[d] * w_p[d]) as f64 * v[d] as f64).sum::<f64>() * r as f64
         })
         .collect();
@@ -196,6 +196,9 @@ pub struct RefKimi {
     pub margin: std::cell::Cell<f32>,
     /// Where set, each step's state after each layer: the partial sum and the completed blocks (`kimilayers`).
     pub trace: Option<Vec<(Vec<f32>, Vec<Vec<f32>>)>>,
+    /// Each mixture-of-experts layer's experts (in the model's order) for the tokens to come, each token's in turn, taken in the place of its router's own
+    /// choice (their weights its router's scores): a comparison's, which runs another reference on the same choices. Empty: the router's.
+    pub take: std::cell::RefCell<Vec<std::collections::VecDeque<Vec<usize>>>>,
     embed: Vec<f32>,
     head: Mat,
     norm: Vec<f32>,
@@ -286,6 +289,7 @@ impl RefKimi {
             c,
             margin: std::cell::Cell::new(f32::INFINITY),
             trace: None,
+            take: Default::default(),
         })
     }
 
@@ -390,7 +394,8 @@ impl RefKimi {
         w[2].mul(&g.iter().zip(&u).map(|(&a, &b)| situ(a, b, self.c.situ)).collect::<Vec<_>>())
     }
 
-    fn moe(&self, m: &Moe, x: &[f32]) -> Vec<f32> {
+    /// The `i`-th mixture-of-experts layer (in the model's order) on its normed input.
+    fn moe(&self, i: usize, m: &Moe, x: &[f32]) -> Vec<f32> {
         let e = &self.c.experts;
         let s: Vec<f32> = m.gate.w.chunks(m.gate.cols).map(|r| sigmoid(r.iter().zip(x).map(|(&a, &b)| a as f64 * b as f64).sum::<f64>() as f32)).collect();
         let mut idx: Vec<usize> = (0..e.experts).collect();
@@ -401,6 +406,9 @@ impl RefKimi {
             self.margin.set(self.margin.get().min(gap));
         }
         idx.truncate(e.top_k);
+        if let Some(t) = self.take.borrow_mut().get_mut(i).and_then(|q| q.pop_front()).filter(|t| !t.is_empty()) {
+            idx = t;
+        }
         let sum: f32 = idx.iter().map(|&i| s[i]).sum::<f32>() + 1e-20;
         let z = m.down.mul(x);
         let mut y = vec![0f64; e.latent];
@@ -438,7 +446,7 @@ impl RefKimi {
                 if blocks.is_empty() {
                     pv.clone()
                 } else {
-                    mix(&blocks.iter().map(|b| &b[..]).chain([&pv[..]]).collect::<Vec<_>>(), &ly.attn_res.0, &ly.attn_res.1)
+                    mix(&blocks.iter().map(|b| &b[..]).chain([&pv[..]]).collect::<Vec<_>>(), &ly.attn_res.0, &ly.attn_res.1, self.c.eps)
                 }
             };
             if l % self.c.res_block == 0 {
@@ -453,11 +461,11 @@ impl RefKimi {
             };
             let ly = &self.layers[l];
             let pv = add(p.take(), a);
-            let y = mix(&blocks.iter().map(|b| &b[..]).chain([&pv[..]]).collect::<Vec<_>>(), &ly.mlp_res.0, &ly.mlp_res.1);
+            let y = mix(&blocks.iter().map(|b| &b[..]).chain([&pv[..]]).collect::<Vec<_>>(), &ly.mlp_res.0, &ly.mlp_res.1, self.c.eps);
             let yn = rms(&y, &ly.post_norm, self.c.eps);
             let m = match &ly.ffn {
                 Ffn::Dense(w) => self.mlp(w, &yn),
-                Ffn::Moe(m) => self.moe(m, &yn),
+                Ffn::Moe(m) => self.moe(self.c.moe[..l].iter().filter(|&&x| x).count(), m, &yn),
             };
             p = Some(add(Some(pv), m));
             if let Some(t) = &mut self.trace {
@@ -465,7 +473,7 @@ impl RefKimi {
             }
         }
         let pv = p.expect("the last block's partial sum");
-        let hh = mix(&blocks.iter().map(|b| &b[..]).chain([&pv[..]]).collect::<Vec<_>>(), &self.out_res.0, &self.out_res.1);
+        let hh = mix(&blocks.iter().map(|b| &b[..]).chain([&pv[..]]).collect::<Vec<_>>(), &self.out_res.0, &self.out_res.1, self.c.eps);
         self.head.mul(&rms(&hh, &self.norm, self.c.eps))
     }
 }
@@ -481,27 +489,56 @@ impl RefKimi {
         }
     }
 
-    /// The depth mix of `src` with a norm and a projection weight.
-    pub(crate) fn mix_of(src: &[&[f32]], w_n: &[f32], w_p: &[f32]) -> Vec<f32> {
-        mix(src, w_n, w_p)
+    /// The depth mix of `src` with a norm and a projection weight, each source normed with `eps`.
+    pub(crate) fn mix_of(src: &[&[f32]], w_n: &[f32], w_p: &[f32], eps: f32) -> Vec<f32> {
+        mix(src, w_n, w_p, eps)
     }
 
     /// Layer `l`'s MLP or MoE on its normed input.
     pub(crate) fn ffn_of(&self, l: usize, x: &[f32]) -> Vec<f32> {
         match &self.layers[l].ffn {
             Ffn::Dense(w) => self.mlp(w, x),
-            Ffn::Moe(m) => self.moe(m, x),
+            Ffn::Moe(m) => self.moe(self.c.moe[..l].iter().filter(|&&x| x).count(), m, x),
         }
     }
 }
 
-/// A small Kimi-K3 of the release's format in `out` (random weights; the experts MXFP4 with E8M0 scales, the rest bf16, A_log and dt_bias fp32): 8 layers in
+/// A small Kimi-K3 of the release's format in `out` (random weights; the experts MXFP4 with E8M0 scales, its config's `quantization_config` the release's
+/// saying so, the rest bf16, A_log and dt_bias fp32): 8 layers in
 /// blocks of 3 (so that the depth mix sees up to four sources), the latent attention at layers 3 and 7 (1-based 4 and 8), the dense MLP in layer 0, 16 experts of
 /// 4 a token on a latent of 128; the delta and latent attention at the release's head widths (128; nope 128, rope 64, v 128).
 ///
-/// `dense`: the layers before which are dense MLPs (1 as released; 8: no experts); `mla`: the latent attention layers (false: every layer delta attention), to check
-/// the parts alone.
+/// `dense`: the layers before which are dense MLPs (1 as released; 8: no experts); `mla`: the latent attention layers (false: every layer delta attention; with fewer
+/// than 8 layers, the last one), to check the parts alone; `real`: Some(experts) for the release's widths instead (`random_real`).
 pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> {
+    random_with(out, dense, mla, layers, None, false, RANDOM_SEED)
+}
+
+/// The seed of the random models' draws.
+pub const RANDOM_SEED: u64 = 0x2026_1021_0000_0001;
+
+/// The case's shape (`random` of 8 layers, or `random_dsa`'s where `dsa`) drawn from `seed` (not 0): its noise floor's other draws.
+pub fn random_seeded(out: &Path, dsa: bool, seed: u64) -> Result<()> {
+    random_with(out, 1, true, 8, None, dsa, seed)
+}
+
+/// `random` of 8 layers with the newer config's sparse attention (`dsa_config`): on its two latent attention layers an indexer of a key a token (4 heads of 64,
+/// the keys RMS-normed, the best 16 tokens attended to), its tensors as the release names them. The family's second shape.
+pub fn random_dsa(out: &Path) -> Result<()> {
+    random_with(out, 1, true, 8, None, true, RANDOM_SEED)
+}
+
+/// `random` at the release's widths (a width of 7,168, 96 delta heads of 128, experts of 3,072 neurons on a latent of 3,584, 16 of `experts` a token, 2 shared), every layer
+/// delta attention (with `mla` and 8 layers, the latent attention at layers 4 and 8 as `random`'s: a model whose decode rows have tables, so that a step of several rows is
+/// a graph; with `mla` and fewer layers, the last one the latent attention), the first a small dense MLP as released and the others experts, a vocabulary of 4,096 (its
+/// embedding small): a model as large as the GPU's memory or larger (4 layers, 3 of 320 experts: 18 GB) to run through the expert cache. Its scales are the small model's
+/// conditioned draw's (`random_with`), the mix and the head narrower by the root of the width, its router the small model's decisive one: so that a cut of three layers (the
+/// dense MLP, then two blocks of experts) holds a path whose experts' sums are added in another order at a tenth of the kind's bound (`storecheck --floor`).
+pub fn random_real(out: &Path, layers: usize, experts: usize, mla: bool) -> Result<()> {
+    random_with(out, 1, mla, layers.min(8), Some(experts), false, RANDOM_SEED)
+}
+
+fn random_with(out: &Path, dense: usize, mla: bool, layers: usize, real: Option<usize>, dsa: bool, seed: u64) -> Result<()> {
     let text = r#"{"architectures": ["KimiK3ForConditionalGeneration"], "model_type": "kimi_k3", "bos_token_id": 1, "eos_token_id": 2,
         "text_config": {"model_type": "kimi_linear", "hidden_act": "situ", "activation_situ_beta": 4.0, "activation_situ_linear_beta": 25.0, "attn_res_block_size": 3, "bos_token_id": 1,
         "eos_token_id": 2, "first_k_dense_replace": 1, "hidden_size": 256, "intermediate_size": 512, "kv_lora_rank": 128, "latent_moe_use_norm": true,
@@ -509,6 +546,9 @@ pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> 
         "max_position_embeddings": 4096, "mla_use_nope": true, "mla_use_output_gate": true, "moe_intermediate_size": 256, "moe_layer_freq": 1, "moe_renormalize": true,
         "moe_router_activation_func": "sigmoid", "num_attention_heads": 2, "num_expert_group": 1, "num_experts": 16, "num_experts_per_token": 4, "num_hidden_layers": 8,
         "num_key_value_heads": 2, "num_shared_experts": 1, "q_lora_rank": 128, "qk_nope_head_dim": 128, "qk_rope_head_dim": 64, "rms_norm_eps": 1e-05, "routed_expert_hidden_size": 128,
+        "quantization_config": {"config_groups": {"group_0": {"format": "mxfp4-pack-quantized", "targets": ["Linear"], "weights": {"group_size": 32, "num_bits": 4,
+        "strategy": "group", "symmetric": true, "type": "float"}}}, "format": "mxfp4-pack-quantized", "ignore": ["re:.*self_attn.*", "re:.*shared_experts.*",
+        "re:.*mlp\\.(gate|up|gate_up|down)_proj.*", "re:.*lm_head.*"], "quant_method": "compressed-tensors"},
         "routed_scaling_factor": 1.0, "topk_group": 1, "topk_method": "noaux_tc", "v_head_dim": 128, "vocab_size": 4096}}"#;
     let text = text.replace(r#""first_k_dense_replace": 1"#, &format!(r#""first_k_dense_replace": {dense}"#));
     let text = if mla {
@@ -517,20 +557,46 @@ pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> 
         text.replace(r#""full_attn_layers": [4, 8]"#, r#""full_attn_layers": []"#)
             .replace(r#""kda_layers": [1, 2, 3, 5, 6, 7]"#, r#""kda_layers": [1, 2, 3, 4, 5, 6, 7, 8]"#)
     };
-    // (fewer layers: delta attention alone, the first `layers` of the list)
+    // (fewer layers: the first `layers` of the list, delta attention, and with `mla` the last one the latent attention, so that a cut of a few layers has both kinds
+    // of attention and decode rows with tables)
     let text = if layers < 8 {
-        let kda: Vec<String> = (1..=layers).map(|n| n.to_string()).collect();
+        let last = mla && layers > 1;
+        let kda: Vec<String> = (1..=layers - last as usize).map(|n| n.to_string()).collect();
+        let full = if last { layers.to_string() } else { String::new() };
         text.replace(r#""num_hidden_layers": 8"#, &format!(r#""num_hidden_layers": {layers}"#))
-            .replace(r#""full_attn_layers": [4, 8]"#, r#""full_attn_layers": []"#)
-            .replace(r#""full_attn_layers": []"#, r#""full_attn_layers": []"#)
+            .replace(r#""full_attn_layers": [4, 8]"#, &format!(r#""full_attn_layers": [{full}]"#))
+            .replace(r#""full_attn_layers": []"#, &format!(r#""full_attn_layers": [{full}]"#))
             .replace(r#""kda_layers": [1, 2, 3, 5, 6, 7]"#, &format!(r#""kda_layers": [{}]"#, kda.join(", ")))
             .replace(r#""kda_layers": [1, 2, 3, 4, 5, 6, 7, 8]"#, &format!(r#""kda_layers": [{}]"#, kda.join(", ")))
     } else {
         text
     };
+    let text = match real {
+        Some(e) => text
+            .replace(r#""hidden_size": 256"#, r#""hidden_size": 7168"#)
+            .replace(r#""num_heads": 2"#, r#""num_heads": 96"#)
+            .replace(r#""moe_intermediate_size": 256"#, r#""moe_intermediate_size": 3072"#)
+            .replace(r#""routed_expert_hidden_size": 128"#, r#""routed_expert_hidden_size": 3584"#)
+            .replace(r#""num_experts": 16"#, &format!(r#""num_experts": {e}"#))
+            .replace(r#""num_experts_per_token": 4"#, r#""num_experts_per_token": 16"#)
+            .replace(r#""num_shared_experts": 1"#, r#""num_shared_experts": 2"#),
+        None => text,
+    };
+    let text = if dsa {
+        text.replace(
+            r#""vocab_size": 4096}}"#,
+            r#""vocab_size": 4096, "dsa_config": {"dsa_layers": [4, 8], "index_head_dim": 64, "index_k_norm_type": "rmsnorm", "index_num_heads": 4,
+        "index_rope_dim": 0, "index_skip_topk_offset": 1, "index_topk": 16, "index_topk_freq": 1, "indexer_use_fp8": false}}}"#,
+        )
+    } else {
+        text
+    };
     let text = text.as_str();
     let c = ConfigKimi::parse(text, "random", None)?;
-    let mut r = 0x2026_1021_0000_0001u64;
+    if dsa != c.dsa.is_some() {
+        return err("the random model's sparse attention is not in its config");
+    }
+    let mut r = seed;
     let mut uni = move |a: f32, b: f32| {
         r ^= r << 13;
         r ^= r >> 7;
@@ -552,12 +618,30 @@ pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> 
         let (sh, a) = lin(rows, cols);
         bf(t, format!("{name}.weight"), sh, -a, a, uni);
     };
+    // (the small model's draw is held to its noise floor, `logits::tests::noise_floor_against_fp32`: the CPU reference with its rounding points against itself
+    // in fp32 on the same choices, at most a tenth of the kind's bound, on this draw and three other seeds. Three scales make it so; before them the floor was
+    // KL mean 1.5e-5, max 6.0e-5 (the second shape's 3.2e-4, 2.8e-3), 1e-4 to 1.8e-3 on other seeds; after them 2.3e-6 to 4.2e-6, max 1.5e-5:
+    //  - `mix`: the depth mix's projections U(-0.05, 0.05), not U(-0.5, 0.5), whose scores' RMS of about 4.6 made a softmax so sharp that one rounding of a
+    //    source moved a block's input by up to half of it;
+    //  - `values`: the delta attention's value products 32 times a product's draw: at 1 time the head outputs' mean square was below the gated norm's eps
+    //    (1e-5) in 94% of the heads and steps, so the norm scaled instead of norming, as a trained model's does not (now 0.1%, its median 9.8e-3);
+    //  - `decay`: its dt_bias U(-4, -2), not U(-1, 1), the state kept over tokens: at U(-1, 1) it forgot a token in about a step, so a head's output was one
+    //    or two terms whose query-key products, near 0 for random queries and keys, set its direction, and a rounding of the input swung it by tens of
+    //    percent.
+    //  None of the three makes an operation an identity: the mix still weighs its sources apart, the norm still norms, the decay still differs by channel
+    //  from about 0.3 to near 1.
+    //  The release's widths (`random_real`) are drawn so too, with the mix's projections and the head narrower by the root of the width (a score or a logit is
+    //  a sum of the width's terms: their RMS the small model's) and the small model's decisive router: drawn with the scales of a trained model's spread
+    //  (the mix U(-0.5, 0.5), values and decay as drawn, the head U(-0.05, 0.05), a router of spread scores), a cut of eight layers 7,168 wide moved
+    //  past the routers' margins by the GPU's own sums in another order (KL to 6.5 against itself: `storecheck --floor`).)
+    let narrow = (256.0 / c.hidden as f32).sqrt();
+    let (mix, values, decay) = (0.05 * narrow, 32.0, -3.0);
     bf(&mut t, format!("{p}embed_tokens.weight"), vec![c.vocab as u64, h], -1.0, 1.0, &mut uni);
-    bf(&mut t, "language_model.lm_head.weight".into(), vec![c.vocab as u64, h], -0.05, 0.05, &mut uni);
+    bf(&mut t, "language_model.lm_head.weight".into(), vec![c.vocab as u64, h], -0.05 * narrow, 0.05 * narrow, &mut uni);
     for n in ["norm", "output_attn_res_norm"] {
         bf(&mut t, format!("{p}{n}.weight"), vec![h], 0.9, 1.1, &mut uni);
     }
-    bf(&mut t, format!("{p}output_attn_res_proj.weight"), vec![1, h], -0.5, 0.5, &mut uni);
+    bf(&mut t, format!("{p}output_attn_res_proj.weight"), vec![1, h], -mix, mix, &mut uni);
     let (w, dd) = (c.kda.heads * c.kda.dim, c.kda.dim);
     for l in 0..c.layers {
         let q = format!("{p}layers.{l}");
@@ -565,13 +649,15 @@ pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> 
             bf(&mut t, format!("{q}.{n}.weight"), vec![h], 0.9, 1.1, &mut uni);
         }
         for n in ["self_attention_res_proj", "mlp_res_proj"] {
-            bf(&mut t, format!("{q}.{n}.weight"), vec![1, h], -0.5, 0.5, &mut uni);
+            bf(&mut t, format!("{q}.{n}.weight"), vec![1, h], -mix, mix, &mut uni);
         }
         let a = format!("{q}.self_attn");
         match c.kinds[l] {
             GlmKind::Kda => {
                 for n in ["q_proj", "k_proj", "v_proj", "g_proj"] {
-                    m(&mut t, format!("{a}.{n}"), w, c.hidden, &mut uni);
+                    let (sh, r) = lin(w, c.hidden);
+                    let r = if n == "v_proj" { r * values } else { r };
+                    bf(&mut t, format!("{a}.{n}.weight"), sh, -r, r, &mut uni);
                 }
                 // (the convolutions' and the gated norm's weights fp32, values no bf16 holds, as Kimi-K3 releases them)
                 for n in ["q", "k", "v"] {
@@ -588,7 +674,7 @@ pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> 
                 m(&mut t, format!("{a}.b_proj"), c.kda.heads, c.hidden, &mut uni);
                 m(&mut t, format!("{a}.o_proj"), c.hidden, w, &mut uni);
                 t.push((format!("{a}.o_norm.weight"), "F32", vec![dd as u64], (0..dd).flat_map(|_| uni(0.9, 1.1).to_le_bytes()).collect()));
-                for (n, len, lo, hi) in [("A_log", c.kda.heads, -1.0, 1.0), ("dt_bias", w, -1.0, 1.0)] {
+                for (n, len, lo, hi) in [("A_log", c.kda.heads, -1.0, 1.0), ("dt_bias", w, decay - 1.0, decay + 1.0)] {
                     t.push((format!("{a}.{n}"), "F32", vec![len as u64], (0..len).flat_map(|_| uni(lo, hi).to_le_bytes()).collect()));
                 }
             }
@@ -602,6 +688,17 @@ pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> 
                 m(&mut t, format!("{a}.kv_b_proj"), d.heads * (d.nope + d.v), d.kv_rank, &mut uni);
                 m(&mut t, format!("{a}.g_proj"), d.heads * d.v, c.hidden, &mut uni);
                 m(&mut t, format!("{a}.o_proj"), c.hidden, d.heads * d.v, &mut uni);
+                // (the sparse attention's indexer on the layers the config names: the queries' product of the q latent, the keys' of the layer's input, the keys'
+                // norm, the head weights' product)
+                if let Some(x) = c.dsa.as_ref().filter(|x| x.layers.contains(&l)) {
+                    m(&mut t, format!("{a}.indexer.wq_b"), x.heads * x.dim, d.q_rank, &mut uni);
+                    m(&mut t, format!("{a}.indexer.wk"), x.dim, c.hidden, &mut uni);
+                    bf(&mut t, format!("{a}.indexer.k_norm.weight"), vec![x.dim as u64], 0.9, 1.1, &mut uni);
+                    if x.layer_norm {
+                        bf(&mut t, format!("{a}.indexer.k_norm.bias"), vec![x.dim as u64], -0.1, 0.1, &mut uni);
+                    }
+                    m(&mut t, format!("{a}.indexer.weights_proj"), x.heads, c.hidden, &mut uni);
+                }
             }
         }
         let e = &c.experts;
@@ -615,16 +712,18 @@ pub fn random(out: &Path, dense: usize, mla: bool, layers: usize) -> Result<()> 
         // (a decisive router, so that the engine's rounding does not flip a choice: weights twenty times a product's, the scores near 0 or 1, and among those near 1 the bias
         // picks, its values 0.05 apart in a random order)
         let (sh, ga) = lin(e.experts, c.hidden);
-        bf(&mut t, format!("{f}.gate.weight"), sh, -20.0 * ga, 20.0 * ga, &mut uni);
+        let g = 20.0 * ga;
+        bf(&mut t, format!("{f}.gate.weight"), sh, -g, g, &mut uni);
         let mut order: Vec<usize> = (0..e.experts).collect();
         for i in (1..order.len()).rev() {
             order.swap(i, (uni(0.0, (i + 1) as f32) as usize).min(i));
         }
+        let step = 0.05;
         t.push((
             format!("{f}.gate.e_score_correction_bias"),
             "F32",
             vec![e.experts as u64],
-            order.iter().flat_map(|&k| (k as f32 * 0.05).to_le_bytes()).collect(),
+            order.iter().flat_map(|&k| (k as f32 * step).to_le_bytes()).collect(),
         ));
         m(&mut t, format!("{f}.routed_expert_down_proj"), e.latent, c.hidden, &mut uni);
         m(&mut t, format!("{f}.routed_expert_up_proj"), c.hidden, e.latent, &mut uni);
@@ -769,7 +868,13 @@ pub fn layers(a: &crate::args::Args) -> Result<()> {
         let last = a.has("last") && l == c.layers;
         let st = crate::dynamic::Stage { layers: (0, l), first: true, last };
         // (GLYD_KIMI_PLACES: the expert cache with that many places a layer, as kimicheck's)
-        let mut e = crate::dynamic::kimi::load_with_places(dir, &o, st, crate::tune!("GLYD_KIMI_PLACES").and_then(|v| v.parse().ok()))?;
+        let mut e = crate::dynamic::kimi::load_with_places(
+            dir,
+            &crate::runtime::config::ModelConfig::load(dir)?,
+            &o,
+            st,
+            crate::tune!("GLYD_KIMI_PLACES").and_then(|v| v.parse().ok()),
+        )?;
         for (i, &t) in toks.iter().enumerate() {
             let mut io = Vec::new();
             e.stage_rows(&[t], i, &mut io, last as usize)?;
@@ -826,10 +931,10 @@ mod tests {
     #[test]
     fn the_mix_of_one_source_is_it_and_of_equal_scores_their_mean() {
         let v = [1.0f32, -2.0, 3.0, 0.5];
-        assert_eq!(mix(&[&v], &[1.0; 4], &[0.3; 4]), v.to_vec());
+        assert_eq!(mix(&[&v], &[1.0; 4], &[0.3; 4], 1e-5), v.to_vec());
         let (a, b) = ([1.0f32, 1.0, 1.0, 1.0], [3.0f32, 3.0, 3.0, 3.0]);
         // (the same direction, so the same score: the mean)
-        assert_eq!(mix(&[&a, &b], &[1.0; 4], &[1.0; 4]), vec![2.0; 4]);
+        assert_eq!(mix(&[&a, &b], &[1.0; 4], &[1.0; 4], 1e-5), vec![2.0; 4]);
     }
 
     /// The random model loads and steps: finite logits, the same for the same tokens from a fresh load, and its state carried (a token's logits depend on the ones before).

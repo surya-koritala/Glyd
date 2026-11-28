@@ -11,7 +11,7 @@ runs of a prompt give the same tokens.
 
 ## One PC
 
-Qwen3.5-9B swift, layers 0..16 and 16..32 on one RTX 4080 SUPER, loopback TLS, `draft_tokens` 7.
+Qwen3.5-9B linnet, layers 0..16 and 16..32 on one RTX 4080 SUPER, loopback TLS, `draft_tokens` 7.
 
 | run | tokens | decode steps, plain / drafted | drafts held | pipeline ms, plain / drafted | whole model ms |
 | --- | --- | --- | --- | --- | --- |
@@ -47,7 +47,7 @@ library built from the same source, sha256 `b452dd11…`. Starlings: this branch
 release build. From `crates/starlings-cli` on the PC, under the GPU lock:
 
     GLYD_GPU_LIB=.../lib-rewind/libglyd_gpu_cuda13.so STARLINGS_RANGE_ENGINE=.../glyd-engine-rewind \
-    STARLINGS_RANGE_MODEL=<Qwen3.5-9B-swift snapshot> STARLINGS_RANGE_NEW=48 STARLINGS_RANGE_DRAFTS=7 \
+    STARLINGS_RANGE_MODEL=<Qwen3.5-9B-linnet snapshot> STARLINGS_RANGE_NEW=48 STARLINGS_RANGE_DRAFTS=7 \
     [STARLINGS_RANGE_LINK_MS=43] [STARLINGS_RANGE_TEXT=...] \
       flock ~/glyd-scratch/gpu.lock target/release/deps/daemon-<hash> --exact \
       real_pipeline_daemons_generate_through_two_stages_like_the_whole_model --nocapture
@@ -56,5 +56,5 @@ Records: `record-*.json` (both requests' reports with `drafted` and `accepted`, 
 the whole model's run).
 
 Limits: one PC and one GPU; the link is a relay. Greedy only (the engine draws only a chunk's last
-row, so sampled requests send no guesses). Only the swift level on Ada was run. Guesses come from
+row, so sampled requests send no guesses). Only the linnet level on Ada was run. Guesses come from
 the request's own tokens only, so prompts that do not repeat themselves gain little.

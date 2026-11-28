@@ -17,11 +17,11 @@ fn parse_body(req: &Req) -> std::result::Result<Value, String> {
 }
 
 /// `{"error": "..."}`, as Ollama says what went wrong.
-fn fail(s: &mut TcpStream, cors: &str, code: u16, msg: &str) {
+fn fail(s: &mut dyn Conn, cors: &str, code: u16, msg: &str) {
     respond_with(s, code, "application/json; charset=utf-8", cors, format!("{{\"error\":{}}}", jstr(&said(msg))).as_bytes());
 }
 
-fn ok(s: &mut TcpStream, cors: &str, body: &str) {
+fn ok(s: &mut dyn Conn, cors: &str, body: &str) {
     respond_with(s, 200, "application/json; charset=utf-8", cors, body.as_bytes());
 }
 
@@ -57,7 +57,7 @@ fn last_name(name: &str) -> &str {
     name.trim_end_matches('/').rsplit('/').next().unwrap_or(name)
 }
 
-/// The Hub repo (`ORG/NAME`) a served model's name is: the repo of a Hub cache's directory, or a name that is one (a level's tag, `:swift`, cut); None for a path or a name that is neither.
+/// The Hub repo (`ORG/NAME`) a served model's name is: the repo of a Hub cache's directory, or a name that is one (a level's tag, `:linnet`, cut); None for a path or a name that is neither.
 fn repo_of(name: &str) -> Option<String> {
     let name = &unix(name);
     if let Some(repo) = name.split('/').find_map(|p| p.strip_prefix("models--")) {
@@ -68,7 +68,7 @@ fn repo_of(name: &str) -> Option<String> {
 }
 
 /// The GGUF a served directory was made from (`gguf::materialize` writes `gguf-source.json` beside the config, with the file's name): the model's name without its file's `.gguf`, a split's part count and a quantization
-/// tag (`Qwen3-8B-BF16.gguf` is `Qwen3-8B`), and that tag lowercased (`bf16`). None where the name is not such a directory (a level's `:swift` after it is not part of the directory).
+/// tag (`Qwen3-8B-BF16.gguf` is `Qwen3-8B`), and that tag lowercased (`bf16`). None where the name is not such a directory (a level's `:linnet` after it is not part of the directory).
 fn gguf_of(name: &str) -> Option<(String, Option<String>)> {
     static CACHE: std::sync::Mutex<Vec<(String, Option<(String, Option<String>)>)>> = std::sync::Mutex::new(Vec::new());
     if let Some((_, hit)) = CACHE.lock().ok()?.iter().find(|(n, _)| n == name) {
@@ -204,7 +204,7 @@ fn details(name: &str) -> String {
 /// The model as `/api/tags` and `/api/ps` list it.
 fn model_entry(sh: &Shared, extra: &str) -> String {
     let name = listed_name(&sh.name);
-    let size = INFO.get().and_then(|i| i.held.as_ref()).map_or(0, |h| h.weights);
+    let size = sh.rt.info.get().and_then(|i| i.held.as_ref()).map_or(0, |h| h.weights);
     format!(
         "{{\"name\":{0},\"model\":{0},\"modified_at\":\"{1}\",\"size\":{size},\"digest\":\"{2}\",\"details\":{3}{extra}}}",
         jstr(&name),
@@ -417,12 +417,12 @@ fn stats(done: &Done, prompt_tokens: usize, begun: std::time::Instant, first: Op
 }
 
 /// A line of a stream of JSON lines, as one chunk of the chunked body.
-fn line(s: &mut TcpStream, text: &str) -> bool {
+fn line(s: &mut dyn Conn, text: &str) -> bool {
     let l = format!("{text}\n");
     s.write_all(format!("{:x}\r\n{l}\r\n", l.len()).as_bytes()).and_then(|_| s.flush()).is_ok()
 }
 
-fn start_lines(s: &mut TcpStream, cors: &str) -> bool {
+fn start_lines(s: &mut dyn Conn, cors: &str) -> bool {
     s.write_all(
         format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nCache-Control: no-store\r\n{cors}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
@@ -453,7 +453,7 @@ impl Shape {
 }
 
 /// `/api/chat` and `/api/generate`.
-pub(super) fn generate(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, chat: bool) {
+pub(super) fn generate(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req, chat: bool) {
     let cors = req.cors.as_str();
     let v = match parse_body(req) {
         Ok(v) => v,
@@ -548,12 +548,12 @@ pub(super) fn generate(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &R
                     }
                     return;
                 }
-                Ok(Out::Failed(e)) => {
+                Ok(Out::Failed(e, server)) => {
                     eprintln!("glyd: a request failed: {e}");
                     if started {
                         let _ = line(s, &format!("{{\"error\":{}}}", jstr(&e))) && s.write_all(b"0\r\n\r\n").is_ok();
                     } else {
-                        fail(s, cors, 500, &e);
+                        fail(s, cors, if server { 500 } else { 400 }, &e);
                     }
                     return;
                 }
@@ -564,7 +564,7 @@ pub(super) fn generate(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &R
 }
 
 /// `/api/pull`: the model served is there; another is not one this server can fetch (the server holds one model: `glyd pull NAME`, then `glyd serve NAME`).
-fn pull(sh: &Shared, s: &mut TcpStream, req: &Req) {
+fn pull(sh: &Shared, s: &mut dyn Conn, req: &Req) {
     let cors = req.cors.as_str();
     let v = match parse_body(req) {
         Ok(v) => v,
@@ -588,7 +588,7 @@ fn pull(sh: &Shared, s: &mut TcpStream, req: &Req) {
 }
 
 /// `/api/delete`: a model that is served is not removed under its server.
-fn delete(sh: &Shared, s: &mut TcpStream, req: &Req) {
+fn delete(sh: &Shared, s: &mut dyn Conn, req: &Req) {
     let cors = req.cors.as_str();
     let v = match parse_body(req) {
         Ok(v) => v,
@@ -608,7 +608,7 @@ fn delete(sh: &Shared, s: &mut TcpStream, req: &Req) {
 pub const VERSION: &str = "0.12.6";
 
 /// One request of Ollama's API on `s` (`POST /api/chat`, `/api/generate`, `/api/show`, `/api/pull`; `GET /api/tags`, `/api/ps`, `/api/version`; `DELETE /api/delete`).
-pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req) {
+pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req) {
     let cors = req.cors.as_str();
     let path = req.path.split('?').next().unwrap_or("");
     match (req.method.as_str(), path) {
@@ -616,7 +616,7 @@ pub(super) fn handle(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
         ("POST", "/api/generate") => generate(sh, tx, s, req, false),
         ("GET" | "HEAD", "/api/tags") => ok(s, cors, &format!("{{\"models\":[{}]}}", model_entry(sh, ""))),
         ("GET" | "HEAD", "/api/ps") => {
-            let size = INFO.get().and_then(|i| i.held.as_ref()).map_or(0, |h| h.weights);
+            let size = sh.rt.info.get().and_then(|i| i.held.as_ref()).map_or(0, |h| h.weights);
             ok(
                 s,
                 cors,
@@ -755,10 +755,10 @@ mod tests {
         // a model the manifest has is listed by its short name, as Ollama writes one; another by its repo or its directory's name with a tag
         assert_eq!(listed_name("Qwen/Qwen3-8B"), "qwen3:8b");
         assert_eq!(listed_name("qwen/qwen3-8b"), "qwen3:8b");
-        assert_eq!(listed_name("Qwen/Qwen3.5-9B:swift"), "qwen3.5:9b");
+        assert_eq!(listed_name("Qwen/Qwen3.5-9B:linnet"), "qwen3.5:9b");
         assert_eq!(listed_name("/home/u/glyd-demo/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d"), "qwen3:8b");
         assert_eq!(listed_name("acme/Thing-1B"), "acme/Thing-1B:latest");
-        assert_eq!(listed_name("acme/Thing-1B:swift"), "acme/Thing-1B:swift");
+        assert_eq!(listed_name("acme/Thing-1B:linnet"), "acme/Thing-1B:linnet");
         assert_eq!(listed_name("/home/u/models--acme--Thing-1B/snapshots/abc"), "acme/Thing-1B:latest");
         assert_eq!(listed_name("/models/Qwen3-0.6B/"), "Qwen3-0.6B:latest");
         assert_eq!(
@@ -793,7 +793,7 @@ mod tests {
         let q = made("q", "Qwen3-8B-BF16.gguf");
         assert_eq!(listed_name(&q), "qwen3:8b-bf16");
         // (a level's tag after the directory is not part of it)
-        assert_eq!(listed_name(&format!("{q}:swift")), "qwen3:8b-bf16");
+        assert_eq!(listed_name(&format!("{q}:linnet")), "qwen3:8b-bf16");
         for asked in ["qwen3:8b-bf16", "qwen3:8b", "qwen3", "Qwen3-8B", "Qwen/Qwen3-8B", "qwen3:8b-BF16", "Qwen3-8B-BF16"] {
             assert!(is_served(asked, &q), "{asked}");
         }

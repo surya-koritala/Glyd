@@ -1,6 +1,6 @@
 # A decode step's ceiling: the formula
 
-`glyd-engine ceiling MODEL --box B` (a development build, src/ceiling.rs) computes it. MODEL is a directory or a Hub repo; for a repo, only the
+`glyd-engine ceiling MODEL --box B` (a development build, glyd-engine/src/ceiling.rs) computes it. MODEL is a directory or a Hub repo; for a repo, only the
 safetensors headers are read, by ranges. The numbers below come from that command.
 
 ## Inputs
@@ -38,6 +38,9 @@ safetensors headers are read, by ranges. The numbers below come from that comman
 - **Unexplained:** measured minus "ours". It is a missing input to measure, not a reason to rent.
 
 ## Calibration: each input measured once per box, not guessed
+
+The figures of this table and of the sections that use them were measured on 2026-10-22 (the dates are beside each constant in
+`glyd-engine/src/ceiling.rs`), on the two boxes its columns name.
 
 | input | how | 4080 SUPER (PC) | 8x A100 80 GB |
 |---|---|---|---|
@@ -81,7 +84,7 @@ layout.
 (~2 µs an event). What it showed on the 4080 SUPER, Kimi-K3's 4 real layers as GPU 0 of 8:
 
 - **A launch in a graph is 0.5 µs** (an empty kernel, graph replays). The fixed cost is inside the kernels.
-- **A product is ~5.5 µs + bytes / 643 GB/s** (643 = 96.5% of the copy rate), from 2 MB to 220 MB. Each product a layer fewer saves ~5.5 µs, and
+- **A product is ~5.5 µs + bytes / 643 GB/s** (the fit of that run; 96.5% of the 702 GB/s copy rate the consistency table above uses would be 677, so the two figures do not agree, and the run's raw data is not kept to say which is off), from 2 MB to 220 MB. Each product a layer fewer saves ~5.5 µs, and
   across GPUs its gather.
 - **One-SM kernels are latency-bound.** The old depth mix read its sources one at a time: 1.4 µs a source, 17 µs at the 10 sources real Kimi-K3 reaches.
 
@@ -120,13 +123,75 @@ Kimi-K3 on 8x A100 after it: 699 exchanges a token (882 before). With the 4080's
 Those vary within a run and were logged per 64 steps, not per layer. The next step is per-layer statistics in the engine, so that one run gives the
 inputs and the next is predicted.
 
+## Experts in the expert cache, many rows: the per-layer statistics (2026-11-23, the PC)
+
+`storebench MODEL --places N --rows 1,8,32 --out FILE` runs batched decode through the expert cache and writes each count of rows' per-layer
+statistics (`LayerStats`: experts asked for and found, copies, the host's experts and pairs, the bytes read for the misses, the copy stream's,
+the host's and each call's own time). `ceiling MODEL --box 4080s --stats FILE [--calibrate MODEL:FILE2] [--fixed-us US]` predicts each step from them. The first formula (the one the table below was made with) took:
+
+- the dense weights once a step, each expert a layer runs on the GPU once, the attention once a row;
+- a layer's misses: the longer of its own copies' measured time and the host's measured time, plus the call's own time on the host; the step is
+  at least the copy stream's whole time (promotions too: one queue);
+- a fixed time a MoE layer and a row, fitted to FILE2's lines' unexplained (without it, FILE's first line's, and no time a row).
+
+The formula of `ceiling.rs`'s `cached_step` now is the one of the second table below (the layers in order); this table's errors are the first formula's.
+
+Random models at the release's widths, larger than the GPU's 16 GB (18 GB each), 8 steps after 3, prompts of 16 tokens; the bytes read for a step's
+misses equal the distinct missed experts' bytes in every line (+0.00%: each copied once, or read once by the host for all its rows):
+
+| model, places | mode | rows | measured | ceiling --stats (ours), the first formula | calibrated on |
+|---|---|---|---|---|---|
+| DeepSeek-V4, 16 layers of 64 experts, 32 places | copy | 1 / 8 / 32 | 30.75 / 146.06 / 280.21 ms | (fitted) / −2.3% / −7.8% | its 1-row line |
+| | auto | 1 / 8 / 32 | 19.58 / 95.69 / 286.45 ms | −5.5% / −13.4% / −16.3% | the copy run |
+| Kimi-K3, 4 layers (3 of 256 experts), 128 places | copy | 1 / 8 / 32 | 23.47 / 111.60 / 237.68 ms | (fitted) / −0.0% / −1.8% | its 1-row line |
+| | auto | 1 / 8 / 32 | 17.00 / 51.51 / 201.33 ms | −10.1% / +1.0% / +5.2% | the copy run |
+
+- **Auto against copy:** the host's half takes 36% (DeepSeek-V4) and 28% (Kimi-K3) off a step at 1 row and 34% and 54% at 8. At 32 rows a miss has
+  several rows; DeepSeek-V4's misses outnumber the places its hits leave, and a call is copied whole in waves where the host's share would take
+  longer (`waves_quicker`): 286 ms against copy's 280 (334 ms median before that choice).
+- **The time a row:** 45 µs a row and a MoE layer on DeepSeek-V4 and 49 on Kimi-K3, fitted. What it is (the launches of the operations a pass runs
+  sequence by sequence, no graph capturing a step that reads the router's choices on the host) is not measured.
+- **DeepSeek-V4 in auto mode is under-predicted at 8 and 32 rows.** Its per-layer statistics show why: after each layer's host pairs the host waits
+  about as long as that layer's copies took, so its copies do not run while the host computes, as the formula assumes and as Kimi-K3's do (its
+  wait after a layer is 2 ms beside 9-11 ms of copies). Why DeepSeek-V4's do not is not measured (a trace of the copy stream against the host's
+  pairs is the next measurement).
+
+### Why: the copy stream's order, and calls of two kinds (2026-11-23, from the same runs)
+
+The per-layer statistics of those runs say what the formula missed; it does not need a trace.
+
+- **8 rows.** Each DeepSeek-V4 layer copies 6 experts for its call (2.9 ms) and promotes 4 behind it (1.9 ms), the host computes 10
+  (3.0 ms). The promotions are queued on the one copy stream after the layer's products (they wait for them), so the next layer's
+  copies wait behind them: the copy stream's period a layer is its copies, the products and its promotions (5.3 ms), not the longer
+  of the copies and the host's 3 ms. Kimi-K3 at 8 rows promotes none and was predicted within 1%.
+- **32 rows.** A layer's hits leave 2 places for 30 misses, so `waves_quicker` copies some calls whole in waves (31 copies, no host
+  half) and gives the host the others (2 copies, 28 experts): layer 4's 13 copies and 17 host experts a step are 3 calls of the
+  one kind and 5 of the other, and the longer of 13 copies and 17 host experts is not the mean of the calls' times. Rebuilt from
+  that split, the step of the formula below is 289.2 ms against 286.5 measured (+1.0%); the lines now carry the calls copied whole
+  (`whole`, `whole_bytes`), so the next run measures the split instead.
+
+`ceiling --stats` now follows the layers in order on the host, the copy stream and the GPU, at the run's measured rates: a call
+plans, its copies start when the copy stream has run what is queued before them, its products after its copies, its promotions
+after its products; the host's pairs from the plan on; the next layer after the products, the host's pairs and the rest of the
+layer. A call copied whole has the host wait for its copies and products. The fixed time a layer goes with the products (the
+copies behind them wait for it), the time a row with the rest of the layer. On the lines above, calibrated on each model's copy run
+(`ceiling::tests::the_cached_step_predicts_the_measured_auto_runs`, with the GPU's dense reads left to the fixed time; the test holds
+each line to 10% but DeepSeek-V4's at 32 rows, which it prints):
+
+| model | rows | measured | the formula before | now |
+|---|---|---|---|---|
+| DeepSeek-V4, auto | 1 / 8 / 32 | 19.58 / 95.69 / 286.45 ms | -5.5% / -13.4% / -16.3% | +6.3% / -6.8% / -21.1% (no `whole` in these lines) |
+| Kimi-K3, auto | 1 / 8 / 32 | 17.00 / 51.51 / 201.33 ms | -10.1% / +1.0% / +5.2% | +2.2% / +0.5% / -2.2% |
+
+`storebench --out` writes each layer's totals over the timed steps (`"totals": true`), so a share of calls is kept as it is.
+
 ## What it says
 
 - **One GPU:** our code is near the ceiling: 85-94% of it on the 4080.
 - **DeepSeek-V4-Flash on 8x A100:** at 12-21% of the ceiling.
   - Fixed time (9.0 ms): the small kernels' fusion.
   - Exchanges (2.9-6.3 ms): the low-latency gather and fewer exchanges.
-  - Products at 57%: the one-token kernels' occupancy, GLY-349 / GLY-334.
+  - Products at 57%: the one-token kernels' occupancy.
 - **Kimi-K3 on 8x A100:** missing experts, the fixed time and the exchanges, in that order. The per-layer statistics come first.
 
 ## Limits
@@ -135,4 +200,4 @@ inputs and the next is predicted.
 - H100's PCIe rate when every GPU copies is assumed.
 - Attention is modelled for Kimi-K3 (KDA states, MLA cache) and DeepSeek-V4 (window plus compressed, approximate) only.
 - A packed size is the measured average share. Single matrices vary by a few percent; the head is the largest.
-- Decode at one user; the prompt is not modelled.
+- Decode only, at one user; `--stats` also predicts steps of 1, 8 and 32 rows through the expert cache on one GPU. The prompt is not modelled.

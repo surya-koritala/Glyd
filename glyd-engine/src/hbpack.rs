@@ -5,11 +5,10 @@
 
 use crate::ffi::{err, Error, Result};
 use crate::nemotron::{ConfigNemotronH, NhKind};
-use crate::pack::plan_puts;
 use glyd_gpu::codebook::{cb_strides, pack_codebook_rows};
 use glyd_gpu::hbexport::HbExport;
 use glyd_gpu::safetensors::Checkpoint;
-use glyd_gpu::save::{self, Layout, Source};
+use glyd_gpu::save::{self, Source};
 use std::path::Path;
 use std::time::Instant;
 
@@ -17,24 +16,16 @@ fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| Error(e.to_string()))
 }
 
-/// The save plan of the model `c` at the Hummingbird level: its matrices but the routed experts', each six-bit (the linear says so: `"layout": "i6"`), its small tensors copied as the checkpoint has them (`f32` says which the
-/// checkpoint holds as F32: cast to bf16, as the saver holds nothing else), and for each mixture-of-experts layer (the export's layer k is the model's k-th) its experts' two matrices from the export (`up` and `downT`)
-/// and the signs of its rotation.
-pub fn plan(c: &ConfigNemotronH, f32: &dyn Fn(&str) -> bool) -> String {
-    let dense: Vec<_> = c.packs().into_iter().filter(|p| !p.key.contains(".mixer.experts.")).collect();
-    let mut puts = plan_puts(&dense, &c.kept(), f32, &|_| Some(Layout::Int6));
-    for (l, &(_, k)) in c.schedule().iter().enumerate().filter(|(_, (kind, _))| *kind == NhKind::Moe) {
-        for e in 0..c.moe.experts {
-            for (name, matrix) in [("up_proj", "up"), ("down_proj", "downT")] {
-                puts.push(format!(
-                    "{{\"codebook\": \"{}layers.{l}.mixer.experts.{e}.{name}\", \"layer\": {k}, \"expert\": {e}, \"matrix\": \"{matrix}\"}}",
-                    c.prefix
-                ));
-            }
-        }
-        puts.push(format!("{{\"signs\": \"{}layers.{l}.mixer.glyd_rot_signs\", \"layer\": {k}}}", c.prefix));
-    }
-    format!("{{\"puts\": [{}]}}", puts.join(", "))
+/// The save plan of the model in `dir` at the Hummingbird level, from its description (src/pack.rs `hb_plan`): its matrices but the routed experts', each in the
+/// layout its family's row gives them there (six-bit), its small tensors copied as the checkpoint has them (F32 cast to bf16), and for each block of experts
+/// (the export's layer k is the model's k-th) its experts' two matrices from the export (`up` and `downT`) and the signs of its rotation.
+pub fn plan(dir: &Path) -> Result<String> {
+    let c = crate::runtime::config::ModelConfig::load(dir)?;
+    let form = c.family().and_then(|f| crate::support::row(f).saves).ok_or_else(|| Error(format!("{}: a family the packer does not save", dir.display())))?;
+    let ck = io(Checkpoint::open(dir))?;
+    let f32 = |n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32");
+    let shape = |n: &str| ck.get(n).map(|(_, t)| t.shape.iter().map(|&x| x as usize).collect());
+    crate::pack::hb_plan(&c, &form, &f32, &shape)
 }
 
 /// The export held to the model: the shape of the experts' rows, their number, the layers (the export's k-th is the model's k-th mixture-of-experts layer, by its block).
@@ -79,10 +70,8 @@ pub fn run(model: &str, out: &Path, threads: usize, export: &Path) -> Result<()>
         eprintln!("{}: already packed, keeping its files", out.display());
         return Ok(());
     }
-    let ck = io(Checkpoint::open(&source.dir))?;
-    let f32 = |n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32");
     let (twos, threes) = ex.bit_counts();
-    let s = io(save::save_hummingbird(&source, out, threads, 5 << 30, &plan(&c, &f32), export))?;
+    let s = io(save::save_hummingbird(&source, out, threads, 5 << 30, &plan(&source.dir)?, export))?;
     eprintln!(
         "glyd-v7 at the hummingbird level: {} packs checked ({} of them the export's, {twos} experts at 2 bits and {threes} at 3), {} tensors hashed, {:.2} GB of bf16 read, {} shards ({:.1} s)",
         s.checked,
@@ -175,9 +164,7 @@ pub(crate) mod tests {
         checkpoint(&src, MOETOY, &c);
         toy_export(&c, &export, 11, share).unwrap();
         let source = save::Source::find(src.to_str().unwrap()).unwrap();
-        let ck = Checkpoint::open(&source.dir).unwrap();
-        let f32 = |n: &str| ck.get(n).is_some_and(|(_, t)| t.dtype == "F32");
-        save::save_hummingbird(&source, &out, 2, shard_bytes, &plan(&c, &f32), &export).unwrap();
+        save::save_hummingbird(&source, &out, 2, shard_bytes, &plan(&source.dir).unwrap(), &export).unwrap();
         (out, c)
     }
 
@@ -209,7 +196,7 @@ pub(crate) mod tests {
         c.check(&have, &c.saved(&ck)).unwrap();
         // the layers read back
         for (k, &l) in [1usize, 3, 5].iter().enumerate() {
-            let h = read_layer(&ck, &manifest, &c, l).unwrap();
+            let h = read_layer(&ck, &manifest, &c.hb_names(l)).unwrap();
             assert_eq!(h.signs, ex.layers[k].signs);
             let counts: Vec<usize> = h.groups.iter().map(|g| g.as_ref().map_or(0, |g| g.experts)).collect();
             assert_eq!(counts.iter().sum::<usize>(), 16);
@@ -237,20 +224,20 @@ pub(crate) mod tests {
         let p = crate::weights::read_pack(&ck, Some(&(layout, manifest.clone())), &fc1, crate::nemotron::pack_layout(layout, &fc1.key)).unwrap();
         assert!(matches!(p.words, crate::ffi::Words::Tiered { tiers, .. } if tiers[0] >> 24 == glyd_gpu::pack::INT6_TAG));
         // an old reader of the directory: the engine's generic reader refuses an expert's pack by its layout
-        let e = crate::weights::read_pack(&ck, Some(&(L::Int6, manifest.clone())), &c.expert_packs(1)[0], L::Int6).err().expect("refused").0;
+        let e = crate::weights::read_pack(&ck, Some(&(L::Int6, manifest.clone())), &c.expert_packs(1)[0], L::Int6).err().expect("refused").msg;
         assert!(e.contains("c3r") || e.contains("c2r"), "{e}");
         // the plan of `run` for this directory is sized by its own bytes at the level: a GPU with a megabyte more than the engine's 2 GiB of work has no room for the tiny model (the level is named in the refusal), one with 64 holds it whole
         let gib = 1u64 << 30;
-        let said = crate::cli::expert_cache_for(&out, L::Hummingbird, 2 * gib + (1 << 20), "a GPU", Some(64 * gib)).unwrap_err().to_string();
+        let said = crate::plan::sizing::expert_cache_for(&out, L::Hummingbird, 2 * gib + (1 << 20), "a GPU", Some(64 * gib)).unwrap_err().to_string();
         assert!(said.contains("at the hummingbird level takes about"), "{said}");
-        assert!(crate::cli::expert_cache_for(&out, L::Hummingbird, 2 * gib + (64 << 20), "a GPU", Some(64 * gib)).unwrap().is_none());
+        assert!(crate::plan::sizing::expert_cache_for(&out, L::Hummingbird, 2 * gib + (64 << 20), "a GPU", Some(64 * gib)).unwrap().is_none());
         // a directory already packed is left as it is
         let before = std::fs::metadata(out.join("glyd.json")).unwrap().modified().unwrap();
         run(src.to_str().unwrap(), &out, 2, &export).unwrap();
         assert_eq!(std::fs::metadata(out.join("glyd.json")).unwrap().modified().unwrap(), before);
         // refused: an export of another shape, of fewer layers, of other blocks, an incomplete one
         let says = |what: &str, r: Result<()>| {
-            let e = r.unwrap_err().0;
+            let e = r.unwrap_err().msg;
             assert!(e.contains(what), "{what:?} not in {e:?}");
         };
         let other = ConfigNemotronH { moe: crate::nemotron::MoeDims { experts: 8, ..c.moe.clone() }, ..c.clone() };

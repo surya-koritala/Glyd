@@ -75,7 +75,7 @@ glyd-engine rangeworker --model MODEL[:level] --layers A..B [--ctx N] [--chunk N
 MODEL is a directory (a glyd/NAME-LEVEL snapshot, a lossless glyd-v4 save, or a bf16 checkpoint packed at load) or a Hub
 id in the cache; `ORG/NAME:level` takes glyd/NAME-level from the cache. `--head-rows N` (1 to 64 and the chunk; 1 by
 default): the most rows the last stage's head runs on in one chunk; each row more costs the last stage `vocab x 2 + 8`
-bytes and the LM head's workspace for that many rows where it needs more (Qwen3.5-9B swift, `--head-rows 8`: 3,476,536
+bytes and the LM head's workspace for that many rows where it needs more (Qwen3.5-9B linnet, `--head-rows 8`: 3,476,536
 bytes more scratch, the workspace unchanged). `--sessions N` (1 or 2; 1 by default): the sessions open at once, each with
 its own KV, states and graph, made at `prepare` ([two sessions a stage](#two-sessions-a-stage---sessions-2)). The worker loads nothing until `prepare`. Its
 standard input and output carry frames; its standard error is its own lines (the load's, errors'). `--no-graph` is a
@@ -95,7 +95,7 @@ before anything is allocated, and the worker ends (the stream is not trusted pas
 | `commit` | `instance` | `committed`, `ready`. Nothing runs before it |
 | `begin_session` | `instance` | `session` (a handle), `context_tokens`, `kv_bytes`, `state_bytes` (the session's own), `tokens` 0. The states zeroed. While fewer than `limits.sessions` are open |
 | `run_chunk` | `session`, `phase` (prefill, decode), `position_start`, `head` (true: the last stage runs the head on the last row), the first stage: `tokens` [ids]; a later stage: `rows` and the body (the boundary of the stage before); the last stage: `logits` true for the body, `head_rows` k (1 by default: the head on the last k rows, at most the chunk and `--head-rows`), `sampling` {temperature, top_p, top_k, min_p, seed, step} (below; with head_rows 1); any stage: `verify` true (a verify chunk: phase decode, 1 to `verify_rows` rows), `keep_previous` K (below: drafted tokens) | `rows`, `position_end`; a stage that is not the last: the body (the boundary) and `body` {what, rows, bytes}; the last, with `head`: `token`, `logit` (the last row's: the greedy token, or the drawn one and its logit), `tokens` [the greedy token of each of the k rows] where `head_rows` was given, and the logits' body where asked (`body` {what, dtype, rows k, width, bytes}) |
-| `status` | `session` (optional) | `state` (empty, idle, running, cancelling, cancelled), `incarnation`, `instance`, `session`, `session_cancelled`, `tokens` (the named session's, else the earliest begun open one's), `running` {id, op, ms, session} or null, `sessions` [{session, tokens, cancelled}] (every open one, in the order begun). Answered by the control thread at once, whatever runs |
+| `status` | `session` (optional) | `state` (empty, idle, running, cancelling, cancelled), `incarnation`, `instance`, `session`, `session_cancelled`, `tokens` (the named session's, else the earliest begun open one's), `running` {id, op, ms, session} or null, `sessions` [{session, tokens, cancelled}] (every open one, in the order begun), `draws` {from_gpu, read_row} (the sampled tokens this process drew from what its GPU made of the row, and by reading the whole row: none is to be of the second). Answered by the control thread at once, whatever runs |
 | `cancel` | `session` | the status (that session's). The session takes no more chunks; a chunk under way runs to its end, its output is withdrawn (its reply is an error), the state has it. Another session is not touched. `end_session` closes it |
 | `end_session` | `session` | `ended`, `tokens`, `cancelled`. Waits its turn behind a chunk under way |
 | `unload` | `instance` | `unloaded`, `retained_bytes` (the engine's buffers left: 0). Refused while a session is open |
@@ -106,8 +106,8 @@ before anything is allocated, and the worker ends (the stream is not trusted pas
 The allocation fields are the engine's own counters (the bytes it asked the driver for, as `/v1/glyd/info` counts them):
 `weights_bytes`, `kv_bytes`, `state_bytes`, `scratch_bytes` (the activations for a chunk, the products' workspaces, the
 logits, the rotary tables), `engine_bytes` their sum, `peak_bytes` the most so far. The CUDA context and the kernels' code
-are not in them: about 300 MiB a process in nvidia-smi (the record: a swift worker at 3,694 MiB against 3,398 MiB of buffers).
-The record's numbers for Qwen3.5-9B: a stage of 16 layers holds 6.03 GB (penguin), 3.10 GB (swift), 3.66 GB (kestrel) of
+are not in them: about 300 MiB a process in nvidia-smi (the record: a linnet worker at 3,694 MiB against 3,398 MiB of buffers).
+The record's numbers for Qwen3.5-9B: a stage of 16 layers holds 6.03 GB (penguin), 3.10 GB (linnet), 3.66 GB (kestrel) of
 weights, 21,233,664 bytes of KV for 1,296 positions, 25,755,648 bytes of states and 416,096,036 bytes of scratch (a 1,024-token
 chunk's); the boundary is 16,384 bytes a token.
 
@@ -127,7 +127,10 @@ generator starts from the seed and draws once a sampled token; the worker starts
 draws, so the request alone says the token: the same seed, step and logits give serve's token, and a repeat of the request
 gives the same. No penalties (repetition, presence, frequency) and no logit_bias: they need the tokens so far; a request
 with one is refused, and a model's default repetition_penalty is not applied. Ask for the logits and apply them on your
-side if needed. The sampler reads the row on the host: a top_p with no top_k sorts the whole vocabulary (some ms).
+side if needed. The token is drawn on the worker's GPU as one GPU's scheduler draws it (`sched::draw_row`): from the row's
+candidates and, where the cut or the point lies past them, the weights and tokens of ranges of the row, every sum exact in any
+order; the row is not read on the host for it (its body only where `logits` is true, and the drawn token's `logit` is the
+model's logit of it, whether or not the body comes). `status`'s `draws` counts them.
 
 Repeated requests: the worker keeps the last 256 requests by id with their replies (their bodies up to 64 MiB in all; the
 oldest bodies are let go first). The same id with the same request comes back from the kept reply and is never run
@@ -162,7 +165,7 @@ Greedy, the way Starlings uses it: the last stage runs `head_rows: k + 1` and gi
 `[g_a, new drafts]` with `position_start` = start + a + 1 and `keep_previous: a + 1`. Sampling on the last stage stays
 head_rows 1 (refused with more rows); draw on the caller's side from the logits' body for anything else.
 
-Cost on the RTX 4080 SUPER, Qwen3.5-9B swift ([the record](../benchmarks/gpu/rtx4080s-range-rewind-2026-10-22/README.md)).
+Cost on the RTX 4080 SUPER, Qwen3.5-9B linnet ([the record](../benchmarks/gpu/rtx4080s-range-rewind-2026-10-22/README.md)).
 The whole model in one process (24 linear-attention layers, 64-token prompt): a one-row step 9.28 ms; a verify pass of 8
 rows 10.26 ms, of it the states' copy 0.17 ms (51,511,296 bytes); a rewind keeping 1 to 7 of the 8 rows 0.40 to 0.59 ms
 (0.03 ms more a kept row; keeping all 8 does nothing). Two worker processes on the one GPU: a plain step 9.89 ms a token;
@@ -205,7 +208,7 @@ copied).
 - One change for one session too: `session_cancelled` is true and `state` `cancelled` as soon as a cancel is asked. Before,
   a cancel with no chunk under way left `session_cancelled` false and `state` `idle` until the next request ran.
 
-Cost on the RTX 4080 SUPER, Qwen3.5-9B swift ([the record](../benchmarks/gpu/rtx4080s-range-sessions-2026-10-22/README.md)).
+Cost on the RTX 4080 SUPER, Qwen3.5-9B linnet ([the record](../benchmarks/gpu/rtx4080s-range-sessions-2026-10-22/README.md)).
 A session more on a stage of 16 layers: its keys and values (16,384 bytes a token: 134,217,728 at ctx 8,192) and its
 states (25,755,648 bytes); prepare's `engine_bytes` 3,677,122,908 with `--sessions 1`, 3,837,096,284 with 2; the
 device's free bytes 5.7 MB lower still (the graph, the driver's rounding). Its room and graph are made at `prepare` in
@@ -229,12 +232,17 @@ from another build of the program (a release build's) against this build's whole
 One process, one GPU: the whole model loaded, a prompt of N random tokens (`report::random_prompt`, the bench's) and
 `--new` greedy tokens, every step's logits (the bf16 words) and token kept; the whole model freed; the stages loaded
 (`Split`, each stage's weights once, cut before each of `--cuts`, or in the middle), the same run, every step's logits and
-token compared bit for bit; with `--workers`, the stages again as `glyd-engine rangeworker` processes chained through the
+token compared bit for bit; with `--workers`, the whole model once more (the scheduler's sampled replies made between the two), and the stages again as `glyd-engine rangeworker` processes chained through the
 protocol, compared the same way, then the protocol's rules: a repeated request id, a conflicting repeat, a stale position,
 another incarnation's handle, an unknown op, `status` during a chunk, `cancel` during a chunk; then `tokenize` and
-`detokenize` (a text there and back, and as a chat), a seeded sampled run of up to 16 tokens twice from fresh sessions (the
-same tokens, and the same as serve's sampler drawing token after token over the same logits), the last sampled request
-sent again (the kept reply), and the head on 8 rows (the prompt, then the first 8 greedy tokens as one chunk with
+`detokenize` (a text there and back, and as a chat; the text is one the model's tokenizer gives back as it was given, so a
+random model made with `logitsmodel CASE DIR --servable` is one the check can use), three kinds of seeded sampled runs of up
+to 16 tokens each (a temperature with top-p and top-k, a flat top-p past the GPU's candidates, a top-k of 200 with top-p and
+min-p) from fresh sessions, with the rows' body asked for and without it: the same tokens and `logit`s both ways, the same as
+serve's sampler drawing token after token over the same logits, and one GPU's scheduler's reply to the same request (the
+whole model's `sched::Sched`, its tokens and the row each was drawn from) token for token, every row and every reply's `logit`
+bit for bit; the last sampled request sent again (the kept reply, not a new draw); the last worker's `draws`: every sampled
+token from the GPU's view of the row, none by reading it; a repetition penalty refused with the session as it was; and the head on 8 rows (the prompt, then the first 8 greedy tokens as one chunk with
 `head_rows` 8: every row's token and logits equal to the whole model's on the same chunk, bit for bit; the last worker runs
 with `--head-rows 8`); drafting (the prompt, then verify chunks of 8 rows whose 7 drafts are the plain run's next a
 tokens and then wrong ones, a = 0 to 7 in turn, each next chunk with `keep_previous: a + 1`: every kept row's token and
@@ -242,12 +250,14 @@ logits equal to the plain run's, bit for bit) and its refusals; with `--sessions
 sessions on every worker, a pass of each in turn (a prompt chunk, a step or a verify chunk): A on the prompt, B on another
 (the prompt backwards, a quarter shorter); a third session refused; both plain to half the tokens, then A cancelled (its
 status cancelled, B's idle, A's next chunk refused), B 4 steps alone, A ended, a session C on A's room from position 0 in
-turn with B to the end; then A drafted with B plain, then both drafted. Every session's tokens and logits against its own
+turn with B to the end; then A drafted with B plain, then both drafted; then both sampled (A's first kind, B's third on its own prompt), each against one GPU's scheduler's reply to its request, and the draws counted again. Every session's tokens and logits against its own
 prompt's whole-model run, bit for bit. Then `end_session`, `unload`, `exit`. Before the stages, the whole model times a
 step, a verify pass of 8 rows, its states' copy and a rewind to each keep; with `--sessions 2` also a second sequence's
 bytes and graph capture, and a step of each in turn against a step alone. Prints "all checks passed", or the first
 difference and exits 1.
-Each run's SHA-256 of (tokens, logits) is printed.
+Each run's SHA-256 of (tokens, logits) is printed. On a random model: `glyd-engine logitsmodel qwen35 DIR --servable` (the
+tokenizer and chat template `--workers` needs; `qwen35-wide` is the other dense shape), then `glyd-engine rangecheck DIR:linnet
+--workers [--sessions 2]` (the verify chunks are checked at linnet only).
 
 ## Against Compute's proposal (partial-worker-contract.md)
 
@@ -263,23 +273,23 @@ Each run's SHA-256 of (tokens, logits) is printed.
 | EndSession / Unload with retained pools | `end_session` (waits behind a chunk), `unload` (refused while a session is open) with `retained_bytes` |
 | Handles scoped to the incarnation; exact repeats answered from history, conflicting repeats fail, retired sequences cannot execute | the same: incarnation-scoped handles, the kept replies by id (256, 64 MiB of bodies), a stale `position_start` refused |
 | Frames: 1 MiB JSON, length-prefixed; bodies up to 64 MiB; never JSON floats | the same limits; the body limit is the stage's own (describe) |
-| Process ownership, pipes, environment, credentials | the worker is a plain child on pipes; it reads GLYD_GPU_LIB, HF_HUB_CACHE/HF_HOME for a Hub id (a directory needs nothing). No network, no shared memory, no broker |
+| Process ownership, pipes, environment, credentials | the worker is a plain child on pipes; it reads HF_HUB_CACHE/HF_HOME for a Hub id (a directory needs nothing: a CUDA build loads no GPU library). No network, no shared memory, no broker |
 
 ## Supported and measured
 
 - Models: Qwen3.5 dense (9B here; 27B, 3.6-27B and 3.8-27B are the same description, and Config35 takes their configs, so
   the worker takes them; the 27Bs are not run here yet) at every level the engine loads:
-  penguin (a lossless save, glyd-v4 or glyd-v7 `mma`, or a bf16 checkpoint packed at load), kestrel, swift, wren. The
-  record has penguin, swift and kestrel on the 4080 SUPER, two stages (0..16, 16..32) and swift in three (0..11, 11..23, 23..32):
+  penguin (a lossless save, glyd-v4 or glyd-v7 `mma`, or a bf16 checkpoint packed at load), kestrel, linnet, wren. The
+  record has penguin, linnet and kestrel on the 4080 SUPER, two stages (0..16, 16..32) and linnet in three (0..11, 11..23, 23..32):
   every step's logits and token equal to the whole model's, bit for bit, in one process and across worker processes.
-- Verify chunks and keep_previous: swift on the 4080 SUPER, two stages and three (0..11, 11..23, 23..32), prompts of 64
+- Verify chunks and keep_previous: linnet on the 4080 SUPER, two stages and three (0..11, 11..23, 23..32), prompts of 64
   and 1,024 tokens: drafted equal to plain, bit for bit, every keep from 0 to 7 drafts
   ([rtx4080s-range-rewind-2026-10-22](../benchmarks/gpu/rtx4080s-range-rewind-2026-10-22/README.md)).
-- Two sessions a stage (`--sessions 2`): swift on the 4080 SUPER, two stages and three, prompt 1,024 and 768: each
+- Two sessions a stage (`--sessions 2`): linnet on the 4080 SUPER, two stages and three, prompt 1,024 and 768: each
   session's 256 tokens and logits equal to its own whole-model run, bit for bit, with the passes of the two in turn,
   plain, drafted and mixed, and one session cancelled and ended half way
   ([rtx4080s-range-sessions-2026-10-22](../benchmarks/gpu/rtx4080s-range-sessions-2026-10-22/README.md)).
-- Other families run as stages in `Split` (Gemma 4, Nemotron, GLM: GLY-300's checks across two GPUs); the worker and
+- Other families run as stages in `Split` (Gemma 4, Nemotron, GLM: `splitcheck` across two GPUs); the worker and
   `rangecheck` take Qwen3.5 only for now.
 - Speed is not the point here and not tuned: a chunk's boundary goes GPU to host to GPU through pipes (16 KiB a token).
 
@@ -294,7 +304,7 @@ Each run's SHA-256 of (tokens, logits) is printed.
   a verify chunk's rows are (above).
 - Verify chunks: Qwen3.5 only (the worker's family), at most 8 rows (the products' one-row kernel), greedy checks on the
   caller's side. A rewind reaches back one verify chunk only. The exactness is measured on the 4080 SUPER (Ada) with the
-  swift layout; another GPU or layout whose product of 2 to 8 rows takes another kernel than one row's would not be exact.
+  linnet layout; another GPU or layout whose product of 2 to 8 rows takes another kernel than one row's would not be exact.
 - `inspect` is the loaded stage's allocation, not a plan from the config.
 - A cancel cannot interrupt a chunk's GPU pass; it takes effect at the chunk's end (a 1,024-token prefill chunk of half
   the 9B model is about 100 ms on the 4080 SUPER).

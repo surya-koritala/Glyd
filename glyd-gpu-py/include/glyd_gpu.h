@@ -39,7 +39,7 @@
 
 /* The C API's version: the library's glyd_gpu_api_version() is this where its functions are this header's (check it: a
  * C FFI does not see a call's arguments). */
-#define GLYD_GPU_API_VERSION 16
+#define GLYD_GPU_API_VERSION 26
 
 /* The counters of a product of W [O, K] and M tokens, at most. */
 #define GLYD_GPU_DONE_COUNTERS(O, M) (1024 + (int64_t)(O) * ((int64_t)(M) / 1024 + 1))

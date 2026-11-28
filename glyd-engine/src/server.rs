@@ -1,34 +1,38 @@
-//! An OpenAI-compatible server for one user at a time (HTTP/1.1 on a socket of its own: no framework): `GET /` the chat page, `GET /v1/models`, `POST /v1/chat/completions` and
-//! `POST /v1/completions` (streamed as server-sent events or whole), `GET /health`. Connections are read on threads of their own (a browser's idle connection waits for no one), the
-//! page, the health check and the model's name answered there, and the completions handed to the engine's thread, which runs one reply at a time in the order they come (the
-//! terminal's chat sends its replies the same way).
+//! The server (HTTP/1.1 on sockets of its own: no framework; `server/frontend.rs` has the connections): `GET /` the chat page, `GET /v1/models`, `POST /v1/chat/completions` and
+//! `POST /v1/completions` (streamed as server-sent events or whole), `GET /health`, and the other APIs of docs/serve-api.md. A request is read and answered on a thread of its own (the
+//! page, the health check and the model's name answered there), and what it asks of the model goes to the engine's thread, which runs the scheduler's rounds (`work_with`): the
+//! sequences of several requests at once, up to `--users` (the terminal's chat sends its replies the same way).
 
 use crate::chat::{Chat, Message};
 use crate::choice::{Cfg, Choice, Delta, Done, ToolsCfg};
+use crate::conn::Conn;
 use crate::constrain::Spec;
 use crate::conv::{Gen, Outcome, Request, Talk};
 use crate::ffi::{err, Error, Result};
-use crate::model::{Engine, Finish, Reply, MAX_ROWS};
 use crate::sampler::{fresh_seed, Lp, Params};
-use crate::sched::{stats_json, Ev, ModelStep, Sched, Submit};
+use crate::sched::{Ev, ModelStep, Sched, Submit};
+use crate::sched::{Finish, Reply};
 use crate::tok::Tok;
 use crate::tools::{self, Format, ToolChoice, ToolEv, Tools};
 use crate::wire;
 use glyd_gpu::json::{self, Value};
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::io::{BufRead, Read, Write};
+#[cfg(test)]
+use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
 mod anthropic;
+mod frontend;
 mod ollama;
 mod responses;
 
 const PAGE: &str = include_str!("../data/chat.html");
 const MAX_BODY: usize = 16 << 20;
-const MAX_CONNECTIONS: usize = 64;
+/// The requests for the engine that may be in flight at once (a thread each); the next is answered 503 with `Retry-After`.
+const MAX_IN_FLIGHT: usize = 8192;
 /// The sequences one request may make (its prompts times `n`).
 const MAX_CHOICES: usize = 64;
 
@@ -51,11 +55,11 @@ pub struct Req {
 /// What the engine's thread is asked to do.
 pub enum Job {
     /// A completions request, its connection open for the reply.
-    Http { s: TcpStream, req: Req, chat: bool, id: u64 },
+    Http { s: Box<dyn Conn>, req: Req, chat: bool, id: u64 },
     /// An Anthropic Messages request (`count`: /v1/messages/count_tokens), its connection open for the reply.
-    Messages { s: TcpStream, req: Req, count: bool, id: u64 },
+    Messages { s: Box<dyn Conn>, req: Req, count: bool, id: u64 },
     /// A request of one of the other APIs (`Endpoint`), its connection open for the reply.
-    Api { s: TcpStream, req: Req, kind: Endpoint, id: u64 },
+    Api { s: Box<dyn Conn>, req: Req, kind: Endpoint, id: u64 },
     /// A reply for the terminal's chat: its pieces (and, last, how it ended) come back on `out`.
     Term { messages: Vec<Message>, request: Request, out: Sender<Piece>, abort: Arc<AtomicBool> },
     /// A sequence for the scheduler (what a request's thread sends: `Remote`).
@@ -133,7 +137,7 @@ pub fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Reje
         ask_method: None,
         ask_headers: None,
     };
-    let mut headers = 0;
+    let (mut headers, mut length_seen) = (0, false);
     while head_line(r, &mut budget, &mut buf)? && buf != b"\r\n" && buf != b"\n" {
         headers += 1;
         if headers > MAX_HEADERS {
@@ -143,7 +147,15 @@ pub fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Reje
         let low = line.to_ascii_lowercase();
         let value = line.split_once(':').map(|(_, v)| v.trim().to_string()).unwrap_or_default();
         if let Some(v) = low.strip_prefix("content-length:") {
-            h.len = v.trim().parse().unwrap_or(0);
+            // (one Content-Length, all digits: a request whose body's end is in doubt is refused, never read as one thing here and another by what is in front of it)
+            let v = v.trim();
+            if length_seen || v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+                return Err((400, "the request's Content-Length is repeated or is not a number".to_string()));
+            }
+            length_seen = true;
+            h.len = v.parse().map_err(|_| (413, format!("the request's body is over {} MiB", MAX_BODY >> 20)))?;
+        } else if low.starts_with("transfer-encoding:") {
+            return Err((400, "a request body with a Transfer-Encoding is not taken: send it with a Content-Length".to_string()));
         } else if low.starts_with("authorization:") {
             h.auth = Some(value);
         } else if low.starts_with("x-api-key:") {
@@ -164,31 +176,19 @@ pub fn read_head(r: &mut impl BufRead) -> std::result::Result<Option<Head>, Reje
 }
 
 /// How long a client has to send its request line and headers, and then its body, and how long a write may wait on a client that reads nothing: a connection that sends a byte a minute is not let
-/// to hold one of the MAX_CONNECTIONS for ever (the time is of the whole, not of each read).
+/// to hold a connection for ever (the time is of the whole, not of each read).
 pub const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
 pub const BODY_TIMEOUT: Duration = Duration::from_secs(120);
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// A read of `s` that waits no longer than `until`: the stream's timeout is what is left of it, and past it the read fails as a timeout does.
-pub fn read_until_deadline(s: &mut TcpStream, until: std::time::Instant, buf: &mut [u8]) -> std::io::Result<usize> {
+/// A read of `s` that waits no longer than `until`: the stream's timeout is what is left of it, and past it the read fails as a timeout does (the background service's proxy reads its requests so).
+pub fn read_until_deadline(s: &mut std::net::TcpStream, until: std::time::Instant, buf: &mut [u8]) -> std::io::Result<usize> {
     let left = until.saturating_duration_since(std::time::Instant::now());
     if left.is_zero() {
         return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the client was too slow"));
     }
     s.set_read_timeout(Some(left))?;
     s.read(buf)
-}
-
-/// A TcpStream whose reads end at a time (`read_until_deadline`), for the BufReader that reads a request.
-struct Deadline {
-    s: TcpStream,
-    until: std::time::Instant,
-}
-
-impl Read for Deadline {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        read_until_deadline(&mut self.s, self.until, buf)
-    }
 }
 
 /// The status a failed read is answered with: 408 where the client was too slow, else 400.
@@ -199,43 +199,12 @@ pub fn read_failure(e: &std::io::Error) -> Rejected {
     }
 }
 
-fn read_request(s: &mut TcpStream) -> std::result::Result<Option<Req>, Rejected> {
-    read_request_within(s, HEAD_TIMEOUT, BODY_TIMEOUT)
-}
-
-/// `read_request` with the times given: the head within `head`, the body within `body` of its end.
-fn read_request_within(s: &mut TcpStream, head: Duration, body: Duration) -> std::result::Result<Option<Req>, Rejected> {
-    let bad = |e: std::io::Error| read_failure(&e);
-    s.set_write_timeout(Some(WRITE_TIMEOUT)).ok();
-    let mut r = BufReader::new(Deadline { s: s.try_clone().map_err(bad)?, until: std::time::Instant::now() + head });
-    let Some(h) = read_head(&mut r)? else { return Ok(None) };
-    if h.len > MAX_BODY {
-        return Err((413, format!("the request's body is over {} MiB", MAX_BODY >> 20)));
-    }
-    if h.expect {
-        s.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").ok();
-    }
-    r.get_mut().until = std::time::Instant::now() + body;
-    let mut body = vec![0u8; h.len];
-    r.read_exact(&mut body).map_err(bad)?;
+/// The request a head and its body make.
+fn req_of(h: Head, body: Vec<u8>) -> Req {
     let preflight = if h.method == "OPTIONS" && !h.origin.is_empty() { h.ask_method.map(|m| (m, h.ask_headers)) } else { None };
     // (the key as `x-api-key` is the same key as a bearer token: the Authorization header, where both come, is the one read)
     let auth = h.auth.or(h.x_api_key.map(|k| format!("Bearer {k}")));
-    Ok(Some(Req { method: h.method, path: h.path, body, auth, host: h.host, origin: h.origin, preflight, cors: String::new(), inflight: None }))
-}
-
-/// After an answer that was sent before the request was read to its end (a header block past its bounds): the end of the connection that sends no more, and what the client still sends read and thrown away
-/// for a few seconds, so that the answer is not lost to a reset (closing with unread data) while the client is writing. Nothing of it is kept.
-fn drain(s: &mut TcpStream) {
-    let _ = s.shutdown(std::net::Shutdown::Write);
-    s.set_read_timeout(Some(Duration::from_millis(500))).ok();
-    let (end, mut sink) = (std::time::Instant::now() + Duration::from_secs(3), [0u8; 16 << 10]);
-    while std::time::Instant::now() < end {
-        match s.read(&mut sink) {
-            Ok(n) if n > 0 => {}
-            _ => break,
-        }
-    }
+    Req { method: h.method, path: h.path, body, auth, host: h.host, origin: h.origin, preflight, cors: String::new(), inflight: None }
 }
 
 fn status_text(code: u16) -> &'static str {
@@ -255,20 +224,27 @@ fn status_text(code: u16) -> &'static str {
     }
 }
 
-fn respond(s: &mut TcpStream, code: u16, ctype: &str, body: &[u8]) {
+fn respond(s: &mut dyn Conn, code: u16, ctype: &str, body: &[u8]) {
     respond_with(s, code, ctype, "", body);
 }
 
 /// `respond` with more header lines (each ending in CRLF).
-fn respond_with(s: &mut TcpStream, code: u16, ctype: &str, extra: &str, body: &[u8]) {
-    let head = format!(
+fn respond_with(s: &mut dyn Conn, code: u16, ctype: &str, extra: &str, body: &[u8]) {
+    // (the head and the body in one write: the answer is one chunk of the pipe to the client)
+    s.write_all(&response_bytes(code, ctype, extra, body)).ok();
+}
+
+/// A whole answer: its head (the headers of every answer, `extra` more, each ending in CRLF; `Connection: close` is the handler's word for the front end to make `keep-alive` where it keeps the
+/// connection) and its body.
+fn response_bytes(code: u16, ctype: &str, extra: &str, body: &[u8]) -> Vec<u8> {
+    let mut out = format!(
         "HTTP/1.1 {code} {}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{extra}Connection: close\r\n\r\n",
         status_text(code),
         body.len()
-    );
-    if s.write_all(head.as_bytes()).is_ok() {
-        s.write_all(body).ok();
-    }
+    )
+    .into_bytes();
+    out.extend_from_slice(body);
+    out
 }
 
 /// The names this server answers to where it is on this computer's own address: the Host of a request must be one of them (the name a page whose DNS points at this computer has is not).
@@ -445,7 +421,7 @@ fn cors_headers_with(local_only: bool, port: u16, origin: &str, allowed: &Access
 }
 
 /// A CORS preflight's answer as Starlette's CORSMiddleware gives it (vLLM's): 200 `OK` with what is allowed where the origin is, 400 `Disallowed CORS origin` where it is not (a method outside the list too).
-fn preflight(s: &mut TcpStream, local_only: bool, port: u16, origin: &str, method: &str, headers: Option<&str>) {
+fn preflight(s: &mut dyn Conn, local_only: bool, port: u16, origin: &str, method: &str, headers: Option<&str>) {
     const METHODS: [&str; 7] = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"];
     let allowed = cors_allowed(local_only, port, origin, access());
     let mut failures = Vec::new();
@@ -770,7 +746,6 @@ const NOT_DONE: &[(&str, &str)] = &[
     ("return_prompt_text", "false"),
     ("return_token_offsets", "false"),
     ("return_assistant_tokens_mask", "false"),
-    ("cache_salt", "null"),
     ("kv_transfer_params", "null"),
     ("ec_transfer_params", "null"),
     ("vllm_xargs", "null"),
@@ -792,9 +767,6 @@ const NOT_DONE: &[(&str, &str)] = &[
 /// The fields of constrained decoding that are not done (the grammars' own, `constraint_spec`'s, are): where the server runs alone the grammar's whitespace is llguidance's, and its backend the only one.
 const CONSTRAINED: &[&str] = &["guided_whitespace_pattern"];
 
-/// What an engine that runs one sequence at a time (`work_gen`'s: a level's) does not do besides NOT_DONE, as NOT_DONE lists it: it gives no log-probabilities, and no least length (`min_tokens`).
-pub const ONE_AT_A_TIME: &[(&str, &str)] = &[("logprobs", "false"), ("min_tokens", "0")];
-
 /// Whether the request sets `name` to something other than null and `default`, the value that means it was not asked for.
 fn asked(v: &Value, name: &str, default: &str) -> bool {
     v.get(name).is_some_and(|x| *x != Value::Null && json::parse(default).map_or(true, |d| *x != d))
@@ -814,6 +786,10 @@ pub fn unsupported(v: &Value) -> Option<String> {
     }
     if let Some((name, _)) = NOT_DONE.iter().find(|(n, d)| asked(v, n, d)) {
         return Some(format!("{name} {yet}"));
+    }
+    // (a cache scope: vLLM's field, a string; one that is not would be no scope without a word)
+    if v.get("cache_salt").is_some_and(|x| *x != Value::Null && x.as_str().is_none_or(str::is_empty)) {
+        return Some("cache_salt must be a string that is not empty".to_string());
     }
     if v.get("best_of").and_then(Value::as_u64).is_some_and(|b| b > num(v, "n").map_or(1, |n| n as u64)) {
         return Some(format!("best_of more than n {yet}"));
@@ -1081,10 +1057,10 @@ fn api_of(v: &Value, chat: bool, vocab: usize) -> std::result::Result<Api, Strin
     if n < 1 {
         return Err(format!("n must be at least 1, got {n}."));
     }
-    if n > MAX_ROWS as i64 {
-        return Err(format!(
-            "n must be at most {MAX_ROWS}, got {n}. (This engine runs up to {MAX_ROWS} sequences at once; GLYD_ENGINE=0 runs vLLM, which takes more.)"
-        ));
+    // (a request's choices are sequences of its own, each a user's turn: past the users the server runs at once they wait theirs. What bounds them is the
+    // request's own limit, `MAX_CHOICES` sequences in all, the one /v1/glyd/info names)
+    if n > MAX_CHOICES as i64 {
+        return Err(format!("n must be at most {MAX_CHOICES}, got {n}. (This engine takes up to {MAX_CHOICES} sequences in a request.)"));
     }
     check_values(v, vocab)?;
     if chat && v.get("echo").and_then(Value::as_bool) == Some(true) {
@@ -1317,6 +1293,38 @@ fn chat_text_of(sh: &Shared, v: &Value, api: &Api, r: &Request) -> Result<(Strin
     Ok((text, in_thinking, prefix, urls))
 }
 
+/// A request's cache scope: the digest of its `cache_salt` (vLLM's field: a string a caller, or the gateway before the callers, gives; the same string, the same scope), 0
+/// where it has none. Never 0 for a salt, so no salt is the scope of the requests that have none.
+fn salt_of(v: &Value) -> u64 {
+    match v.get("cache_salt").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        Some(s) => u64::from_le_bytes(key_digest(s)[..8].try_into().expect("8 bytes")) | 1,
+        None => 0,
+    }
+}
+
+/// The seconds a request asks what it leaves in the cache to be held (`sched::Submit::pin`): `cache_pin_seconds`, which the Anthropic endpoint sets from a request's
+/// `cache_control` (and any request may carry); an hour at most.
+fn pin_of(v: &Value) -> u32 {
+    num(v, "cache_pin_seconds").map_or(0, |x| x.clamp(0.0, 3600.0) as u32)
+}
+
+/// A sequence's handle as its request may read it: what the sequence found in the cache is told (`Handle::cached`, for the usage) to a request with a cache scope of its
+/// own, which can have found only what its scope left. A request with none is told nothing (0, as before these counts were kept) unless the operator has said that every
+/// caller is one user (`Context::tell_cached`): the cache serves it all the same, from what any such request left, and a count would let one caller learn how another's
+/// prompt begins (docs/serve-api.md).
+fn told(sh: &Shared, salt: u64, mut h: Handle) -> Handle {
+    if salt == 0 && !sh.rt.tell_cached.load(Ordering::Relaxed) {
+        h.cached = Arc::new(AtomicU32::new(0));
+        h.created = Arc::new(AtomicU32::new(0));
+    }
+    h
+}
+
+/// The prompt tokens a request's sequences found in the cache (`Handle::cached` of each prompt's first choice), read when they have ended.
+fn cached_tokens(found: &[Arc<AtomicU32>]) -> usize {
+    found.iter().map(|c| c.load(Ordering::Relaxed) as usize).sum()
+}
+
 /// A choice as a reply that is not streamed has it.
 #[derive(Default)]
 struct Whole {
@@ -1327,8 +1335,14 @@ struct Whole {
 /// What a choice's thread tells the request's: what its text adds, and how it ended (with its thinking where the reply is not streamed), or why it could not.
 enum Out {
     Delta(usize, Delta),
-    Done { i: usize, last: Delta, done: Done, thinking: Option<String> },
-    Failed(String),
+    Done {
+        i: usize,
+        last: Delta,
+        done: Done,
+        thinking: Option<String>,
+    },
+    /// The request cannot go on: why, and whether it is the server's doing (the model's step failed, the engine stopped) and not the request's own (a prompt the cache does not hold).
+    Failed(String, bool),
 }
 
 /// The sequence of `h` asked to end, and waited for until the engine has let it go (its end comes last; a closed channel is an engine that has stopped): what it held is the engine's to use again
@@ -1351,7 +1365,7 @@ fn drive(i: usize, h: Handle, mut c: Choice, tok: &Tok, whole: bool, out: Sender
             let _ = f.send(());
         }
         let ended = matches!(ev, Ok(Ev::End(_)) | Err(_));
-        let step: std::result::Result<Option<Finish>, String> = match ev {
+        let step: std::result::Result<Option<Finish>, (String, bool)> = match ev {
             Ok(Ev::Lp(lp)) => {
                 c.lp(lp);
                 Ok(None)
@@ -1368,22 +1382,22 @@ fn drive(i: usize, h: Handle, mut c: Choice, tok: &Tok, whole: bool, out: Sender
                         Ok(None)
                     }
                 }
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err((e.to_string(), false)),
             },
             Ok(Ev::End(Ok(f))) => Ok(Some(f)),
-            Ok(Ev::End(Err(e))) => Err(e),
-            Err(_) => Err("the engine stopped".to_string()),
+            Ok(Ev::End(Err(e))) => Err((e.msg, e.kind != crate::ffi::Kind::Request)),
+            Err(_) => Err(("the engine stopped".to_string(), true)),
         };
         match step {
             Ok(None) => continue,
             Ok(Some(f)) => {
                 let _ = match c.end(tok, f) {
                     Ok((last, done)) => out.send(Out::Done { i, last, done, thinking: whole.then(|| c.reasoning.clone()) }),
-                    Err(e) => out.send(Out::Failed(e.to_string())),
+                    Err(e) => out.send(Out::Failed(e.to_string(), false)),
                 };
             }
-            Err(e) => {
-                let _ = out.send(Out::Failed(e));
+            Err((e, server)) => {
+                let _ = out.send(Out::Failed(e, server));
             }
         }
         if !ended {
@@ -1505,13 +1519,14 @@ fn start_as(sh: &Shared, tx: &Sender<Job>, o: &Value, chat: bool, hide_reasoning
         logprobs: None,
         stop_ids: r.stop_ids.clone(),
     };
-    let h = (Remote { tx: tx.clone(), window: sh.window }).start_with(&pr.ids, pr.images.clone(), &reply).map_err(|e| (500, e.to_string()))?;
-    Ok(Started { h, cfg, prompt_tokens: pr.ids.len(), api })
+    let salt = salt_of(o);
+    let h = (Remote { tx: tx.clone(), window: sh.window }).start_in(&pr.ids, pr.images.clone(), &reply, (salt, pin_of(o))).map_err(|e| (500, e.to_string()))?;
+    Ok(Started { h: told(sh, salt, h), cfg, prompt_tokens: pr.ids.len(), api })
 }
 
 /// One completions request on `s`: chat (messages) or plain (a prompt); or, at /v1/glyd/tokenize, the count of its prompt's tokens alone (a chat's where it has messages), made as its reply's would be.
-fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req, chat: bool, id: u64) {
-    let bad = |s: &mut TcpStream, msg: &str| respond_with(s, 400, "application/json", &req.cors, error_body(msg, 400).as_bytes());
+fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut dyn Conn, req: &Req, chat: bool, id: u64) {
+    let bad = |s: &mut dyn Conn, msg: &str| respond_with(s, 400, "application/json", &req.cors, error_body(msg, 400).as_bytes());
     let v = match std::str::from_utf8(&req.body).ok().and_then(|t| json::parse(t).ok()) {
         Some(v) => v,
         None => return bad(s, "the body is not JSON"),
@@ -1578,14 +1593,19 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
     let prompt_tokens: usize = prompts.iter().map(|p| p.ids.len()).sum();
     let remote = Remote { tx: tx.clone(), window: sh.window };
     let ident = format!("{}-{}", if chat { "chatcmpl" } else { "cmpl" }, api.request_id.clone().unwrap_or_else(|| id.to_string()));
-    if !track_begin(&ident) {
+    if !track_begin(&sh.rt, &ident) {
         return bad(s, &format!("a request with the id {ident} is running: an id names one request at a time"));
     }
     let created = now();
     let (out_tx, out_rx) = std::sync::mpsc::channel::<Out>();
     let (first_tx, first_rx) = std::sync::mpsc::channel::<()>();
+    let salt = salt_of(&v);
     let mut aborts: Vec<Arc<AtomicBool>> = Vec::new();
+    // (each prompt's first choice: what it found in the cache is what the request's prompt tokens did not cost; the other choices of a prompt find the first one's)
+    let mut found: Vec<Arc<AtomicU32>> = Vec::new();
     let mut failure: Option<String> = None;
+    // (whether the failure is the server's doing: answered 500, where a request's own is 400)
+    let mut server_fault = false;
     let (name, tok) = (sh.name.as_str(), &sh.tok);
     // the whole of a reply, where it is not streamed: each choice's log-probabilities, and how it ended with its thinking and its text
     let mut acc: Vec<Whole> = (0..api.total).map(|_| Whole::default()).collect();
@@ -1626,15 +1646,18 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
                 let idx = pi * api.n + i;
                 let mut reply = Reply { params: r.params.clone(), max_new, ignore_eos: r.ignore_eos, logprobs: api.logprobs, stop_ids: r.stop_ids.clone() };
                 reply.params.seed = r.params.seed.wrapping_add(i as u64);
-                let h = match remote.start_with(&pr.ids, pr.images.clone(), &reply) {
-                    Ok(h) => h,
+                let h = match remote.start_in(&pr.ids, pr.images.clone(), &reply, (salt, pin_of(&v))) {
+                    Ok(h) => told(sh, salt, h),
                     Err(e) => {
                         failure = Some(e.to_string());
                         break 'prompts;
                     }
                 };
                 aborts.push(h.abort.clone());
-                track_seq(&ident, &h.abort);
+                if i == 0 {
+                    found.push(h.cached.clone());
+                }
+                track_seq(&sh.rt, &ident, &h.abort);
                 let (c, o, whole) = (Choice::new(cfg.clone()), out_tx.clone(), !api.stream);
                 let announce = (i == 0 && api.n > 1).then(|| first_tx.clone());
                 sc.spawn(move || drive(idx, h, c, tok, whole, o, announce));
@@ -1669,7 +1692,10 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
                 Err(RecvTimeoutError::Disconnected) => break,
             };
             match out {
-                Out::Failed(e) => failure = Some(e),
+                Out::Failed(e, server) => {
+                    failure = Some(e);
+                    server_fault = server;
+                }
                 Out::Delta(i, d) => {
                     if !api.stream {
                         acc[i].lps.extend(d.lps.iter().cloned());
@@ -1700,7 +1726,7 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
             }
         }
         if gone {
-            track_cancel(&ident, "client gone");
+            track_cancel(&sh.rt, &ident, "client gone");
         }
         if gone || failure.is_some() {
             for a in &aborts {
@@ -1710,13 +1736,15 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
         drop(out_rx);
     });
     // (each choice's thread has seen its sequence end: the engine has let go of them all)
-    track_end(&ident, failure.as_deref());
+    track_end(&sh.rt, &ident, failure.as_deref());
     if let Some(msg) = failure {
         eprintln!("glyd: a request failed: {msg}");
         return if started {
             let _ = sse(s, &format!("{{\"error\":{{\"message\":{},\"type\":\"server_error\"}}}}", jstr(&msg)));
             let _ = sse(s, "[DONE]");
             let _ = s.write_all(b"0\r\n\r\n");
+        } else if server_fault {
+            respond_with(s, 500, "application/json", &req.cors, error_body(&msg, 500).as_bytes())
         } else {
             bad(s, &msg)
         };
@@ -1729,7 +1757,7 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
             start_stream(s, &head, chat, &api, &req.cors);
         }
         if api.include_usage {
-            let _ = sse(s, &format!("{head},\"choices\":[],\"usage\":{}}}", wire::usage(prompt_tokens, completion_tokens)));
+            let _ = sse(s, &format!("{head},\"choices\":[],\"usage\":{}}}", wire::usage_with(prompt_tokens, completion_tokens, cached_tokens(&found))));
         }
         let _ = sse(s, "[DONE]");
         let _ = s.write_all(b"0\r\n\r\n");
@@ -1767,7 +1795,7 @@ fn handle_completion(sh: &Shared, tx: &Sender<Job>, s: &mut TcpStream, req: &Req
         "{{\"id\":\"{ident}\",\"object\":\"{kind}\",\"created\":{created},\"model\":{},\"choices\":[{}],\"usage\":{}}}",
         jstr(name),
         choices.join(","),
-        wire::usage(prompt_tokens, completion_tokens)
+        wire::usage_with(prompt_tokens, completion_tokens, cached_tokens(&found))
     );
     respond_with(s, 200, "application/json", &req.cors, body.as_bytes());
 }
@@ -1822,6 +1850,8 @@ const DONE: &[&str] = &[
     "return_tokens_as_token_ids",
     "best_of",
     "suffix",
+    "cache_salt",
+    "cache_pin_seconds",
 ];
 
 /// The fields that change nothing on a server of one model on this computer.
@@ -1858,7 +1888,7 @@ fn warn_unknown(v: &Value, chat: bool) {
 }
 
 /// The headers of a streamed reply, and (a chat's) the first chunk of every choice, which carries the role.
-fn start_stream(s: &mut TcpStream, head: &str, chat: bool, api: &Api, cors: &str) -> bool {
+fn start_stream(s: &mut dyn Conn, head: &str, chat: bool, api: &Api, cors: &str) -> bool {
     let h = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n{cors}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
     );
@@ -1887,7 +1917,7 @@ fn start_stream(s: &mut TcpStream, head: &str, chat: bool, api: &Api, cors: &str
 /// False where the client has gone.
 #[allow(clippy::too_many_arguments)]
 fn stream_chunk(
-    s: &mut TcpStream,
+    s: &mut dyn Conn,
     cors: &str,
     started: &mut bool,
     head: &str,
@@ -1928,31 +1958,21 @@ fn stream_chunk(
 const WAIT_TICK: Duration = Duration::from_secs(1);
 
 /// A comment of a server-sent stream (clients skip it): a stream that waits shows it is alive.
-fn sse_comment(s: &mut TcpStream) -> bool {
+fn sse_comment(s: &mut dyn Conn) -> bool {
     s.write_all(b"b\r\n: waiting\n\n\r\n").and_then(|_| s.flush()).is_ok()
 }
 
+/// Whether the client of a connection has closed it (a request that waited in line for a reply nobody reads).
+fn client_gone(s: &dyn Conn) -> bool {
+    s.gone()
+}
+
 /// A server-sent event as one chunk of the chunked body.
-fn sse(s: &mut TcpStream, data: &str) -> std::io::Result<()> {
+fn sse(s: &mut dyn Conn, data: &str) -> std::io::Result<()> {
     let ev = format!("data: {data}\n\n");
     // one write for the chunk (its size, the event, the line end): three small ones would wait on each other's acknowledgements
     s.write_all(format!("{:x}\r\n{ev}\r\n", ev.len()).as_bytes())?;
     s.flush()
-}
-
-/// Whether the client of a connection has closed it (a request that waited in line for a reply nobody reads).
-fn client_gone(s: &TcpStream) -> bool {
-    if s.set_nonblocking(true).is_err() {
-        return true;
-    }
-    let mut b = [0u8; 1];
-    let gone = match s.peek(&mut b) {
-        Ok(0) => true,
-        Ok(_) => false,
-        Err(e) => e.kind() != std::io::ErrorKind::WouldBlock,
-    };
-    let _ = s.set_nonblocking(false);
-    gone
 }
 
 /// Listens on `addr` (host:port): a thread accepts, a thread of its own reads each connection. The page, the health check and the model list are answered there; a completions request is
@@ -1987,33 +2007,29 @@ pub fn listen_with_life(
     loading: Arc<AtomicBool>,
     life: Arc<crate::ops::Life>,
 ) -> Result<std::net::SocketAddr> {
+    listen_in(addr, name, window, key, local_only, tx, loading, life, crate::runtime::context::Context::current())
+}
+
+/// `listen_with_life` for the model of the runtime context `rt`: the process's own for a server of one model, its own for each model of a process that serves several (and for a test's).
+#[allow(clippy::too_many_arguments)]
+pub fn listen_in(
+    addr: &str,
+    name: &str,
+    window: usize,
+    key: Option<String>,
+    local_only: bool,
+    tx: Sender<Job>,
+    loading: Arc<AtomicBool>,
+    life: Arc<crate::ops::Life>,
+    rt: Arc<crate::runtime::context::Context>,
+) -> Result<std::net::SocketAddr> {
     crate::ops::init();
-    crate::otel::set_model(name);
-    let listener = TcpListener::bind(addr).map_err(|e| Error(format!("{addr}: {e}")))?;
-    let bound = listener.local_addr().map_err(|e| Error(e.to_string()))?;
-    let name = Arc::new(name.to_string());
+    let _ = rt.figures.model.set(name.to_string());
     let key = Arc::new(key.map(|k| key_digest(&k)));
-    let live = Arc::new(AtomicUsize::new(0));
-    let (port, guard) = (bound.port(), local_only);
-    // (the connections are counted for the process, not the server: a reply's id names one request of the process, which /v1/glyd/requests/ID finds)
-    static CONNECTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    std::thread::spawn(move || {
-        for conn in listener.incoming() {
-            let Ok(mut s) = conn else { continue };
-            let _ = s.set_nodelay(true);
-            if live.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
-                live.fetch_sub(1, Ordering::SeqCst);
-                respond(&mut s, 503, "application/json", error_body("too many connections", 503).as_bytes());
-                continue;
-            }
-            let id = CONNECTIONS.fetch_add(1, Ordering::SeqCst) + 1;
-            let (tx, name, live, key, loading, life) = (tx.clone(), name.clone(), live.clone(), key.clone(), loading.clone(), life.clone());
-            std::thread::spawn(move || {
-                route(s, &name, window, &key, (guard, port), &tx, id, &loading, &life);
-                live.fetch_sub(1, Ordering::SeqCst);
-            });
-        }
-    });
+    let name = Arc::new(name.to_string());
+    // (the connections are the front end's: tasks of its own runtime, with no cap on how many; what answers a request runs on threads, as before)
+    let bound = frontend::serve(addr, move |port| Ctx { name, window, key, local_only, port, tx, loading, life, times: Times::default(), rt })
+        .map_err(|e| Error(format!("{addr}: {e}")))?;
     Ok(bound)
 }
 
@@ -2024,36 +2040,55 @@ fn forbidden_body(why: &str, code: u16) -> String {
 
 /// One connection's request. The checks come in the order of the Python server's layers: the Host and the Origin where the server is on this computer's own address (everything is refused for them, the page too), a CORS
 /// preflight, the key for the API.
-#[allow(clippy::too_many_arguments)]
-fn route(
-    mut s: TcpStream,
-    name: &str,
-    window: usize,
-    key: &Option<[u8; 32]>,
-    (local_only, port): (bool, u16),
-    tx: &Sender<Job>,
-    id: u64,
-    loading: &AtomicBool,
-    life: &Arc<crate::ops::Life>,
-) {
-    let mut req = match read_request(&mut s) {
-        Ok(Some(r)) => r,
-        Ok(None) => return,
-        Err((code, why)) => {
-            crate::ops::refused(code);
-            respond(&mut s, code, "application/json", error_body(&why, code).as_bytes());
-            if code == 431 {
-                drain(&mut s);
-            }
-            return;
-        }
-    };
+/// What the server answers a request under: its model's name and window, its key, whether it is on its own address only, the engine's queue, and its life.
+#[derive(Clone)]
+pub(crate) struct Ctx {
+    pub name: Arc<String>,
+    pub window: usize,
+    pub key: Arc<Option<[u8; 32]>>,
+    pub local_only: bool,
+    pub port: u16,
+    pub tx: Sender<Job>,
+    pub loading: Arc<AtomicBool>,
+    pub life: Arc<crate::ops::Life>,
+    pub times: Times,
+    /// The model's runtime context: what /v1/glyd/info, /metrics and /stats read, and where the requests are counted.
+    pub rt: Arc<crate::runtime::context::Context>,
+}
+
+/// The times the front end gives a connection: for the head of a request (of the whole of it), for its body, and for the next request of a connection that has been answered.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Times {
+    pub head: Duration,
+    pub body: Duration,
+    pub idle: Duration,
+}
+
+impl Default for Times {
+    fn default() -> Times {
+        Times { head: HEAD_TIMEOUT, body: BODY_TIMEOUT, idle: frontend::IDLE }
+    }
+}
+
+/// The job sent to the engine's thread, and where it fails to go (the engine is not running) the connection given back, to say so.
+fn send_job(tx: &Sender<Job>, job: Job) -> std::result::Result<(), Box<dyn Conn>> {
+    tx.send(job).map_err(|e| match e.0 {
+        Job::Http { s, .. } | Job::Messages { s, .. } | Job::Api { s, .. } => s,
+        _ => unreachable!("only a request with a connection is sent here"),
+    })
+}
+
+/// A request that was read, answered: the checks come in the order of the Python server's layers (the Host and the Origin where the server is on this computer's own address, everything is
+/// refused for them, a preflight too; the key for the API), then the request is answered here (the page, the health checks, the model list) or sent to the engine's thread with its connection.
+pub(crate) fn dispatch(mut s: Box<dyn Conn>, mut req: Req, ctx: &Ctx, id: u64) {
+    let (name, window, key, (local_only, port), tx, loading, life) =
+        (ctx.name.as_str(), ctx.window, &*ctx.key, (ctx.local_only, ctx.port), &ctx.tx, &*ctx.loading, &ctx.life);
     if let Some((code, why)) = refusal(&req.host, &req.origin, local_only) {
-        crate::ops::refused(code);
-        return respond(&mut s, code, "application/json", forbidden_body(&why, code).as_bytes());
+        ctx.rt.figures.refused(code);
+        return respond(&mut *s, code, "application/json", forbidden_body(&why, code).as_bytes());
     }
     if let Some((method, headers)) = &req.preflight {
-        return preflight(&mut s, local_only, port, &req.origin, method, headers.as_deref());
+        return preflight(&mut *s, local_only, port, &req.origin, method, headers.as_deref());
     }
     req.cors = cors_headers(local_only, port, &req.origin);
     let path = req.path.split('?').next().unwrap_or("").to_string();
@@ -2071,21 +2106,27 @@ fn route(
         } else {
             error_body("Incorrect API key provided: the server's key is needed as `Authorization: Bearer <key>`.", 401)
         };
-        crate::ops::refused(401);
-        return respond_with(&mut s, 401, "application/json", &format!("{cors}WWW-Authenticate: Bearer\r\n"), body.as_bytes());
+        ctx.rt.figures.refused(401);
+        return respond_with(&mut *s, 401, "application/json", &format!("{cors}WWW-Authenticate: Bearer\r\n"), body.as_bytes());
     }
     // a request for an API that goes to the engine is counted as in flight until its answer ends, and is not taken while the server drains (a 503 that says so: the load balancer's next try goes elsewhere)
     let to_engine = (req.method == "POST"
         && matches!(path.as_str(), "/v1/chat/completions" | "/v1/completions" | "/v1/responses" | "/v1/messages" | "/v1/messages/count_tokens"))
         || path.starts_with("/api/");
     if to_engine {
-        crate::ops::request(&path);
+        ctx.rt.figures.request(&path);
+        // (requests being answered are bounded as the connections are: each holds a thread of its own while the engine makes its reply)
+        if life.inflight() >= MAX_IN_FLIGHT {
+            ctx.rt.figures.refused(503);
+            let body = error_body("the server is answering as many requests as it takes: try again", 503);
+            return respond_with(&mut *s, 503, "application/json", &format!("{cors}Retry-After: 1\r\n"), body.as_bytes());
+        }
         match life.enter() {
             Some(g) => req.inflight = Some(g),
             None => {
-                crate::ops::refused(503);
+                ctx.rt.figures.refused(503);
                 let body = error_body("the server is shutting down: it takes no new requests", 503);
-                return respond_with(&mut s, 503, "application/json", &format!("{cors}Retry-After: 1\r\n"), body.as_bytes());
+                return respond_with(&mut *s, 503, "application/json", &format!("{cors}Retry-After: 1\r\n"), body.as_bytes());
             }
         }
     }
@@ -2119,89 +2160,112 @@ fn route(
                         Some("woff2") => "font/woff2",
                         _ => "application/octet-stream",
                     };
-                    respond_with(&mut s, 200, kind, &cors, &b);
+                    respond_with(&mut *s, 200, kind, &cors, &b);
                 }
-                None => respond_with(&mut s, 404, "application/json", &cors, error_body("not found", 404).as_bytes()),
+                None => respond_with(&mut *s, 404, "application/json", &cors, error_body("not found", 404).as_bytes()),
             }
         }
-        ("GET", "/v1/glyd/status") if crate::monitor::on() => respond_with(&mut s, 200, "application/json", &cors, crate::monitor::json(name).as_bytes()),
-        ("GET", "/v1/glyd/info") => match INFO.get() {
-            Some(i) => respond_with(&mut s, 200, "application/json", &cors, info_json(i).as_bytes()),
-            None => respond_with(&mut s, 404, "application/json", &cors, error_body("this server has no description (glyd serve gives one)", 404).as_bytes()),
+        ("GET", "/v1/glyd/status") if crate::monitor::on() => respond_with(&mut *s, 200, "application/json", &cors, crate::monitor::json(name).as_bytes()),
+        ("GET", "/v1/glyd/info") => match ctx.rt.info.get() {
+            Some(i) => respond_with(&mut *s, 200, "application/json", &cors, info_json(i, &ctx.rt).as_bytes()),
+            None => respond_with(&mut *s, 404, "application/json", &cors, error_body("this server has no description (glyd serve gives one)", 404).as_bytes()),
         },
         (m @ ("GET" | "POST"), p) if p.starts_with("/v1/glyd/requests/") => {
             let rest = &p["/v1/glyd/requests/".len()..];
             let answer = match (m, rest.strip_suffix("/cancel")) {
-                ("POST", Some(id)) => track_cancel(id, "asked"),
-                ("GET", None) => track_status(rest),
-                _ => return respond_with(&mut s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes()),
+                ("POST", Some(id)) => track_cancel(&ctx.rt, id, "asked"),
+                ("GET", None) => track_status(&ctx.rt, rest),
+                _ => return respond_with(&mut *s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes()),
             };
             match answer {
-                Some(b) => respond_with(&mut s, 200, "application/json", &cors, b.as_bytes()),
-                None => {
-                    respond_with(&mut s, 404, "application/json", &cors, error_body("no request has this id (the last 64 that ended are kept)", 404).as_bytes())
-                }
+                Some(b) => respond_with(&mut *s, 200, "application/json", &cors, b.as_bytes()),
+                None => respond_with(
+                    &mut *s,
+                    404,
+                    "application/json",
+                    &cors,
+                    error_body("no request has this id (the last 64 that ended are kept)", 404).as_bytes(),
+                ),
             }
         }
         ("GET", "/health" | "/v1/health") if loading.load(Ordering::Relaxed) => {
-            respond_with(&mut s, 503, "application/json", &cors, b"{\"status\":\"loading\"}")
+            respond_with(&mut *s, 503, "application/json", &cors, b"{\"status\":\"loading\"}")
         }
-        ("GET", "/health" | "/v1/health") => respond_with(&mut s, 200, "application/json", &cors, b"{\"status\":\"ok\"}"),
+        ("GET", "/health" | "/v1/health") => respond_with(&mut *s, 200, "application/json", &cors, b"{\"status\":\"ok\"}"),
         // (ready: the model is loaded and the server is not draining; `/health` says only that the process is up)
-        ("GET" | "HEAD", "/ready") if loading.load(Ordering::Relaxed) => respond_with(&mut s, 503, "application/json", &cors, b"{\"status\":\"loading\"}"),
-        ("GET" | "HEAD", "/ready") if life.draining() => respond_with(&mut s, 503, "application/json", &cors, b"{\"status\":\"draining\"}"),
-        ("GET" | "HEAD", "/ready") => respond_with(&mut s, 200, "application/json", &cors, b"{\"status\":\"ready\"}"),
+        ("GET" | "HEAD", "/ready") if loading.load(Ordering::Relaxed) => respond_with(&mut *s, 503, "application/json", &cors, b"{\"status\":\"loading\"}"),
+        ("GET" | "HEAD", "/ready") if life.draining() => respond_with(&mut *s, 503, "application/json", &cors, b"{\"status\":\"draining\"}"),
+        ("GET" | "HEAD", "/ready") => respond_with(&mut *s, 200, "application/json", &cors, b"{\"status\":\"ready\"}"),
         ("GET", "/metrics") => {
             let ready = !loading.load(Ordering::Relaxed);
-            let text = crate::ops::render(&crate::ops::State { model: name, ready, life, engine: true });
-            respond_with(&mut s, 200, crate::ops::CONTENT_TYPE, &cors, text.as_bytes())
+            let text = crate::ops::render_of(&ctx.rt, &crate::ops::State { model: name, ready, life, engine: true });
+            respond_with(&mut *s, 200, crate::ops::CONTENT_TYPE, &cors, text.as_bytes())
         }
-        ("GET", "/stats") => respond_with(&mut s, 200, "application/json", &cors, stats_json().as_bytes()),
+        ("GET", "/stats") => respond_with(&mut *s, 200, "application/json", &cors, crate::sched::stats_json_of(&ctx.rt).as_bytes()),
+        // (a development build's GLYD_PROF=1: the executor's GPU time by operation and its steps' host time (src/dynamic/prof.rs); ?reset=1 starts the figures again)
+        ("GET", "/v1/glyd/prof") if crate::dynamic::prof::on() => {
+            let reset = req.path.split_once('?').is_some_and(|(_, q)| q.split('&').any(|kv| kv == "reset=1"));
+            respond_with(&mut *s, 200, "application/json", &cors, crate::dynamic::prof::snapshot(reset).to_string().as_bytes())
+        }
+        // the cache's blocks stored and removed by name (src/kv_events.rs), after batch `after`, waiting up to `wait` seconds (at most 10) for one: off unless the
+        // server's operator turns them on, since they carry every caller's prompt tokens
+        ("GET", "/v1/glyd/kv/events") => match &ctx.rt.kv_events {
+            Some(log) => {
+                let q = req.path.split_once('?').map_or("", |x| x.1);
+                let num = |k: &str| q.split('&').find_map(|kv| kv.strip_prefix(k).and_then(|v| v.strip_prefix('=')).and_then(|v| v.parse::<u64>().ok()));
+                let body = log.json(num("after").unwrap_or(0), std::time::Duration::from_secs(num("wait").unwrap_or(0).min(10)));
+                respond_with(&mut *s, 200, "application/json", &cors, body.as_bytes())
+            }
+            None => {
+                let msg =
+                    "the cache's events are off: the server's operator turns them on with GLYD_ENGINE_KV_EVENTS=1 (they carry every caller's prompt tokens)";
+                respond_with(&mut *s, 404, "application/json", &cors, error_body(msg, 404).as_bytes())
+            }
+        },
         ("GET", "/v1/models") => {
             let body =
                 format!("{{\"object\":\"list\",\"data\":[{}],\"has_more\":false,\"first_id\":{1},\"last_id\":{1}}}", model_json(name, window), jstr(name));
-            respond_with(&mut s, 200, "application/json", &cors, body.as_bytes());
+            respond_with(&mut *s, 200, "application/json", &cors, body.as_bytes());
         }
         ("POST", p @ ("/v1/chat/completions" | "/v1/completions" | "/v1/glyd/tokenize")) => {
             let chat = p == "/v1/chat/completions";
-            if let Err(e) = tx.send(Job::Http { s: s.try_clone().expect("a connection clones"), req, chat, id }) {
-                respond(&mut s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
-                drop(e);
+            if let Err(mut s) = send_job(tx, Job::Http { s, req, chat, id }) {
+                respond(&mut *s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
             }
         }
         ("GET", p) if p.starts_with("/v1/models/") => {
             // (one model, as the OpenAI SDKs' `models.retrieve` asks: the model's name may hold slashes)
             let asked = p["/v1/models/".len()..].replace("%2F", "/").replace("%2f", "/").replace("%3A", ":").replace("%3a", ":");
             if asked == name {
-                respond_with(&mut s, 200, "application/json", &cors, model_json(name, window).as_bytes());
+                respond_with(&mut *s, 200, "application/json", &cors, model_json(name, window).as_bytes());
             } else {
-                respond_with(&mut s, 404, "application/json", &cors, error_body(&format!("The model `{asked}` does not exist"), 404).as_bytes());
+                respond_with(&mut *s, 404, "application/json", &cors, error_body(&format!("The model `{asked}` does not exist"), 404).as_bytes());
             }
         }
         // (Ollama's API: the key guards it as it guards /v1; its errors are its own, `{"error": "..."}`)
         (_, p) if p.starts_with("/api/") => {
-            if tx.send(Job::Api { s: s.try_clone().expect("a connection clones"), req, kind: Endpoint::Ollama, id }).is_err() {
-                respond_with(&mut s, 503, "application/json", &cors, b"{\"error\":\"the engine is not running\"}");
+            if let Err(mut s) = send_job(tx, Job::Api { s, req, kind: Endpoint::Ollama, id }) {
+                respond_with(&mut *s, 503, "application/json", &cors, b"{\"error\":\"the engine is not running\"}");
             }
         }
         ("POST", "/v1/responses") => {
-            if tx.send(Job::Api { s: s.try_clone().expect("a connection clones"), req, kind: Endpoint::Responses, id }).is_err() {
-                respond(&mut s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
+            if let Err(mut s) = send_job(tx, Job::Api { s, req, kind: Endpoint::Responses, id }) {
+                respond(&mut *s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
             }
         }
         ("POST", p @ ("/v1/messages" | "/v1/messages/count_tokens")) => {
             let count = p.ends_with("count_tokens");
-            if tx.send(Job::Messages { s: s.try_clone().expect("a connection clones"), req, count, id }).is_err() {
-                respond(&mut s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
+            if let Err(mut s) = send_job(tx, Job::Messages { s, req, count, id }) {
+                respond(&mut *s, 503, "application/json", error_body("the engine is not running", 503).as_bytes());
             }
         }
         (_, "/v1/messages" | "/v1/messages/count_tokens") => {
-            respond_with(&mut s, 405, "application/json", &cors, anthropic::anthropic_body(405, "method not allowed").as_bytes())
+            respond_with(&mut *s, 405, "application/json", &cors, anthropic::anthropic_body(405, "method not allowed").as_bytes())
         }
         (_, "/v1/chat/completions") | (_, "/v1/completions") | (_, "/v1/models") | (_, "/v1/responses") | (_, "/v1/glyd/tokenize") | (_, "/v1/glyd/info") => {
-            respond_with(&mut s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes())
+            respond_with(&mut *s, 405, "application/json", &cors, error_body("method not allowed", 405).as_bytes())
         }
-        _ => respond_with(&mut s, 404, "application/json", &cors, error_body(&format!("Invalid URL ({} {path})", req.method), 404).as_bytes()),
+        _ => respond_with(&mut *s, 404, "application/json", &cors, error_body(&format!("Invalid URL ({} {path})", req.method), 404).as_bytes()),
     }
 }
 
@@ -2216,8 +2280,10 @@ pub struct Shared {
     pub vocab: usize,
     /// Thinking where a request does not say (None: the template's own default).
     pub thinking: Option<bool>,
-    /// The fields the engine does not do besides NOT_DONE's (ONE_AT_A_TIME, or none): refused, in words, where a request sets one.
+    /// The fields the engine does not do besides NOT_DONE's (none: every engine is a scheduler's step, which does them): refused, in words, where a request sets one.
     pub refused: &'static [(&'static str, &'static str)],
+    /// The model's runtime context (src/runtime/context.rs): its figures, its engine's first failure, what /v1/glyd/info says of it. The process's own where one model is served.
+    pub rt: Arc<crate::runtime::context::Context>,
 }
 
 /// The chat page's directory where the server was given one (`chat.html`, and its files in `web/`), in place of the page built in.
@@ -2235,8 +2301,6 @@ pub struct Info {
     pub started: f64,
 }
 
-pub static INFO: std::sync::OnceLock<Info> = std::sync::OnceLock::new();
-
 /// The version of what /v1/glyd/info, /v1/glyd/requests/ID and /v1/glyd/tokenize say (docs/serve-api.md).
 pub const API: &str = "glyd-serve/1";
 
@@ -2246,7 +2310,7 @@ fn names<'a>(l: impl Iterator<Item = &'a str>) -> Value {
 
 /// /v1/glyd/info's answer: `i`, the build, the limits and the fields, and what is so now: whether the engine has failed, the requests, and the memory (the engine's buffers, and the GPU's as the driver has it:
 /// every program's on it).
-fn info_json(i: &Info) -> String {
+fn info_json(i: &Info, rt: &crate::runtime::context::Context) -> String {
     use tools::obj;
     let (num, secs) = (|n: usize| Value::from(n as u64), |t: f64| Value::Number(format!("{t:.3}")));
     let (live, peak, peak_at) = crate::dev::held_now();
@@ -2255,8 +2319,8 @@ fn info_json(i: &Info) -> String {
         crate::dev::Dev::release(o);
         g
     });
-    let failed = FAILED.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let (running, cancelling) = track_counts();
+    let failed = rt.failed.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let (running, cancelling) = track_counts(rt);
     let here: Vec<&str> = i.refused.iter().map(|(n, _)| *n).collect();
     let held = |f: fn(&crate::dev::Held) -> u64| i.held.as_ref().map_or(Value::Null, |h| Value::from(f(h)));
     let mut o = vec![("object", Value::from("glyd.info")), ("api", Value::from(API))];
@@ -2278,7 +2342,7 @@ fn info_json(i: &Info) -> String {
             ("max_body_bytes", num(MAX_BODY)),
             ("max_header_bytes", num(MAX_HEAD)),
             ("max_headers", num(MAX_HEADERS)),
-            ("max_connections", num(MAX_CONNECTIONS)),
+            ("max_connections", Value::Null), // (no cap: the connections are the front end's tasks)
             ("read_timeout_seconds", num(30)),
         ]),
     ));
@@ -2309,6 +2373,22 @@ fn info_json(i: &Info) -> String {
             ("peak_since", secs(i.started)),
             ("device_total_bytes", gpu.as_ref().map_or(Value::Null, |g| Value::from(g.total))),
             ("device_free_bytes", gpu.as_ref().map_or(Value::Null, |g| Value::from(g.free))),
+            (
+                "devices",
+                Value::Array(
+                    crate::dev::held_by_context()
+                        .into_iter()
+                        .map(|h| {
+                            obj(vec![
+                                ("gpu", if h.gpu < 0 { Value::Null } else { num(h.gpu as usize) }),
+                                ("engine_bytes", Value::from(h.live)),
+                                ("peak_bytes", Value::from(h.peak)),
+                                ("peak_at", secs(h.peak_at as f64 / 1000.0)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
             ("not_counted", names(["the CUDA context and the kernels' code", "cuBLAS's own workspace", "the computer's memory"].into_iter())),
         ]),
     ));
@@ -2325,6 +2405,10 @@ pub struct Remote {
 pub struct Handle {
     pub events: Receiver<Ev>,
     pub abort: Arc<AtomicBool>,
+    /// The prompt tokens the scheduler found in its cache as it let the sequence in (`sched::Submit::cached`): read for the request's usage once the sequence has ended.
+    pub cached: Arc<AtomicU32>,
+    /// A request with a cache marker: the prompt tokens it left findable in the cache that it did not find (`sched::Submit::created`), read with `cached`.
+    pub created: Arc<AtomicU32>,
 }
 
 impl Remote {
@@ -2335,6 +2419,11 @@ impl Remote {
 
     /// `start` with the prompt's images (their places in it their tokens).
     pub fn start_with(&self, prompt: &[u32], images: Vec<Arc<crate::vision::Image>>, o: &Reply) -> Result<Handle> {
+        self.start_in(prompt, images, o, (0, 0))
+    }
+
+    /// `start_with` in the cache scope `salt` (`sched::Submit::salt`; 0: none), what it leaves held for `pin` seconds (`sched::Submit::pin`; 0: none).
+    pub fn start_in(&self, prompt: &[u32], images: Vec<Arc<crate::vision::Image>>, o: &Reply, (salt, pin): (u64, u32)) -> Result<Handle> {
         if prompt.is_empty() {
             return err("an empty prompt");
         }
@@ -2342,17 +2431,32 @@ impl Remote {
             return err(format!("{} tokens, where the context holds {}", prompt.len(), self.window));
         }
         let (out, events) = std::sync::mpsc::channel();
-        let abort = Arc::new(AtomicBool::new(false));
+        let (abort, cached, created) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
         self.tx
-            .send(Job::Seq(Submit { prompt: prompt.to_vec(), reply: o.clone(), out, abort: abort.clone(), resumed: Default::default(), images }))
+            .send(Job::Seq(Submit {
+                prompt: prompt.to_vec(),
+                reply: o.clone(),
+                out,
+                abort: abort.clone(),
+                resumed: Default::default(),
+                cached: cached.clone(),
+                created: created.clone(),
+                salt,
+                pin,
+                images,
+            }))
             .map_err(|_| Error("the engine is not running".into()))?;
-        Ok(Handle { events, abort })
+        Ok(Handle { events, abort, cached, created })
     }
 }
 
 impl Gen for Remote {
     fn capacity(&self) -> usize {
         self.window
+    }
+
+    fn own_speed(&self) -> bool {
+        false
     }
 
     fn reply(&mut self, prompt: &[u32], o: &Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, Finish)> {
@@ -2369,47 +2473,50 @@ impl Gen for Remote {
                 }
                 Ok(Ev::Lp(_)) => {}
                 Ok(Ev::End(Ok(f))) => return Ok((tokens, f)),
-                Ok(Ev::End(Err(e))) => return err(e),
+                Ok(Ev::End(Err(e))) => return Err(e),
                 Err(_) => return err("the engine stopped"),
             }
         }
     }
 }
 
-/// The engine's thread: the scheduler's rounds (a step for every sequence that runs, a chunk of a prompt), and between them the jobs that come, until `Job::Stop`. A completions request and the terminal's chat
-/// each run on a thread of their own (their text, their connection) and ask the scheduler for a sequence through `tx`; the engine's thread never waits on a connection.
-pub fn work(e: &mut Engine, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>, users: usize) {
-    work_with(&mut Sched::new(e, users), shared, rx, tx);
+/// A request's thread or the terminal's reply, started for `job` (the engine's thread never waits on a connection); any other job is not one.
+/// A request's handler on a thread of its own, for as long as the request is answered (it waits for the engine's events). Where the system will not give another thread, the client is told so
+/// (503, `Retry-After`) and the engine's own thread goes on: a refused spawn must not take the server down with it.
+fn spawn_handler(s: Box<dyn Conn>, run: impl FnOnce(&mut dyn Conn) + Send + 'static) {
+    let cell = Arc::new(std::sync::Mutex::new(Some(s)));
+    let inner = cell.clone();
+    let spawned = std::thread::Builder::new().name("glyd-request".into()).spawn(move || {
+        let taken = inner.lock().ok().and_then(|mut g| g.take());
+        if let Some(mut s) = taken {
+            if !s.gone() {
+                run(&mut *s);
+            }
+        }
+    });
+    if spawned.is_err() {
+        crate::ops::refused(503);
+        if let Some(mut s) = cell.lock().ok().and_then(|mut g| g.take()) {
+            respond_with(
+                &mut *s,
+                503,
+                "application/json",
+                "Retry-After: 1\r\n",
+                error_body("the server cannot start another thread for this request: try again", 503).as_bytes(),
+            );
+        }
+    }
 }
 
-/// A request's thread or the terminal's reply, started for `job` (the engine's thread never waits on a connection); any other job is not one.
 pub fn detach(job: Job, shared: &Arc<Shared>, tx: &Sender<Job>) {
     let (sh, tx) = (shared.clone(), tx.clone());
     match job {
-        Job::Http { mut s, req, chat, id } => {
-            std::thread::spawn(move || {
-                if !client_gone(&s) {
-                    handle_completion(&sh, &tx, &mut s, &req, chat, id);
-                }
-            });
-        }
-        Job::Messages { mut s, req, count, id } => {
-            std::thread::spawn(move || {
-                if !client_gone(&s) {
-                    anthropic::handle(&sh, &tx, &mut s, &req, count, id);
-                }
-            });
-        }
-        Job::Api { mut s, req, kind, id } => {
-            std::thread::spawn(move || {
-                if !client_gone(&s) {
-                    match kind {
-                        Endpoint::Responses => responses::handle(&sh, &tx, &mut s, &req, id),
-                        Endpoint::Ollama => ollama::handle(&sh, &tx, &mut s, &req),
-                    }
-                }
-            });
-        }
+        Job::Http { s, req, chat, id } => spawn_handler(s, move |s| handle_completion(&sh, &tx, s, &req, chat, id)),
+        Job::Messages { s, req, count, id } => spawn_handler(s, move |s| anthropic::handle(&sh, &tx, s, &req, count, id)),
+        Job::Api { s, req, kind, id } => spawn_handler(s, move |s| match kind {
+            Endpoint::Responses => responses::handle(&sh, &tx, s, &req, id),
+            Endpoint::Ollama => ollama::handle(&sh, &tx, s, &req),
+        }),
         Job::Term { messages, request, out, abort } => {
             std::thread::spawn(move || {
                 let mut remote = Remote { tx, window: sh.window };
@@ -2423,38 +2530,12 @@ pub fn detach(job: Job, shared: &Arc<Shared>, tx: &Sender<Job>) {
     }
 }
 
-/// `work` for an engine that has no scheduler (a lossy level's): the sequences are run one at a time, in the order they come; one that is asked to end before its turn (a cancel, its client gone) is not run.
-pub fn work_gen(e: &mut dyn Gen, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>) {
-    while let Ok(job) = rx.recv() {
-        match job {
-            Job::Stop => return,
-            Job::Seq(sub) if sub.abort.load(Ordering::Relaxed) => {
-                let _ = sub.out.send(Ev::End(Ok(Finish::Stopped)));
-            }
-            Job::Seq(sub) => {
-                let mut timer = crate::ops::Timer::start(sub.prompt.len());
-                let r = e.reply(&sub.prompt, &sub.reply, &mut |t| {
-                    timer.token();
-                    sub.out.send(Ev::Token(t)).is_ok() && !sub.abort.load(Ordering::Relaxed)
-                });
-                timer.end(match &r {
-                    Ok((_, Finish::Stop)) => "stop",
-                    Ok((_, Finish::Length)) => "length",
-                    Ok((_, Finish::Stopped)) => "stopped",
-                    Err(_) => "error",
-                });
-                if let Err(err) = &r {
-                    engine_failed(&err.to_string());
-                }
-                let _ = sub.out.send(Ev::End(r.map(|x| x.1).map_err(|e| e.to_string())));
-            }
-            _ => detach(job, &shared, tx),
-        }
-    }
-}
-
-/// `work` on any scheduler (the tests run it on a scheduler of a made-up model).
+/// The engine's thread: the scheduler's rounds (a step for every sequence that runs, a chunk of a prompt), and between them the jobs that come, until `Job::Stop`. A completions request and the terminal's chat
+/// each run on a thread of their own (their text, their connection) and ask the scheduler for a sequence through `tx`; the engine's thread never waits on a connection.
 pub fn work_with<B: ModelStep>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &Receiver<Job>, tx: &Sender<Job>) {
+    // (the scheduler's figures and its sequences' counts go where the server's own do: the model's runtime context)
+    let rt = shared.rt.clone();
+    sched.set_context(rt.clone());
     // A thread of its own takes the jobs off the queue as they come: the requests' threads (which parse, tokenize and apply the chat template) start at once, and not at the end of the prompt pass or decode
     // step the scheduler is in (20 ms of every first token with eight requests at once), and the sequences they make are passed on; the scheduler takes them in at its next round.
     let (wtx, wrx) = std::sync::mpsc::channel::<Job>();
@@ -2494,7 +2575,7 @@ pub fn work_with<B: ModelStep>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &R
             while let Some(job) = next.take() {
                 match job {
                     Job::Stop => {
-                        sched.fail("the server is stopping");
+                        sched.fail(&crate::ffi::Error("the server is stopping".to_string()));
                         return;
                     }
                     Job::Seq(sub) => sched.submit(sub),
@@ -2504,8 +2585,12 @@ pub fn work_with<B: ModelStep>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &R
             }
             if let Err(err) = sched.tick() {
                 eprintln!("glyd: {err}");
-                engine_failed(&err.to_string());
-                sched.fail(&err.to_string());
+                rt.fail(&err.to_string());
+                sched.fail(&err);
+                if err.sticky() {
+                    device_lost(&err);
+                    return;
+                }
             }
         }
     });
@@ -2515,7 +2600,7 @@ pub fn work_with<B: ModelStep>(sched: &mut Sched<B>, shared: Arc<Shared>, rx: &R
 
 /// A completions request by the id its reply carries: its sequences' stop flags, why it was asked to end before its time (a cancel, its client gone), when it began, and when the engine had let go of every
 /// sequence of it and how it ended.
-struct Track {
+pub(crate) struct Track {
     id: String,
     aborts: Vec<Arc<AtomicBool>>,
     cancel: Option<&'static str>,
@@ -2523,18 +2608,16 @@ struct Track {
     ended: Option<(f64, String)>,
 }
 
-/// The requests that run, and the last KEPT that ended. One server a process: the ids are the process's (`listen_loading`'s count).
-static TRACKS: std::sync::Mutex<std::collections::VecDeque<Track>> = std::sync::Mutex::new(std::collections::VecDeque::new());
-// (the tests' servers share the process, so each test's ended requests are kept while the others end theirs)
-const KEPT: usize = if cfg!(test) { 1 << 16 } else { 64 };
+/// The ended requests a served model keeps (`Context::tracks`: the requests that run, and the last KEPT that ended, each model's its own).
+const KEPT: usize = 64;
 
-fn tracks() -> std::sync::MutexGuard<'static, std::collections::VecDeque<Track>> {
-    TRACKS.lock().unwrap_or_else(|e| e.into_inner())
+fn tracks(rt: &crate::runtime::context::Context) -> std::sync::MutexGuard<'_, std::collections::VecDeque<Track>> {
+    rt.tracks.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// A request begun under `id`; false where one of that id runs (an id names one request at a time). One that ended under it is forgotten.
-fn track_begin(id: &str) -> bool {
-    let mut t = tracks();
+fn track_begin(rt: &crate::runtime::context::Context, id: &str) -> bool {
+    let mut t = tracks(rt);
     if t.iter().any(|x| x.id == id && x.ended.is_none()) {
         return false;
     }
@@ -2548,8 +2631,8 @@ fn track_begin(id: &str) -> bool {
 }
 
 /// A sequence of request `id` begun: its stop flag, set at once where the request is asked to end already.
-fn track_seq(id: &str, abort: &Arc<AtomicBool>) {
-    if let Some(x) = tracks().iter_mut().find(|x| x.id == id && x.ended.is_none()) {
+fn track_seq(rt: &crate::runtime::context::Context, id: &str, abort: &Arc<AtomicBool>) {
+    if let Some(x) = tracks(rt).iter_mut().find(|x| x.id == id && x.ended.is_none()) {
         if x.cancel.is_some() {
             abort.store(true, Ordering::Relaxed);
         }
@@ -2558,8 +2641,8 @@ fn track_seq(id: &str, abort: &Arc<AtomicBool>) {
 }
 
 /// Request `id` asked to end before its time, `why`: every sequence of it stops at its next step (or is skipped where its turn has not come). Its status, or None where no request has the id.
-fn track_cancel(id: &str, why: &'static str) -> Option<String> {
-    let mut t = tracks();
+fn track_cancel(rt: &crate::runtime::context::Context, id: &str, why: &'static str) -> Option<String> {
+    let mut t = tracks(rt);
     let x = t.iter_mut().find(|x| x.id == id)?;
     if x.ended.is_none() {
         x.cancel = x.cancel.or(Some(why));
@@ -2571,8 +2654,8 @@ fn track_cancel(id: &str, why: &'static str) -> Option<String> {
 }
 
 /// Request `id` over: the engine has let go of every sequence of it (each choice's thread has seen its end), so what they held is the engine's to use again. `failure`: the error it ended with.
-fn track_end(id: &str, failure: Option<&str>) {
-    if let Some(x) = tracks().iter_mut().find(|x| x.id == id && x.ended.is_none()) {
+fn track_end(rt: &crate::runtime::context::Context, id: &str, failure: Option<&str>) {
+    if let Some(x) = tracks(rt).iter_mut().find(|x| x.id == id && x.ended.is_none()) {
         let how = match (failure, x.cancel) {
             (Some(e), _) => format!("failed: {e}"),
             (None, Some(_)) => "cancelled".to_string(),
@@ -2584,13 +2667,13 @@ fn track_end(id: &str, failure: Option<&str>) {
 }
 
 /// How request `id` stands, or None where no request has the id.
-fn track_status(id: &str) -> Option<String> {
-    tracks().iter().find(|x| x.id == id).map(track_json)
+fn track_status(rt: &crate::runtime::context::Context, id: &str) -> Option<String> {
+    tracks(rt).iter().find(|x| x.id == id).map(track_json)
 }
 
 /// (running, asked to end and not ended yet) of the requests.
-fn track_counts() -> (usize, usize) {
-    let t = tracks();
+fn track_counts(rt: &crate::runtime::context::Context) -> (usize, usize) {
+    let t = tracks(rt);
     let running = t.iter().filter(|x| x.ended.is_none() && x.cancel.is_none()).count();
     (running, t.iter().filter(|x| x.ended.is_none() && x.cancel.is_some()).count())
 }
@@ -2611,19 +2694,28 @@ fn track_json(x: &Track) -> String {
     )
 }
 
-/// The engine's first failure (when, and what): nothing is sure of the GPU after one, so /v1/glyd/info says the server has failed from then on.
-static FAILED: std::sync::Mutex<Option<(f64, String)>> = std::sync::Mutex::new(None);
+/// The sticky device errors this process's servers ended for (a test's server does not end the process: it says so here).
+#[cfg(test)]
+static LOST: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-fn engine_failed(e: &str) {
-    let mut f = FAILED.lock().unwrap_or_else(|e| e.into_inner());
-    if f.is_none() {
-        *f = Some((crate::monitor::clock(), e.to_string()));
+/// The engine's GPU context is lost (`ffi::Error::sticky`): every later step would fail as this one did, so the server does not go on. Its requests have had the error (`Sched::fail`, or the
+/// reply's end) and /v1/glyd/info says the server failed; after a moment for those replies to be sent the process ends with `ui::DEVICE_LOST`. The service sees the program gone and starts
+/// the model again when it is next asked for, and `glyd serve` alone ends with the error said.
+fn device_lost(err: &crate::ffi::Error) {
+    eprintln!("glyd: the GPU cannot be used after this error; the server is stopping ({})", err.msg);
+    #[cfg(test)]
+    LOST.lock().unwrap_or_else(|e| e.into_inner()).push(err.msg.clone());
+    #[cfg(not(test))]
+    {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::process::exit(crate::ui::DEVICE_LOST);
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use std::io::BufReader;
 
     #[test]
     fn json_strings() {
@@ -2637,6 +2729,25 @@ pub(crate) mod tests {
         let mut out = String::new();
         c.read_to_string(&mut out).unwrap();
         out
+    }
+
+    /// #142: the cache's events (src/kv_events.rs): not found while the operator has not turned them on; on, the batches after `after` (the first: the cache cleared),
+    /// the newest's number, and only with the server's key where it has one.
+    #[test]
+    fn the_cache_events_are_the_operators_alone() {
+        let body = |t: &str| json::parse(t.split_once("\r\n\r\n").map_or(t, |x| x.1)).unwrap();
+        let status = |t: &str| t.split(' ').nth(1).and_then(|c| c.parse::<u16>().ok()).unwrap_or(0);
+        let off = serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], crate::runtime::context::Context::new());
+        let t = get(off, "/v1/glyd/kv/events", None);
+        assert!(status(&t) == 404 && t.contains("GLYD_ENGINE_KV_EVENTS=1"), "{t}");
+        let rt = crate::runtime::context::Context::with_kv_events();
+        let on = serve_fake_in(Fake::new(64, 32), None, 2, false, Some("k"), &[], rt.clone());
+        assert_eq!(status(&get(on, "/v1/glyd/kv/events", None)), 401);
+        let v = body(&get(on, "/v1/glyd/kv/events?after=0", Some("k")));
+        assert_eq!((f64_of(at(&v, &["next"])), at(&v, &["batches", "0", "events", "0", "type"]).as_str()), (1.0, Some("cleared")));
+        rt.kv_events.as_ref().unwrap().push(vec![crate::kv_events::Event::Removed { blocks: vec![5] }]);
+        let v = body(&get(on, "/v1/glyd/kv/events?after=1&wait=1", Some("k")));
+        assert_eq!((f64_of(at(&v, &["next"])), f64_of(at(&v, &["batches", "0", "seq"])), at(&v, &["gap"]).as_bool()), (2.0, 2.0, Some(false)));
     }
 
     #[test]
@@ -2771,6 +2882,78 @@ pub(crate) mod tests {
         assert!(invalid(&json::parse(r#"{"logit_bias":{"500":5}}"#).unwrap(), true, 100).unwrap().contains("out-of-vocab"));
     }
 
+    /// P5e: the prompt tokens a completion found in the cache are in its usage as OpenAI's API has them (`prompt_tokens_details.cached_tokens`, among `prompt_tokens`), whole
+    /// and streamed, for a request with a cache scope of its own (`cache_salt`); the first time a prompt is seen in a scope there are none and the usage is as it was. A scope
+    /// finds nothing of another's. A request with no scope is served from the cache and told nothing of it.
+    #[test]
+    fn the_usage_counts_the_prompt_tokens_found_in_the_cache() {
+        let rt = crate::runtime::context::Context::new();
+        let addr = serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], rt.clone());
+        let q = |stream: bool, salt: &str| {
+            format!(
+                r#"{{"model":"m","max_tokens":20,"temperature":0,"stream":{stream},"stream_options":{}{salt},"messages":[{{"role":"user","content":"LONG"}}]}}"#,
+                if stream { r#"{"include_usage":true}"# } else { "null" }
+            )
+            .replace("LONG", "the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills")
+        };
+        let found = |body: &str| -> Option<u64> {
+            at(&json::parse(body).unwrap(), &["usage"]).get("prompt_tokens_details").map(|d| at(d, &["cached_tokens"]).as_u64().unwrap())
+        };
+        // (the server's own count of the prompt tokens found, which /stats and /metrics do not tell either: null, and no such metric)
+        let hits = || rt.sched[1].load(Ordering::Relaxed);
+        // no scope, twice: the second is served from the cache (the server's own count says so) and its usage does not say it
+        let (st, first) = call(addr, "/v1/chat/completions", &q(false, ""));
+        assert_eq!(st, 200, "{first}");
+        let prompt = at(&json::parse(&first).unwrap(), &["usage", "prompt_tokens"]).as_u64().unwrap();
+        let again = call(addr, "/v1/chat/completions", &q(false, "")).1;
+        assert!(hits() >= 32 && found(&first).is_none() && found(&again).is_none(), "{again}");
+        let stats = get(addr, "/stats", None);
+        assert!(
+            stats.contains("\"prefix_hit_tokens\":null,\"prefix_hit_rate_percent\":null")
+                && !get(addr, "/metrics", None).contains("glyd_prefix_cache_hit_tokens_total"),
+            "{stats}"
+        );
+        // a scope: nothing of the requests with none; then its own
+        let a = r#","cache_salt":"tenant-a""#;
+        let before = hits();
+        let first = call(addr, "/v1/chat/completions", &q(false, a)).1;
+        assert!(found(&first).is_none() && hits() == before, "{first}");
+        let again = call(addr, "/v1/chat/completions", &q(false, a)).1;
+        let n = found(&again).expect("cached tokens");
+        assert!(
+            at(&json::parse(&again).unwrap(), &["usage", "prompt_tokens"]).as_u64() == Some(prompt) && n >= 32 && n < prompt && n % crate::kv::PAGE as u64 == 0,
+            "{n} of {prompt}"
+        );
+        // another scope finds nothing of it
+        assert!(found(&call(addr, "/v1/chat/completions", &q(false, r#","cache_salt":"tenant-b""#)).1).is_none());
+        // streamed, with the usage asked for: the last chunk's
+        let (st, body) = call(addr, "/v1/chat/completions", &q(true, a));
+        assert_eq!(st, 200, "{body}");
+        let last = body.lines().filter_map(|l| l.strip_prefix("data: ")).rfind(|d| d.contains("\"usage\":{")).expect("a chunk with the usage");
+        assert_eq!(found(last), Some(n), "{body}");
+    }
+
+    /// A server whose operator has said every caller is one user (GLYD_ENGINE_CACHED_USAGE=1, `Context::tell_cached`) tells a request with no scope what it found. It is
+    /// not the listener's address that decides: this one is on a loopback address like the others, which tell nothing.
+    #[test]
+    fn a_server_told_its_callers_are_one_user_tells_what_was_found_without_a_scope() {
+        let body = format!(r#"{{"model":"fake","max_tokens":8,"temperature":0,"prompt":"{}"}}"#, "the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills the quick brown fox jumps over the lazy dog and keeps on running through the field until the sun goes down behind the hills");
+        let found = |addr| -> (Option<u64>, Option<u64>) {
+            let ask = || json::parse(&call(addr, "/v1/completions", &body).1).unwrap();
+            let details = |d: &Value| at(d, &["usage"]).get("prompt_tokens_details").map(|x| at(x, &["cached_tokens"]).as_u64().unwrap());
+            (details(&ask()), details(&ask()))
+        };
+        let rt = crate::runtime::context::Context::new();
+        rt.tell_cached.store(true, Ordering::Relaxed);
+        let addr = serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], rt);
+        let (first, again) = found(addr);
+        assert!(first.is_none() && again.is_some_and(|n| n >= 32), "{first:?} {again:?}");
+        let (stats, metrics) = (get(addr, "/stats", None), get(addr, "/metrics", None));
+        assert!(stats.contains(&format!("\"prefix_hit_tokens\":{}", again.unwrap())) && metrics.contains("glyd_prefix_cache_hit_tokens_total"), "{stats}");
+        // the same server without the operator's word
+        assert_eq!(found(serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], crate::runtime::context::Context::new())), (None, None));
+    }
+
     #[test]
     fn requests_as_the_openai_api_names_them() {
         let v = json::parse(r#"{"messages":[{"role":"system","content":"s"},{"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}],"temperature":0.5,"top_p":0.9,"top_k":40,"max_tokens":64,"stop":["x","y"],"seed":7,"chat_template_kwargs":{"enable_thinking":false}}"#).unwrap();
@@ -2816,6 +2999,19 @@ pub(crate) mod tests {
         key: Option<&str>,
         refused: &'static [(&'static str, &'static str)],
     ) -> std::net::SocketAddr {
+        serve_fake_in(f, template, users, local_only, key, refused, crate::runtime::context::Context::new())
+    }
+
+    /// `serve_fake_with` as the model of the runtime context `rt` (each made-up server has its own: what one counts or fails is not another's).
+    pub(crate) fn serve_fake_in(
+        f: Fake,
+        template: Option<&str>,
+        users: usize,
+        local_only: bool,
+        key: Option<&str>,
+        refused: &'static [(&'static str, &'static str)],
+        rt: Arc<crate::runtime::context::Context>,
+    ) -> std::net::SocketAddr {
         let words: Vec<String> = (1..=1100).map(|i| format!(" w{i}")).collect();
         let refs: Vec<&str> = words.iter().map(String::as_str).collect();
         let window = f.store.len() * crate::kv::PAGE;
@@ -2829,9 +3025,12 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused,
+            rt: rt.clone(),
         });
         let (tx, rx) = std::sync::mpsc::channel();
-        let addr = listen("127.0.0.1:0", "fake", window, key.map(str::to_string), local_only, tx.clone()).unwrap();
+        let life = crate::ops::Life::global();
+        let addr =
+            listen_in("127.0.0.1:0", "fake", window, key.map(str::to_string), local_only, tx.clone(), Arc::new(AtomicBool::new(false)), life, rt).unwrap();
         std::thread::spawn(move || work_with(&mut Sched::new(f, users), shared, &rx, &tx));
         addr
     }
@@ -3066,11 +3265,12 @@ pub(crate) mod tests {
             .map(|c| at(c, &["message", "content"]).as_str().unwrap().to_string())
             .collect();
         assert_eq!(built, whole, "streamed and whole choices are the same texts");
-        // the limits: 8 at the most (and 8 are served by 4 users, 4 waiting), none or fewer than one is wrong, and greedy draws are all one text
-        let (st, body) = call(addr, "/v1/completions", &q(",\"n\":8"));
-        assert_eq!((st, texts(&body).len()), (200, 8), "{body}");
+        // the limits: the request's own, 64 sequences (12 are served by 4 users, 8 waiting: no 8-row bound), none or fewer than one is wrong, and greedy
+        // draws are all one text
+        let (st, body) = call(addr, "/v1/completions", &q(",\"n\":12"));
+        assert_eq!((st, texts(&body).len()), (200, 12), "{body}");
         for (extra, want) in [
-            (",\"n\":9", "n must be at most 8, got 9"),
+            (",\"n\":65", "n must be at most 64, got 65"),
             (",\"n\":0", "n must be at least 1, got 0"),
             (",\"n\":2.5", "`n` must be an integer"),
             (",\"n\":2,\"temperature\":0", "n must be 1 when using greedy sampling, got 2"),
@@ -3313,63 +3513,493 @@ pub(crate) mod tests {
         assert!(cors_headers_with(true, 8000, "http://localhost:8000", &Access::default()).contains("http://localhost:8000"));
     }
 
-    /// A client that sends its request slowly is let wait for the time that is given the whole of it, not for each read: a request that stops, or goes a byte at a time, is answered 408 and its connection is let go.
+    /// The process's limit of open files raised (each test connection is two: a macOS default of 256 holds no thousand connections).
+    #[cfg(unix)]
+    pub(crate) fn raise_fd_limit(want: u64) {
+        #[repr(C)]
+        struct Rlimit {
+            cur: u64,
+            max: u64,
+        }
+        extern "C" {
+            fn getrlimit(resource: i32, r: *mut Rlimit) -> i32;
+            fn setrlimit(resource: i32, r: *const Rlimit) -> i32;
+        }
+        #[cfg(target_os = "macos")]
+        const NOFILE: i32 = 8;
+        #[cfg(not(target_os = "macos"))]
+        const NOFILE: i32 = 7;
+        let mut r = Rlimit { cur: 0, max: 0 };
+        // SAFETY: getrlimit and setrlimit read and write the struct, which has the layout of rlimit on the 64-bit Unixes the tests run on.
+        unsafe {
+            if getrlimit(NOFILE, &mut r) == 0 && r.cur < want {
+                r.cur = want.min(if r.max == 0 { want } else { r.max });
+                setrlimit(NOFILE, &r);
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn raise_fd_limit(_: u64) {}
+
+    /// A server on a free port with the times given, for the tests of what the front end does with a slow client.
+    fn listen_timed(times: Times, tx: Sender<Job>) -> std::net::SocketAddr {
+        frontend::serve("127.0.0.1:0", move |port| Ctx {
+            name: Arc::new("m".into()),
+            window: 4096,
+            key: Arc::new(None),
+            local_only: true,
+            port,
+            tx,
+            loading: Arc::new(AtomicBool::new(false)),
+            life: Arc::default(),
+            times,
+            rt: crate::runtime::context::Context::new(),
+        })
+        .unwrap()
+    }
+
+    /// What a server answers a request written to it in pieces: (the status, the whole of what it sent), read to its end.
+    fn raw_status(c: &mut TcpStream) -> (u16, String) {
+        c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut out = String::new();
+        let _ = c.read_to_string(&mut out);
+        (out.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0), out)
+    }
+
+    /// A step that fails as a call of the driver does. With a status after which the GPU's context is lost (700: an illegal address) the request is told, the server says it failed, and it
+    /// ends itself (`device_lost`: a test's server says so in `LOST`, a real one ends the process with `ui::DEVICE_LOST` and the service starts the model again). With a status that leaves the
+    /// context whole (1: an invalid value) the request is told and the server goes on: the next request is answered.
+    #[test]
+    fn a_sticky_device_error_ends_the_server_and_another_error_does_not() {
+        let ask = |addr: std::net::SocketAddr| {
+            let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":6,"temperature":0}"#;
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.write_all(
+                format!(
+                    "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            raw_status(&mut c)
+        };
+        let lost = |status: i32| LOST.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|m| m.ends_with(&format!("failed ({status})"))).count();
+        // an invalid value: this request fails, the server lives
+        let mut f = Fake::new(512, 64);
+        f.fault = Some((2, 1));
+        let addr = serve_fake(f, None, 4);
+        let (status, text) = ask(addr);
+        assert!(status >= 500 && text.contains("failed (1)"), "{status}: {text}");
+        assert_eq!(lost(1), 0);
+        assert_eq!(ask(addr).0, 200, "the server answers the next request");
+        // an illegal address: the request fails, and the server ends itself
+        let mut f = Fake::new(512, 64);
+        f.fault = Some((2, 700));
+        let addr = serve_fake(f, None, 4);
+        let (status, text) = ask(addr);
+        assert!(status >= 500 && text.contains("failed (700)"), "{status}: {text}");
+        let t = std::time::Instant::now();
+        while lost(700) == 0 && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(lost(700), 1, "the server ended itself for the lost context, once");
+    }
+
+    /// Two models in one process (R16), one of which hits a sticky device error: its request is answered with the error at once (no wait on the GPU it lost), the server ends itself
+    /// for it once (a real one ends the process, both models with it: `device_lost`), and the other model's server, whose context is whole, answers its requests as before.
+    #[test]
+    fn two_models_in_one_process_a_sticky_error_of_one_is_no_hang() {
+        use crate::runtime::context::Context;
+        let ask = |addr: std::net::SocketAddr| {
+            let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":6,"temperature":0}"#;
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+            c.write_all(
+                format!(
+                    "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            raw_status(&mut c)
+        };
+        // (a status of its own, so that the other tests' sticky errors are not counted here)
+        let lost = || LOST.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|m| m.ends_with("failed (719)")).count();
+        let mut sticky = Fake::new(512, 64);
+        sticky.fault = Some((2, 719));
+        let a = serve_fake_in(Fake::new(512, 64), None, 4, false, None, &[], Context::new());
+        let b = serve_fake_in(sticky, None, 4, false, None, &[], Context::new());
+        assert_eq!(ask(a).0, 200);
+        let t = std::time::Instant::now();
+        let (status, text) = ask(b);
+        assert!(status >= 500 && text.contains("failed (719)") && t.elapsed() < Duration::from_secs(10), "{status} in {:?}: {text}", t.elapsed());
+        while lost() == 0 && t.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(lost(), 1, "the model whose context was lost ended its server, once");
+        assert_eq!((ask(a).0, ask(a).0), (200, 200), "the other model answers on");
+    }
+
+    /// Two models in one process (R16): each server has its own runtime context, so its scheduler's figures, its counts and its engine's failure are its own. Three requests to one and a
+    /// request that fails to the other: the first one's /stats and /metrics count its three and not the other's, the second one's /v1/glyd/info says it failed and the first one's that it is
+    /// ready, and the process's own context has seen none of it.
+    #[test]
+    fn two_models_in_one_process_have_their_own_figures_and_failures() {
+        use crate::runtime::context::Context;
+        let ask = |addr: std::net::SocketAddr| {
+            let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":6,"temperature":0}"#;
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.write_all(
+                format!(
+                    "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            raw_status(&mut c).0
+        };
+        let (rt_a, rt_b) = (Context::new(), Context::new());
+        let mut failing = Fake::new(512, 64);
+        failing.fault = Some((2, 1));
+        let a = serve_fake_in(Fake::new(512, 64), None, 4, false, None, &[], rt_a.clone());
+        let b = serve_fake_in(failing, None, 4, false, None, &[], rt_b.clone());
+        for rt in [&rt_a, &rt_b] {
+            assert!(rt
+                .info
+                .set(Info { about: Vec::new(), gpu: None, held: None, concurrency: 4, window: 512 * crate::kv::PAGE, refused: &[], started: 0.0 })
+                .is_ok());
+        }
+        assert_eq!((ask(a), ask(a), ask(a)), (200, 200, 200));
+        assert_eq!(ask(b), 500);
+        let num = |text: &str, key: &str| -> f64 {
+            let v = json::parse(text.split_once("\r\n\r\n").map_or(text, |x| x.1)).unwrap();
+            f64_of(at(&v, &[key]))
+        };
+        // the schedulers' figures: prompt tokens run
+        let (sa, sb) = (get(a, "/stats", None), get(b, "/stats", None));
+        let (pa, pb) = (num(&sa, "prompt_tokens"), num(&sb, "prompt_tokens"));
+        assert!(pb > 0.0 && pa == 3.0 * pb, "{pa} prompt tokens of three requests, {pb} of one");
+        // the counts: tokens written to replies (six a reply of the first; the second's reply failed at its second step)
+        let made = |text: &str| -> f64 {
+            text.lines().find_map(|l| l.strip_prefix("glyd_generated_tokens_total ")).and_then(|v| v.trim().parse().ok()).expect("glyd_generated_tokens_total")
+        };
+        let (ma, mb) = (made(&get(a, "/metrics", None)), made(&get(b, "/metrics", None)));
+        assert!(ma == 18.0 && mb < 6.0, "{ma} tokens of the first model's replies, {mb} of the second's");
+        // the failure is the second model's alone
+        let state = |addr| {
+            let t = get(addr, "/v1/glyd/info", None);
+            let v = json::parse(t.split_once("\r\n\r\n").map_or(t.as_str(), |x| x.1)).unwrap();
+            at(&v, &["state"]).as_str().unwrap_or("").to_string()
+        };
+        assert_eq!((state(a), state(b)), ("ready".to_string(), "failed".to_string()));
+        assert!(rt_a.failed.lock().unwrap().is_none() && rt_b.failed.lock().unwrap().is_some());
+        // the figures are in the contexts the two were given, read here and not through a server. (That the process's own context counts none of them cannot be read
+        // from it: the tests beside this one run their schedulers in it at the same time, and it failed on a runner where one did.)
+        assert_eq!((rt_a.sched[0].load(Ordering::Relaxed) as f64, rt_b.sched[0].load(Ordering::Relaxed) as f64), (pa, pb));
+    }
+
+    /// A client that sends its request slowly is let wait for the time that is given the whole of it, not for each read: a request that stops, or goes a byte at a time, is answered 408 and its
+    /// connection is let go; a whole request, sent at once, is answered.
     #[test]
     fn a_slow_request_is_timed_out_as_a_whole() {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = l.local_addr().unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let addr = listen_timed(Times { head: Duration::from_millis(300), body: Duration::from_millis(300), idle: Duration::from_secs(5) }, tx);
         // a head that never ends
         let mut c = TcpStream::connect(addr).unwrap();
-        let (mut s, _) = l.accept().unwrap();
         c.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n").unwrap();
         let t = std::time::Instant::now();
-        let r = read_request_within(&mut s, Duration::from_millis(300), Duration::from_secs(5));
-        assert_eq!(r.err().map(|e| e.0), Some(408));
+        assert_eq!(raw_status(&mut c).0, 408);
         assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
         // a head that goes a byte every 100 ms: each read is in time, the whole is not
         let mut c = TcpStream::connect(addr).unwrap();
-        let (mut s, _) = l.accept().unwrap();
+        let mut w = c.try_clone().unwrap();
         let drip = std::thread::spawn(move || {
             for b in b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\nX-Slow: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".iter() {
-                if c.write_all(&[*b]).is_err() {
+                if w.write_all(&[*b]).is_err() {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
         });
         let t = std::time::Instant::now();
-        let r = read_request_within(&mut s, Duration::from_millis(500), Duration::from_secs(5));
-        assert_eq!(r.err().map(|e| e.0), Some(408));
+        assert_eq!(raw_status(&mut c).0, 408);
         assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
-        drop(s);
+        drop(c);
         drip.join().unwrap();
         // a body that stops short of its Content-Length
         let mut c = TcpStream::connect(addr).unwrap();
-        let (mut s, _) = l.accept().unwrap();
         c.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n{\"a\"").unwrap();
-        let r = read_request_within(&mut s, Duration::from_secs(5), Duration::from_millis(300));
-        assert_eq!(r.err().map(|e| e.0), Some(408));
-        // a whole request, sent at once, is read
+        assert_eq!(raw_status(&mut c).0, 408);
+        // a whole request, sent at once, is answered
         let mut c = TcpStream::connect(addr).unwrap();
-        let (mut s, _) = l.accept().unwrap();
-        c.write_all(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}").unwrap();
-        let r = read_request_within(&mut s, Duration::from_millis(300), Duration::from_millis(300)).unwrap().unwrap();
-        assert_eq!((r.method.as_str(), r.body.as_slice()), ("POST", &b"{}"[..]));
+        c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        let (st, out) = raw_status(&mut c);
+        assert!(st == 200 && out.contains("{\"status\":\"ok\"}"), "{out}");
     }
 
-    /// The server does not hold more than MAX_CONNECTIONS connections that send nothing: the next one is answered 503 and let go, and a connection that has been given up on frees its place.
+    /// `n` connections to `addr` that send nothing, made in waves the system's listen queue holds (macOS keeps 128), each wave followed by a request that is answered: the server takes
+    /// connections in the order they arrived, so every one of the wave has been taken before the next comes. A burst longer than the queue is reset by the system where the thread
+    /// that accepts is not running, which a loaded machine does, and is no concern of the server's. A connection is made again where the system had no room for it.
+    fn idle_connections(addr: std::net::SocketAddr, n: usize) -> Vec<TcpStream> {
+        let connect = || {
+            for _ in 0..3000 {
+                if let Ok(c) = TcpStream::connect(addr) {
+                    return c;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            TcpStream::connect(addr).unwrap()
+        };
+        let mut idle = Vec::with_capacity(n);
+        while idle.len() < n {
+            idle.extend((0..(n - idle.len()).min(64)).map(|_| connect()));
+            let mut c = connect();
+            c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+            assert_eq!(raw_status(&mut c).0, 200, "answered beside {} idle connections", idle.len());
+        }
+        idle
+    }
+
+    /// There is no cap on connections: a thousand that send nothing are held (a task each, and no thread), the server answers a request from another meanwhile, and a connection that sends
+    /// nothing is let go by its time. The two are two servers, and neither stands on how fast the machine runs the test: the first gives its connections a time far above the test's steps
+    /// (it ends them by dropping them), the second a short one, and the test ends only when each of its hundred has been let go.
     #[test]
-    fn connections_are_capped() {
+    fn idle_connections_are_held_without_a_cap_and_closed_by_their_time() {
+        raise_fd_limit(8192);
         let (tx, _rx) = std::sync::mpsc::channel();
-        let addr = listen("127.0.0.1:0", "m", 4096, None, true, tx).unwrap();
-        let idle: Vec<TcpStream> = (0..MAX_CONNECTIONS).map(|_| TcpStream::connect(addr).unwrap()).collect();
-        std::thread::sleep(Duration::from_millis(300)); // (the accepting thread counts each)
-        let mut over = TcpStream::connect(addr).unwrap();
-        over.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let mut out = String::new();
-        over.read_to_string(&mut out).unwrap();
-        assert!(out.starts_with("HTTP/1.1 503 Service Unavailable"), "{out}");
+        let long = Duration::from_secs(600);
+        let addr = listen_timed(Times { head: long, body: long, idle: long }, tx.clone());
+        let idle = idle_connections(addr, 1000);
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+        assert_eq!(raw_status(&mut c).0, 200, "answered beside a thousand idle connections");
+        // (every one is open, not refused and not answered)
+        for i in &idle {
+            i.set_nonblocking(true).unwrap();
+            let got = (&*i).read(&mut [0u8; 1]);
+            assert!(got.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::WouldBlock), "a connection that sent nothing is held open: {got:?}");
+        }
         drop(idle);
+        // a connection that sent nothing is let go by its time, answered 408 or with no word
+        let addr = listen_timed(Times { head: Duration::from_secs(1), body: Duration::from_secs(1), idle: Duration::from_secs(1) }, tx);
+        let mut closed = 0;
+        for mut i in idle_connections(addr, 100) {
+            i.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+            let mut out = Vec::new();
+            // (a read that timed out is a connection still open)
+            match i.read_to_end(&mut out) {
+                Ok(_) if out.is_empty() || out.starts_with(b"HTTP/1.1 408") => closed += 1,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => closed += 1,
+                other => eprintln!("a connection not let go by its time: {other:?} {:?}", String::from_utf8_lossy(&out)),
+            }
+        }
+        assert_eq!(closed, 100);
+    }
+
+    /// R11's load test: a thousand streaming connections at once, on a scheduler over a CPU fake model, and every one of them is answered 200 with its events and its `[DONE]`, none refused, none
+    /// cut. Every client has sent its request before any is read: all of them are in flight together (the scheduler runs eight at a time; the rest wait in its queue, and their connections are
+    /// held by the front end as tasks, with no cap on how many). The clients are eight threads that poll their connections, not a thread each: where a system gives a process few threads (a Mac
+    /// runner's), the thousand handlers of the replies are threads enough.
+    #[test]
+    fn a_thousand_streaming_connections_all_end_without_an_error() {
+        const N: usize = 1000;
+        const WORKERS: usize = 8;
+        raise_fd_limit(8192);
+        let mut f = Fake::new(512, 64);
+        f.decode_delay = Duration::from_millis(1);
+        let addr = serve_fake(f, None, 8);
+        let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":6,"temperature":0,"stream":true}"#;
+        let sent = Arc::new(std::sync::Barrier::new(WORKERS));
+        let workers: Vec<_> = (0..WORKERS)
+            .map(|w| {
+                let sent = sent.clone();
+                std::thread::spawn(move || -> Vec<String> {
+                    let mut errors = Vec::new();
+                    let mut open: Vec<(usize, TcpStream, Vec<u8>)> = Vec::new();
+                    for i in (w..N).step_by(WORKERS) {
+                        // (made in waves: a burst of a thousand SYNs is longer than a system's listen queue, which is no concern of the server's; once made, all are held open together)
+                        std::thread::sleep(Duration::from_millis((i / 50) as u64 * 40 / WORKERS as u64));
+                        let ask = || {
+                            TcpStream::connect(addr).and_then(|mut c| {
+                                c.write_all(
+                                    format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes(),
+                                )?;
+                                c.set_nonblocking(true)?;
+                                Ok(c)
+                            })
+                        };
+                        // (a connection the client's own system has no room for yet is made again after a pause: Windows' WSAENOBUFS, 10055, on a runner holding a thousand sockets of
+                        // the test's beside the server's; the server never saw it)
+                        let mut connected = ask();
+                        for _ in 0..40 {
+                            match &connected {
+                                Err(e) if e.raw_os_error() == Some(10055) || e.kind() == std::io::ErrorKind::OutOfMemory => {
+                                    std::thread::sleep(Duration::from_millis(50));
+                                    connected = ask();
+                                }
+                                _ => break,
+                            }
+                        }
+                        match connected {
+                            Ok(c) => open.push((i, c, Vec::new())),
+                            Err(e) => errors.push(format!("{i}: {e}")),
+                        }
+                    }
+                    sent.wait(); // (every connection is open and asked before any answer is read)
+                    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+                    while !open.is_empty() && std::time::Instant::now() < deadline {
+                        let mut buf = [0u8; 8192];
+                        let mut progressed = false;
+                        open.retain_mut(|(i, c, got)| match c.read(&mut buf) {
+                            Ok(0) => {
+                                let text = String::from_utf8_lossy(got);
+                                if !text.starts_with("HTTP/1.1 200 OK") {
+                                    errors.push(format!("{i}: {}", text.lines().next().unwrap_or("")));
+                                } else if !text.contains("data: [DONE]") {
+                                    errors.push(format!("{i}: the stream did not end with [DONE]"));
+                                }
+                                progressed = true;
+                                false
+                            }
+                            Ok(n) => {
+                                got.extend_from_slice(&buf[..n]);
+                                progressed = true;
+                                true
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => true,
+                            Err(e) => {
+                                errors.push(format!("{i}: read: {e}"));
+                                progressed = true;
+                                false
+                            }
+                        });
+                        if !progressed {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                    }
+                    errors.extend(open.iter().map(|(i, ..)| format!("{i}: no end in 120 s")));
+                    errors
+                })
+            })
+            .collect();
+        let errors: Vec<String> = workers.into_iter().flat_map(|w| w.join().unwrap()).collect();
+        assert!(errors.is_empty(), "{} of {N} failed; the first: {:?}", errors.len(), errors.first());
+    }
+
+    /// A client that goes while its reply is being made ends the sequence: the pipe says it is gone, the handler stops writing, and the scheduler is not left running a reply nobody reads (the
+    /// request's record, `/v1/glyd/requests/ID`, says it ended).
+    #[test]
+    fn a_client_that_disconnects_ends_its_sequence() {
+        let mut f = Fake::new(64, 32);
+        f.decode_delay = Duration::from_millis(20);
+        let addr = serve_fake(f, None, 4);
+        let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":400,"temperature":0,"stream":true}"#;
+        let (r, id) = first_event(addr, body);
+        let state = |id: &str| -> String {
+            let (st, _, b) = ask(addr, "GET", &format!("/v1/glyd/requests/{id}"), &[("Host", "x")]);
+            assert_eq!(st, 200, "{b}");
+            at(&json::parse(&b).unwrap(), &["state"]).as_str().unwrap_or("").to_string()
+        };
+        assert_eq!(state(&id), "running", "the reply is being made");
+        drop(r); // the client goes
+        let t = std::time::Instant::now();
+        while state(&id) != "ended" {
+            assert!(t.elapsed() < Duration::from_secs(10), "the sequence of a client that went is still running");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// A request whose body's end is in doubt is refused (400), on a connection that is kept or not: a repeated Content-Length, one that is not a number, and a Transfer-Encoding (which this server
+    /// does not read) would each be read one way here and another by a proxy in front of it.
+    #[test]
+    fn an_ambiguous_body_length_is_refused() {
+        let head = |t: &str| read_head(&mut BufReader::new(t.as_bytes())).err().map(|e| e.0);
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 5\r\ncontent-length: 6\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: +5\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 5, 5\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length:\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"), Some(400));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 99999999999999999999\r\n\r\n"), Some(413));
+        assert_eq!(head("POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\n"), None, "one is fine");
+        // and over the wire, on a connection that asked to be kept
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let addr = listen_timed(Times::default(), tx);
+        for bad in ["Content-Length: 2\r\nContent-Length: 2", "Transfer-Encoding: chunked"] {
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.write_all(format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n{bad}\r\n\r\n{{}}").as_bytes()).unwrap();
+            assert_eq!(raw_status(&mut c).0, 400, "{bad}");
+        }
+    }
+
+    /// A client that sends more than the beginning of a next request while its answer is being made is let go, and its sequence with it (what it sent is not held without bound).
+    #[test]
+    fn a_client_that_floods_while_it_is_answered_is_let_go() {
+        let mut f = Fake::new(64, 32);
+        f.decode_delay = Duration::from_millis(20);
+        let addr = serve_fake(f, None, 4);
+        let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":400,"temperature":0,"stream":true}"#;
+        let (r, id) = first_event(addr, body);
+        let mut c = r.into_inner();
+        let junk = vec![b'x'; 256 << 10];
+        let _ = c.write_all(&junk);
+        let state = |id: &str| -> String {
+            let (st, _, b) = ask(addr, "GET", &format!("/v1/glyd/requests/{id}"), &[("Host", "x")]);
+            assert_eq!(st, 200, "{b}");
+            at(&json::parse(&b).unwrap(), &["state"]).as_str().unwrap_or("").to_string()
+        };
+        let t = std::time::Instant::now();
+        while state(&id) != "ended" {
+            assert!(t.elapsed() < Duration::from_secs(10), "the sequence of a client that flooded is still running");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// One connection carries as many requests as the client sends while it asks for `Connection: keep-alive` and each answer has a length, and ends with one that does not (a stream); a client that
+    /// asks for nothing, or for `close`, gets the connection closed after its answer.
+    #[test]
+    fn a_connection_is_kept_for_the_next_request() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let addr = listen_timed(Times::default(), tx);
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut r = std::io::BufReader::new(c.try_clone().unwrap());
+        // reads one answer with a Content-Length: (status, its head, its body)
+        let mut one = || {
+            let mut head = String::new();
+            loop {
+                let mut l = String::new();
+                r.read_line(&mut l).unwrap();
+                head.push_str(&l);
+                if l == "\r\n" || l.is_empty() {
+                    break;
+                }
+            }
+            let len: usize = head.to_ascii_lowercase().lines().find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse().unwrap())).unwrap_or(0);
+            let mut body = vec![0u8; len];
+            r.read_exact(&mut body).unwrap();
+            (head.split_whitespace().nth(1).unwrap().to_string(), head, String::from_utf8(body).unwrap())
+        };
+        for i in 0..5 {
+            c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n").unwrap();
+            let (st, head, body) = one();
+            assert_eq!((st.as_str(), body.as_str()), ("200", "{\"status\":\"ok\"}"), "request {i}");
+            assert!(head.contains("Connection: keep-alive"), "{head}");
+        }
+        // two requests sent together are answered in turn
+        c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\nGET /ready HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n").unwrap();
+        assert_eq!(one().2, "{\"status\":\"ok\"}");
+        assert_eq!(one().2, "{\"status\":\"ready\"}");
+        // `Connection: close` is answered with the connection closed
+        c.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+        let (_, head, _) = one();
+        assert!(head.contains("Connection: close"), "{head}");
+        let mut b = [0u8; 4];
+        assert_eq!(r.read(&mut b).unwrap(), 0, "the server closed it");
     }
 
     /// `/health` says the process is up, `/ready` that the model is loaded (200 `ready`; 503 `loading` where the server listens while it loads), `/metrics` is Prometheus's text format with the families an operator
@@ -3515,7 +4145,7 @@ pub(crate) mod tests {
     }
 
     /// A connection whose request is written on a thread of its own while this one reads the answer (a server that answers before it has read it all must be read from at once); what came back.
-    fn send_raw(addr: std::net::SocketAddr, write: impl FnOnce(&mut TcpStream) + Send + 'static) -> String {
+    fn send_raw(addr: std::net::SocketAddr, write: impl FnOnce(&mut dyn Conn) + Send + 'static) -> String {
         let mut c = TcpStream::connect(addr).unwrap();
         let mut w = c.try_clone().unwrap();
         let t = std::thread::spawn(move || write(&mut w));
@@ -3562,7 +4192,7 @@ pub(crate) mod tests {
         assert!(first(&out).starts_with("HTTP/1.1 431"), "{}", &out[..out.len().min(300)]);
         // 300 headers, 257 of them too many; 256 are within the bound
         let many = |n: usize| {
-            move |w: &mut TcpStream| {
+            move |w: &mut dyn Conn| {
                 let h: String = (0..n).map(|i| format!("X-N{i}: 1\r\n")).collect();
                 let _ = w.write_all(format!("GET /v1/models HTTP/1.1\r\nHost: x\r\n{h}\r\n").as_bytes());
             }
@@ -3573,14 +4203,14 @@ pub(crate) mod tests {
         assert!(first(&send_raw(addr, many(255))).starts_with("HTTP/1.1 401"), "within the count the key is asked for");
         // 60 KiB in one header is within the bound: the key is asked for, and with it the request is answered
         let big = |auth: &'static str| {
-            move |w: &mut TcpStream| {
+            move |w: &mut dyn Conn| {
                 let _ = w.write_all(format!("GET /v1/models HTTP/1.1\r\nHost: x\r\nX-Pad: {}\r\n{auth}\r\n", "a".repeat(60 << 10)).as_bytes());
             }
         };
         assert!(first(&send_raw(addr, big(""))).starts_with("HTTP/1.1 401"));
         assert!(first(&send_raw(addr, big("Authorization: Bearer secret\r\n"))).starts_with("HTTP/1.1 200"));
         // the bound is the block's, not a line's: two headers of 40 KiB are 80 KiB
-        let two = |w: &mut TcpStream| {
+        let two = |w: &mut dyn Conn| {
             let pad = "a".repeat(40 << 10);
             let _ = w.write_all(format!("GET /v1/models HTTP/1.1\r\nHost: x\r\nX-A: {pad}\r\nX-B: {pad}\r\n\r\n").as_bytes());
         };
@@ -3655,6 +4285,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let mut bytes: Vec<Vec<u8>> = (0..=255u8).map(|b| vec![b]).collect();
         bytes.push([&[toktrie::TokTrie::SPECIAL_TOKEN_MARKER][..], b"<|im_end|>"].concat());
@@ -3695,6 +4326,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let text = |body: &str| {
             let v = json::parse(body).unwrap();
@@ -3746,6 +4378,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let text = |body: &str| {
             let v = json::parse(body).unwrap();
@@ -3776,6 +4409,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let text = |body: &str| {
             let v = json::parse(body).unwrap();
@@ -3827,6 +4461,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         });
         let (tx, rx) = std::sync::mpsc::channel();
         let addr = listen("127.0.0.1:0", "fake", window, None, false, tx.clone()).unwrap();
@@ -3926,6 +4561,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let ask = |sh: &Shared, body: &str| {
             let v = json::parse(body).unwrap();
@@ -4271,6 +4907,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let prompt = |extra: &str| {
             let v = json::parse(&chat_body(extra)).unwrap();
@@ -4386,6 +5023,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let prompt = |extra: &str| {
             let v = json::parse(&chat_body(extra)).unwrap();
@@ -4513,6 +5151,74 @@ pub(crate) mod tests {
         }
     }
 
+    /// A request for thinking gets a reply that begins with a thinking block, whole and streamed, empty where the model closes its thinking at once and writes
+    /// no answer (the GPU job's random model did: a reply with no content block at all, which a client reading the first block fails on).
+    #[test]
+    fn a_thinking_reply_begins_with_its_thinking_block() {
+        let addr = serve_script_with("</think>\n\n", include_str!("../tests/fixtures/chat_qwen38_tools.jinja"));
+        let q = |extra: &str| {
+            format!(r#"{{"max_tokens":50,"thinking":{{"type":"enabled","budget_tokens":20}},"messages":[{{"role":"user","content":"Hi"}}]{extra}}}"#)
+        };
+        let (st, body) = call(addr, "/v1/messages", &q(""));
+        assert_eq!(st, 200, "{body}");
+        let d = json::parse(&body).unwrap();
+        assert_eq!((at(&d, &["content", "0", "type"]).as_str(), at(&d, &["content", "0", "thinking"]).as_str()), (Some("thinking"), Some("")), "{body}");
+        let (_, body) = call(addr, "/v1/messages", &q(r#","stream":true"#));
+        let first = body
+            .lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .filter_map(|d| json::parse(d).ok())
+            .find(|e| e.get("type").and_then(Value::as_str) == Some("content_block_start"));
+        assert_eq!(first.as_ref().and_then(|e| at(e, &["content_block", "type"]).as_str()), Some("thinking"), "{body}");
+        // (without thinking asked for, no thinking block)
+        let (_, body) = call(addr, "/v1/messages", r#"{"max_tokens":50,"messages":[{"role":"user","content":"Hi"}]}"#);
+        assert!(!body.contains("\"type\":\"thinking\""), "{body}");
+    }
+
+    /// The random model that `logitsmodel qwen35 DIR --servable` makes serves a client: its tokenizer reads the template's text and the characters of JSON, its template takes tools, its end token is named, and the
+    /// grammars of a JSON schema and of a forced call (Qwen3.8's XML) compile on its tokens, so that a client gets valid structured output and a valid call from weights that write random characters.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn a_servable_random_model_takes_grammars() {
+        let dir = std::env::temp_dir().join(format!("glyd-servable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"model_type":"qwen3_5_text","eos_token_id":2,"vocab_size":4096}"#).unwrap();
+        crate::logits::write_serving_files(&dir, include_str!("../tests/fixtures/chat_qwen38_tools.jinja")).unwrap();
+        let tok = Tok::load(&dir).unwrap();
+        let sh = Shared {
+            tok,
+            chat: Chat::load(&dir).unwrap(),
+            name: "tiny".into(),
+            defaults: Params::default(),
+            window: 4096,
+            vocab: 4096,
+            thinking: None,
+            refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
+        };
+        assert!(sh.chat.is_some());
+        // the text: every character known, the markers one token each, the end token the config's
+        let ids = sh.tok.encode_with("<|im_start|>user\nHi {\"a\": [1, 2.5, true]}<|im_end|>", false).unwrap();
+        assert_eq!(ids[0], 1);
+        assert_eq!(*ids.last().unwrap(), 2);
+        assert!(!ids.contains(&0), "{ids:?}");
+        assert_eq!(sh.tok.decode(&ids).unwrap(), "<|im_start|>user\nHi {\"a\": [1, 2.5, true]}<|im_end|>");
+        let chat = |extra: &str| json::parse(&format!(r#"{{"messages":[{{"role":"user","content":"Weather in Paris?"}}],"max_tokens":40{extra}}}"#)).unwrap();
+        let tool = r#","tools":[{"type":"function","function":{"name":"get_weather","description":"Get the weather","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"integer"}},"required":["city","days"]}}}]"#;
+        // a plain chat, the thinking left to the template (it opens `<think>`)
+        let p = prepare(&sh, &chat("")).unwrap();
+        assert!(p.pr.ids.len() > 5 && p.pr.in_thinking && p.r.params.constraint.is_none());
+        // a JSON schema: a grammar
+        let p = prepare(&sh, &chat(r#","response_format":{"type":"json_schema","json_schema":{"name":"w","schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}}}"#)).unwrap();
+        assert!(p.r.params.constraint.is_some());
+        // a forced call: its opening in the prompt, its arguments a grammar
+        for choice in [r#","tool_choice":{"type":"function","function":{"name":"get_weather"}}"#, r#","tool_choice":"required""#] {
+            let p = prepare(&sh, &chat(&format!("{tool}{choice}"))).unwrap();
+            assert!(p.pr.text.contains("<tool_call>") && p.r.params.constraint.is_some(), "{choice}: {}", p.pr.text);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     const XML_CALL: &str = "<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>";
 
     /// What a model whose template writes XML calls is shown: the tools as that template gives them, a call of the conversation and its result in XML, and the opening of a forced call (a named function's through the line after
@@ -4528,6 +5234,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let text = |body: &str| {
             let v = json::parse(body).unwrap();
@@ -4855,7 +5562,8 @@ pub(crate) mod tests {
             (",\"best_of\":3", "best_of more than n is not supported"),
             (",\"use_beam_search\":true", "use_beam_search is not supported"),
             (",\"priority\":2", "priority is not supported"),
-            (",\"cache_salt\":\"s\"", "cache_salt is not supported"),
+            (",\"cache_salt\":7", "cache_salt must be a string that is not empty"),
+            (",\"cache_salt\":\"\"", "cache_salt must be a string that is not empty"),
             (",\"logprobs\":1,\"echo\":true", "logprobs with echo"),
         ] {
             let (st, body) = ask(extra);
@@ -5005,6 +5713,7 @@ pub(crate) mod tests {
             vocab: 2048,
             thinking: None,
             refused: &[],
+            rt: crate::runtime::context::Context::process().clone(),
         };
         let prompt_text = |body: &str| {
             let v = json::parse(body).unwrap();
@@ -5028,18 +5737,21 @@ pub(crate) mod tests {
     fn the_server_says_what_it_is_and_what_it_holds() {
         let held = crate::dev::Held { weights: 5 << 30, kv: 1 << 28, state: 1 << 20, kv_type: "bf16", state_type: "fp32" };
         let about = vec![
-            ("model", tools::obj(vec![("id", Value::from("Qwen/Qwen3.5-9B:swift"))])),
-            ("level", tools::obj(vec![("requested", Value::from("swift")), ("effective", Value::from("swift"))])),
+            ("model", tools::obj(vec![("id", Value::from("Qwen/Qwen3.5-9B:linnet"))])),
+            ("level", tools::obj(vec![("requested", Value::from("linnet")), ("effective", Value::from("linnet"))])),
         ];
-        assert!(INFO.set(Info { about, gpu: None, held: Some(held), concurrency: 1, window: 4096, refused: ONE_AT_A_TIME, started: 1.5 }).is_ok());
+        assert!(crate::runtime::context::Context::process()
+            .info
+            .set(Info { about, gpu: None, held: Some(held), concurrency: 1, window: 4096, refused: ONE_AT_A_TIME, started: 1.5 })
+            .is_ok());
         let (tx, _rx) = std::sync::mpsc::channel();
-        let addr = listen("127.0.0.1:0", "Qwen/Qwen3.5-9B:swift", 4096, Some("k".into()), false, tx).unwrap();
+        let addr = listen("127.0.0.1:0", "Qwen/Qwen3.5-9B:linnet", 4096, Some("k".into()), false, tx).unwrap();
         assert_eq!(ask(addr, "GET", "/v1/glyd/info", &[("Host", "x")]).0, 401);
         let info = || json::parse(&ask(addr, "GET", "/v1/glyd/info", &[("Host", "x"), ("Authorization", "Bearer k")]).2).unwrap();
         let d = info();
         assert_eq!(
             (at(&d, &["object"]).as_str(), at(&d, &["api"]).as_str(), at(&d, &["model", "id"]).as_str(), at(&d, &["level", "effective"]).as_str()),
-            (Some("glyd.info"), Some(API), Some("Qwen/Qwen3.5-9B:swift"), Some("swift"))
+            (Some("glyd.info"), Some(API), Some("Qwen/Qwen3.5-9B:linnet"), Some("linnet"))
         );
         assert_eq!(at(&d, &["build", "version"]).as_str(), Some(env!("CARGO_PKG_VERSION")));
         assert_eq!((f64_of(at(&d, &["limits", "context_tokens"])), f64_of(at(&d, &["limits", "concurrency"]))), (4096.0, 1.0));
@@ -5066,8 +5778,9 @@ pub(crate) mod tests {
         );
         assert!(f64_of(at(m, &["peak_bytes"])) >= f64_of(at(m, &["engine_bytes"])) && f64_of(at(m, &["peak_since"])) == 1.5);
         assert_eq!((at(m, &["gpu"]), at(m, &["device_total_bytes"]), at(m, &["device_free_bytes"])), (&Value::Null, &Value::Null, &Value::Null));
+        assert!(matches!(at(m, &["devices"]), Value::Array(_)), "the engine's buffers by GPU: a list, empty where no GPU is open");
         // after a failure of the engine it says so (nothing is sure of the GPU after one), with when and what
-        engine_failed("cuLaunchKernel: an illegal memory access was encountered (700)");
+        crate::runtime::context::Context::process().fail("cuLaunchKernel: an illegal memory access was encountered (700)");
         let d = info();
         assert!(at(&d, &["state"]).as_str() == Some("failed") && at(&d, &["error", "message"]).as_str().is_some(), "{d:?}");
     }
@@ -5142,7 +5855,30 @@ pub(crate) mod tests {
         assert_eq!(ask(addr, "GET", "/v1/glyd/requests/nothing/cancel", &[("Host", "x")]).0, 405);
     }
 
-    /// What a level's engine does not do (ONE_AT_A_TIME: log-probabilities, a least length) is refused in words where it is asked for, and not where its value means it is not; a length the context has no room
+    /// #237: two models' servers in one process keep their requests apart (each its context's tracks): a request's id is found and cancelled on the server that runs it,
+    /// and not on the other, which may run a request of the same id at once.
+    #[test]
+    fn two_models_in_one_process_keep_their_requests_apart() {
+        let a = serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], crate::runtime::context::Context::new());
+        let b = serve_fake_in(Fake::new(64, 32), None, 2, false, None, &[], crate::runtime::context::Context::new());
+        let body = r#"{"messages":[{"role":"user","content":"hello there"}],"max_tokens":3,"temperature":0,"request_id":"same-1"}"#;
+        let (st, _) = call(a, "/v1/chat/completions", body);
+        assert_eq!(st, 200);
+        let state = |addr| {
+            let (st, _, b) = ask(addr, "GET", "/v1/glyd/requests/chatcmpl-same-1", &[("Host", "x")]);
+            (st, if st == 200 { at(&json::parse(&b).unwrap(), &["state"]).as_str().map(str::to_string) } else { None })
+        };
+        assert_eq!((state(a), state(b)), ((200, Some("ended".to_string())), (404, None)));
+        assert_eq!(ask(b, "POST", "/v1/glyd/requests/chatcmpl-same-1/cancel", &[("Host", "x"), ("Content-Length", "0")]).0, 404);
+        // the same id on the other model's server is its own request
+        let (st, _) = call(b, "/v1/chat/completions", body);
+        assert_eq!((st, state(b).1.as_deref()), (200, Some("ended")));
+    }
+
+    /// Fields an engine might not do (an engine that ran one sequence at a time gave no log-probabilities and no least length), for the checks of a refusal.
+    const ONE_AT_A_TIME: &[(&str, &str)] = &[("logprobs", "false"), ("min_tokens", "0")];
+
+    /// What an engine does not do (ONE_AT_A_TIME here: log-probabilities, a least length) is refused in words where it is asked for, and not where its value means it is not; a length the context has no room
     /// for after the prompt is refused, not cut short (one that fits to the last token is served); and /v1/glyd/tokenize counts a prompt as its reply's usage does, a chat's or a plain completion's, and runs nothing.
     #[test]
     fn what_the_engine_does_not_do_is_refused_and_a_prompt_is_counted() {
@@ -5187,54 +5923,6 @@ pub(crate) mod tests {
         }
         let (st, body) = chat(&format!(",\"max_tokens\":{}", window - used));
         assert_eq!(st, 200, "{body}");
-    }
-
-    /// A level's engine (`work_gen`: one sequence at a time) does not run a sequence asked to end before its turn (a cancel, its client gone): it ends at once, stopped; the next runs.
-    #[test]
-    fn a_sequence_asked_to_end_before_its_turn_is_not_run() {
-        struct Count(usize);
-        impl Gen for Count {
-            fn capacity(&self) -> usize {
-                64
-            }
-            fn reply(&mut self, _: &[u32], _: &Reply, each: &mut dyn FnMut(u32) -> bool) -> Result<(Vec<u32>, Finish)> {
-                self.0 += 1;
-                each(7);
-                Ok((vec![7], Finish::Length))
-            }
-        }
-        let shared = Arc::new(Shared {
-            tok: crate::tok::tests::toy(&["x"]),
-            chat: None,
-            name: "m".into(),
-            defaults: Params::default(),
-            window: 64,
-            vocab: 2048,
-            thinking: None,
-            refused: ONE_AT_A_TIME,
-        });
-        let (tx, rx) = std::sync::mpsc::channel();
-        let seq = |abort: bool| {
-            let (out, events) = std::sync::mpsc::channel();
-            let reply = Reply { params: Params::default(), max_new: 4, ignore_eos: false, logprobs: None, stop_ids: Vec::new() };
-            tx.send(Job::Seq(Submit {
-                prompt: vec![1, 2],
-                reply,
-                out,
-                abort: Arc::new(AtomicBool::new(abort)),
-                resumed: Default::default(),
-                images: Vec::new(),
-            }))
-            .unwrap();
-            events
-        };
-        let (gone, kept) = (seq(true), seq(false));
-        tx.send(Job::Stop).unwrap();
-        let mut c = Count(0);
-        work_gen(&mut c, shared, &rx, &tx);
-        assert!(matches!(gone.recv().unwrap(), Ev::End(Ok(Finish::Stopped))));
-        assert!(matches!(kept.recv().unwrap(), Ev::Token(7)) && matches!(kept.recv().unwrap(), Ev::End(Ok(Finish::Length))));
-        assert_eq!(c.0, 1, "the sequence asked to end was not run");
     }
 }
 

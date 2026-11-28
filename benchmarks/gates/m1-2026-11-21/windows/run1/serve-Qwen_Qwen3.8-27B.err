@@ -1,0 +1,2 @@
+glyd: Qwen3.8-27B (Qwen3.5) runs at the kestrel, linnet and wren levels in this engine, not penguin.
+  Run it at the kestrel level: glyd run Qwen/Qwen3.8-27B:kestrel

@@ -1,0 +1,90 @@
+name: Consumer bench
+
+# P20: each release measured against llama.cpp (and Ollama where the machine has it) on the project's own GPU, by the one harness
+# (scripts/consumer_bench.sh: benchmarks/consumer/matrix.tsv's rows of the GPU's memory tier, every engine on the same GPU; docs/bench.md). The results,
+# with each run's command lines and server logs and the comparison page (README.md), are this run's artifact; a pull request puts them under
+# benchmarks/consumer/vX.Y.Z/. Runs only where the repository variable GPU_RUNNER names the machine: when a release is published, or by hand.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      engines:
+        type: string
+        default: glyd llama.cpp ollama
+      tier:
+        description: The tier's rows to run (empty for the GPU's own)
+        type: string
+        default: ''
+      convert:
+        description: Make the GGUF files the rows lack, from the Hub checkpoints with llama.cpp's own tools (hours and tens of GB the first time; kept in the machine's cache)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: consumer-bench
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    if: vars.GPU_RUNNER != ''
+    runs-on: ${{ fromJSON(vars.GPU_RUNNER) }}
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: nvidia/cuda:13.0.3-devel-ubuntu24.04
+      options: --gpus all -v glyd-ci-cache:/cache --memory=28g --memory-swap=28g
+    env:
+      HF_HOME: /cache/hf
+      GLYD_CACHE: /cache/glyd
+      CARGO_HOME: /cache/cargo
+      RUSTUP_HOME: /cache/rustup
+      CARGO_TARGET_DIR: /cache/target-sm${{ vars.GPU_RUNNER_ARCHS || '89' }}
+      GLYD_ENGINE_ARCHS: ${{ vars.GPU_RUNNER_ARCHS || '89' }}
+      NVCC: /usr/local/cuda/bin/nvcc
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      ENGINES: ${{ inputs.engines || 'glyd llama.cpp ollama' }}
+      TIER: ${{ inputs.tier }}
+      GGUF_DIR: /cache/gguf                        # (the GGUF files of the matrix's rows, MODELNAME-QUANT.gguf; a row without one is listed as not run)
+      CONVERT: ${{ inputs.convert && '1' || '0' }}  # (a run by hand may make the missing ones; a release's run measures with the files that are there)
+      LLAMA_SERVER_DIR: /cache/llama.cpp-build
+    steps:
+      - name: Tools
+        run: |
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential cmake pkg-config curl git ca-certificates python3 python3-venv > /dev/null
+          [ -x "$CARGO_HOME/bin/cargo" ] || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          nvidia-smi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The checkout's files get the times their content last changed
+        run: python3 scripts/ci_restore_mtimes.py "/cache/mtimes-sm${GLYD_ENGINE_ARCHS}.json"
+      - name: Build the engine and the GPU library
+        run: bash scripts/ci_gpu_build.sh
+      - name: Measure every engine on this GPU
+        run: |
+          export GLYD_ENGINE="$CARGO_TARGET_DIR/release/glyd-engine" WORK="$LLAMA_SERVER_DIR"
+          mkdir -p "$GGUF_DIR"
+          bash scripts/consumer_bench.sh "consumer-${GITHUB_REF_NAME//\//-}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: consumer-bench
+          path: |
+            consumer-*/*.json
+            consumer-*/*.cmd
+            consumer-*/*.log
+            consumer-*/*.skip
+            consumer-*/*.other-level
+            consumer-*/README.md
+          if-no-files-found: ignore
+      - name: The workspace back to the runner's user
+        if: always()
+        run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP" 2> /dev/null || echo 1000:1000)" "$GITHUB_WORKSPACE" || true

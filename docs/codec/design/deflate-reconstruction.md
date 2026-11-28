@@ -4,7 +4,7 @@ Opening a container means taking every deflate stream inside it apart
 into its plain text and whatever it takes to write the identical stream
 back. Since v0.12.0 that has been done by preflate-rs (carried in
 `third_party/` since v0.13.3). This is the design for doing it in
-`src/reflate.rs`, with nothing outside this repository, so the codec has
+`src/reflate/`, with nothing outside this repository, so the codec has
 no dependency, and so the work can be made faster and wider than a
 library built for other purposes.
 

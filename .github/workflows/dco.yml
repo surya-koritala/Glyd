@@ -5,11 +5,15 @@ on:
   pull_request:
   # (the merge queue: the commits of the entries in the group, which the pull requests' own runs checked one by one)
   merge_group:
+# a pull request's older run is cancelled by its newer one; any other run is a group of its own, so none is cancelled or held back (as ci.yml)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 jobs:
   signoff:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Check Signed-off-by on every commit

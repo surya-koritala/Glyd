@@ -1,10 +1,10 @@
-//! glyd-engine: Glyd's own engine for Qwen3 on CUDA.
+//! glyd-engine: Glyd's own inference engine (the families of src/support.rs on CUDA).
 //!
 //!   glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--no-think] [--context N] [--users N] [--port N] [--host H] [--temp T] [--layout auto|mma|mma12] [--expert-cache GIB] [--host-memory GIB]
 //!                                                             what `glyd run` starts: the model made ready on the first run (downloaded, packed for this GPU,
 //!                                                             its KV tables made), then a chat in the terminal and at one URL, or one answer with --prompt
-//!                                                             LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5), wren (about 4.5)
-//!                                                             or hummingbird (Nemotron 3 Super's experts at about 3)
+//!                                                             LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), linnet (about 5.5), wren (about 4.5)
+//!                                                             or hummingbird (a mixture of experts' routed experts at about 3)
 //!                                                             --expert-cache GIB: Nemotron 3 Super with its experts in the computer's memory and a cache of them in GIB GiB of the GPU's (without it, the cache is what the GPU has left when it cannot hold the model)
 //!                                                             --cpu-threads N: the threads that compute the experts that are not on the GPU (the computer's cores less two)
 //!                                                             --host-memory GIB|auto: the computer's memory the experts may take (auto: what it has free, less 6 GiB for the system); the Hummingbird level keeps the rest of its
@@ -21,7 +21,10 @@
 //!   glyd-engine rangeworker --model MODEL[:LEVEL] --layers A..B [--ctx N] [--chunk N] [--head-rows N] [--sessions N] [--device D]
 //!                                                             one range of a Qwen3.5 model's layers on this GPU, its frames on the standard input and output: one model across
 //!                                                             processes or machines (docs/range-worker.md, glyd-range/1)
+//!   glyd-engine connect | pull | ls | rm | names | service | ps | stop | verify | bench   the rest of the commands about models
 //!   glyd-engine --version
+//!
+//! The commands about models, their flags and each one's page (`glyd-engine help COMMAND`) are one table: src/cmdtable.rs, which this list does not repeat.
 //!
 //! A development build (the default features) has the checks and the measurements too: src/devcmd.rs.
 

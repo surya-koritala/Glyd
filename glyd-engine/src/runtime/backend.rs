@@ -1,12 +1,14 @@
 //! The vendor seam (`docs/design/runtime.md` §3-4): a backend says per kind and weight format whether it supports it, and builds a
-//! `LayerImpl` for each block of a description. The executor is generic over a backend's associated types; layers are
-//! `Box<dyn LayerImpl<B>>`, one virtual call per block per step.
+//! `LayerImpl` for each block of a description, and for the pieces around the blocks' bodies (`Around`: the residual's norms and rules,
+//! the embedding, the head). The executor is generic over a backend's associated types; layers are `Box<dyn LayerImpl<B>>`, one virtual
+//! call per block per step.
 //!
-//! The types around the traits (`Placement`, `Arenas`, `StepCx`) carry what the CPU reference needs today; the executor (R4a), the
-//! KV manager (R4b) and the expert store (R12) fill them in.
+//! The types around the traits (`Placement`, `Arenas`, `StepCx`) carry what the CPU reference needs; the CUDA backend (`runtime::cuda`)
+//! keeps a piece's state where its loaded executor holds it (KV pages, recurrent states, the expert cache, a pass's row tables), so its
+//! pieces take nothing more from them.
 
-use super::kinds::{Block, Body, Ffn, Mixer};
-use crate::ffi::Result;
+use super::kinds::{Block, Body, Embed, Ffn, Head, Mixer, Norm};
+use crate::ffi::{err, Result};
 
 /// A kind without its parameters, for `supports`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -19,8 +21,14 @@ pub enum KindRef {
     GatedDeltaNet,
     KimiDelta,
     Mamba2,
+    /// The gated short convolution (LFM's `conv` layers).
+    ShortConv,
     Mlp,
     Moe,
+    /// A hashed n-gram embedding into the residual streams (Qwen3.8-Flash-Next's, DeepSeek-V4.1's Engram).
+    Ngram,
+    /// A per-layer input's gated branch (Gemma 4's E2B, E4B).
+    PerLayer,
 }
 
 impl KindRef {
@@ -35,8 +43,11 @@ impl KindRef {
             Body::Mixer(Mixer::Linear(l)) if l.kind == LinearKind::GatedDeltaNet => KindRef::GatedDeltaNet,
             Body::Mixer(Mixer::Linear(_)) => KindRef::KimiDelta,
             Body::Mixer(Mixer::Mamba2(_)) => KindRef::Mamba2,
+            Body::Mixer(Mixer::ShortConv(_)) => KindRef::ShortConv,
             Body::Ffn(Ffn::Mlp(_)) => KindRef::Mlp,
             Body::Ffn(Ffn::Moe(_)) => KindRef::Moe,
+            Body::Ngram(_) => KindRef::Ngram,
+            Body::PerLayer(_) => KindRef::PerLayer,
         }
     }
 }
@@ -48,7 +59,7 @@ pub enum Format {
     F32,
     /// Glyd's lossless formats (10.75-12 bits).
     Lossless,
-    /// Int4-6 and codebook lossy levels, by name (kestrel, swift, wren, ...).
+    /// Int4-6 and codebook lossy levels, by name (kestrel, linnet, wren, ...).
     Lossy(String),
     /// FP8 with 128x128 block scales, as DeepSeek and GLM release them.
     Fp8Block,
@@ -127,10 +138,25 @@ pub struct StepCx<'a, B: Backend + ?Sized> {
     pub tokens: &'a [u32],
 }
 
+/// A piece of a description around its blocks' bodies, each with an entry point of its own on a backend that runs whole models (`build_around`):
+/// the residual's operations between the bodies (the rule of the block before, its post-norm, the next block's input norm, a streams kind's mixes),
+/// the embedding, and the head. A backend decides which side of a body its residual's operations fall on (the CUDA backend: where its executor's
+/// layers put them), so a piece before a body or after one may hold none.
+pub enum Around<'a> {
+    /// The residual's operations before block `index`'s body (`block`).
+    Before { index: usize, block: &'a Block },
+    /// The residual's operations after block `index`'s body (the final norm's, after the last).
+    After { index: usize, block: &'a Block },
+    /// The tokens' rows of the embedding into the residual (`StepCx::tokens`).
+    Embed(&'a Embed),
+    /// The last rows' final norm (its collapse of the streams), the LM head and its soft-cap.
+    Head { norm: &'a Norm, head: &'a Head },
+}
+
 /// A captured step (a CUDA or HIP graph); backends that cannot capture return None from `capture`.
 pub struct Captured;
 
-/// All-reduce, all-gather, all-to-all across a backend's devices (M5).
+/// All-reduce, all-gather, all-to-all across a backend's devices (M4).
 pub trait Collective {}
 
 pub trait Backend: Send + Sync {
@@ -140,6 +166,18 @@ pub trait Backend: Send + Sync {
     fn devices(&self) -> &[DeviceInfo];
     fn supports(&self, kind: &KindRef, fmt: &Format) -> Support;
     fn build(&self, layer: &LayerDesc, w: &dyn WeightSource, place: &Placement, mem: &mut Arenas<Self>) -> Result<Box<dyn LayerImpl<Self>>>;
+    /// An entry point for a piece around the blocks' bodies; a backend that runs blocks alone (the reference's model runs these itself, the MLX spike
+    /// runs one kind) refuses it.
+    fn build_around(&self, a: &Around, w: &dyn WeightSource, place: &Placement, mem: &mut Arenas<Self>) -> Result<Box<dyn LayerImpl<Self>>> {
+        let _ = (w, place, mem);
+        let what = match a {
+            Around::Before { index, .. } => format!("the residual before block {index}"),
+            Around::After { index, .. } => format!("the residual after block {index}"),
+            Around::Embed(_) => "the embedding".into(),
+            Around::Head { .. } => "the head".into(),
+        };
+        err(format!("{what}: this backend runs blocks' bodies alone"))
+    }
     fn queue(&self, dev: DeviceId) -> Result<Self::Queue>;
     fn capture(&self, q: &Self::Queue, body: &mut dyn FnMut() -> Result<()>) -> Result<Option<Captured>>;
     fn collective(&self) -> Option<&dyn Collective>;
@@ -148,7 +186,6 @@ pub trait Backend: Send + Sync {
 pub trait LayerImpl<B: Backend + ?Sized>: Send {
     /// Bytes of the step arena it needs at this shape.
     fn workspace(&self, shape: &StepShape) -> u64;
-    fn capturable(&self) -> bool;
     /// Enqueue the block on `x` (the residual stream of the step's tokens); never waits on the device.
     fn run(&mut self, cx: &mut StepCx<B>, x: &mut B::Tensor) -> Result<()>;
 }

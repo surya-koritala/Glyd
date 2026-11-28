@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # One command for a model card's numbers (GLY-31): speed, first-token time, GPU memory at a 4k context and the 32k fit on each GPU class, from the engine built
 # from this checkout's HEAD, into cards/<model>-<level>.json (merged with what is there: one entry per GPU, replaced on a rerun).
-#   bash tools/cards/numbers.sh [--kl] [--dry-run] MODEL REVISION LEVEL CLASS...        e.g.  Qwen/Qwen3.8-27B 1d4bf0f2... swift a6000 l40 a100
-# LEVEL: penguin, kestrel or swift. CLASS: 4090 3090 16gb l4 a6000 l40 a100 (tools/runpod/classes.sh). One pod per class, in parallel, through rp_class.sh.
-# --kl: one more A100 pod scores the level against bf16 with research/lossy-2026/kld_study.py (kestrel int:6:32:mse:bf16, swift int:5:32:mse:bf16; penguin is lossless: none).
+#   bash tools/cards/numbers.sh [--kl] [--dry-run] MODEL REVISION LEVEL CLASS...        e.g.  Qwen/Qwen3.8-27B 1d4bf0f2... linnet a6000 l40 a100
+# LEVEL: penguin, kestrel or linnet. CLASS: 4090 3090 16gb l4 a6000 l40 a100 (tools/runpod/classes.sh). One pod per class, in parallel, through rp_class.sh.
+# --kl: one more A100 pod scores the level against bf16 with research/lossy-2026/kld_study.py (kestrel int:6:32:mse:bf16, linnet int:5:32:mse:bf16; penguin is lossless: none).
 # kl_fp8_ref is only from the table below (measured earlier); null for any other model. --dry-run starts nothing (no runpodctl) and prints the plan.
 set -u
 KL=0; DRY=0
@@ -12,9 +12,9 @@ while [ "${1:-}" ]; do case $1 in --kl) KL=1; shift;; --dry-run) DRY=1; shift;; 
 MODEL=$1; REV=$2; LEVEL=$3; shift 3; CLASSES=("$@")
 ROOT=$(git -C "$(dirname "$0")" rev-parse --show-toplevel); cd "$ROOT" || exit 1
 . tools/runpod/classes.sh
-case $LEVEL in penguin|kestrel|swift) ;; *) echo "LEVEL is penguin, kestrel or swift"; exit 2;; esac
+case $LEVEL in penguin|kestrel|linnet) ;; *) echo "LEVEL is penguin, kestrel or linnet"; exit 2;; esac
 for c in "${CLASSES[@]}" $([ $KL = 1 ] && echo a100); do class_types "$c" > /dev/null || { echo "unknown GPU class $c"; exit 2; }; done
-case $LEVEL in swift) VARIANT=int:5:32:mse:bf16;; kestrel) VARIANT=int:6:32:mse:bf16;; *) VARIANT="";; esac
+case $LEVEL in linnet) VARIANT=int:5:32:mse:bf16;; kestrel) VARIANT=int:6:32:mse:bf16;; *) VARIANT="";; esac
 [ $KL = 1 ] && [ -z "$VARIANT" ] && { echo "--kl: penguin is lossless, nothing to score"; exit 2; }
 # the KL of the FP8 reference checkpoint, measured earlier (never guessed: null for a model not here)
 # (MODEL may be the published glyd/NAME-LEVEL repo, measured as users download it; the KL is scored on the bf16 model: KL_MODEL, KL_REV)

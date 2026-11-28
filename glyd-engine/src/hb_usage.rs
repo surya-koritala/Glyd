@@ -138,24 +138,46 @@ fn io<T>(r: std::io::Result<T>) -> Result<T> {
 /// The pass on the GPU: `model` (a directory, or a Hub name in the cache) on `devices` (layers cut at `cuts` across them), `tokens` of the
 /// corpus at most `ctx` a document; the usage file written to `out`.
 pub fn run(model: &str, out: &std::path::Path, tokens: u64, devices: &[i32], cuts: &[usize], ctx: usize) -> Result<()> {
+    run_with(model, out, tokens, devices, cuts, ctx, false)
+}
+
+/// `run`; `synthetic`: documents of token ids drawn over the vocabulary in place of the corpus (a random test model, which has no tokenizer: its counts are a test's, not a recipe's).
+pub fn run_with(model: &str, out: &std::path::Path, tokens: u64, devices: &[i32], cuts: &[usize], ctx: usize, synthetic: bool) -> Result<()> {
     let t0 = std::time::Instant::now();
     let dir = io(glyd_gpu::save::Source::find(model))?.dir;
-    let text = io(std::fs::read_to_string(dir.join("config.json")))?;
-    let cfg: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error(format!("config.json: {e}")))?;
-    let d = crate::runtime::describe::describe(&cfg)?;
+    let cfg = crate::runtime::config::ModelConfig::load(&dir)?;
+    let d = crate::runtime::describe::describe_config(&cfg)?;
     if moe_layers(&d)?.is_empty() {
         return err(format!("{model}: no mixture of experts to count"));
     }
-    let family = crate::dynamic::split::family(&text)
+    let family = crate::dynamic::split::family_in(&cfg)
         .ok_or_else(|| Error(format!("{model}: not a model of the dynamic route (Kimi-K3, GLM-5.3-Flash, DeepSeek-V4, Muse Spark)")))?;
-    let tok = crate::tok::Tok::load(&dir)?;
-    let own = match family {
-        "DeepSeek-V4" => Some(crate::chat::DSV4_CHAT),
-        "Kimi-K3" => Some(crate::chat::KIMI_CHAT),
-        _ => None,
+    let docs = if synthetic {
+        let vocab = cfg.num("vocab_size").unwrap_or(1000).max(16) as u64;
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        (0..16)
+            .map(|d| {
+                let ids = (0..ctx.max(16))
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        (x % (vocab - 2) + 1) as u32
+                    })
+                    .collect();
+                (String::new(), format!("synthetic {d}"), ids)
+            })
+            .collect::<Vec<(String, String, Vec<u32>)>>()
+    } else {
+        let tok = crate::tok::Tok::load(&dir)?;
+        let own = match family {
+            "DeepSeek-V4" => Some(crate::chat::DSV4_CHAT),
+            "Kimi-K3" => Some(crate::chat::KIMI_CHAT),
+            _ => None,
+        };
+        let chat = crate::chat::Chat::load_or(&dir, own)?;
+        crate::calib::corpus_docs(&tok, chat.as_ref())?
     };
-    let chat = crate::chat::Chat::load_or(&dir, own)?;
-    let docs = crate::calib::corpus_docs(&tok, chat.as_ref())?;
     // (one sequence a document, prompt passes only; no graph, for the choices are read back after each layer)
     let o = crate::dynamic::Opts { ctx: ctx + 1, chunk: 256, graph: false, device: devices.first().copied().unwrap_or(0), layout: None };
     let mut e = crate::dynamic::split::open(&dir, &o, cuts, devices)?;
@@ -171,7 +193,7 @@ pub fn run(model: &str, out: &std::path::Path, tokens: u64, devices: &[i32], cut
                 continue;
             }
             e.reset()?;
-            e.prefill(&ids[..take]).map_err(|x| Error(format!("{name}: {}", x.0)))?;
+            e.prefill(&ids[..take]).map_err(|x| Error(format!("{name}: {}", x.msg)))?;
             ran += take as u64;
         }
         Ok(())
@@ -230,11 +252,11 @@ mod tests {
             let mut less = c.clone();
             less.layers.remove(&(moe[0].block / 2));
             less.missed.insert(moe[0].block / 2);
-            let e = usage_of(&d, &less, "tiny", 36).unwrap_err().0;
+            let e = usage_of(&d, &less, "tiny", 36).unwrap_err().msg;
             assert!(e.contains("were not counted") && e.contains("on the GPUs"), "{e}");
             let mut more = c.clone();
             more.layers.insert(9999, vec![0; 4]);
-            assert!(usage_of(&d, &more, "tiny", 36).unwrap_err().0.contains("not a MoE layer"));
+            assert!(usage_of(&d, &more, "tiny", 36).unwrap_err().msg.contains("not a MoE layer"));
             std::fs::remove_dir_all(&dir).unwrap();
         }
     }

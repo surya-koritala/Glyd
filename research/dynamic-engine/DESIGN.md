@@ -1,5 +1,7 @@
 # The dynamic engine (GLY-326): design, 2026-10-17
 
+Status (2026-11-26): built, under other names. `dynamic::blocks`, `desc` and `exec` became the layer kinds (`glyd-engine/src/runtime/`) and the executor (`glyd-engine/src/dynamic/`); the hand-written engines listed under "What changes" are deleted and every family runs on it. The current design is `docs/design/runtime.md`; this note is the design of 2026-10-17 and its present-tense lines are that day's.
+
 Goal (milestone 0.33.0): one engine runs the popular families with no quality loss at 95%+ of each card's practical ceiling;
 a family is a description, not a hand-written engine. Checkpoints GLY-327..331.
 

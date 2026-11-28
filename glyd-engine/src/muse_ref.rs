@@ -1,9 +1,11 @@
 //! The CPU reference of Muse Spark's text model (src/muse.rs), one sequence a token at a time, from the checkpoint's weights: fp32 inside (the products' sums in f64), rounded to bf16 where transformers'
-//! modeling_muse_spark.py holds a bf16 tensor (each bf16 operation's result, as eager PyTorch rounds it). Its attention sums in fp32 (transformers' eager attention rounds the scores to bf16 first; vLLM's do
+//! modeling_muse_spark.py holds a bf16 tensor (each bf16 operation's result, as eager PyTorch rounds it); its residual gates and routers are fp32 modules there,
+//! so a gate's factors are fp32 and its add rounded once (`muse::gated`). Its attention sums in fp32 (transformers' eager attention rounds the scores to bf16 first; vLLM's do
 //! not). Equal router scores: the smaller expert first. The GPU's kernels are checked against it; `random` writes a small model of the release's layout. A development build's only.
 
 use crate::ffi::{err, Error, Result};
-use crate::muse::{bf, plus_one, residual_gate, ConfigMuse};
+use crate::muse::{bf, gated, plus_one, ConfigMuse};
+use crate::runtime::reference::residual_gate;
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
@@ -88,6 +90,9 @@ pub struct RefMuse {
     pub pos: usize,
     /// The step's closest expert choice: the smallest gap, over its layers, between the k-th choice's score (plus bias) and the next one's.
     pub margin: std::cell::Cell<f32>,
+    /// Each layer's experts for the tokens to come, each token's in turn, taken in the place of its router's own choice (their weights its router's
+    /// scores): a comparison's, which runs another reference on the same choices. Empty: the router's.
+    pub take: std::cell::RefCell<Vec<std::collections::VecDeque<Vec<usize>>>>,
 }
 
 impl RefMuse {
@@ -131,6 +136,7 @@ impl RefMuse {
             c,
             pos: 0,
             margin: std::cell::Cell::new(f32::INFINITY),
+            take: Default::default(),
         })
     }
 
@@ -204,6 +210,9 @@ impl RefMuse {
             self.margin.set(self.margin.get().min(gap));
         }
         ord.truncate(c.top_k);
+        if let Some(t) = self.take.borrow_mut().get_mut(l).and_then(|q| q.pop_front()).filter(|t| !t.is_empty()) {
+            ord = t;
+        }
         let tot: f32 = ord.iter().map(|&e| s[e]).sum::<f32>() + 1e-15;
         let x = rms_w(&mul(&ly.pre, d, h).into_iter().map(bf).collect::<Vec<_>>(), &ly.w_pre, c.eps);
         let mut acc = vec![0f32; lat];
@@ -222,13 +231,14 @@ impl RefMuse {
         mul(&ly.post, lat, &acc).into_iter().map(bf).collect()
     }
 
-    /// One token at the next position: its logits (bf16 values, soft-capped as transformers does).
+    /// One token at the next position: its logits (bf16 values, times the output multiplier and soft-capped as transformers does, each step rounded; the
+    /// multiplier alone where the config's soft-cap is none, which `muse::number` refuses).
     pub fn step(&mut self, token: u32) -> Vec<f32> {
         self.margin.set(f32::INFINITY);
         let (d, eps, pe) = (self.c.hidden, self.c.eps, self.c.post_eps);
         let mut x = rms(&self.embed[token as usize * d..][..d], eps);
         let gate = |x: &[f32], o: &[f32], (a, b): &(Vec<f32>, Vec<f32>)| -> Vec<f32> {
-            x.iter().zip(o).zip(a.iter().zip(b)).map(|((&r, &h), (&al, &be))| bf(bf(al * r) + bf(be * h))).collect()
+            x.iter().zip(o).zip(a.iter().zip(b)).map(|((&r, &h), (&al, &be))| gated(r, h, al, be)).collect()
         };
         for l in 0..self.layers.len() {
             let h = rms_w(&x, &self.layers[l].w_in, eps);
@@ -241,7 +251,8 @@ impl RefMuse {
         self.pos += 1;
         let y = rms_w(&x, &self.norm, eps);
         let (m, cap) = (self.c.out_mult, self.c.softcap);
-        mul(&self.head, d, &y).into_iter().map(|v| bf(bf(bf(bf(bf(v) * m) / cap).tanh()) * cap)).collect()
+        let capped = |a: f32| if cap > 0.0 { bf(bf(bf(a / cap).tanh()) * cap) } else { a };
+        mul(&self.head, d, &y).into_iter().map(|v| capped(bf(bf(v) * m))).collect()
     }
 }
 
@@ -275,7 +286,16 @@ impl RefMuse {
                 vals: Vec::new(),
             })
             .collect();
-        RefMuse { c, embed: Vec::new(), head: Vec::new(), norm: Vec::new(), layers, pos: 0, margin: std::cell::Cell::new(f32::INFINITY) }
+        RefMuse {
+            c,
+            embed: Vec::new(),
+            head: Vec::new(),
+            norm: Vec::new(),
+            layers,
+            pos: 0,
+            margin: std::cell::Cell::new(f32::INFINITY),
+            take: Default::default(),
+        }
     }
 
     /// A model of MoE layers only, from each layer's router, choice bias, pre-expert projection and norm, experts' gate-up and down,
@@ -299,16 +319,23 @@ impl RefMuse {
     }
 }
 
-/// A small Muse Spark of the release's layout in `out` (bf16, the routers fp32; random weights): four layers (the window's, every position's, the window's twice), a window of 32, 16 experts of which 4,
-/// a latent of 512.
-pub fn random(out: &Path) -> Result<()> {
-    let text = r#"{"architectures": ["MuseSparkForConditionalGeneration"], "model_type": "muse_spark", "text_config": {"model_type": "muse_spark_text", "hidden_size": 1024, "num_hidden_layers": 4,
+/// `random`'s config.json. Its `qk_scale_factor` is 1.5, not the release's 5.473: Muse's q and k norms have no weight, so on a random model's queries and
+/// keys the scores' RMS is the factor itself, and at 5.47 a softmax that sharp left the CPU reference 1.2e-4 in KL mean from itself with the engine's
+/// storage roundings (on its own expert choices), past the kind's bound. 1.5 is the smallest of the factors tried (1.5, 2) that brings that under a
+/// tenth of the bound: 2.9e-6 mean, 5.9e-6 at most (2: 6.4e-6 and 1.6e-5; 3: 2.1e-5 and 5.3e-5); not 1, where a multiply skipped or made twice would
+/// change nothing.
+pub(crate) const RANDOM_CONFIG: &str = r#"{"architectures": ["MuseSparkForConditionalGeneration"], "model_type": "muse_spark", "text_config": {"model_type": "muse_spark_text", "hidden_size": 1024, "num_hidden_layers": 4,
         "num_attention_heads": 16, "num_key_value_heads": 2, "head_dim": 64, "intermediate_size": 2048, "moe_hidden_size": 512, "moe_intermediate_size": 512, "num_local_experts": 16,
         "num_experts_per_tok": 4, "num_shared_experts": 0, "vocab_size": 4096, "max_position_embeddings": 65536, "sliding_window": 32, "hidden_act": "silu", "attention_bias": false,
         "layer_types": ["sliding_attention", "full_attention", "sliding_attention", "sliding_attention"], "layer_rope_theta": [500000.0, 0, 500000.0, 500000.0],
         "mlp_layer_types": ["sparse", "sparse", "sparse", "sparse"], "rope_parameters": {"rope_theta": 500000.0, "rope_type": "default"}, "rms_norm_eps": 1e-05, "post_norm_eps": 1e-08,
-        "qk_scale_factor": 5.4730064863875, "output_multiplier": 0.5, "final_logit_softcapping": 20.0, "residual_gate_temperature": 0.3, "routed_scaling_factor": 1.0,
+        "qk_scale_factor": 1.5, "output_multiplier": 0.5, "final_logit_softcapping": 20.0, "residual_gate_temperature": 0.3, "routed_scaling_factor": 1.0,
         "bos_token_id": 0, "eos_token_id": 1, "tie_word_embeddings": false}}"#;
+
+/// A small Muse Spark of the release's layout in `out` (bf16, the routers fp32; random weights): four layers (the window's, every position's, the window's twice), a window of 32, 16 experts of which 4,
+/// a latent of 512.
+pub fn random(out: &Path) -> Result<()> {
+    let text = RANDOM_CONFIG;
     let c = ConfigMuse::parse(text, "random", None)?;
     let mut r = 0x2026_1018_0000_0003u64;
     let mut uni = move |a: f32, b: f32| {
