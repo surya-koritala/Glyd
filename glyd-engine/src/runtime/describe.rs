@@ -23,19 +23,23 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, PartialEq)]
 pub enum Source {
     Tensor(String),
-    /// Matrices stacked along their rows (a gate and an up projection as one `gate_up`).
+    /// Matrices stacked along their rows (a gate and an up projection as one `gate_up`); vectors joined end to end (three stored scalars as the one vector
+    /// of a role: ERNIE's `alpha_pre`, `alpha_post`, `alpha_res` as `hc_scale`).
     Rows(Vec<String>),
     /// One entry per expert (each its rows stacked), as [experts, rows, cols].
     Experts(Vec<Vec<String>>),
     /// Ranges of one matrix's rows [from, to), joined in order (a query, key or value product of a checkpoint that holds the three as one matrix).
     RowsOf(String, Vec<(usize, usize)>),
+    /// A matrix the checkpoint stores transposed: the role's [rows, cols] is the tensor's [cols, rows] turned (ERNIE's hyper-connections' `mapping_proj.weight`,
+    /// its hyper-head's `hc_head_fn`, its drafter's `markov_w1`).
+    Transposed(String),
 }
 
 impl Source {
     /// The checkpoint's tensors the source reads.
     pub fn names(&self) -> Vec<String> {
         match self {
-            Source::Tensor(n) | Source::RowsOf(n, _) => vec![n.clone()],
+            Source::Tensor(n) | Source::RowsOf(n, _) | Source::Transposed(n) => vec![n.clone()],
             Source::Rows(v) => v.clone(),
             Source::Experts(v) => v.iter().flatten().cloned().collect(),
         }
@@ -4542,7 +4546,6 @@ pub const ERNIE_LACKS: &[&str] = &[
     "two routers whose sigmoid scores add, and a learned scale an expert (block_sparse_moe.gate.weight_1, gate.routed_scaling_factor_param)",
     "the residual streams' norm with its epsilon outside the root (1 / (rms + eps)), in the blocks and in the hyper-head",
     "the logits' four-part correction (lm_head.multimax_ranges, multimax_ts)",
-    "matrices stored transposed (the hyper-connections' mapping_proj.weight, mhc_contract.hc_head_fn, the draft's markov_w1)",
 ];
 
 /// ERNIE 5.5 (`ernie5_5_moe`, `Ernie5_5_MoeForCausalLM`; text in, text out: no tower): DeepSeek-V4's decoder (residual streams, the compressed

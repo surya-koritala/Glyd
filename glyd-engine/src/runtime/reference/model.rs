@@ -44,6 +44,11 @@ pub fn load(src: Tensors, role: &str, s: &Source) -> Result<(Vec<usize>, Vec<f32
             let data: Vec<f32> = ranges.iter().flat_map(|&(a, b)| v[a * c..b * c].iter().copied()).collect();
             (vec![data.len() / c.max(1), c], data)
         }
+        Source::Transposed(n) => {
+            let (shape, v) = get(src, n)?;
+            let [c, r] = shape[..] else { return err(format!("{n}: {shape:?}, where a matrix is stored transposed")) };
+            (vec![r, c], (0..r).flat_map(|i| (0..c).map(move |j| (i, j))).map(|(i, j)| v[j * r + i]).collect())
+        }
         Source::Experts(v) => {
             let (mut shape, mut data) = (Vec::new(), Vec::new());
             for e in v {
@@ -608,6 +613,36 @@ mod tests {
         let mut again = model(streams(false), Collapse::Mean);
         assert_eq!(again.forward(&tokens, 0).unwrap(), logits, "recording leaves the logits as they are");
         assert!(again.record.is_none());
+    }
+
+    /// A matrix the checkpoint stores transposed loads turned, so that a product by the role is the stored matrix's by columns; three stored scalars load as
+    /// the one vector of their role, in the order named; a tensor that is no matrix is refused where it is to be turned.
+    #[test]
+    fn a_transposed_matrix_and_scalars_apart_load_as_their_roles() {
+        let stored = fill("turn.w", 5 * 3, -1.0, 1.0);
+        let src = |n: &str| match n {
+            "w" => Some((vec![5, 3], stored.clone())),
+            "a" => Some((vec![1], vec![0.25])),
+            "b" => Some((vec![1], vec![0.5])),
+            "c" => Some((vec![1], vec![0.75])),
+            "v" => Some((vec![7], vec![0.0; 7])),
+            _ => None,
+        };
+        let (shape, w) = load(&src, "hc_fn", &Source::Transposed("w".into())).unwrap();
+        assert_eq!(shape, [3, 5]);
+        for i in 0..3 {
+            for j in 0..5 {
+                assert_eq!(w[i * 5 + j], stored[j * 3 + i], "row {i}, column {j}");
+            }
+        }
+        // (the role's product of x is the stored matrix's columns weighed by x: x^T W_stored)
+        let x = fill("turn.x", 5, -1.0, 1.0);
+        let by_columns: Vec<f32> = (0..3).map(|i| (0..5).map(|j| stored[j * 3 + i] as f64 * x[j] as f64).sum::<f64>() as f32).collect();
+        assert_eq!(crate::runtime::reference::matvec(&w, 5, &x), by_columns);
+        let names = ["a", "b", "c"].map(String::from).to_vec();
+        assert_eq!(load(&src, "hc_scale", &Source::Rows(names)).unwrap(), (vec![3], vec![0.25, 0.5, 0.75]));
+        assert!(load(&src, "hc_fn", &Source::Transposed("v".into())).unwrap_err().msg.contains("stored transposed"));
+        assert_eq!(Source::Transposed("w".into()).names(), ["w"]);
     }
 
     /// The head's rounding points (`Head::rounding`): none in f32; the product's output alone; or a bf16 tensor between operations, as transformers

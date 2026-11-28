@@ -616,7 +616,7 @@ fn released_nemotron_config() {
         let of = |role: &str| match &roles.iter().find(|(r, _)| r == role).unwrap_or_else(|| panic!("no role {role}")).1 {
             Source::Tensor(n) => shape(n),
             Source::Experts(e) => [vec![e.len()], shape(&e[0][0])].concat(),
-            Source::Rows(_) | Source::RowsOf(..) => panic!("{role}"),
+            Source::Rows(_) | Source::RowsOf(..) | Source::Transposed(_) => panic!("{role}"),
         };
         assert_eq!(of("norm_in"), [h]);
         match &b.body {
@@ -1958,7 +1958,7 @@ fn deepseek_v41s_tiny_model_runs_on_the_reference() {
     for (b, roles) in d.blocks.iter().enumerate() {
         for (role, src) in roles {
             let names = match src {
-                Source::Tensor(x) | Source::RowsOf(x, _) => vec![x.clone()],
+                Source::Tensor(x) | Source::RowsOf(x, _) | Source::Transposed(x) => vec![x.clone()],
                 Source::Rows(v) => v.clone(),
                 Source::Experts(v) => v.iter().flatten().cloned().collect(),
             };
@@ -3370,13 +3370,11 @@ fn ernie_5_5s_released_config_is_read_and_refused_at_the_parts_no_kind_says() {
     let read = "ernie5_5_moe: its config is read (37 layers of compressed attention and 6 of latent attention, 1 dense feed-forward and 42 of 512 experts, \
                 4 residual streams, a drafter of 3 layers), and it is not described yet.";
     assert!(e.starts_with(read), "{e}");
-    assert_eq!(ERNIE_LACKS.len(), 7);
+    assert_eq!(ERNIE_LACKS.len(), 6);
     for part in ERNIE_LACKS {
         assert!(e.contains(part), "{part}: {e}");
     }
-    for tensor in
-        ["gate_proj", "vha_postmix_U", "softmax_offset", "gate.weight_1", "routed_scaling_factor_param", "multimax_ranges", "mapping_proj.weight", "hc_head_fn"]
-    {
+    for tensor in ["gate_proj", "vha_postmix_U", "softmax_offset", "gate.weight_1", "routed_scaling_factor_param", "multimax_ranges"] {
         assert!(e.contains(tensor), "{tensor}: {e}");
     }
     assert!(keys_named(&e).is_empty() && !e.contains("has no description builder yet"), "{e}");

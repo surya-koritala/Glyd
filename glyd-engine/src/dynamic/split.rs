@@ -1008,6 +1008,22 @@ pub const SHORT_CONV_NOT_RUN: &str = "its layers hold a short convolution, which
 /// gate a head, experts whose SwiGLU limit holds the activated gate): the CPU reference computes them, no loader lowers the layout.
 pub const DELTA_PLAIN_NOT_RUN: &str = "its layers hold the Kimi delta attention on plain residuals, which the executor does not run yet";
 
+/// The refusal of a description one of whose roles is a matrix the checkpoint stores transposed (`Source::Transposed`), or a vector it stores as scalars
+/// apart (`Source::Rows` of a residual's `hc_scale`): the CPU reference loads them, the executor's loaders read a role's tensor as it is stored.
+pub const STORED_FORM_NOT_RUN: &str = "its checkpoint stores a matrix transposed or a vector as scalars apart, which the executor does not run yet";
+
+/// The first part of the description `d` that the CPU reference computes and the executor has no operation for, as its refusal; None where every part is one
+/// a lowering may take. Asked before the layer kinds choose a lowering (`lowering`), so that such a model is refused by the part's name.
+pub fn not_run(d: &crate::runtime::describe::Described) -> Option<&'static str> {
+    use crate::runtime::describe::Source;
+    let heads = d.mtp.iter().flat_map(|(blocks, own)| blocks.iter().chain(std::iter::once(own)));
+    let mut roles = d.blocks.iter().chain(std::iter::once(&d.extra)).chain(heads).flatten();
+    if roles.any(|(r, s)| matches!(s, Source::Transposed(_)) || (r == "hc_scale" && matches!(s, Source::Rows(_)))) {
+        return Some(STORED_FORM_NOT_RUN);
+    }
+    None
+}
+
 /// The layer kinds a loader of the dynamic route lowers, as a description tells them apart (`lowering`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Lowering {
@@ -1042,6 +1058,9 @@ fn lowering(d: &crate::runtime::describe::Described) -> Result<Lowering> {
     // (a kind the reference has and no lowering yet: refused by its name before the kinds beside it choose a lowering)
     if mixer(&|m| matches!(m, Mixer::ShortConv(_))) {
         return err(SHORT_CONV_NOT_RUN);
+    }
+    if let Some(part) = not_run(d) {
+        return err(part);
     }
     if linear(LinearKind::KimiDelta) && plain {
         return err(DELTA_PLAIN_NOT_RUN);
@@ -1222,6 +1241,42 @@ mod tests {
                 && !q("model.layers.0.mlp.experts.gate_up_proj")
         );
         assert!(!q("model.layers.0.mlp.shared_expert.up_proj.weight") && !q("model.layers.0.mlp.gate.weight"));
+    }
+
+    /// DeepSeek-V4-Flash's released description, which the executor lowers: what a part of another family's is put into, one at a time.
+    fn v4_described() -> crate::runtime::describe::Described {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers/DeepSeek-V4-Flash-0731.json");
+        let h: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        crate::runtime::describe::describe(&serde_json::from_str(h["config"].as_str().unwrap()).unwrap()).unwrap()
+    }
+
+    /// The parts the CPU reference computes and the executor has no operation for (ERNIE's) are each refused by name where a loader is chosen and where a
+    /// description is lowered for a plan, never lowered as the part they extend and never a panic; the description without them has its loader.
+    #[test]
+    fn the_parts_the_executor_does_not_run_are_refused_by_name() {
+        use crate::runtime::describe::{Described, Source};
+        let refused = |d: &Described, part: &str| {
+            assert!(part.ends_with("which the executor does not run yet"), "{part}");
+            assert_eq!(super::not_run(d), Some(part));
+            let Err(e) = super::loader(d).map(|_| ()) else { panic!("a loader for: {part}") };
+            assert_eq!(e.msg, part);
+            let Err(e) = super::lowered_described(d, 43, 4096) else { panic!("lowered: {part}") };
+            assert_eq!(e.msg, part);
+        };
+        let base = v4_described();
+        assert_eq!(super::not_run(&base), None);
+        assert!(super::loader(&base).is_ok());
+        // (a matrix stored transposed; a residual's three scalars stored apart)
+        let role = |d: &mut Described, b: usize, r: &str, s: Source| d.blocks[b].iter_mut().find(|(n, _)| n == r).unwrap_or_else(|| panic!("no {r}")).1 = s;
+        let mut d = base.clone();
+        role(&mut d, 0, "hc_fn", Source::Transposed("model.layers.0.self_attention_hyper_connection.mapping_proj.weight".into()));
+        refused(&d, super::STORED_FORM_NOT_RUN);
+        let mut d = base.clone();
+        role(&mut d, 1, "hc_scale", Source::Rows(["alpha_pre", "alpha_post", "alpha_res"].map(String::from).to_vec()));
+        refused(&d, super::STORED_FORM_NOT_RUN);
+        let mut d = base.clone();
+        d.extra.push(("out_hc_fn".into(), Source::Transposed("model.mhc_contract.hc_head_fn".into())));
+        refused(&d, super::STORED_FORM_NOT_RUN);
     }
 
     /// A plan of experts in the computer's memory across GPUs opens the latent block's cache across them (src/dynamic/tp_cache.rs) by the description's
