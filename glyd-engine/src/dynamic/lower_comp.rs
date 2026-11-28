@@ -621,6 +621,9 @@ fn ngram(
     b: usize,
     d: usize,
 ) -> Result<Vec<Op>> {
+    if g.form == NgramForm::EngramNormed {
+        return err(format!("block {b}: {}", Ngram::NORMED_NOT_RUN));
+    }
     if g.order < 2 || g.order > 4 || g.streams != 4 || g.dim % ((g.order - 1) * g.heads) != 0 || g.dim > 8192 {
         return err(format!("block {b}: an n-gram block of {g:?}: the kernels take orders 2 to 4 over four streams"));
     }

@@ -5487,9 +5487,6 @@ pub const HY4_LACKS: &[&str] = &[
      channel at a time, of a gate product plus a learned position bias weighs a value product; normed again; turned at the group's first position), a query \
      keeping the tokens of its best compressed_indexer_group_topk - 1 groups and of its own open group (self_attn.compressed_indexer.token_key_projection, \
      token_key_norm, key_value_projection, key_gate_projection, intra_group_ape, key_norm, query_projection, head_weight_projection)",
-    "the n-gram memory's form: the compressed vocabulary a tensor of the checkpoint (engram_layer.lookup_table), each table's row normed (lookup_per_head_norms), a \
-     key a stream and the value by products with a bias (key_projs, value_proj), the key and the stream normed with weights of their own (norm_key, norm_query), \
-     the value normed and scaled (unified_pre_gamma), a learned scale a stream added to the gate (unified_per_hc_scales), on the streams before the layer's attention",
     "the drafter (model.dfly_layers.): a block of mask tokens after the last token, drafted in one pass by layers of one residual that read the model's own \
      keys at dfly_target_kv_layers with its picks at dfly_target_index_layer; the model's last state joined to the first row through a learned gate \
      (mtp_fusion.eh_proj, mtp_fusion.gate), each drafted state corrected by the token before it (hidden_correction), an acceptance estimate (confidence_head)",
@@ -5555,7 +5552,9 @@ const HY4_SPARSE: &[&str] = &["deepseek_sparse_attention", "indexed_attention", 
 /// training alone (an initial value, a loss's weight) is read and not held. The builder then refuses: `HY4_LACKS` are parts of its layers, and a
 /// description without them would be of another model. What the kinds do say of it: the latent attention of both sorts of layer with its sinks, its
 /// output gate and a sliding layer's window (`hy4_mla`), both feed-forwards with the norm after them, the residual streams that do not mix
-/// (`StreamsP::apart`, the magnitude `hc_magnitude`: the readers' models/hy_v4/nvidia/hc.py, each result rounded once), the hyper-head, the fp32 logits.
+/// (`StreamsP::apart`, the magnitude `hc_magnitude`: the readers' models/hy_v4/nvidia/hc.py, each result rounded once), the n-gram memory
+/// (`NgramForm::EngramNormed`: its compressed vocabulary the checkpoint's `lookup_table`, its rows and its value normed, a scale a stream beside the
+/// gate), the hyper-head, the fp32 logits.
 fn hy4_flash(c: &ModelConfig) -> Result<Described> {
     let (mt, tc) = ("hy_v4_flash", &c.text);
     let k = Keys::new(tc, mt);

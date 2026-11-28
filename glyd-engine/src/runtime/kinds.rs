@@ -882,7 +882,8 @@ pub enum Ffn {
 /// hidden, dim], `value` [hidden, dim], `norm_key` and `norm_conv` [streams hidden] (their kind `norm`, a stream at a time), `conv`
 /// [streams hidden, conv]; and the hash's own int64 tensors, what the parameters make: `ngram_mult` [order], `ngram_sizes`,
 /// `ngram_offsets` [(order - 1) heads]. A sequence's state: its last `order` - 1 tokens and the convolution's last (conv - 1) dilation
-/// inputs. `form` says where a family's differs (DeepSeek-V4.1's Engram: `NgramForm::Engram`); `table` where the tables are held.
+/// inputs. `form` says where a family's differs (DeepSeek-V4.1's Engram: `NgramForm::Engram`; Hunyuan's: `NgramForm::EngramNormed`); `table` where the
+/// tables are held.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Ngram {
     pub order: usize,
@@ -923,6 +924,22 @@ pub enum NgramForm {
     /// segments: a position before the sequence reads as `eos` (its pad id) and the end token is a token like another; no convolution (`conv`
     /// 0): the output is g. The key and the value may be one product, role `kv` [(streams + 1) hidden, dim], the keys' rows first.
     Engram,
+    /// Hunyuan's n-gram memory: `Engram`'s hash, gate and stream-by-stream add (compressed ids, numpy's multipliers, no segments, no convolution), with
+    /// these of its own. The compressed vocabulary is a tensor of the checkpoint (role `ngram_map`, int32 [its length]: a token past its length is its
+    /// own id), and the multipliers' bound is of its largest id plus one, (2^63 - 1) / (largest + 1) / 2, not of `vocab`, which is the model's vocabulary;
+    /// `seed` is the config's seed plus 10007 times the layer's number counted from 1. A position whose token is `eos` (the pad id) adds nothing to the
+    /// streams, and is a token like another in the n-grams of the positions after it. Each table's row is RMS-normed on its own before the products, r
+    /// w / sqrt(mean r^2 + f32's epsilon) (role `ngram_norm` [tables row], a table's weights in turn). The keys and the value are products with a bias
+    /// (`kv` and `kv_bias` [(streams + 1) hidden], the keys' first). The gate is `Engram`'s on the keys normed by `norm` (`norm_key`) and the streams normed
+    /// by the block's `norm_in`, its signed root of 0 being 0. The value is normed with a weight: signal = `value_gamma` v / sqrt(mean v^2 + f32's
+    /// epsilon) (role [hidden]); stream s adds (sigmoid(gate_s) + `stream_scale`_s) signal, the scale a value a channel (role [streams hidden]).
+    EngramNormed,
+}
+
+impl Ngram {
+    /// The refusal of Hunyuan's form of the n-gram memory: the CPU reference computes it, the executor's n-gram operations are the other two forms'.
+    pub const NORMED_NOT_RUN: &'static str =
+        "an n-gram memory whose rows and value are normed, with a compressed vocabulary from the checkpoint, which the executor does not run yet";
 }
 
 /// The derived form, with `form` said only where it is not `Segmented` and `table` only where it is not `Gpu`: descriptions of that form read as they did

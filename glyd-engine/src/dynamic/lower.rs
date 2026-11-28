@@ -634,6 +634,9 @@ pub fn qwen4x(d: &Described, eos: Vec<i64>, max_pos: usize) -> Result<ModelDesc>
         match &b.body {
             Body::Ngram(n) => {
                 let Ngram { order, heads, dim, conv, dilation, streams, eos: end, .. } = *n;
+                if n.form == crate::runtime::kinds::NgramForm::EngramNormed {
+                    return err(format!("{what}: {}", Ngram::NORMED_NOT_RUN));
+                }
                 if (order, conv, dilation, streams, hc) != (3, 4, 3, 4, 4)
                     || n.form != crate::runtime::kinds::NgramForm::Segmented
                     || n.norm.weight != NormWeight::PlusOne

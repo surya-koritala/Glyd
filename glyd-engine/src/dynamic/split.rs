@@ -1066,6 +1066,9 @@ pub fn not_run(d: &crate::runtime::describe::Described) -> Option<&'static str> 
     }) {
         return Some(Indexer::ROPE_STYLE_NOT_RUN);
     }
+    if blocks().any(|b| matches!(&b.body, Body::Ngram(n) if n.form == crate::runtime::kinds::NgramForm::EngramNormed)) {
+        return Some(crate::runtime::kinds::Ngram::NORMED_NOT_RUN);
+    }
     if d.desc.mtp.iter().any(|h| h.dspark.as_ref().is_some_and(|x| x.after)) {
         return Some(crate::runtime::kinds::DSpark::AFTER_NOT_RUN);
     }
@@ -1357,6 +1360,18 @@ mod tests {
         let Residual::Streams(s) = &mut d.desc.blocks[5].residual else { panic!("no streams") };
         (s.apart, s.sinkhorn_iters) = (Some(2.0), 0);
         refused(&d, StreamsP::APART_NOT_RUN);
+        // (the n-gram memory's normed form: on DeepSeek-V4.1's released description, whose Engram blocks the executor lowers)
+        let v41 = {
+            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/headers/DeepSeek-V4.1-Flash-1017.json");
+            let h: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+            crate::runtime::describe::describe(&serde_json::from_str(h["config"].as_str().unwrap()).unwrap()).unwrap()
+        };
+        assert_eq!(super::not_run(&v41), None);
+        let mut d = v41.clone();
+        let memory = d.desc.blocks.iter_mut().find_map(|b| if let crate::runtime::kinds::Body::Ngram(n) = &mut b.body { Some(n) } else { None });
+        memory.expect("an Engram block").form = crate::runtime::kinds::NgramForm::EngramNormed;
+        assert_eq!(super::not_run(&d), Some(crate::runtime::kinds::Ngram::NORMED_NOT_RUN));
+        assert_eq!(super::loader(&d).map(|_| ()).unwrap_err().msg, crate::runtime::kinds::Ngram::NORMED_NOT_RUN);
         // (two routers whose scores add; a learned scale an expert: on a layer's experts, and where the experts' kind is made the executor's)
         use crate::runtime::kinds::{Body, Ffn, Router};
         let moe = |d: &mut Described, b: usize, f: &dyn Fn(&mut Router)| {
