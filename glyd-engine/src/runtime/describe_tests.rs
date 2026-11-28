@@ -3856,3 +3856,229 @@ fn mistral_large_on_the_reference_steps_as_it_prompts_and_reads_each_of_its_form
     let want: Vec<f32> = uncapped[8].iter().map(|&x| 0.05 * (x / 0.05).tanh()).collect();
     assert!(super::reference::testing::rel(&capped[8], &want) < 1e-5 && super::reference::testing::rel(&capped[8], &uncapped[8]) > 1e-2);
 }
+
+/// Hy4 Flash's config as released (the top level with its text model's and its tower's keys), with `text` over the text model's keys and `top` over the top
+/// level's. The lists a layer and the n-gram tables' sizes are made as the release has them: a layer of latent attention with the indexer first and on
+/// every fourth after layer 1, sliding ones between; a dense feed-forward on the first layer; the tables' sizes the 64 primes past 10,312,000 in order,
+/// 16 a layer of the memory.
+fn hy4_config(text: serde_json::Value, top: serde_json::Value) -> serde_json::Value {
+    let sparse = |l: usize| l == 0 || l % 4 == 1;
+    let prime = |n: &u64| (2..).take_while(|i| i * i <= *n).all(|i| n % i != 0);
+    let primes: Vec<u64> = (10_312_000u64..).filter(prime).take(64).collect();
+    let tables: serde_json::Map<String, serde_json::Value> =
+        [2, 12, 22, 32].iter().zip(primes.chunks(16)).map(|(l, p)| (l.to_string(), serde_json::json!([p[..8], p[8..]]))).collect();
+    let mut t = serde_json::Map::new();
+    for part in [
+        serde_json::json!({
+            "architectures": ["HYV4FlashForCausalLM"], "attention_bias": false, "attention_dropout": 0.0, "bitwise_backward_align": true, "bos_token_id": 120000,
+            "compressed_indexer_candidate_topk": 2048, "compressed_indexer_compress_ratio": 4, "compressed_indexer_group_topk": 512,
+            "compressed_indexer_head_dim": 128, "compressed_indexer_key_pooling": "gated", "compressed_indexer_num_attention_heads": 16,
+            "compressed_indexer_reuse_fine_indexer": false, "compressed_indexer_skip_fine_select": true, "compressed_indexer_stage2_query_block_size": 8192,
+            "compressed_indexer_teacher_pooling_type": "max", "compressed_indexer_triton_pooling_min_groups": 1, "compressed_indexer_use_triton_pooling": true,
+            "dsa_skip_attn_post_norm": false, "enable_ihc": true, "enable_lm_head_fp32": true, "engram_embed_random_seed": 1234, "engram_fp8_embedding": false,
+            "engram_isolate_fffd_namespace": false, "engram_layer_ids": [2, 12, 22, 32], "engram_max_ngram_size": 3, "engram_n_embed_per_ngram": 768,
+            "engram_n_head_per_ngram": 8, "engram_pad_id": 120002, "engram_seed": 0, "engram_tokenizer_name_or_path": null, "engram_vocab_map_path": null,
+            "engram_vocab_size": [10312000, 10312000], "eos_token_id": 120025, "fast_op_fp32_linear_gemm": true, "first_k_dense_replace": 1,
+        }),
+        serde_json::json!({
+            "full_nope": false, "gate_groups": 1, "gate_lora_op": "none", "gate_lora_rank": null, "gated_mla": true, "gating_type": "elementwise", "hc_eps": 1e-06,
+            "hc_magnitude": 2.0, "hc_mult": 4, "head_dim": 64, "hidden_act": "silu", "hidden_size": 3072, "ihc_kernel_backend": "naive", "index_head_dim": 128,
+            "index_n_heads": 16, "index_topk": 2048, "initializer_range": 0.006, "intermediate_size": 13824, "kv_lora_rank": 512, "learnable_sink": true,
+            "learnable_sink_init": 0.0, "max_position_embeddings": 1048576, "model_type": "hy_v4_flash", "moe_aux_loss_coeff": 0.0, "moe_intermediate_size": 1536,
+            "moe_router_enable_expert_bias": true, "moe_router_use_sigmoid": true, "n_group": 1, "n_routed_experts": 512, "n_shared_experts": 1,
+            "norm_topk_prob": true, "num_attention_heads": 32, "num_experts_per_tok": 16, "num_hidden_layers": 42, "num_key_value_heads": 32,
+        }),
+        serde_json::json!({
+            "num_nextn_predict_layers": 0, "o_groups": 1, "o_lora_op": "none", "o_lora_rank": null, "output_router_logits": false, "pad_token_id": 120002,
+            "q_lora_rank": 1024, "qk_head_dim": 256, "qk_nope_head_dim": 192, "qk_norm": true, "qk_rope_head_dim": 64, "return_bos_score": true,
+            "return_max_logit": true, "rms_norm_eps": 1e-05, "routed_expert_hidden_size": 1536, "routed_scaling_factor": 3.998, "sandwich_norm": true,
+            "sliding_window": 512, "swa_num_attention_heads": 64, "swa_qk_head_dim": 256, "swa_qk_nope_head_dim": 192, "swa_qk_rope_head_dim": 64,
+            "swa_v_head_dim": 256, "swiglu_limit": 10.0, "tie_word_embeddings": false, "topk_group": 1, "use_cache": true, "use_compressed_indexer": true,
+            "use_dsa": true, "use_grouped_mm": false, "use_mla": true, "v_head_dim": 256, "vocab_size": 120832, "window_size": [511, 0],
+        }),
+        serde_json::json!({
+            "layer_types": (0..42).map(|l| if sparse(l) { "deepseek_sparse_attention" } else { "sliding_attention" }).collect::<Vec<_>>(),
+            "swa_pattern": (0..42).map(|l| !sparse(l) as usize).collect::<Vec<_>>(),
+            "mlp_layer_types": (0..42).map(|l| if l == 0 { "dense" } else { "sparse" }).collect::<Vec<_>>(),
+            "indexer_types": vec!["full"; 42],
+            "engram_layer_head_vocab_sizes": tables,
+            "rope_parameters": {
+                "sliding_attention": {"mrope_interleaved": true, "mrope_section": [12, 10, 10], "rope_theta": 10000, "rope_type": "default"},
+                "deepseek_sparse_attention": {"mrope_interleaved": true, "mrope_section": [12, 10, 10], "rope_theta": 10000000, "rope_type": "default"},
+            },
+        }),
+        text,
+    ] {
+        t.extend(part.as_object().unwrap().clone());
+    }
+    let vision = serde_json::json!({
+        "add_patchemb_bias": true, "anyres_vit_max_image_size": 2048, "attention_backend": "hf_align_sdpa", "attention_dropout": 0.0, "bias_activation_fusion": true,
+        "cat_extra_token": 0, "hidden_act": "gelu", "hidden_dropout": 0.0, "hidden_size": 1152, "img_max_token_num": 4096, "intermediate_size": 4304,
+        "interpolate_mode": "bilinear", "learnable_mlp_pooling_size": 0, "max_image_size": 2048, "max_vit_seq_len": 16384, "min_image_size": 512,
+        "model_type": "hy_v4_flash", "num_attention_heads": 16, "num_channels": 3, "num_hidden_layers": 27, "num_key_value_heads": 16, "out_hidden_size": 3072,
+        "packed_seq_alignment": 128, "patch_size": 16, "perceive_post_norm": false, "perceive_pre_norm": true, "projector_type": "rmsnorm_mlp_adapter",
+        "remove_prenorm": true, "resize_resolution": 2048, "rms_norm_eps": 1e-05, "rope_2d_percent": 1.0, "rope_2d_theta": 10000.0, "spatial_merge_size": 2,
+        "spatial_patch_size": 1, "temporal_patch_size": 1, "text_hidden_size": 3072, "video_max_image_size": 768, "video_min_image_size": 256,
+        "video_spatial_compression": false, "video_temporal_compression": false, "vision_full_attention": false,
+    });
+    let mut c = serde_json::json!({
+        "architectures": ["HYV4FlashForConditionalGeneration"], "dtype": "bfloat16", "image_end_token_id": 120119, "image_newline_token_id": 120121,
+        "image_start_token_id": 120118, "image_token_id": 120120, "model_type": "hy_v4_flash", "processor_class": "HYV4FlashProcessor", "spatial_merge_size": 2,
+        "transformers_version": "5.23.0", "video_end_token_id": 120123, "video_start_token_id": 120122, "video_token_id": 120124, "vision_start_token_id": 120118,
+        "dfly_block_size": 6, "dfly_mtp_fusion": "slot0", "dfly_target_index_topk": 2048, "dfly_context_local_window": null, "dfly_enable_hidden_correction": true,
+        "dfly_num_hidden_layers": 5, "dfly_mask_token_id": 120009, "dfly_target_index_layer": [25, 29, 33, 37, 41], "dfly_target_kv_layers": [25, 29, 33, 37, 41],
+    });
+    c.as_object_mut().unwrap().extend(top.as_object().unwrap().clone());
+    c["text_config"] = serde_json::Value::Object(t);
+    c["vision_config"] = vision;
+    c
+}
+
+/// Hy4 Flash's released config has a builder that reads every key of it, the text model's and the top level's, and says what it found: 12 layers of
+/// latent attention with the compressed indexer and 30 in a window, a dense feed-forward on the first layer and experts on the rest, four residual
+/// streams, the n-gram memory on four layers, a drafter of five. It is then refused: each part that no layer kind says is named with its tensors, and
+/// no key is left unread.
+#[test]
+fn hy4_flashs_released_config_is_read_and_refused_at_the_parts_no_kind_says() {
+    use super::describe::{keys_named, HY4_LACKS};
+    let none = || serde_json::json!({});
+    let c = hy4_config(none(), none());
+    let keys = |v: &serde_json::Value| v.as_object().unwrap().len();
+    assert_eq!((keys(&c), keys(&c["text_config"]), keys(&c["vision_config"])), (25, 110, 41), "every key of the release's config.json");
+    let e = describe(&c).expect_err("refused").msg;
+    let read =
+        "hy_v4_flash: its config is read (12 layers of latent attention with a compressed indexer and 30 in a window of 512 tokens, 1 dense feed-forward \
+                and 41 of 512 experts, 4 residual streams, an n-gram memory on 4 layers, a drafter of 5 layers), and it is not described yet.";
+    assert!(e.starts_with(read), "{e}");
+    assert_eq!(HY4_LACKS.len(), 6);
+    for part in HY4_LACKS {
+        assert!(e.contains(part), "{part}: {e}");
+    }
+    for tensor in [
+        "learnable_sink_param",
+        "q_b_proj",
+        "compressed_indexer.token_key_projection",
+        "key_gate_projection",
+        "intra_group_ape",
+        "head_weight_projection",
+        "hc_pre.hc_fn",
+        "lookup_table",
+        "lookup_per_head_norms",
+        "unified_per_hc_scales",
+        "mtp_fusion.gate",
+        "hidden_correction",
+        "confidence_head",
+    ] {
+        assert!(e.contains(tensor), "{tensor}: {e}");
+    }
+    assert!(keys_named(&e).is_empty() && !e.contains("has no description builder yet"), "{e}");
+    // (the counts are the config's: a model of other layers says its own; a layer's names as the readers fold them; one layer for every draft layer's picks)
+    let small = hy4_config(
+        serde_json::json!({
+            "num_hidden_layers": 3, "layer_types": ["sparse", "sliding_attention", "indexed_attention"], "swa_pattern": [0, 1, 0], "indexer_types": null,
+            "mlp_layer_types": ["dense", "dense", "sparse"], "first_k_dense_replace": 2, "n_routed_experts": 32, "sliding_window": 64, "window_size": [63, 0],
+            "engram_layer_ids": [3], "engram_layer_head_vocab_sizes": {"3": vec![vec![10_312_007; 8]; 2]},
+        }),
+        serde_json::json!({"dfly_num_hidden_layers": 1, "dfly_target_index_layer": 2, "dfly_target_kv_layers": [2]}),
+    );
+    let e = describe(&small).expect_err("refused").msg;
+    let read = "(2 layers of latent attention with a compressed indexer and 1 in a window of 64 tokens, 2 dense feed-forward and 1 of 32 experts, \
+                4 residual streams, an n-gram memory on 1 layers, a drafter of 1 layers)";
+    assert!(e.contains(read), "{e}");
+    // (the text model alone, its keys at the top level, with no memory: no drafter's keys are asked for, nor the tables')
+    let mut flat = c["text_config"].clone();
+    for key in ["engram_layer_ids", "engram_layer_head_vocab_sizes", "engram_vocab_size"] {
+        flat[key] = serde_json::Value::Null;
+    }
+    let e = describe(&flat).expect_err("refused").msg;
+    assert!(e.contains("an n-gram memory on 0 layers, a drafter of 0 layers), and it is not described yet"), "{e}");
+}
+
+/// The Hy4 builder holds each key to what the family's readers compute: a setting of another form is refused by its key before the parts are, a key
+/// nobody knows by its name (the top level's and the text model's together), and a list that is not the layers', a sort that is no layer's, a width
+/// that is not the form's, a table or a drafter's layer that cannot be, in words.
+#[test]
+fn hy4_flash_holds_every_key_to_the_form_its_readers_compute() {
+    use super::describe::keys_named;
+    let refusal = |text: serde_json::Value, top: serde_json::Value| describe(&hy4_config(text, top)).expect_err("refused").msg;
+    for (text, want) in [
+        (serde_json::json!({"hidden_act": "gelu"}), "hidden_act = \"gelu\" is not supported (only \"silu\")"),
+        (serde_json::json!({"gated_mla": false}), "gated_mla = false is not supported"),
+        (serde_json::json!({"gating_type": "headwise"}), "gating_type = \"headwise\" is not supported (only \"elementwise\")"),
+        (serde_json::json!({"learnable_sink": false}), "learnable_sink = false is not supported"),
+        (serde_json::json!({"enable_ihc": false}), "enable_ihc = false is not supported"),
+        (serde_json::json!({"use_compressed_indexer": false}), "use_compressed_indexer = false is not supported"),
+        (serde_json::json!({"compressed_indexer_key_pooling": "mean"}), "compressed_indexer_key_pooling = \"mean\" is not supported (only \"gated\")"),
+        (serde_json::json!({"compressed_indexer_skip_fine_select": false}), "compressed_indexer_skip_fine_select = false is not supported"),
+        (serde_json::json!({"index_head_dim": 64}), "index_head_dim = 64 is not supported (only 128)"),
+        (serde_json::json!({"o_lora_rank": 256}), "o_lora_rank = 256 is not supported (only null)"),
+        (serde_json::json!({"qk_norm": false}), "qk_norm = false is not supported"),
+        (serde_json::json!({"full_nope": true}), "full_nope = true is not supported"),
+        (serde_json::json!({"use_mla": false}), "use_mla = false is not supported"),
+        (serde_json::json!({"n_group": 2}), "n_group = 2 is not supported (only 1)"),
+        (serde_json::json!({"moe_router_use_sigmoid": false}), "moe_router_use_sigmoid = false is not supported"),
+        (serde_json::json!({"swa_qk_rope_head_dim": 32}), "swa_qk_rope_head_dim = 32 is not supported (only 64, qk_rope_head_dim"),
+        (serde_json::json!({"qk_head_dim": 128}), "qk_head_dim = 128 is not supported (only 256, qk_nope_head_dim + qk_rope_head_dim)"),
+        (serde_json::json!({"head_dim": 256}), "head_dim = 256 is not supported (only 64, qk_rope_head_dim"),
+        (serde_json::json!({"num_key_value_heads": 1}), "num_key_value_heads = 1 is not supported (only 32, num_attention_heads"),
+        (serde_json::json!({"layer_types": ["sparse", "sliding_attention"]}), "2 layer_types for 42 layers"),
+        (serde_json::json!({"num_hidden_layers": 2, "layer_types": ["sparse", "full_attention"]}), "layer 1 is of type \"full_attention\" (only deepseek_sparse_attention"),
+        (serde_json::json!({"swa_pattern": vec![0; 42]}), "swa_pattern is not layer_types'"),
+        (serde_json::json!({"indexer_types": (0..42).map(|l| if l == 5 { "shared" } else { "full" }).collect::<Vec<_>>()}), "indexer_types is not \"full\" for each of the 42"),
+        (serde_json::json!({"window_size": [512, 0]}), "window_size = [512,0] is not supported (only [511, 0]"),
+        (
+            serde_json::json!({"rope_parameters": {"rope_theta": 10000, "rope_type": "yarn", "factor": 2.0, "original_max_position_embeddings": 4096}}),
+            "rope_type yarn is not supported (only default)",
+        ),
+        (serde_json::json!({"rope_parameters": {"sliding_attention": {"rope_theta": 10000}}}), "rope_parameters has no rotary for the deepseek_sparse_attention layers"),
+        (serde_json::json!({"rope_parameters": {"rope_theta": 10000, "mrope_section": [16, 8, 4]}}), "mrope_section [16, 8, 4] is not the 32 angles of qk_rope_head_dim"),
+        (serde_json::json!({"rope_parameters": {"mrope_section": [12, 10, 10], "mrope_interleaved": false}}), "mrope_interleaved = false is not supported"),
+        (serde_json::json!({"rope_parameters": {"sparse": {"rope_theta": 10000}, "sliding_attention": {}, "rope_theta": 10}}), "rope_parameters has rope_theta beside"),
+        (serde_json::json!({"compressed_indexer_compress_ratio": 3}), "compressed_indexer_compress_ratio = 3 is not supported (only 2, 4, 8 or 16"),
+        (
+            serde_json::json!({"index_topk": 1024}),
+            "index_topk = 1024 and compressed_indexer_candidate_topk = 2048, where both are compressed_indexer_group_topk x compressed_indexer_compress_ratio (2048)",
+        ),
+        (serde_json::json!({"hc_mult": 0}), "0 residual streams"),
+        (serde_json::json!({"mlp_layer_types": ["dense"]}), "1 mlp_layer_types for 42 layers"),
+        (serde_json::json!({"first_k_dense_replace": 3}), "first_k_dense_replace = 3, where mlp_layer_types has 1 dense layers"),
+        (serde_json::json!({"num_experts_per_tok": 600}), "600 of 512 experts a token"),
+        (serde_json::json!({"routed_scaling_factor": null}), "no routed_scaling_factor"),
+        (serde_json::json!({"num_nextn_predict_layers": 1}), "num_nextn_predict_layers = 1 is not supported (only 0"),
+        (serde_json::json!({"num_nextn_predict_layers": null}), "no num_nextn_predict_layers"),
+        (serde_json::json!({"engram_layer_ids": [0, 12]}), "engram_layer_ids names layer 0: the layers numbered from 1, 1 to 42"),
+        (serde_json::json!({"engram_layer_ids": [2, 43]}), "engram_layer_ids names layer 43"),
+        (serde_json::json!({"engram_layer_ids": [2, 2]}), "names a layer twice"),
+        (serde_json::json!({"engram_layer_ids": [3]}), "engram_layer_head_vocab_sizes has no tables for layer 3 (2 orders of 8 sizes)"),
+        (serde_json::json!({"engram_vocab_size": [10312000, 10400000]}), "layer 2's table of 10312177 rows is not past engram_vocab_size (10400000)"),
+        (serde_json::json!({"engram_n_head_per_ngram": 7}), "an n-gram memory of orders up to 3, 7 heads an order over 768 values"),
+        (serde_json::json!({"engram_pad_id": 120832}), "engram_pad_id 120832 of 120832"),
+    ] {
+        let e = refusal(text.clone(), serde_json::json!({}));
+        assert!(e.starts_with("hy_v4_flash") && e.contains(want), "{text}: {e}");
+        assert!(!e.contains("its config is read"), "{text}: refused at the key, before the parts: {e}");
+    }
+    // (the drafter's keys, the top level's)
+    for (top, want) in [
+        (serde_json::json!({"dfly_mtp_fusion": "concat"}), "dfly_mtp_fusion = \"concat\" is not supported (only \"slot0\")"),
+        (serde_json::json!({"dfly_enable_hidden_correction": false}), "dfly_enable_hidden_correction = false is not supported"),
+        (serde_json::json!({"dfly_enable_ihc": true}), "dfly_enable_ihc = true is not supported"),
+        (serde_json::json!({"dfly_block_size": null}), "a drafter without its dfly_block_size"),
+        (serde_json::json!({"dfly_mask_token_id": 120832}), "or its dfly_mask_token_id (a token of the vocabulary)"),
+        (serde_json::json!({"dfly_target_index_topk": 1024}), "dfly_target_index_topk = 1024 is not supported (only index_topk, 2048"),
+        (serde_json::json!({"dfly_target_index_layer": [25]}), "dfly_target_index_layer is not a layer of the model for each of the 5 draft layers"),
+        (
+            serde_json::json!({"dfly_target_kv_layers": [25, 29, 33, 37, 40]}),
+            "dfly_target_kv_layers names layer 40: a layer of latent attention with the indexer, 1 to 41",
+        ),
+        (serde_json::json!({"dfly_target_kv_layers": [25, 25, 33, 37, 41]}), "dfly_target_kv_layers names a layer twice"),
+        (serde_json::json!({"dfly_attn_post_proj_norm": "rms"}), "dfly_attn_post_proj_norm is not true or false"),
+    ] {
+        let e = refusal(serde_json::json!({}), top.clone());
+        assert!(e.starts_with("hy_v4_flash: ") && e.contains(want), "{top}: {e}");
+        assert!(!e.contains("its config is read"), "{top}: refused at the key, before the parts: {e}");
+    }
+    // (a key no builder knows is named, the top level's and the text model's, with every other one, before the parts are)
+    let e = refusal(serde_json::json!({"attn_merger_rank": 16}), serde_json::json!({"dfly_new_setting": 1, "quantization_config": {}}));
+    assert_eq!(keys_named(&e), ["dfly_new_setting", "quantization_config", "attn_merger_rank"], "{e}");
+}
